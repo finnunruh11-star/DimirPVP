@@ -1,0 +1,19 @@
+{
+  "name": "pvp-dimir",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Turn-based mage duel with a word-based spell system and an MTG-style reaction stack.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "phaser": "^3.80.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11"
+  }
+}
