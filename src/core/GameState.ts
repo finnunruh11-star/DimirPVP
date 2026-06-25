@@ -5,6 +5,7 @@ import type { Spell } from '../spells/Spell';
 import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
 import { dealDamage, heal } from '../effects/effects';
 import { dmg } from './Damage';
+import type { DamageType, DamageClass } from './Damage';
 import { dist, stepTowards, type Vec2 } from './utils';
 import {
   CONE_DEGREES,
@@ -30,6 +31,20 @@ import { barrierContains } from './Barrier';
 import { addOrExtendStatus, type ControlStatus, type DotStatus, type ShadowTrailStatus } from './Status';
 
 /**
+ * A board-wide escalating damage effect (Necrosis): on each round rollover every
+ * living mage takes the current stage's damage, then the effect steps to the
+ * next stage. Removed once all stages are spent.
+ */
+export interface GlobalEscalation {
+  name: string;
+  stages: string[];
+  index: number;
+  type: DamageType;
+  damageClass: DamageClass;
+  potency: number;
+}
+
+/**
  * The pure (Phaser-free) game model: two mages, whose turn it is, the round
  * counter, the reaction stack, dice and a rolling log. The Phaser scene drives
  * the flow (prompts, animation) and calls into this for all rules.
@@ -52,6 +67,12 @@ export class GameState {
 
   /** Active reality-break wedges placed by Reality+Shatter (block all movement). */
   barriers: BarrierZone[] = [];
+
+  /** Board-wide escalating damage effects (Necrosis). */
+  globalEscalations: GlobalEscalation[] = [];
+
+  /** Alive summon (scarab) count per team at last regen, to score deaths since. */
+  private prevScarabAlive: Record<1 | 2, number> = { 1: 0, 2: 0 };
 
   /** Mages queued for an extra turn (Shatter+Mind+Reality), taken in order. */
   extraTurnQueue: Mage[] = [];
@@ -116,7 +137,7 @@ export class GameState {
   /** Reset reactions for both mages at the start of a new round. */
   startRound(): void {
     for (const m of this.mages) {
-      m.reactionAvailable = m.grantsReaction;
+      m.reactionAvailable = m.canEverReact;
     }
   }
 
@@ -133,6 +154,7 @@ export class GameState {
     const ticks = m.tickStatuses();
     for (const line of ticks) this.log(line);
     this.applyControlOnTurnStart(m);
+    this.regenResources(m);
     m.beginTurn();
   }
 
@@ -149,6 +171,7 @@ export class GameState {
       this.tickShadows();
       this.tickTotems();
       this.tickBarriers();
+      this.tickGlobalEscalations();
       this.startRound();
     }
   }
@@ -161,6 +184,40 @@ export class GameState {
   /** Queue an extra turn for `m`, taken immediately after the current one. */
   grantExtraTurn(m: Mage): void {
     this.extraTurnQueue.push(m);
+  }
+
+  /**
+   * Regenerate a mage's mana & color-charges for its starting turn, scoring any
+   * allied summons (scarabs) lost since its previous turn for black's regen.
+   */
+  private regenResources(m: Mage): void {
+    const alive = this.scarabs.filter((s) => s.owner === m.team && scarabAlive(s)).length;
+    const deaths = Math.max(0, (this.prevScarabAlive[m.team] ?? alive) - alive);
+    m.regen({ summonDeaths: deaths });
+    this.prevScarabAlive[m.team] = alive;
+  }
+
+  /** Register a board-wide escalating damage effect (Necrosis). */
+  addGlobalEscalation(opts: Omit<GlobalEscalation, 'index'>): void {
+    this.globalEscalations.push({ ...opts, index: 0 });
+    this.log(`A creeping ${opts.name.toLowerCase()} takes hold of the duel.`);
+  }
+
+  /** Advance every global escalation one stage, damaging all living mages. */
+  private tickGlobalEscalations(): void {
+    if (this.globalEscalations.length === 0) return;
+    for (const e of this.globalEscalations) {
+      const spec = e.stages[e.index];
+      if (!spec) continue;
+      for (const m of this.mages) {
+        if (!m.alive) continue;
+        const amount = Math.round(this.rng.roll(spec).total * e.potency);
+        const ctx = this.effectContext(m, m, null);
+        dealDamage(ctx, m, dmg(amount, e.type, e.damageClass), { canMiss: false, aoe: true });
+      }
+      e.index += 1;
+    }
+    this.globalEscalations = this.globalEscalations.filter((e) => e.index < e.stages.length);
   }
 
   /** Pop the next queued extra-turn mage, if any. */
@@ -769,7 +826,9 @@ export class GameState {
       isStillValid: (game) => game.canMelee(source, target),
       resolve: (game) => {
         const ctx = game.effectContext(source, target, null);
-        dealDamage(ctx, target, dmg(MELEE_DAMAGE, 'shatter', 'physical'));
+        // Black primary tier sharpens every melee blow.
+        const bonus = source.profile.blackPrimaryTier ? 1 : 0;
+        dealDamage(ctx, target, dmg(MELEE_DAMAGE + bonus, 'shatter', 'physical'));
       },
     };
   }

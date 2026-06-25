@@ -19,6 +19,17 @@ export const MELEE_DAMAGE = 6;
 export const START_HP = 30;
 export const START_SANITY = 20;
 
+// Mana powers word-spells and color abilities; color-charges power only color
+// abilities. Mana does NOT regenerate on its own — you start at full and refill
+// only via items or abilities like Rejuvenate. Color-charges regenerate (by
+// color) each turn, capped at COLOR_CHARGE_CAP. See Mage.regen / GameState.beginTurn.
+export const MANA_CAP = 24;
+export const COLOR_CHARGE_CAP = 12;
+export const START_MANA = MANA_CAP;
+export const START_COLOR_CHARGES = 0;
+// Extra damage the "marked" debuff (Bane) makes its bearer take from all sources.
+export const MARKED_DAMAGE = 1;
+
 // Shadow zones (placed by the Shadow word). Spells gain reach through your own
 // shadows, and damage is boosted when the caster or target stands in a shadow.
 export const SHADOW_RADIUS = 95;

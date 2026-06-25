@@ -1,13 +1,19 @@
 import {
   ACTIONS_PER_TURN,
+  COLOR_CHARGE_CAP,
   FIELD,
+  MANA_CAP,
   MOVE_RANGE,
+  START_COLOR_CHARGES,
   START_HP,
+  START_MANA,
   START_SANITY,
 } from '../config/constants';
 import { Dev } from '../config/dev';
 import type { WordId } from './Words';
 import { WORDS } from './Words';
+import type { ColorProfile } from './Colors';
+import { computeColorProfile } from './Colors';
 import type {
   ForgetStatus,
   InvisibilityStatus,
@@ -38,6 +44,25 @@ export class Mage {
 
   loadout: WordId[];
   charges: Record<string, number> = {};
+
+  /** Color identity derived from the loadout (primary / secondary tiers). */
+  profile: ColorProfile;
+
+  /** Mana pool: powers word-spells and color abilities. */
+  mana: number;
+  maxMana: number;
+  /** Color-charge pool: powers color abilities only. */
+  colorCharges: number;
+  maxColorCharges: number;
+
+  /**
+   * Whether this mage spent a reaction since its previous turn. Blue's regen
+   * grants extra resources to mages that held their reaction.
+   */
+  reactionUsedRecently = false;
+
+  /** Mana actually paid for the most recent color ability (Rejuvenate reads it). */
+  lastAbilityManaPaid = 0;
 
   statuses: Status[] = [];
   actions: ActionPool = { ...ACTIONS_PER_TURN };
@@ -82,7 +107,14 @@ export class Mage {
     this.maxSanity = START_SANITY;
     this.sanity = START_SANITY;
     this.loadout = [...opts.loadout];
-    for (const w of this.loadout) this.charges[w] = WORDS[w].charges;
+    this.profile = computeColorProfile(this.loadout);
+    // Blue primary tier grants every word one extra charge.
+    const bonusCharge = this.profile.bluePrimaryTier ? 1 : 0;
+    for (const w of this.loadout) this.charges[w] = WORDS[w].charges + bonusCharge;
+    this.maxMana = MANA_CAP;
+    this.mana = START_MANA;
+    this.maxColorCharges = COLOR_CHARGE_CAP;
+    this.colorCharges = START_COLOR_CHARGES;
   }
 
   get pos(): Vec2 {
@@ -98,8 +130,63 @@ export class Mage {
     return this.loadout.some((w) => WORDS[w].grantsReaction);
   }
 
+  /**
+   * Whether this mage can ever react: it has a reaction-granting word, or its
+   * blue primary tier lets it respond with any spell / color ability.
+   */
+  get canEverReact(): boolean {
+    return this.grantsReaction || this.profile.bluePrimaryTier;
+  }
+
   hasReaction(): boolean {
-    return this.grantsReaction && this.reactionAvailable;
+    return this.canEverReact && this.reactionAvailable;
+  }
+
+  // ---- Mana & color charges -------------------------------------------------
+
+  hasMana(amount: number): boolean {
+    return Dev.infiniteActions || this.mana >= amount;
+  }
+
+  spendMana(amount: number): void {
+    if (Dev.infiniteActions) return;
+    this.mana = Math.max(0, this.mana - amount);
+  }
+
+  gainMana(amount: number): void {
+    this.mana = Math.min(this.maxMana, this.mana + Math.max(0, amount));
+  }
+
+  hasColorCharges(amount: number): boolean {
+    return Dev.infiniteActions || this.colorCharges >= amount;
+  }
+
+  spendColorCharges(amount: number): void {
+    if (Dev.infiniteActions) return;
+    this.colorCharges = Math.max(0, this.colorCharges - amount);
+  }
+
+  gainColorCharges(amount: number): void {
+    this.colorCharges = Math.min(this.maxColorCharges, this.colorCharges + Math.max(0, amount));
+  }
+
+  /**
+   * Regenerate color-charges at the start of this mage's turn. The amount is
+   * decided by the primary color:
+   *   - Black: +1, plus +1 per allied summon (scarab) lost since last turn.
+   *   - Blue:  +1, plus +2 if no reaction was spent since last turn.
+   *   - Colorless: +1.
+   * Mana does NOT regenerate here — it refills only via items or abilities.
+   */
+  regen(opts: { summonDeaths: number }): void {
+    let amount = 1;
+    if (this.profile.primary === 'black') {
+      amount = 1 + Math.max(0, opts.summonDeaths);
+    } else if (this.profile.primary === 'blue') {
+      amount = 1 + (this.reactionUsedRecently ? 0 : 2);
+    }
+    this.gainColorCharges(amount);
+    this.reactionUsedRecently = false;
   }
 
   // ---- Charges --------------------------------------------------------------

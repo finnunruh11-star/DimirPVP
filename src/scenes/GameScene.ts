@@ -16,6 +16,8 @@ import scarabGifUrl from '../Sprites/Scarab.gif';
 import type { ScarabState } from '../core/Scarab';
 import { Dev, type DevToggle } from '../config/dev';
 import { WORDS, type WordId } from '../core/Words';
+import { wordSpellMana } from '../core/Colors';
+import { getColorAbilitiesFor, type ColorAbility } from '../spells/colorAbilities';
 import type { StackItem } from '../core/Stack';
 import type { ShadowZone } from '../core/Shadow';
 import type { Spell, SpellVisual } from '../spells/Spell';
@@ -106,6 +108,8 @@ interface ScarabRec {
   baseScale: number;
   /** Individual walk-cycle time scale so scarabs never march in lockstep. */
   speed: number;
+  /** Per-scarab easing factor for the crawl, low and varied so each lags uniquely. */
+  glide: number;
   /** A one-shot attack/heal cue tween currently owns the tint/scale/angle. */
   cue: boolean;
   /** Whether the looping walk animation has been started. */
@@ -144,6 +148,8 @@ export class GameScene extends Phaser.Scene {
   // Human spell-building state (indices into the current mage's loadout).
   private selectedIdx: number[] = [];
   private pendingSpell: Spell | null = null;
+  /** The color ability currently being aimed (paid for differently than spells). */
+  private pendingAbility: ColorAbility | null = null;
 
   // Reaction target-selection state (a reaction can require picking a target).
   private aimingSource: Mage | null = null;
@@ -172,6 +178,7 @@ export class GameScene extends Phaser.Scene {
   private hintText!: Phaser.GameObjects.Text;
   private logText!: Phaser.GameObjects.Text;
   private actionText!: Phaser.GameObjects.Text;
+  private resourceText!: Phaser.GameObjects.Text;
   private wordTexts: Phaser.GameObjects.Text[] = [];
   private tooltip!: Phaser.GameObjects.Text;
   private bannerText!: Phaser.GameObjects.Text;
@@ -498,8 +505,13 @@ export class GameScene extends Phaser.Scene {
       if (!passed.has(top.id) && this.reactorCanRespond(reactor, top)) {
         const choice = await this.getReaction(reactor, top);
         if (choice) {
-          this.payForSpell(reactor, choice.spell);
+          if (this.isColorAbility(choice.spell)) {
+            this.payForColorAbility(reactor, choice.spell);
+          } else {
+            this.payForSpell(reactor, choice.spell);
+          }
           reactor.reactionAvailable = false;
+          reactor.reactionUsedRecently = true;
           const item = this.gs.makeSpellItem(
             reactor,
             choice.spell,
@@ -589,7 +601,8 @@ export class GameScene extends Phaser.Scene {
 
   /** Roll 1d20 against a spell's DC, queue the die for display, and log it. */
   private rollSpellSuccess(spell: Spell, source: Mage): boolean {
-    const dc = spell.dc ?? 0;
+    // Blue primary tier sharpens every word-spell, lowering its difficulty.
+    const dc = (spell.dc ?? 0) - (source.profile.bluePrimaryTier ? 2 : 0);
     const r = this.gs.rng.roll('1d20');
     this.pendingDice.push({
       spec: '1d20',
@@ -607,8 +620,14 @@ export class GameScene extends Phaser.Scene {
   /** Reaction spells the reactor could actually cast right now (charges + valid target). */
   private castableReactions(reactor: Mage): Spell[] {
     const forgotten = reactor.forgotten();
-    return reactionSpellsFor(reactor.loadout).filter((s) => {
+    // Blue primary tier lets a mage respond with ANY of its word-spells, not
+    // just reaction-flagged ones; otherwise use the normal reaction set.
+    const pool = reactor.profile.bluePrimaryTier
+      ? allSpells().filter((s) => s.words.every((w) => reactor.loadout.includes(w)))
+      : reactionSpellsFor(reactor.loadout);
+    return pool.filter((s) => {
       if (!reactor.hasCharges(s.words)) return false;
+      if (!reactor.hasMana(wordSpellMana(s.words, reactor.profile))) return false;
       if (forgotten.length && s.words.some((w) => forgotten.includes(w))) return false;
       if (s.targeting === 'enemy' || s.targeting === 'ally') {
         const tgt = s.targeting === 'ally' ? reactor : this.gs.opponentOf(reactor);
@@ -618,10 +637,30 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  /** True if `spell` is actually a color ability (paid with charges + mana). */
+  private isColorAbility(spell: Spell): spell is ColorAbility {
+    return (spell as ColorAbility).chargeCost !== undefined;
+  }
+
+  /** Blue mages (any blue in their identity) may respond with color abilities. */
+  private canReactWithAbilities(reactor: Mage): boolean {
+    return reactor.profile.bluePrimaryTier;
+  }
+
+  /** Color abilities the reactor could cast right now as a reaction. */
+  private castableAbilities(reactor: Mage): ColorAbility[] {
+    if (!this.canReactWithAbilities(reactor)) return [];
+    return getColorAbilitiesFor(reactor.profile.primary).filter((ab) =>
+      this.canAffordAbility(reactor, ab)
+    );
+  }
+
   private reactorCanRespond(reactor: Mage, top: StackItem): boolean {
     if (reactor === top.source) return false;
     if (!reactor.hasReaction()) return false;
-    return this.castableReactions(reactor).length > 0;
+    return (
+      this.castableReactions(reactor).length > 0 || this.castableAbilities(reactor).length > 0
+    );
   }
 
   private getReaction(reactor: Mage, top: StackItem): Promise<ReactionChoice | null> {
@@ -646,6 +685,8 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-ENTER', () => this.onCast());
     kb.on('keydown-M', () => this.beginMove());
     kb.on('keydown-A', () => this.beginMelee());
+    kb.on('keydown-Z', () => this.castColorAbility(0));
+    kb.on('keydown-X', () => this.castColorAbility(1));
     kb.on('keydown-E', () => this.onEndTurn());
     kb.on('keydown-SPACE', () => {
       if (this.mode === 'reaction') this.onReactionPass();
@@ -763,6 +804,10 @@ export class GameScene extends Phaser.Scene {
       this.flashHint('Not enough charges.');
       return;
     }
+    if (!me.hasMana(wordSpellMana(spell.words, me.profile))) {
+      this.flashHint('Not enough mana.');
+      return;
+    }
     if ((spell.actionType === 'main' ? me.actions.main : me.actions.bonus) <= 0) {
       this.flashHint(`No ${spell.actionType} action left.`);
       return;
@@ -832,6 +877,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     this.pendingSpell = null;
+    this.pendingAbility = null;
     this.aimingSource = null;
     this.mode = 'idle';
     this.redraw();
@@ -918,9 +964,14 @@ export class GameScene extends Phaser.Scene {
       if (!spell) return;
       const target = this.clickedMage(pt, me);
       if (target && this.gs.isValidSpellTarget(spell, me, target)) {
-        this.payForSpell(me, spell);
+        if (this.pendingAbility) {
+          this.payForColorAbility(me, this.pendingAbility);
+        } else {
+          this.payForSpell(me, spell);
+        }
         this.mode = 'idle';
         this.pendingSpell = null;
+        this.pendingAbility = null;
         const item = this.gs.makeSpellItem(me, spell, target, null);
         this.resetSelection();
         this.runStack(item);
@@ -944,9 +995,14 @@ export class GameScene extends Phaser.Scene {
         this.flashHint('Too close — aim farther away.');
         return;
       }
-      this.payForSpell(me, spell);
+      if (this.pendingAbility) {
+        this.payForColorAbility(me, this.pendingAbility);
+      } else {
+        this.payForSpell(me, spell);
+      }
       this.mode = 'idle';
       this.pendingSpell = null;
+      this.pendingAbility = null;
       const item = this.gs.makeSpellItem(me, spell, null, capped);
       this.resetSelection();
       this.runStack(item);
@@ -964,13 +1020,100 @@ export class GameScene extends Phaser.Scene {
 
   private payForSpell(mage: Mage, spell: Spell): void {
     mage.spendCharges(spell.words);
+    mage.spendMana(wordSpellMana(spell.words, mage.profile));
     mage.hasCastThisTurn = true;
     mage.spend(spell.actionType === 'main' ? 'main' : 'bonus');
+  }
+
+  // ===========================================================================
+  //  COLOR ABILITIES (bonus-action powers granted by your primary color)
+  // ===========================================================================
+
+  /** Effective color-charge cost after the blue-secondary discount. */
+  private abilityChargeCost(me: Mage, ability: ColorAbility): number {
+    return Math.max(0, ability.chargeCost - (me.profile.blueSecondaryTier ? 1 : 0));
+  }
+
+  /** Whether `me` can pay for `ability` (color-charges, optional life, mana). */
+  private canAffordAbility(me: Mage, ability: ColorAbility): boolean {
+    if (Dev.infiniteActions) return true;
+    if (!me.hasMana(ability.manaCost)) return false;
+    const charge = this.abilityChargeCost(me, ability);
+    if (me.colorCharges >= charge) return true;
+    // Black secondary may substitute up to 2 missing charges with 5% life each.
+    if (me.profile.blackSecondaryTier) {
+      return charge - me.colorCharges <= 2;
+    }
+    return false;
+  }
+
+  /** Spend a color ability's full cost (charges, substituted life, mana, bonus). */
+  private payForColorAbility(me: Mage, ability: ColorAbility): void {
+    const charge = this.abilityChargeCost(me, ability);
+    let fromCharges = Math.min(charge, me.colorCharges);
+    let fromLife = charge - fromCharges;
+    if (fromLife > 0 && me.profile.blackSecondaryTier) {
+      fromLife = Math.min(fromLife, 2);
+      fromCharges = charge - fromLife;
+      const per = Math.max(1, Math.floor(me.maxHp * 0.05));
+      const lifeCost = fromLife * per;
+      me.hp = Math.max(1, me.hp - lifeCost);
+      this.gs.log(`${me.name} pays ${lifeCost} life for ${fromLife} color charge${fromLife > 1 ? 's' : ''}.`);
+    }
+    me.spendColorCharges(fromCharges);
+    me.spendMana(ability.manaCost);
+    me.lastAbilityManaPaid = ability.manaCost;
+    me.spend('bonus');
+  }
+
+  /** Cast the idx-th color ability granted by the current mage's primary color. */
+  private castColorAbility(idx: number): void {
+    if (this.mode === 'reaction') {
+      this.castAbilityReaction(idx);
+      return;
+    }
+    if (!this.humanActive) return;
+    const me = this.gs.current;
+    const ability = getColorAbilitiesFor(me.profile.primary)[idx];
+    if (!ability) {
+      this.flashHint('No color ability there.');
+      return;
+    }
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions) {
+      this.flashHint('Color abilities need a bonus action.');
+      return;
+    }
+    if (!this.canAffordAbility(me, ability)) {
+      this.flashHint('Not enough color charges / mana.');
+      return;
+    }
+    if (ability.targeting === 'self' || ability.targeting === 'none') {
+      this.payForColorAbility(me, ability);
+      const item = this.gs.makeSpellItem(me, ability, ability.targeting === 'self' ? me : null, null);
+      this.resetSelection();
+      this.runStack(item);
+      return;
+    }
+    if (ability.targeting === 'point') {
+      this.pendingAbility = ability;
+      this.pendingSpell = ability;
+      this.mode = 'aiming-point';
+      this.flashHint(`${ability.name} — click a destination within range.`);
+      this.redraw();
+      return;
+    }
+    // enemy / ally
+    this.pendingAbility = ability;
+    this.pendingSpell = ability;
+    this.mode = 'aiming-spell';
+    this.flashHint(`${ability.name} — click a valid target.`);
+    this.redraw();
   }
 
   private resetSelection(): void {
     this.selectedIdx = [];
     this.pendingSpell = null;
+    this.pendingAbility = null;
     this.aimingSource = null;
   }
 
@@ -992,8 +1135,9 @@ export class GameScene extends Phaser.Scene {
       this.reactionResolve = resolve;
       this.mode = 'reaction';
       this.resetSelection();
+      const abil = this.castableAbilities(reactor).length > 0 ? '  [Z/X] color ability' : '';
       this.flashHint(
-        `${reactor.name}: REACTION — [1-4]+Enter to cast a reaction, or Space/E to pass.`
+        `${reactor.name}: REACTION — [1-4]+Enter to cast${abil}, or Space/E to pass.`
       );
       this.redraw();
     });
@@ -1017,6 +1161,25 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     this.onReactionChosen(this.reactor, spell, this.reactionTop);
+  }
+
+  /** Cast a color ability as a reaction (blue mages only). */
+  private castAbilityReaction(idx: number): void {
+    if (!this.reactor || !this.reactionTop) return;
+    if (!this.canReactWithAbilities(this.reactor)) {
+      this.flashHint('Only blue mages can react with color abilities.');
+      return;
+    }
+    const ability = getColorAbilitiesFor(this.reactor.profile.primary)[idx];
+    if (!ability) {
+      this.flashHint('No color ability there.');
+      return;
+    }
+    if (!this.canAffordAbility(this.reactor, ability)) {
+      this.flashHint('Not enough color charges / mana.');
+      return;
+    }
+    this.onReactionChosen(this.reactor, ability, this.reactionTop);
   }
 
   /** Pass priority during a reaction mini-turn (no reaction is cast). */
@@ -1161,10 +1324,11 @@ export class GameScene extends Phaser.Scene {
     this.turnText = this.add.text(FIELD.x, HUD_Y, '', { fontSize: '20px', color: TEXT.body, fontStyle: 'bold' });
     this.comboText = this.add.text(FIELD.x, HUD_Y + 30, '', { fontSize: '16px', color: TEXT.warn });
     this.actionText = this.add.text(FIELD.x, HUD_Y + 56, '', { fontSize: '16px', color: TEXT.body });
-    this.hintText = this.add.text(FIELD.x, HUD_Y + 82, '', { fontSize: '15px', color: TEXT.dim });
+    this.resourceText = this.add.text(FIELD.x, HUD_Y + 80, '', { fontSize: '15px', color: TEXT.warn });
+    this.hintText = this.add.text(FIELD.x, HUD_Y + 104, '', { fontSize: '15px', color: TEXT.dim });
 
-    this.add.text(FIELD.x, HUD_Y + 112,
-      '[1-4] toggle words   [Enter] cast   [M] move   [A] melee   [E] end turn   [Esc] cancel',
+    this.add.text(FIELD.x, HUD_Y + 132,
+      '[1-4] words  [Enter] cast  [Z/X] color ability  [M] move  [A] melee  [E] end turn  [Esc] cancel',
       { fontSize: '13px', color: TEXT.dim });
 
     for (let i = 0; i < 4; i++) {
@@ -1367,6 +1531,12 @@ export class GameScene extends Phaser.Scene {
     return { x: Math.cos(a) * r, y: Math.sin(a) * r * 0.6 };
   }
 
+  /** Deterministic 0..1 hash per scarab id, used to spread out speeds/timings. */
+  private scarabHash(id: number, seed: number): number {
+    const v = Math.sin((id + 1) * seed) * 43758.5453;
+    return v - Math.floor(v);
+  }
+
   /** Create/position each scarab's sprite and ease it toward its target spot. */
   private syncScarabSprites(): void {
     if (!this.gs) return;
@@ -1389,14 +1559,21 @@ export class GameScene extends Phaser.Scene {
         const srcH = sprite.height || 16;
         const baseScale = (SCARAB.radius * 3.6) / srcH;
         sprite.setScale(baseScale);
-        // Each scarab crawls at its own deliberately slow, slightly different pace.
-        const speed = 0.55 + (sc.id % 6) * 0.11;
+        // Two independent hashes so each scarab gets its own crawl pace AND its
+        // own leg-animation tempo — the swarm spreads across a wide, slow range.
+        const h1 = this.scarabHash(sc.id, 12.9898);
+        const h2 = this.scarabHash(sc.id, 78.233);
+        // Very low easing (~0.012–0.05) => deliberate, drawn-out crawling.
+        const glide = 0.012 + h1 * 0.04;
+        // Leg tempo wanders from a sluggish 0.18 up to 0.7.
+        const speed = 0.18 + h2 * 0.52;
         rec = {
           sprite,
           disp: { x: tx, y: ty },
           prevState: sc.state,
           baseScale,
           speed,
+          glide,
           cue: false,
           walking: false,
         };
@@ -1414,8 +1591,8 @@ export class GameScene extends Phaser.Scene {
 
       // Glide toward the target spot so the running motion reads clearly.
       const prevX = rec.disp.x;
-      rec.disp.x += (tx - rec.disp.x) * 0.12;
-      rec.disp.y += (ty - rec.disp.y) * 0.12;
+      rec.disp.x += (tx - rec.disp.x) * rec.glide;
+      rec.disp.y += (ty - rec.disp.y) * rec.glide;
       spr.setPosition(rec.disp.x, rec.disp.y);
       const dx = rec.disp.x - prevX;
       if (Math.abs(dx) > 0.05) spr.setFlipX(dx < 0);
@@ -1830,8 +2007,9 @@ export class GameScene extends Phaser.Scene {
   private drawHud(): void {
     const me = this.actor;
     if (this.mode === 'reaction' && this.reactor) {
+      const abil = this.castableAbilities(this.reactor).length > 0 ? ', [Z/X] color ability' : '';
       this.turnText.setText(
-        `${this.reactor.name}: REACTION — [1-4]+Enter to cast, Space/E to pass`
+        `${this.reactor.name}: REACTION — [1-4]+Enter to cast${abil}, Space/E to pass`
       );
     } else {
       const cur = this.gs.current;
@@ -1849,7 +2027,10 @@ export class GameScene extends Phaser.Scene {
       this.comboText.setText('Selection: —');
     } else if (spell) {
       const rng = Number.isFinite(spell.range) ? `rng ${spell.range}` : 'any range';
-      this.comboText.setText(`Selection: ${sel}  →  ${spell.name} (${spell.actionType}, ${rng})`);
+      const mana = wordSpellMana(spell.words, me.profile);
+      this.comboText.setText(
+        `Selection: ${sel}  →  ${spell.name} (${spell.actionType}, ${rng}, ${mana} mana)`
+      );
     } else {
       this.comboText.setText(`Selection: ${sel}  →  (no spell)`);
     }
@@ -1858,6 +2039,8 @@ export class GameScene extends Phaser.Scene {
     this.actionText.setText(
       `Actions — Move ${dots(a.move, ACTIONS_PER_TURN.move)}  Main ${dots(a.main, ACTIONS_PER_TURN.main)}  Bonus ${dots(a.bonus, ACTIONS_PER_TURN.bonus)}   Reaction: ${me.hasReaction() ? 'ready' : '—'}`
     );
+
+    this.drawResourceText(me);
 
     // Word boxes for the active human.
     for (let i = 0; i < 4; i++) {
@@ -1876,6 +2059,30 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.drawLog();
+  }
+
+  /** Show the active mage's mana, color charges and primary-color abilities. */
+  private drawResourceText(me: Mage): void {
+    if (this.controllerIsAI(me)) {
+      this.resourceText.setText('');
+      return;
+    }
+    const p = me.profile;
+    const identity = p.primary
+      ? `${p.primary}${p.secondary ? `/${p.secondary}` : ''}`
+      : 'colorless';
+    const abilities = getColorAbilitiesFor(p.primary);
+    const abilText = abilities.length
+      ? abilities
+          .map((ab, i) => {
+            const c = this.abilityChargeCost(me, ab);
+            return `[${i === 0 ? 'Z' : 'X'}] ${ab.name} (${c}c/${ab.manaCost}m)`;
+          })
+          .join('   ')
+      : 'none';
+    this.resourceText.setText(
+      `Mana ${me.mana}/${me.maxMana}   Color ${me.colorCharges}/${me.maxColorCharges}   [${identity}]   ${abilText}`
+    );
   }
 
   private drawLog(): void {
