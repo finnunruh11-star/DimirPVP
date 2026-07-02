@@ -13,6 +13,7 @@ import type { DamageInstance, DamageClass, DamageType } from '../core/Damage';
 import type { Dice } from '../core/Dice';
 import type { GameState } from '../core/GameState';
 import type { Mage } from '../core/Mage';
+import { getItem } from '../core/Items';
 import {
   addOrExtendStatus,
   type ControlMode,
@@ -20,7 +21,7 @@ import {
   type StunType,
 } from '../core/Status';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
-import { FIELD, RANGE_UNIT, SCARAB, SHADOW_DAMAGE_BONUS, VEIL } from '../config/constants';
+import { FIELD, RANGE_UNIT, SCARAB, SHADOW_DAMAGE_BONUS, SILVER_PER_GOLD, VEIL } from '../config/constants';
 import { Dev } from '../config/dev';
 
 /**
@@ -127,14 +128,27 @@ export function dealDamage(
   ctx: EffectContext,
   target: Mage,
   damage: DamageInstance,
-  opts: { canMiss?: boolean; aoe?: boolean } = {}
+  opts: { canMiss?: boolean; aoe?: boolean; ignoreResist?: boolean; ignoreArmor?: boolean; trueDamage?: boolean } = {}
 ): number {
   const canMiss = opts.canMiss !== false;
   const isAoe = !!opts.aoe;
+  const isTrue = !!opts.trueDamage;
+
+  // Second Ring of Lareneg: untouchable to all hostile damage in cycles 3 & 4.
+  if (ctx.game.isLaranegUntouchable(target)) {
+    return 0;
+  }
+
+  // Eldritch Truth: while shrouded, the wielder voids all incoming damage until
+  // their next turn.
+  if (target.eldritchDefend) {
+    ctx.log(`${target.name} stands untouched — eldritch truth voids the blow.`);
+    return 0;
+  }
 
   // Veil dodge: only targeted (non-area) attacks can be slipped. Area effects
-  // always connect.
-  if (canMiss && !isAoe && !Dev.autoSuccess) {
+  // always connect. True damage never misses.
+  if (canMiss && !isAoe && !isTrue && !Dev.autoSuccess) {
     const inv = target.getInvisibility();
     if (inv) {
       const units = dist(ctx.caster.pos, target.pos) / RANGE_UNIT;
@@ -165,6 +179,45 @@ export function dealDamage(
   }
 
   amount = Math.max(0, Math.round(amount));
+  // Worn armour soaks physical / magical blows (flat reduction), unless this
+  // strike is fully armour-penetrating (Greatshield sword form).
+  if (!opts.ignoreArmor && !isTrue) {
+    amount = target.reduceIncoming(amount, damage.type, damage.damageClass);
+  }
+
+  // Damage-type resistances / immunities / weaknesses (multiplicative), unless
+  // this strike is set to ignore them (e.g. Bastion sword form).
+  if (amount > 0 && !opts.ignoreResist && !isTrue) {
+    const mult = target.resistMultiplier(damage.type);
+    if (mult !== 1) {
+      const before = amount;
+      amount = Math.floor(amount * mult);
+      if (mult === 0) {
+        ctx.log(`${target.name} is immune to ${damage.type} — the blow is absorbed.`);
+      } else if (mult < 1) {
+        ctx.log(`${target.name} resists ${damage.type} (${before} → ${amount}).`);
+      } else {
+        ctx.log(`${target.name} is vulnerable to ${damage.type} (${before} → ${amount})!`);
+      }
+    }
+  }
+
+  // An Aluminium Hat shrugs off any minor psychic jab below its threshold.
+  if (damage.damageClass === 'sanity' && amount > 0 && amount < target.sanityWardBelow()) {
+    ctx.log(`${target.name}'s foil hat shrugs off the minor psychic jab.`);
+    amount = 0;
+  }
+
+  // A shield raised as a reaction blunts the next physical blow (one-shot).
+  if (amount > 0 && damage.damageClass === 'physical' && target.blockPending && !isTrue) {
+    const block = target.blockReduction();
+    target.blockPending = false;
+    if (block > 0) {
+      const before = amount;
+      amount = Math.floor(amount * (1 - block));
+      ctx.log(`${target.name} catches it on the shield (${before} → ${amount}).`);
+    }
+  }
 
   if (damage.damageClass === 'sanity') {
     target.sanity = Math.max(0, target.sanity - amount);
@@ -182,8 +235,35 @@ export function dealDamage(
     ctx.vfx?.hit?.(target);
     breakVeilOnStruck(ctx, target, damage.damageClass, amount);
     if (canMiss) breakVeilOnStrike(ctx, ctx.caster, amount);
+    // A Channeling Ring converts pain into mana.
+    const manaBack = target.manaOnHit();
+    if (manaBack > 0) {
+      target.gainMana(manaBack);
+      ctx.log(`${target.name}'s ring channels the pain into ${manaBack} mana.`);
+    }
+    // Gaze Timez Bracelet: dealing or taking mental (mill) damage grants 1d3 mana.
+    if (damage.damageClass === 'sanity') {
+      tryMillMana(ctx.caster, ctx);
+      tryMillMana(target, ctx);
+    }
+    // A Gambler's Blade turns every wound it helps inflict into coin.
+    if (ctx.caster.hasGamblerBlade()) {
+      const gold = ctx.rng.roll('1d3').total;
+      ctx.caster.silver += gold * SILVER_PER_GOLD;
+      ctx.log(`${ctx.caster.name}'s Gambler's Blade rakes in ${gold}g.`);
+    }
   }
   return amount;
+}
+
+/** Gaze Timez Bracelet: once per duel, dealing/taking mental damage gives 1d3 mana. */
+function tryMillMana(mage: Mage, ctx: EffectContext): void {
+  if (mage.manaMilledOnce) return;
+  if (!mage.equippedItems().some((id) => getItem(id).millManaOnce)) return;
+  mage.manaMilledOnce = true;
+  const gain = ctx.rng.roll('1d3').total;
+  mage.gainMana(gain);
+  ctx.log(`${mage.name}'s Gaze Timez Bracelet drinks the mill for ${gain} mana.`);
 }
 
 /** Chance (0..1) that a targeted attack misses a veiled mage `units` away. */
@@ -254,6 +334,8 @@ export function heal(
     target.sanity = Math.min(target.maxSanity, target.sanity + amount);
     ctx.log(`${target.name} recovers ${amount} sanity.`);
   } else {
+    // Blood Charm and the like make every heal restore more.
+    amount = Math.round(amount * target.healMult());
     target.hp = Math.min(target.maxHp, target.hp + amount);
     ctx.log(`${target.name} heals ${amount} health.`);
   }
@@ -308,6 +390,7 @@ export function applyStun(
   target: Mage,
   opts: { duration: number; type: StunType; extend?: boolean }
 ): void {
+  if (ctx.game.isLaranegUntouchable(target)) return;
   const names: Record<StunType, string> = {
     main: 'Disarmed',
     movement: 'Rooted',
@@ -460,18 +543,21 @@ export function applyDebuff(
     extend?: boolean;
   }
 ): void {
+  if (ctx.game.isLaranegUntouchable(target)) return;
+  // A Witch Wand makes every debuff the caster lands last twice as long.
+  const duration = ctx.caster.hasWitchWand() ? opts.duration * 2 : opts.duration;
   addOrExtendStatus(
     target.statuses,
     {
       key: opts.key ?? `debuff:${opts.name}`,
       name: opts.name,
       kind: 'debuff',
-      duration: opts.duration,
+      duration,
       mods: opts.mods,
     },
     !!opts.extend
   );
-  ctx.log(`${target.name} is cursed with ${opts.name} (${opts.duration} cycles).`);
+  ctx.log(`${target.name} is cursed with ${opts.name} (${duration} cycles).`);
 }
 
 /** Remove all debuffs / dots / stuns from a mage (a cleanse helper). */
@@ -589,6 +675,7 @@ export function applyAuraDot(
     damageClass?: DamageClass;
   }
 ): void {
+  if (ctx.game.isLaranegUntouchable(target)) return;
   addOrExtendStatus(
     target.statuses,
     {
@@ -632,6 +719,7 @@ export function applyControl(
   target: Mage,
   opts: { name: string; mode: ControlMode; duration: number }
 ): void {
+  if (ctx.game.isLaranegUntouchable(target)) return;
   if (target.consumeWard('mind')) {
     ctx.log(`${target.name}'s Mind Dodge shrugs off the compulsion.`);
     return;
@@ -717,12 +805,32 @@ export function placeBarrier(
 ): void {
   const angle = Math.atan2(toward.y - ctx.caster.y, toward.x - ctx.caster.x);
   ctx.game.addBarrier({ x: ctx.caster.x, y: ctx.caster.y }, angle, {
+    shape: 'wedge',
     halfAngle: ((opts.degrees * Math.PI) / 180) / 2,
     range: opts.range,
     owner: ctx.caster.team,
     ttl: opts.ttl,
   });
   ctx.log(`${ctx.caster.name} tears a wedge of reality open — no one may pass.`);
+}
+
+/**
+ * Blue Wall: raise a thin rectangular wall centred on `center`, oriented at
+ * `angle` (radians), that blocks all movement for `ttl` rounds.
+ */
+export function placeWall(
+  ctx: EffectContext,
+  center: Vec2,
+  opts: { angle: number; length: number; thickness: number; ttl: number }
+): void {
+  ctx.game.addBarrier({ x: center.x, y: center.y }, opts.angle, {
+    shape: 'rect',
+    range: opts.length,
+    thickness: opts.thickness,
+    owner: ctx.caster.team,
+    ttl: opts.ttl,
+  });
+  ctx.log(`${ctx.caster.name} raises a wall — no one may pass.`);
 }
 
 /** Shatter+Mind+Reality: grant `m` an extra turn after the current one. */

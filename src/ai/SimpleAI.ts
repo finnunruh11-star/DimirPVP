@@ -90,7 +90,7 @@ export class SimpleAI {
       }
       return { spell: counter, target: enemy };
     }
-    const selfBuff = reactions.find((s) => s.targeting === 'self');
+    const selfBuff = reactions.find((s) => s.targeting === 'self' || s.targeting === 'any');
     if (selfBuff && this.self.hp <= this.self.maxHp * 0.5 && this.game.rng.chance(0.7)) {
       return { spell: selfBuff, target: this.self };
     }
@@ -108,7 +108,7 @@ export class SimpleAI {
     const options = this.castableSpells(action).filter((s) => {
       if (s.targeting === 'enemy') return this.game.isValidSpellTarget(s, this.self, enemy);
       if (s.targeting === 'point') return true;
-      if (s.targeting === 'self' || s.targeting === 'ally') {
+      if (s.targeting === 'self' || s.targeting === 'ally' || s.targeting === 'any') {
         // Only self-cast defensively when hurt.
         return this.self.hp <= this.self.maxHp * 0.5;
       }
@@ -123,7 +123,7 @@ export class SimpleAI {
 
   private castDecision(spell: Spell, enemy: Mage): AIDecision {
     if (spell.targeting === 'enemy') return { type: 'spell', spell, target: enemy };
-    if (spell.targeting === 'self' || spell.targeting === 'ally')
+    if (spell.targeting === 'self' || spell.targeting === 'ally' || spell.targeting === 'any')
       return { type: 'spell', spell, target: this.self };
     if (spell.targeting === 'point') {
       const toEnemy = Math.hypot(enemy.pos.x - this.self.pos.x, enemy.pos.y - this.self.pos.y);

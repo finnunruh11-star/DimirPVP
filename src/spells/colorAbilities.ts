@@ -14,7 +14,7 @@
 import type { Spell } from './Spell';
 import type { ColorName } from '../core/Colors';
 import type { EffectContext } from '../effects/effects';
-import { applyDebuff, dealDamage, placeBarrier, rollDice } from '../effects/effects';
+import { applyDebuff, dealDamage, placeWall, rollDice } from '../effects/effects';
 import { dmg } from '../core/Damage';
 import { MARKED_DAMAGE, RANGE_UNIT } from '../config/constants';
 
@@ -127,17 +127,24 @@ const wall: ColorAbility = {
   color: 'blue',
   words: [],
   actionType: 'bonus',
-  range: R(6),
+  range: R(5),
   targeting: 'point',
+  rotatableWall: { length: 360, thickness: 20 },
   chargeCost: 4,
   manaCost: 3,
-  description: 'Raise a wall blocking movement for 2d3 rounds (wider with black potency).',
+  description:
+    'Raise a thin wall blocking movement for 2d3 rounds. Place it anywhere within range 5 and press H while aiming to rotate it (longer with black potency).',
   visual: { preset: 'beam', color: 0x6ad1ff, size: 6 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const wider = ctx.caster.profile.blackSecondaryTier;
     const ttl = rollDice(ctx, '2d3', 'Wall duration');
-    placeBarrier(ctx, ctx.targetPoint, { degrees: wider ? 60 : 40, range: R(6), ttl });
+    placeWall(ctx, ctx.targetPoint, {
+      angle: ctx.caster.wallAngle,
+      length: wider ? 540 : 360,
+      thickness: 20,
+      ttl,
+    });
     payBlackSecondaryLife(ctx);
   },
 };

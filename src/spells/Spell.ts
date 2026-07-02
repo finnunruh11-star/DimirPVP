@@ -2,7 +2,7 @@ import type { WordId } from '../core/Words';
 import type { EffectContext } from '../effects/effects';
 
 export type ActionType = 'main' | 'bonus';
-export type Targeting = 'none' | 'self' | 'enemy' | 'ally' | 'point';
+export type Targeting = 'none' | 'self' | 'enemy' | 'ally' | 'point' | 'any';
 
 /**
  * Declarative spell animation. Pick a preset and tweak its look. The scene plays
@@ -12,8 +12,10 @@ export type Targeting = 'none' | 'self' | 'enemy' | 'ally' | 'point';
  *  - 'beam'       : an instant line from caster to target.
  *  - 'burst'      : an expanding ring at the target / point.
  *  - 'nova'       : an expanding ring centred on the caster (good for self buffs).
+ *  - 'conjure'    : an attack that simply erupts on the target (no projectile travel).
+ *  - 'heal'       : a positive glow with rising sparkles on the target (buffs/heals).
  */
-export type VfxPreset = 'projectile' | 'beam' | 'burst' | 'nova';
+export type VfxPreset = 'projectile' | 'beam' | 'burst' | 'nova' | 'conjure' | 'heal';
 
 export interface SpellVisual {
   preset: VfxPreset;
@@ -76,6 +78,13 @@ export interface Spell {
 
   /** Optional visual played when the spell resolves. */
   visual?: SpellVisual;
+
+  /**
+   * If set, this point-targeted spell/ability places a rotatable rectangular
+   * wall the caster positions within `range` and rotates with H while aiming.
+   * The chosen orientation is read from the caster's `wallAngle`.
+   */
+  rotatableWall?: { length: number; thickness: number };
 
   /**
    * The actual effect. Use the effect helpers in effects/effects.ts here. May be

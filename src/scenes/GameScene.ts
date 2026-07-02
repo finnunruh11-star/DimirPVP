@@ -12,20 +12,48 @@ import {
 } from '../config/constants';
 import { GameState } from '../core/GameState';
 import { Mage } from '../core/Mage';
+import type { Status } from '../core/Status';
 import scarabGifUrl from '../Sprites/Scarab.gif';
+import moveIconUrl from '../Sprites/Move.png';
+import attackIconUrl from '../Sprites/Attack.png';
+import spellIconUrl from '../Sprites/SpellCast.png';
 import type { ScarabState } from '../core/Scarab';
 import { Dev, type DevToggle } from '../config/dev';
 import { WORDS, type WordId } from '../core/Words';
 import { wordSpellMana } from '../core/Colors';
-import { getColorAbilitiesFor, type ColorAbility } from '../spells/colorAbilities';
+import { WORD_COLOR } from '../core/Colors';
+import {
+  STAT_DEFS,
+  STAT_ORDER,
+  aiAssignment,
+  defaultAssignment,
+  isValidAssignment,
+  rollStatAssortment,
+  type DieResult,
+} from '../core/Stats';
+import { getColorAbilitiesFor, COLOR_ABILITIES, type ColorAbility } from '../spells/colorAbilities';
+import {
+  getItem,
+  sanitizeCart,
+  aiDraft,
+  asItemIds,
+  carryCapacity,
+  rollRarity,
+  draftChoices,
+  DRAFT_ROUNDS,
+  RARITY_COLOR,
+  type ItemId,
+} from '../core/Items';
 import type { StackItem } from '../core/Stack';
 import type { ShadowZone } from '../core/Shadow';
+import { barrierContains } from '../core/Barrier';
 import type { Spell, SpellVisual } from '../spells/Spell';
 import { allSpells, getSpell, reactionSpellsFor } from '../spells/registry';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type { SubTargetPointOpts, SubTargetEnemyOpts } from '../effects/effects';
 import { SimpleAI, type AIDecision } from '../ai/SimpleAI';
 import type { MatchConfig } from './MenuScene';
+import type { Net, NetMessage } from '../net/Net';
 
 // Pixel-art mage animations. Frames live under src/Sprites/<Action>/; Vite's
 // glob import resolves each PNG to a hashed URL the Phaser loader can read.
@@ -121,11 +149,20 @@ type InputMode =
   | 'aiming-spell'
   | 'aiming-point'
   | 'aiming-melee'
+  | 'aiming-throw'
+  | 'aiming-eldritch'
+  | 'aiming-discharge'
   | 'aiming-move'
+  | 'aiming-wall'
   | 'subtarget-point'
   | 'subtarget-enemy'
   | 'busy'
   | 'reaction'
+  | 'assign'
+  | 'shop'
+  | 'inventory'
+  | 'eldritch-menu'
+  | 'thunder-menu'
   | 'over';
 
 interface DiceRoll {
@@ -135,12 +172,58 @@ interface DiceRoll {
   label?: string;
 }
 
+// -----------------------------------------------------------------------------
+//  Online lockstep commands
+// -----------------------------------------------------------------------------
+//  In online play both peers run the identical seeded simulation; only a
+//  player's *decisions* cross the wire. A decision is encoded as one of these
+//  small, fully-serializable commands, applied by the same code on both ends so
+//  the RNG stays in lockstep.
+// -----------------------------------------------------------------------------
+
+/** A top-level turn action chosen by the active player. */
+type TurnCommand =
+  | { t: 'move'; x: number; y: number }
+  | { t: 'melee'; target: 1 | 2 }
+  | { t: 'spell'; spellId: string; ability: boolean; target: 1 | 2 | null; x?: number; y?: number; angle?: number }
+  | { t: 'item-drop'; itemId: string }
+  | { t: 'item-pickup'; dropId: number }
+  | { t: 'item-use'; itemId: string }
+  | { t: 'item-equip'; itemId: string }
+  | { t: 'item-unequip'; itemId: string }
+  | { t: 'item-throw'; itemId: string; target: 1 | 2 }
+  | { t: 'eldritch'; choice: 'attack' | 'defend' | 'restore'; target?: 1 | 2 }
+  | { t: 'thunder-charge' }
+  | { t: 'thunder-discharge'; target: 1 | 2 }
+  | { t: 'cast-random' }
+  | { t: 'weapon-action' }
+  | { t: 'end' };
+
+/** A reaction-window choice (a counter/response, or a pass). */
+type ReactionCommand =
+  | { t: 'react'; spellId: string; ability: boolean; target: 1 | 2 | null; x?: number; y?: number }
+  | { t: 'shield'; kind: 'block' | 'bash' }
+  | { t: 'needle' }
+  | { t: 'pass' };
+
+/** A mid-cast sub-target choice. */
+type SubCommand =
+  | { t: 'sub-point'; x: number; y: number }
+  | { t: 'sub-enemy'; target: 1 | 2 }
+  | { t: 'sub-none' };
+
 const MAGE_RADIUS = 22;
 const HUD_Y = FIELD.y + FIELD.h + 18;
 
 export class GameScene extends Phaser.Scene {
   private gs!: GameState;
   private ais = new Map<Mage, SimpleAI>();
+
+  // Online play (lockstep relay). `net` is null for local matches.
+  private net: Net | null = null;
+  private online = false;
+  private localTeam: 1 | 2 = 1;
+  private opponentLeft = false;
 
   private mode: InputMode = 'idle';
   private busy = false;
@@ -150,6 +233,10 @@ export class GameScene extends Phaser.Scene {
   private pendingSpell: Spell | null = null;
   /** The color ability currently being aimed (paid for differently than spells). */
   private pendingAbility: ColorAbility | null = null;
+  /** The throwable item currently being aimed for a throw. */
+  private throwPendingItem: ItemId | null = null;
+  /** Orientation (radians) of the rotatable wall while it is being placed. */
+  private wallAimAngle = 0;
 
   // Reaction target-selection state (a reaction can require picking a target).
   private aimingSource: Mage | null = null;
@@ -179,9 +266,61 @@ export class GameScene extends Phaser.Scene {
   private logText!: Phaser.GameObjects.Text;
   private actionText!: Phaser.GameObjects.Text;
   private resourceText!: Phaser.GameObjects.Text;
+  private resourceGfx!: Phaser.GameObjects.Graphics;
+  private resourceLabels: Phaser.GameObjects.Text[] = [];
+  private resourceValues: Phaser.GameObjects.Text[] = [];
   private wordTexts: Phaser.GameObjects.Text[] = [];
   private tooltip!: Phaser.GameObjects.Text;
   private bannerText!: Phaser.GameObjects.Text;
+
+  // Dedicated, filterable history panel.
+  private historyPanel!: Phaser.GameObjects.Container;
+  private historyBg!: Phaser.GameObjects.Rectangle;
+  private historyTitle!: Phaser.GameObjects.Text;
+  private historyExpanded = false;
+  private historyFilters = { cast: true, roll: true, event: true };
+  private historyToggleTexts: { cat: 'cast' | 'roll' | 'event'; text: Phaser.GameObjects.Text }[] = [];
+
+  // Pre-duel stat-assignment overlay.
+  private statDice: DieResult[] = [];
+  private assignPanel!: Phaser.GameObjects.Container;
+  private assignTitle!: Phaser.GameObjects.Text;
+  private assignDieTexts: Phaser.GameObjects.Text[] = [];
+  private assignSlotTexts: Phaser.GameObjects.Text[] = [];
+  private assignConfirm!: Phaser.GameObjects.Text;
+  /** placement[statSlot] = die index assigned to that stat (or null). */
+  private assignPlacement: (number | null)[] = [];
+  /** The die currently "picked up" awaiting placement. */
+  private assignSelectedDie: number | null = null;
+  private assignResolve: ((order: number[]) => void) | null = null;
+  /** When true the overlay ignores clicks (e.g. while awaiting the opponent). */
+  private assignLocked = false;
+
+  // Pre-duel rarity-draft overlay.
+  private shopPanel!: Phaser.GameObjects.Container;
+  private shopTitle!: Phaser.GameObjects.Text;
+  private shopInfo!: Phaser.GameObjects.Text;
+  private shopOptionTexts: Phaser.GameObjects.Text[] = [];
+  private shopCartText!: Phaser.GameObjects.Text;
+  /** Items drafted so far this shop session. */
+  private shopPicks: ItemId[] = [];
+  /** Current draft round (1-based) and the three options being offered. */
+  private shopRound = 0;
+  private shopOptions: ItemId[] = [];
+  /** The mage currently drafting (for luck-weighted rarity rolls). */
+  private shopMage: Mage | null = null;
+  private shopLocked = false;
+  private shopResolve: ((items: ItemId[]) => void) | null = null;
+
+  // Inventory overlay (items + status effects, opened with [I]).
+  private invPanel?: Phaser.GameObjects.Container;
+  private invTooltip?: Phaser.GameObjects.Text;
+
+  // Mantle of Eldritch Truth action menu.
+  private eldritchMenu?: Phaser.GameObjects.Container;
+
+  // Blessing of Roaring Thunder action menu.
+  private thunderMenu?: Phaser.GameObjects.Container;
 
   // Dev / testing cheat panel.
   private devPanel!: Phaser.GameObjects.Container;
@@ -194,6 +333,8 @@ export class GameScene extends Phaser.Scene {
 
   // Stack token hit areas for hover.
   private stackTokens: { x: number; y: number; r: number; item: StackItem }[] = [];
+  /** Reusable sprite icons overlaid on the stack tokens (move / attack / spell). */
+  private stackIcons: Phaser.GameObjects.Image[] = [];
 
   private pointer: Vec2 = { x: 0, y: 0 };
 
@@ -207,27 +348,39 @@ export class GameScene extends Phaser.Scene {
     }
     // First frame of the scarab gif, used until the animated frames decode.
     this.load.image('scarab-static', scarabGifUrl);
+    // Stack token icons (move / basic attack / spell cast).
+    this.load.image('stack-move', moveIconUrl);
+    this.load.image('stack-melee', attackIconUrl);
+    this.load.image('stack-spell', spellIconUrl);
   }
 
   create(config: MatchConfig): void {
     this.cameras.main.setBackgroundColor(COLORS.bg);
 
+    this.online = config.mode === 'online';
+    this.net = config.net ?? null;
+    this.localTeam = config.localTeam ?? 1;
+    this.opponentLeft = false;
+
+    const onlineName = (team: 1 | 2): string =>
+      team === this.localTeam ? `Player ${team} (You)` : `Player ${team}`;
+
     const m1 = new Mage({
-      name: 'Player 1',
+      name: this.online ? onlineName(1) : 'Player 1',
       isAI: false,
       team: 1,
       position: { x: FIELD.x + 180, y: FIELD.y + FIELD.h / 2 },
       loadout: config.loadouts[0],
     });
     const m2 = new Mage({
-      name: config.mode === 'ai' ? 'AI' : 'Player 2',
+      name: this.online ? onlineName(2) : config.mode === 'ai' ? 'AI' : 'Player 2',
       isAI: config.mode === 'ai',
       team: 2,
       position: { x: FIELD.x + FIELD.w - 180, y: FIELD.y + FIELD.h / 2 },
       loadout: config.loadouts[1],
     });
 
-    this.gs = new GameState([m1, m2]);
+    this.gs = new GameState([m1, m2], config.seed);
     this.gs.onLog = () => this.drawLog();
     this.gs.vfxSink = {
       diceRoll: (spec, total, rolls, label) => this.pendingDice.push({ spec, total, rolls, label }),
@@ -250,9 +403,517 @@ export class GameScene extends Phaser.Scene {
 
     this.bindInput();
 
+    if (this.net) {
+      this.net.onClose = () => this.onOpponentLeft();
+      // Tear the socket down if the player navigates away from the duel.
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.net?.close());
+    }
+
+    void this.beginDuel();
+  }
+
+  /** Roll the shared stat dice, run the assignment phase, then start the duel. */
+  private async beginDuel(): Promise<void> {
+    this.redraw();
+    await this.runAssignmentPhase();
+    if (this.opponentLeft) return;
+    await this.runShopPhase();
+    if (this.opponentLeft) return;
     this.gs.startRound();
     this.startTurn();
   }
+
+  /** Drink a potion: spend it from the utility belt and apply its effect. */
+  private useConsumable(mage: Mage, itemId: ItemId): void {
+    const def = getItem(itemId);
+    const i = mage.utility.indexOf(itemId);
+    if (i < 0 || !def.potion) return;
+    mage.utility.splice(i, 1);
+    if (def.potion === 'mana') {
+      mage.gainMana(10);
+      this.gs.log(`${mage.name} drinks a Mana Potion (+10 mana).`);
+    } else {
+      const amt = this.gs.rng.roll('2d3').total;
+      mage.hp = Math.min(mage.maxHp, mage.hp + amt);
+      this.gs.log(`${mage.name} drinks a Health Potion (+${amt} HP).`);
+    }
+  }
+
+  // ===========================================================================
+  //  STAT ASSIGNMENT PHASE
+  // ===========================================================================
+
+  /** Roll one shared assortment of dice and let each duellist allocate it. */
+  private async runAssignmentPhase(): Promise<void> {
+    this.statDice = rollStatAssortment(this.gs.rng);
+    this.buildAssignOverlay();
+    this.mode = 'assign';
+    this.gs.log(`Stat dice: ${this.statDice.map((d) => `${d.spec}=${d.value}`).join(', ')}`);
+
+    if (this.online && this.net) {
+      const myTeam = this.localTeam;
+      const oppTeam: 1 | 2 = myTeam === 1 ? 2 : 1;
+      const myMage = this.mageByTeam(myTeam);
+      const myOrder = await this.promptAssignment(`${myMage.name} — assign your dice`);
+      if (this.opponentLeft) return;
+      this.net.send({ k: 'assign', order: myOrder });
+      this.showAssignWaiting();
+      const oppOrder = await this.awaitOpponentAssign();
+      if (this.opponentLeft) return;
+      this.mageByTeam(myTeam).applyStatAllocation(this.statDice, myOrder);
+      this.mageByTeam(oppTeam).applyStatAllocation(this.statDice, oppOrder);
+    } else {
+      for (const m of this.gs.mages) {
+        if (m.isAI) {
+          m.applyStatAllocation(this.statDice, aiAssignment(this.statDice));
+        } else {
+          const order = await this.promptAssignment(`${m.name} — assign your dice`);
+          m.applyStatAllocation(this.statDice, order);
+        }
+      }
+    }
+
+    this.logStatSummary();
+    this.hideAssignOverlay();
+  }
+
+  /** Wait for the opponent's allocation message in online play. */
+  private async awaitOpponentAssign(): Promise<number[]> {
+    while (!this.opponentLeft && this.net) {
+      const msg = await this.net.recv();
+      if (msg.k === 'bye') break;
+      if (msg.k === 'assign') {
+        return isValidAssignment(msg.order) ? msg.order : defaultAssignment();
+      }
+    }
+    return defaultAssignment();
+  }
+
+  /** Show the overlay for one player and resolve with their chosen order. */
+  private promptAssignment(label: string): Promise<number[]> {
+    this.assignPlacement = STAT_ORDER.map(() => null);
+    this.assignSelectedDie = null;
+    this.assignLocked = false;
+    this.assignTitle.setText(label);
+    this.assignPanel.setVisible(true);
+    this.refreshAssignOverlay();
+    return new Promise((resolve) => {
+      this.assignResolve = resolve;
+    });
+  }
+
+  private showAssignWaiting(): void {
+    this.assignTitle.setText('Waiting for opponent to assign…');
+    this.assignLocked = true;
+    this.assignSelectedDie = null;
+    this.refreshAssignOverlay();
+  }
+
+  private hideAssignOverlay(): void {
+    if (this.assignPanel) this.assignPanel.setVisible(false);
+    this.assignResolve = null;
+  }
+
+  /** Build the assignment overlay once; later calls just refresh it. */
+  private buildAssignOverlay(): void {
+    if (this.assignPanel) {
+      this.refreshAssignOverlay();
+      return;
+    }
+    this.assignPanel = this.add.container(0, 0).setDepth(95).setVisible(false);
+    const dim = this.add
+      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.78)
+      .setOrigin(0, 0);
+    const panel = this.add
+      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 980, 600, 0x10101c, 0.98)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, 0x5a5a88);
+    this.assignTitle = this.add
+      .text(GAME_WIDTH / 2, 70, '', { fontSize: '24px', color: TEXT.warn, fontStyle: 'bold' })
+      .setOrigin(0.5);
+    const subtitle = this.add
+      .text(
+        GAME_WIDTH / 2,
+        104,
+        'Click a die, then a stat to assign it. Click a filled stat to take its die back. All six must be placed.',
+        { fontSize: '14px', color: TEXT.dim }
+      )
+      .setOrigin(0.5);
+
+    const children: Phaser.GameObjects.GameObject[] = [dim, panel, this.assignTitle, subtitle];
+
+    // Dice row.
+    const startX = GAME_WIDTH / 2 - (6 * 120 + 5 * 12) / 2;
+    this.assignDieTexts = [];
+    for (let i = 0; i < 6; i++) {
+      const t = this.add
+        .text(startX + i * 132, 140, '', {
+          fontSize: '16px',
+          color: TEXT.body,
+          align: 'center',
+          backgroundColor: '#181826',
+          padding: { x: 6, y: 8 },
+          fixedWidth: 120,
+        })
+        .setInteractive({ useHandCursor: true });
+      t.on('pointerdown', () => this.onAssignDieClick(i));
+      this.assignDieTexts.push(t);
+      children.push(t);
+    }
+
+    // Stat slots: a value box plus a name/description label per stat.
+    this.assignSlotTexts = [];
+    STAT_DEFS.forEach((def, i) => {
+      const rowY = 250 + i * 54;
+      const slot = this.add
+        .text(GAME_WIDTH / 2 - 360, rowY, '', {
+          fontSize: '18px',
+          color: TEXT.warn,
+          align: 'center',
+          backgroundColor: '#23233a',
+          padding: { x: 6, y: 8 },
+          fixedWidth: 64,
+        })
+        .setInteractive({ useHandCursor: true });
+      slot.on('pointerdown', () => this.onAssignSlotClick(i));
+      const label = this.add.text(GAME_WIDTH / 2 - 280, rowY + 4, `${def.name} — ${def.blurb}`, {
+        fontSize: '15px',
+        color: TEXT.body,
+      });
+      this.assignSlotTexts.push(slot);
+      children.push(slot, label);
+    });
+
+    this.assignConfirm = this.add
+      .text(GAME_WIDTH / 2, 600, 'Confirm', {
+        fontSize: '20px',
+        color: TEXT.dim,
+        fontStyle: 'bold',
+        backgroundColor: '#181826',
+        padding: { x: 18, y: 10 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    this.assignConfirm.on('pointerdown', () => this.onAssignConfirm());
+    children.push(this.assignConfirm);
+
+    this.assignPanel.add(children);
+    this.refreshAssignOverlay();
+  }
+
+  private onAssignDieClick(i: number): void {
+    if (this.assignLocked) return;
+    const slotOf = this.assignPlacement.indexOf(i);
+    if (this.assignSelectedDie === i) {
+      this.assignSelectedDie = null;
+    } else {
+      if (slotOf >= 0) this.assignPlacement[slotOf] = null;
+      this.assignSelectedDie = i;
+    }
+    this.refreshAssignOverlay();
+  }
+
+  private onAssignSlotClick(s: number): void {
+    if (this.assignLocked) return;
+    if (this.assignSelectedDie != null) {
+      const prev = this.assignPlacement.indexOf(this.assignSelectedDie);
+      if (prev >= 0) this.assignPlacement[prev] = null;
+      this.assignPlacement[s] = this.assignSelectedDie;
+      this.assignSelectedDie = null;
+    } else if (this.assignPlacement[s] != null) {
+      this.assignSelectedDie = this.assignPlacement[s];
+      this.assignPlacement[s] = null;
+    }
+    this.refreshAssignOverlay();
+  }
+
+  private onAssignConfirm(): void {
+    if (this.assignLocked) return;
+    if (this.assignPlacement.some((p) => p == null)) return;
+    const order = this.assignPlacement.map((p) => p as number);
+    const resolve = this.assignResolve;
+    this.assignResolve = null;
+    resolve?.(order);
+  }
+
+  private refreshAssignOverlay(): void {
+    if (!this.assignDieTexts.length) return;
+    this.assignDieTexts.forEach((t, i) => {
+      const d = this.statDice[i];
+      t.setText(d ? `${d.spec}\n${d.value}` : '');
+      const used = this.assignPlacement.includes(i);
+      const selected = this.assignSelectedDie === i;
+      t.setBackgroundColor(selected ? '#5a5a1a' : used ? '#15251a' : '#181826');
+      t.setColor(selected ? TEXT.warn : used ? TEXT.dim : TEXT.body);
+    });
+    this.assignSlotTexts.forEach((t, s) => {
+      const p = this.assignPlacement[s];
+      t.setText(p != null ? String(this.statDice[p].value) : '—');
+      t.setColor(p != null ? TEXT.warn : TEXT.dim);
+    });
+    const complete = this.assignPlacement.length === 6 && this.assignPlacement.every((p) => p != null);
+    this.assignConfirm.setColor(complete && !this.assignLocked ? '#7cfc9a' : TEXT.dim);
+  }
+
+  private logStatSummary(): void {
+    for (const m of this.gs.mages) {
+      this.gs.log(
+        `${m.name}: STR ${m.statStrength}, DEX ${m.statDex}%, INT ${m.statInt} (DC -${m.dcReduction()}), ` +
+          `Mana ${m.maxMana}, HP ${m.maxHp}, Luck ${m.maxLuck}.`
+      );
+    }
+  }
+
+  // ===========================================================================
+  //  SHOP PHASE
+  // ===========================================================================
+
+  /** Each duellist spends gold on equipment before the duel begins. */
+  private async runShopPhase(): Promise<void> {
+    this.buildShopOverlay();
+    this.mode = 'shop';
+
+    if (this.online && this.net) {
+      const myTeam = this.localTeam;
+      const oppTeam: 1 | 2 = myTeam === 1 ? 2 : 1;
+      const myMage = this.mageByTeam(myTeam);
+      const myCart = await this.promptShop(myMage);
+      if (this.opponentLeft) return;
+      this.net.send({ k: 'buy', items: myCart });
+      this.showShopWaiting();
+      const oppCart = await this.awaitOpponentBuy();
+      if (this.opponentLeft) return;
+      this.applyCart(myMage, myCart);
+      this.applyCart(this.mageByTeam(oppTeam), oppCart);
+    } else {
+      for (const m of this.gs.mages) {
+        if (m.isAI) {
+          this.applyCart(m, aiDraft(m.maxLuck));
+        } else {
+          const cart = await this.promptShop(m);
+          this.applyCart(m, cart);
+        }
+      }
+    }
+
+    this.logEquipSummary();
+    this.hideShopOverlay();
+  }
+
+  /** Wait for the opponent's purchases in online play. */
+  private async awaitOpponentBuy(): Promise<ItemId[]> {
+    while (!this.opponentLeft && this.net) {
+      const msg = await this.net.recv();
+      if (msg.k === 'bye') break;
+      if (msg.k === 'buy') return asItemIds(msg.items);
+    }
+    return [];
+  }
+
+  /** Equip a (sanitised) cart onto a mage, distributing items into slots. */
+  private applyCart(mage: Mage, items: ItemId[]): void {
+    const valid = sanitizeCart(items, mage.statStrength);
+    mage.hands = [];
+    mage.bag = [];
+    mage.head = null;
+    mage.torso = null;
+    mage.boots = null;
+    mage.accessories = [];
+    mage.utility = [];
+    mage.arrows = 0;
+    for (const id of valid) {
+      const def = getItem(id);
+      switch (def.slot) {
+        case 'hand':
+          // Hand items start stowed in the bag; they must be equipped in-duel.
+          mage.bag.push(id);
+          break;
+        case 'head':
+          mage.head = id;
+          break;
+        case 'torso':
+          mage.torso = id;
+          break;
+        case 'boots':
+          mage.boots = id;
+          break;
+        case 'accessory':
+          mage.accessories.push(id);
+          break;
+        case 'utility':
+          if (def.ammo) mage.arrows += 1;
+          else mage.utility.push(id);
+          break;
+      }
+    }
+    mage.silver = 0;
+    // The AI does not manage its bag, so it auto-equips its first hand items.
+    if (mage.isAI) {
+      for (const id of [...mage.bag]) {
+        if (!mage.equipHand(id)) break;
+      }
+    }
+    // Apply one-time HP / sanity changes from equipped gear (rings).
+    mage.applyEquipmentVitals();
+  }
+
+  private logEquipSummary(): void {
+    for (const m of this.gs.mages) {
+      const worn: string[] = [
+        ...m.hands,
+        ...(m.head ? [m.head] : []),
+        ...(m.torso ? [m.torso] : []),
+        ...(m.boots ? [m.boots] : []),
+        ...m.accessories,
+        ...m.utility,
+      ].map((id) => getItem(id).name);
+      if (m.arrows > 0) worn.push(`${m.arrows} arrows`);
+      const bag = m.bag.map((id) => getItem(id).name);
+      const bagText = bag.length ? `   (in bag: ${bag.join(', ')})` : '';
+      this.gs.log(`${m.name} equips — ${worn.length ? worn.join(', ') : 'nothing'}.${bagText}`);
+    }
+  }
+
+  private promptShop(mage: Mage): Promise<ItemId[]> {
+    this.shopMage = mage;
+    this.shopPicks = [];
+    this.shopRound = 0;
+    this.shopLocked = false;
+    this.shopPanel.setVisible(true);
+    return new Promise((resolve) => {
+      this.shopResolve = resolve;
+      this.startDraftRound();
+    });
+  }
+
+  /** Begin the next draft round, or resolve the shop once all rounds are done. */
+  private startDraftRound(): void {
+    this.shopRound += 1;
+    if (this.shopRound > DRAFT_ROUNDS) {
+      const picks = [...this.shopPicks];
+      const resolve = this.shopResolve;
+      this.shopResolve = null;
+      resolve?.(picks);
+      return;
+    }
+    const luck = this.shopMage?.maxLuck ?? 0;
+    const rarity = rollRarity(Math.random, luck);
+    this.shopOptions = draftChoices(rarity, Math.random, 3);
+    this.refreshShopOverlay();
+  }
+
+  /** Player chose option `idx` of the current round. */
+  private onDraftPick(idx: number): void {
+    if (this.shopLocked) return;
+    const id = this.shopOptions[idx];
+    if (!id) return;
+    this.shopPicks.push(id);
+    this.startDraftRound();
+  }
+
+  private showShopWaiting(): void {
+    this.shopTitle.setText('Waiting for opponent to draft…');
+    this.shopLocked = true;
+    for (const t of this.shopOptionTexts) t.setVisible(false);
+  }
+
+  private hideShopOverlay(): void {
+    if (this.shopPanel) this.shopPanel.setVisible(false);
+    this.shopResolve = null;
+  }
+
+  private buildShopOverlay(): void {
+    if (this.shopPanel) {
+      this.refreshShopOverlay();
+      return;
+    }
+    this.shopPanel = this.add.container(0, 0).setDepth(95).setVisible(false);
+    const dim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.78).setOrigin(0, 0);
+    const panel = this.add
+      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 1120, 650, 0x10101c, 0.98)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, 0x5a5a88);
+    this.shopTitle = this.add
+      .text(GAME_WIDTH / 2, 70, '', { fontSize: '26px', color: TEXT.warn, fontStyle: 'bold' })
+      .setOrigin(0.5);
+    this.shopInfo = this.add
+      .text(GAME_WIDTH / 2, 110, '', { fontSize: '16px', color: TEXT.body })
+      .setOrigin(0.5);
+
+    const children: Phaser.GameObjects.GameObject[] = [dim, panel, this.shopTitle, this.shopInfo];
+
+    // Three draft option cards, side by side.
+    this.shopOptionTexts = [];
+    const cardW = 330;
+    const gap = 24;
+    const totalW = cardW * 3 + gap * 2;
+    for (let i = 0; i < 3; i++) {
+      const x = GAME_WIDTH / 2 - totalW / 2 + i * (cardW + gap);
+      const t = this.add
+        .text(x, 180, '', {
+          fontSize: '15px',
+          color: TEXT.body,
+          wordWrap: { width: cardW - 28 },
+          backgroundColor: '#181826',
+          padding: { x: 14, y: 14 },
+          fixedWidth: cardW,
+          align: 'left',
+        })
+        .setOrigin(0, 0)
+        .setInteractive({ useHandCursor: true });
+      t.on('pointerdown', () => this.onDraftPick(i));
+      t.on('pointerover', () => {
+        if (!this.shopLocked) t.setStroke('#ffffff', 2);
+      });
+      t.on('pointerout', () => t.setStroke('#000000', 0));
+      this.shopOptionTexts.push(t);
+      children.push(t);
+    }
+
+    this.shopCartText = this.add
+      .text(GAME_WIDTH / 2, 470, '', {
+        fontSize: '15px',
+        color: TEXT.warn,
+        wordWrap: { width: 1040 },
+        align: 'center',
+      })
+      .setOrigin(0.5, 0);
+    children.push(this.shopCartText);
+
+    this.shopPanel.add(children);
+    this.refreshShopOverlay();
+  }
+
+  private refreshShopOverlay(): void {
+    if (!this.shopOptionTexts.length || !this.shopMage) return;
+    const cap = carryCapacity(this.shopMage.statStrength);
+    const rarity = this.shopOptions.length ? getItem(this.shopOptions[0]).rarity : 'common';
+    const rarityName = rarity.charAt(0).toUpperCase() + rarity.slice(1);
+    this.shopTitle.setText(
+      `${this.shopMage.name} — Draft ${this.shopRound}/${DRAFT_ROUNDS}`
+    );
+    this.shopTitle.setColor(TEXT.warn);
+    this.shopInfo.setText(`A ${rarityName} appears — choose one of three (carry ${cap}kg)`);
+    this.shopInfo.setColor(RARITY_COLOR[rarity]);
+    this.shopOptionTexts.forEach((t, i) => {
+      const id = this.shopOptions[i];
+      if (!id) {
+        t.setVisible(false);
+        return;
+      }
+      const def = getItem(id);
+      t.setVisible(true);
+      t.setText(
+        `${def.name}\n[${def.rarity}]  ${def.weight}kg\n\n${def.blurb}`
+      );
+      t.setColor(RARITY_COLOR[def.rarity]);
+    });
+    const pickNames = this.shopPicks.map((id) => getItem(id).name);
+    this.shopCartText.setText(
+      `Drafted: ${pickNames.length ? pickNames.join(', ') : '(nothing yet)'}`
+    );
+  }
+
 
   /** Per-frame: pulse the highlight rings around currently valid targets. */
   update(time: number): void {
@@ -319,6 +980,13 @@ export class GameScene extends Phaser.Scene {
       await this.runAITurn();
       if (this.gs.isOver) return this.endGame();
       this.nextTurn();
+    } else if (this.online && !this.isLocalTurn()) {
+      // The opponent pilots this turn; drive it from their relayed commands.
+      this.mode = 'busy';
+      this.redraw();
+      await this.runRemoteTurn();
+      if (this.gs.isOver) return this.endGame();
+      this.nextTurn();
     } else {
       this.mode = 'idle';
       this.redraw();
@@ -352,8 +1020,9 @@ export class GameScene extends Phaser.Scene {
       return this.gs.makeMoveItem(me, la.point);
     }
     if (la.type === 'melee') {
-      if (me.actions.main <= 0 || !la.target || !this.gs.canMelee(me, la.target)) return null;
-      me.spend('main');
+      const cost = me.attackIsBonusAction() ? 'bonus' : 'main';
+      if (me.actions[cost] <= 0 || !la.target || !this.gs.canMelee(me, la.target)) return null;
+      me.spend(cost);
       return this.gs.makeMeleeItem(me, la.target);
     }
     // spell
@@ -363,7 +1032,12 @@ export class GameScene extends Phaser.Scene {
     if (!me.hasCharges(spell.words)) return null;
     if (spell.actionType === 'main' ? me.actions.main <= 0 : me.actions.bonus <= 0) return null;
     const target = spell.targeting === 'self' ? me : la.target ?? null;
-    if ((spell.targeting === 'enemy' || spell.targeting === 'ally') && (!target || !this.gs.isValidSpellTarget(spell, me, target))) {
+    if (
+      (spell.targeting === 'enemy' ||
+        spell.targeting === 'ally' ||
+        spell.targeting === 'any') &&
+      (!target || !this.gs.isValidSpellTarget(spell, me, target))
+    ) {
       return null;
     }
     this.payForSpell(me, spell);
@@ -456,7 +1130,7 @@ export class GameScene extends Phaser.Scene {
         await this.runStack(this.gs.makeMoveItem(me, d.point));
         break;
       case 'melee':
-        me.spend('main');
+        me.spend(me.attackIsBonusAction() ? 'bonus' : 'main');
         await this.runStack(this.gs.makeMeleeItem(me, d.target));
         break;
       case 'spell': {
@@ -484,6 +1158,404 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ===========================================================================
+  //  ONLINE LOCKSTEP  (relay the decisions, simulate identically on both ends)
+  // ===========================================================================
+
+  /** True when the local client owns the mage whose turn it currently is. */
+  private isLocalTurn(): boolean {
+    if (!this.online) return true;
+    return this.gs.current.team === this.localTeam;
+  }
+
+  /** True when the local client decides for `m` (turn action / reaction / sub-target). */
+  private isLocalDecider(m: Mage): boolean {
+    if (!this.online) return true;
+    return m.team === this.localTeam;
+  }
+
+  private mageByTeam(team: 1 | 2): Mage {
+    return this.gs.mages[0].team === team ? this.gs.mages[0] : this.gs.mages[1];
+  }
+
+  /** Resolve a serialized spell / color-ability id back to its definition. */
+  private resolveSpellId(id: string): Spell | null {
+    if (id.startsWith('ability:')) return COLOR_ABILITIES.find((a) => a.id === id) ?? null;
+    return allSpells().find((s) => s.id === id) ?? null;
+  }
+
+  /**
+   * Route a turn action through the lockstep seam: relay it to the opponent
+   * (online) and apply it locally. Offline this is just "apply it".
+   */
+  private submitTurn(cmd: TurnCommand): void {
+    if (this.online) this.net?.send({ k: 'turn', cmd });
+    void this.applyTurnCommand(cmd);
+  }
+
+  /** Apply a turn command — spending costs and running the stack identically on both peers. */
+  private async applyTurnCommand(cmd: TurnCommand): Promise<void> {
+    const me = this.gs.current;
+    this.resetSelection();
+    switch (cmd.t) {
+      case 'move':
+        me.spend('move');
+        await this.runStack(this.gs.makeMoveItem(me, { x: cmd.x, y: cmd.y }));
+        break;
+      case 'melee': {
+        const target = this.mageByTeam(cmd.target);
+        me.spend(me.attackIsBonusAction() ? 'bonus' : 'main');
+        await this.runStack(this.gs.makeMeleeItem(me, target));
+        break;
+      }
+      case 'spell': {
+        const spell = this.resolveSpellId(cmd.spellId);
+        if (!spell) break;
+        // A colour ability stifled by a Needle of Serenity can never be cast.
+        if (cmd.ability && this.isColorAbility(spell) && me.isAbilityBanned(spell.id)) {
+          this.gs.log(`${me.name} reaches for ${spell.name}, but it has been stifled forever.`);
+          break;
+        }
+        const target =
+          spell.targeting === 'self'
+            ? me
+            : cmd.target != null
+            ? this.mageByTeam(cmd.target)
+            : null;
+        const point = cmd.x != null && cmd.y != null ? { x: cmd.x, y: cmd.y } : null;
+        if (cmd.angle != null) me.wallAngle = cmd.angle;
+        if (cmd.ability && this.isColorAbility(spell)) this.payForColorAbility(me, spell);
+        else this.payForSpell(me, spell);
+        await this.runStack(this.gs.makeSpellItem(me, spell, target, point));
+        // Mutivarg's Rod: spells cast through it burn 20% of the target's mana.
+        if (
+          me.hands.includes('mutivargRod' as ItemId) &&
+          target &&
+          target !== me &&
+          target.alive
+        ) {
+          const burn = Math.floor(target.mana * 0.2);
+          if (burn > 0) {
+            target.spendMana(burn);
+            this.gs.log(`The rod burns ${burn} mana from ${target.name}.`);
+          }
+        }
+        break;
+      }
+      case 'cast-random': {
+        // A scrambled mage (Mind Curse) casts a random spell. Both peers draw
+        // from the same synced RNG, so they pick the same spell + target.
+        const sub = this.randomCastFor(me);
+        if (sub) {
+          this.gs.log(`${me.name} is scrambled — ${sub.spell.name} erupts instead!`);
+          this.payForSpell(me, sub.spell);
+          await this.runStack(this.gs.makeSpellItem(me, sub.spell, sub.target, sub.point));
+        }
+        break;
+      }
+      case 'item-drop': {
+        me.spend('bonus');
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Drop',
+            description: `${me.name} drops an item.`,
+            resolve: (game) => {
+              game.dropItem(me, cmd.itemId as ItemId);
+            },
+          })
+        );
+        break;
+      }
+      case 'item-pickup': {
+        me.spend('bonus');
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Pick up',
+            description: `${me.name} picks up an item.`,
+            resolve: (game) => {
+              game.pickUpItem(me, cmd.dropId);
+            },
+          })
+        );
+        break;
+      }
+      case 'item-use': {
+        const itemId = cmd.itemId as ItemId;
+        if (me.isItemBanned(itemId)) {
+          this.gs.log(
+            `${me.name} reaches for ${getItem(itemId).name}, but it has been stifled forever.`
+          );
+          break;
+        }
+        me.spend('bonus');
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Use',
+            description: `${me.name} uses ${getItem(itemId).name}.`,
+            needleBan: { kind: 'item', itemId },
+            resolve: () => {
+              this.useConsumable(me, itemId);
+            },
+          })
+        );
+        break;
+      }
+      case 'item-equip': {
+        const itemId = cmd.itemId as ItemId;
+        me.spend('bonus');
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Equip',
+            description: `${me.name} equips ${getItem(itemId).name}.`,
+            resolve: () => {
+              if (me.equipHand(itemId))
+                this.gs.log(`${me.name} equips ${getItem(itemId).name}.`);
+            },
+          })
+        );
+        break;
+      }
+      case 'item-unequip': {
+        const itemId = cmd.itemId as ItemId;
+        me.spend('bonus');
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Unequip',
+            description: `${me.name} stows ${getItem(itemId).name}.`,
+            resolve: () => {
+              if (me.unequipHand(itemId))
+                this.gs.log(`${me.name} stows ${getItem(itemId).name} in the bag.`);
+            },
+          })
+        );
+        break;
+      }
+      case 'item-throw': {
+        const itemId = cmd.itemId as ItemId;
+        if (me.isItemBanned(itemId)) {
+          this.gs.log(
+            `${me.name} reaches for ${getItem(itemId).name}, but it has been stifled forever.`
+          );
+          break;
+        }
+        me.spend('bonus');
+        const target = this.mageByTeam(cmd.target);
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Throw',
+            description: `${me.name} throws ${getItem(itemId).name} at ${target.name}.`,
+            needleBan: { kind: 'item', itemId },
+            resolve: (game) => {
+              game.throwItem(me, target, itemId);
+            },
+          })
+        );
+        break;
+      }
+      case 'eldritch': {
+        if (me.isActionBanned('eldritch')) {
+          this.gs.log(`${me.name} reaches for eldritch truth, but it has been stifled forever.`);
+          break;
+        }
+        me.spend('main');
+        const target = cmd.target ? this.mageByTeam(cmd.target) : null;
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Eldritch',
+            description: `${me.name} invokes eldritch truth.`,
+            needleBan: { kind: 'ability', key: 'eldritch', label: 'the Eldritch action' },
+            resolve: (game) => game.useEldritch(me, cmd.choice, target),
+          })
+        );
+        break;
+      }
+      case 'thunder-charge': {
+        if (me.isActionBanned('thunder-charge')) {
+          this.gs.log(`${me.name} reaches to charge thunder, but it has been stifled forever.`);
+          break;
+        }
+        me.spend('bonus');
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Charge Up',
+            description: `${me.name} charges up thunder.`,
+            needleBan: { kind: 'ability', key: 'thunder-charge', label: 'Charge Up' },
+            resolve: (game) => {
+              game.chargeUpThunder(me);
+            },
+          })
+        );
+        break;
+      }
+      case 'thunder-discharge': {
+        if (me.isActionBanned('thunder-discharge')) {
+          this.gs.log(`${me.name} reaches to discharge thunder, but it has been stifled forever.`);
+          break;
+        }
+        me.spend('bonus');
+        const target = this.mageByTeam(cmd.target);
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Discharge',
+            description: `${me.name} discharges thunder at ${target.name}.`,
+            needleBan: { kind: 'ability', key: 'thunder-discharge', label: 'Discharge' },
+            resolve: (game) => {
+              game.dischargeThunder(me, target);
+            },
+          })
+        );
+        break;
+      }
+      case 'weapon-action': {
+        const abilityIds = me.weaponAbilityItems();
+        const firstAbility = abilityIds.length ? getItem(abilityIds[0]).weaponAbility : undefined;
+        if (firstAbility && me.isActionBanned(`weapon:${firstAbility}`)) {
+          this.gs.log(`${me.name}'s weapon action has been stifled forever.`);
+          break;
+        }
+        me.spend('bonus');
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Weapon Action',
+            description: `${me.name} uses a weapon action.`,
+            needleBan: firstAbility
+              ? { kind: 'ability', key: `weapon:${firstAbility}`, label: 'that weapon action' }
+              : undefined,
+            resolve: (game) => {
+              for (const id of me.weaponAbilityItems()) {
+                const ability = getItem(id).weaponAbility;
+                if (ability === 'bastionSwap') game.swapBastionForm(me);
+                else if (ability === 'mutivargZone') game.castMutivargZone(me);
+              }
+            },
+          })
+        );
+        break;
+      }
+      case 'end':
+        // Handled by the caller (local onEndTurn / remote driver) so the turn
+        // rotation happens exactly once per peer.
+        break;
+    }
+
+    // If the command produced no stack action (e.g. a scrambled mage with
+    // nothing castable), unlock local input again so the player can still act.
+    if (!this.gs.isOver && this.isLocalTurn() && this.gs.stack.length === 0 && this.mode === 'busy') {
+      this.mode = 'idle';
+      this.redraw();
+    }
+  }
+
+  /** Drive the opponent's turn from their relayed commands until they end it. */
+  private async runRemoteTurn(): Promise<void> {
+    for (;;) {
+      if (this.opponentLeft || this.gs.isOver) return;
+      const msg = await this.net!.recv();
+      if (msg.k !== 'turn') {
+        if (msg.k === 'bye') return;
+        continue;
+      }
+      const cmd = msg.cmd as TurnCommand;
+      if (cmd.t === 'end') return;
+      await this.applyTurnCommand(cmd);
+      this.redraw();
+    }
+  }
+
+  // --- reaction encoding -----------------------------------------------------
+
+  private encodeReaction(choice: ReactionChoice | null): NetMessage {
+    if (!choice) return { k: 'react', cmd: { t: 'pass' } satisfies ReactionCommand };
+    if (choice.needle) {
+      return { k: 'react', cmd: { t: 'needle' } satisfies ReactionCommand };
+    }
+    if (choice.shield) {
+      return { k: 'react', cmd: { t: 'shield', kind: choice.shield } satisfies ReactionCommand };
+    }
+    const cmd: ReactionCommand = {
+      t: 'react',
+      spellId: choice.spell!.id,
+      ability: this.isColorAbility(choice.spell!),
+      target: (choice.target?.team ?? null) as 1 | 2 | null,
+      x: choice.point?.x,
+      y: choice.point?.y,
+    };
+    return { k: 'react', cmd };
+  }
+
+  private decodeReaction(msg: NetMessage): ReactionChoice | null {
+    const cmd = msg.cmd as ReactionCommand | undefined;
+    if (!cmd) return null;
+    if (cmd.t === 'needle') return { needle: true };
+    if (cmd.t === 'shield') return { shield: cmd.kind };
+    if (cmd.t !== 'react') return null;
+    const spell = this.resolveSpellId(cmd.spellId);
+    if (!spell) return null;
+    const target = cmd.target != null ? this.mageByTeam(cmd.target) : undefined;
+    const point = cmd.x != null && cmd.y != null ? { x: cmd.x, y: cmd.y } : undefined;
+    return { spell, target, point };
+  }
+
+  // --- sub-target encoding ---------------------------------------------------
+
+  private async recvSubPoint(): Promise<Vec2 | null> {
+    const msg = await this.net!.recv();
+    const cmd = msg.cmd as SubCommand | undefined;
+    if (cmd && cmd.t === 'sub-point') return { x: cmd.x, y: cmd.y };
+    return null;
+  }
+
+  private async recvSubEnemy(): Promise<Mage | null> {
+    const msg = await this.net!.recv();
+    const cmd = msg.cmd as SubCommand | undefined;
+    if (cmd && cmd.t === 'sub-enemy') return this.mageByTeam(cmd.target);
+    return null;
+  }
+
+  private sendSubPoint(v: Vec2 | null): void {
+    const cmd: SubCommand = v ? { t: 'sub-point', x: v.x, y: v.y } : { t: 'sub-none' };
+    this.net?.send({ k: 'sub', cmd });
+  }
+
+  private sendSubEnemy(m: Mage | null): void {
+    const cmd: SubCommand = m ? { t: 'sub-enemy', target: m.team as 1 | 2 } : { t: 'sub-none' };
+    this.net?.send({ k: 'sub', cmd });
+  }
+
+  /** The opponent dropped: freeze the duel and offer a return to the menu. */
+  private onOpponentLeft(): void {
+    if (this.opponentLeft || this.gs.isOver) return;
+    this.opponentLeft = true;
+    this.mode = 'over';
+    // Unblock the assignment phase if we're disconnected mid-allocation.
+    if (this.assignResolve) {
+      const resolve = this.assignResolve;
+      this.assignResolve = null;
+      resolve(defaultAssignment());
+    }
+    // Unblock the shop phase if we're disconnected mid-purchase.
+    if (this.shopResolve) {
+      const resolve = this.shopResolve;
+      this.shopResolve = null;
+      resolve([]);
+    }
+    this.hideAssignOverlay();
+    this.hideShopOverlay();
+    this.bannerText.setText('Opponent disconnected.\nClick to return to menu').setVisible(true);
+    this.redraw();
+    this.input.once('pointerdown', () => this.scene.start('Menu'));
+  }
+
+  // ===========================================================================
   //  THE STACK  (resolve with reaction windows)
   // ===========================================================================
 
@@ -504,7 +1576,33 @@ export class GameScene extends Phaser.Scene {
 
       if (!passed.has(top.id) && this.reactorCanRespond(reactor, top)) {
         const choice = await this.getReaction(reactor, top);
-        if (choice) {
+        if (choice && choice.needle) {
+          // Needle of Serenity: stifle the ability/strike (it never resolves)
+          // and disable it against this reactor forever. One-time use.
+          this.applyNeedle(reactor, top);
+          this.gs.removeStackItem(top.id);
+          this.redraw();
+          await this.delay(250);
+          if (this.gs.isOver) break;
+          continue;
+        }
+        if (choice && choice.shield) {
+          // Shield reactions are not put on the stack. Block raises a shield for
+          // the next physical hit (free, unlimited); bash smashes the attacker
+          // once per duel. Neither consumes the once-per-turn reaction.
+          if (choice.shield === 'block') {
+            reactor.blockPending = true;
+            this.gs.log(`${reactor.name} raises a shield to block.`);
+          } else {
+            this.gs.shieldBash(reactor, top.source);
+          }
+          this.redraw();
+          await this.delay(250);
+          if (this.gs.isOver) break;
+          passed.add(top.id);
+          continue;
+        }
+        if (choice && choice.spell) {
           if (this.isColorAbility(choice.spell)) {
             this.payForColorAbility(reactor, choice.spell);
           } else {
@@ -540,8 +1638,16 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.busy = false;
-    this.mode = this.gs.isOver ? 'over' : prevMode === 'busy' ? 'busy' : 'idle';
-    if (!this.controllerIsAI(this.gs.current) && !this.gs.isOver) this.mode = 'idle';
+    if (this.gs.isOver) {
+      this.mode = 'over';
+    } else if (this.online && !this.isLocalTurn()) {
+      // Mid-way through the opponent's relayed turn: stay locked.
+      this.mode = 'busy';
+    } else if (this.controllerIsAI(this.gs.current)) {
+      this.mode = prevMode === 'busy' ? 'busy' : 'idle';
+    } else {
+      this.mode = 'idle';
+    }
     this.redraw();
   }
 
@@ -601,8 +1707,9 @@ export class GameScene extends Phaser.Scene {
 
   /** Roll 1d20 against a spell's DC, queue the die for display, and log it. */
   private rollSpellSuccess(spell: Spell, source: Mage): boolean {
-    // Blue primary tier sharpens every word-spell, lowering its difficulty.
-    const dc = (spell.dc ?? 0) - (source.profile.bluePrimaryTier ? 2 : 0);
+    // Blue primary tier and assigned Intellect both lower a spell's difficulty.
+    // A flat +3 raises the baseline difficulty of every spell.
+    const dc = (spell.dc ?? 0) + 3 - (source.profile.bluePrimaryTier ? 2 : 0) - source.dcReduction();
     const r = this.gs.rng.roll('1d20');
     this.pendingDice.push({
       spec: '1d20',
@@ -610,10 +1717,23 @@ export class GameScene extends Phaser.Scene {
       rolls: r.rolls,
       label: `${spell.name} — success?`,
     });
-    const ok = Dev.autoSuccess || r.total >= dc;
+    let ok = Dev.autoSuccess || r.total >= dc;
+    // Luck can turn a near-miss into a hit: spend the minimum needed to reach
+    // the DC. Both peers know the roll and the luck pool, so this stays in
+    // lockstep without any extra network decision.
+    let luckSpent = 0;
+    if (!ok && source.luck > 0 && dc - r.total <= source.luck) {
+      luckSpent = source.spendLuck(dc - r.total);
+      ok = true;
+    }
+    const luckNote = luckSpent > 0 ? ` (+${luckSpent} luck → ${source.luck} left)` : '';
     this.gs.log(
-      `${source.name}'s ${spell.name}: 1d20=${r.total} vs DC ${dc} — ${ok ? 'success!' : 'fizzles.'}`
+      `${source.name}'s ${spell.name}: 1d20=${r.total} vs DC ${dc} — ${ok ? 'success!' : 'fizzles.'}${luckNote}`
     );
+    // A failed spell can still pay out through gear (Soul Battery / Locket / Tantrum).
+    if (!ok) {
+      for (const line of source.onSpellFizzle()) this.gs.log(line);
+    }
     return ok;
   }
 
@@ -650,28 +1770,112 @@ export class GameScene extends Phaser.Scene {
   /** Color abilities the reactor could cast right now as a reaction. */
   private castableAbilities(reactor: Mage): ColorAbility[] {
     if (!this.canReactWithAbilities(reactor)) return [];
-    return getColorAbilitiesFor(reactor.profile.primary).filter((ab) =>
-      this.canAffordAbility(reactor, ab)
+    return getColorAbilitiesFor(reactor.profile.primary).filter(
+      (ab) => !reactor.isAbilityBanned(ab.id) && this.canAffordAbility(reactor, ab)
     );
   }
 
   private reactorCanRespond(reactor: Mage, top: StackItem): boolean {
     if (reactor === top.source) return false;
+    if (this.canNeedle(reactor, top)) return true;
+    if (this.canBlock(reactor) || this.canBash(reactor, top)) return true;
     if (!reactor.hasReaction()) return false;
     return (
       this.castableReactions(reactor).length > 0 || this.castableAbilities(reactor).length > 0
     );
   }
 
-  private getReaction(reactor: Mage, top: StackItem): Promise<ReactionChoice | null> {
+  /**
+   * True if the reactor can spend a Needle of Serenity on `top`. The Needle only
+   * answers *abilities* (colour abilities) and weapon / unarmed strikes — never
+   * base mechanics such as walking (moves) or casting spells (word spells).
+   */
+  private canNeedle(reactor: Mage, top: StackItem): boolean {
+    if (reactor === top.source || !reactor.alive || !reactor.hasNeedle()) return false;
+    if (top.kind === 'melee') return true;
+    if (top.kind === 'spell' && !!top.spell && this.isColorAbility(top.spell)) return true;
+    if (top.kind === 'action' && !!top.needleBan) return true;
+    return false;
+  }
+
+  /** Spend the reactor's Needle of Serenity to stifle & permanently ban `top`. */
+  private applyNeedle(reactor: Mage, top: StackItem): void {
+    const src = top.source;
+    reactor.consumeNeedle();
+    if (top.kind === 'action' && top.needleBan) {
+      const ban = top.needleBan;
+      if (ban.kind === 'item') {
+        src.bannedItemIds.add(ban.itemId);
+        this.gs.log(
+          `${reactor.name}'s Needle of Serenity stifles the action — ${src.name}'s ${getItem(ban.itemId).name} is disabled forever.`
+        );
+      } else {
+        src.bannedAbilityIds.add(ban.key);
+        this.gs.log(
+          `${reactor.name}'s Needle of Serenity stifles ${ban.label} — ${src.name} can never use it again.`
+        );
+      }
+    } else if (top.kind === 'spell' && top.spell && this.isColorAbility(top.spell)) {
+      src.bannedAbilityIds.add(top.spell.id);
+      this.gs.log(
+        `${reactor.name}'s Needle of Serenity stifles ${top.spell.name} — ${src.name} can never use it again.`
+      );
+    } else if (top.kind === 'melee') {
+      const wid = src.activeWeaponId();
+      if (wid) {
+        src.bannedItemIds.add(wid);
+        this.gs.log(
+          `${reactor.name}'s Needle of Serenity stifles the strike — ${src.name}'s ${getItem(wid).name} is disabled forever.`
+        );
+      } else {
+        src.unarmedBanned = true;
+        this.gs.log(
+          `${reactor.name}'s Needle of Serenity stifles the strike — ${src.name} can never strike unarmed again.`
+        );
+      }
+    } else {
+      this.gs.log(`${reactor.name}'s Needle of Serenity stifles the action.`);
+    }
+  }
+
+  /** True if the reactor holds a shield it can raise to block the next blow. */
+  private canBlock(reactor: Mage): boolean {
+    return reactor.alive && reactor.blockReduction() > 0;
+  }
+
+  /** True if the reactor can shield-bash the (adjacent) source of `top`. */
+  private canBash(reactor: Mage, top: StackItem): boolean {
+    return (
+      reactor.alive &&
+      reactor.shieldBashMult() != null &&
+      top.source.alive &&
+      dist(top.source.pos, reactor.pos) <= MELEE_RANGE
+    );
+  }
+
+  private async getReaction(reactor: Mage, top: StackItem): Promise<ReactionChoice | null> {
     if (this.controllerIsAI(reactor)) {
       // Dev: a passive AI never reacts.
-      if (Dev.aiPassive) return Promise.resolve(null);
+      if (Dev.aiPassive) return null;
       const ai = this.aiFor(reactor);
       const r = ai.chooseReaction(true) ?? null;
-      return Promise.resolve(r ? { spell: r.spell, target: r.target, point: r.point } : null);
+      if (r) return { spell: r.spell, target: r.target, point: r.point };
+      // No spell reaction — fall back to a defensive shield reaction so the AI
+      // still profits from its shield now that block/bash are no longer passive.
+      const incoming = top.kind === 'melee' || (top.kind === 'spell' && top.target === reactor);
+      if (incoming && this.canBash(reactor, top)) return { shield: 'bash' };
+      if (incoming && this.canBlock(reactor)) return { shield: 'block' };
+      return null;
     }
-    return this.promptReaction(reactor, top);
+    // Online: the opponent's reaction arrives over the wire; ours is relayed.
+    if (this.online && !this.isLocalDecider(reactor)) {
+      const msg = await this.net!.recv();
+      if (msg.k === 'bye') return null;
+      return this.decodeReaction(msg);
+    }
+    const choice = await this.promptReaction(reactor, top);
+    if (this.online) this.net?.send(this.encodeReaction(choice));
+    return choice;
   }
 
   // ===========================================================================
@@ -688,10 +1892,47 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-Z', () => this.castColorAbility(0));
     kb.on('keydown-X', () => this.castColorAbility(1));
     kb.on('keydown-E', () => this.onEndTurn());
+    kb.on('keydown-G', () => this.onDropItem());
+    kb.on('keydown-H', () => {
+      if (this.mode === 'aiming-wall') {
+        this.wallAimAngle += Math.PI / 12; // rotate 15°
+        this.redraw();
+        return;
+      }
+      this.onPickUpItem();
+    });
+    kb.on('keydown-I', () => this.toggleInventory());
+    kb.on('keydown-R', () => void this.onWeaponAction());
+    kb.on('keydown-T', () => this.beginThrowFirst());
+    kb.on('keydown-Q', () => this.beginEldritch());
+    kb.on('keydown-C', () => this.beginThunder());
     kb.on('keydown-SPACE', () => {
       if (this.mode === 'reaction') this.onReactionPass();
     });
-    kb.on('keydown-ESC', () => this.cancelAiming());
+    kb.on('keydown-B', () => {
+      if (this.mode === 'reaction') this.chooseShieldReaction('block');
+    });
+    kb.on('keydown-N', () => {
+      if (this.mode === 'reaction') this.chooseShieldReaction('bash');
+    });
+    kb.on('keydown-K', () => {
+      if (this.mode === 'reaction') this.chooseNeedleReaction();
+    });
+    kb.on('keydown-ESC', () => {
+      if (this.mode === 'inventory') {
+        this.closeInventory();
+        return;
+      }
+      if (this.mode === 'eldritch-menu') {
+        this.hideEldritchMenu();
+        return;
+      }
+      if (this.mode === 'thunder-menu') {
+        this.hideThunderMenu();
+        return;
+      }
+      this.cancelAiming();
+    });
 
     // Dev cheat toggles (also clickable on the on-field panel).
     kb.addCapture('F1,F2,F3,F4,BACKTICK');
@@ -712,6 +1953,16 @@ export class GameScene extends Phaser.Scene {
   /** The mage currently giving input — the reactor during a reaction window. */
   private get actor(): Mage {
     return this.reactor ?? this.gs.current;
+  }
+
+  /**
+   * Whose hand/resources the HUD should display. Online, each client always
+   * shows its OWN mage's loadout and resources (never the opponent's),
+   * regardless of whose turn it is. Offline it follows the acting mage so the
+   * shared screen always shows the player who is about to act.
+   */
+  private get viewMage(): Mage {
+    return this.online ? this.mageByTeam(this.localTeam) : this.actor;
   }
 
   /**
@@ -744,9 +1995,14 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
+  /** Like `humanActive`, but also true while the inventory overlay is open. */
+  private get humanActiveOrInventory(): boolean {
+    return this.humanActive || (this.mode === 'inventory' && !this.controllerIsAI(this.actor));
+  }
+
   private onWordKey(i: number): void {
     if (!this.humanActive) return;
-    if (i >= this.actor.loadout.length) return;
+    if (i >= this.viewMage.loadout.length) return;
     const pos = this.selectedIdx.indexOf(i);
     if (pos >= 0) {
       this.selectedIdx.splice(pos, 1);
@@ -760,7 +2016,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private selectedWords(): WordId[] {
-    return this.selectedIdx.map((i) => this.actor.loadout[i]);
+    return this.selectedIdx.map((i) => this.viewMage.loadout[i]);
   }
 
   private currentComboSpell(): Spell | undefined {
@@ -781,6 +2037,11 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
+    if (me.blocksCasting()) {
+      this.flashHint('Both hands full — drop an item (G) to cast.');
+      return;
+    }
+
     if (me.hasCastThisTurn && !Dev.infiniteActions && this.gs.controlOf(me)?.mode !== 'random') {
       this.flashHint('Only one spell per turn.');
       return;
@@ -788,15 +2049,9 @@ export class GameScene extends Phaser.Scene {
 
     // A scrambled mage (Mind Curse) cannot choose: a random spell fires.
     if (this.gs.controlOf(me)?.mode === 'random') {
-      const sub = this.randomCastFor(me);
-      if (!sub) {
-        this.flashHint('Scrambled — no spell can be cast right now.');
-        return;
-      }
-      this.gs.log(`${me.name} is scrambled — ${sub.spell.name} erupts instead!`);
-      this.payForSpell(me, sub.spell);
       this.resetSelection();
-      this.runStack(this.gs.makeSpellItem(me, sub.spell, sub.target, sub.point));
+      this.mode = 'busy';
+      this.submitTurn({ t: 'cast-random' });
       return;
     }
 
@@ -814,14 +2069,25 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (spell.targeting === 'self' || spell.targeting === 'none') {
-      this.payForSpell(me, spell);
-      const item = this.gs.makeSpellItem(me, spell, spell.targeting === 'self' ? me : null, null);
       this.resetSelection();
-      this.runStack(item);
+      this.mode = 'busy';
+      this.submitTurn({
+        t: 'spell',
+        spellId: spell.id,
+        ability: false,
+        target: spell.targeting === 'self' ? me.team : null,
+      });
       return;
     }
     if (spell.targeting === 'point') {
       this.pendingSpell = spell;
+      if (spell.rotatableWall) {
+        this.wallAimAngle = 0;
+        this.mode = 'aiming-wall';
+        this.flashHint('Move to place the wall, [H] rotate, click to confirm.');
+        this.redraw();
+        return;
+      }
       this.mode = 'aiming-point';
       this.flashHint('Click a destination within range.');
       this.redraw();
@@ -851,11 +2117,225 @@ export class GameScene extends Phaser.Scene {
     if (!this.humanActive) return;
     if (this.gs.current.hasForgotten('melee'))
       return this.flashHint('You have forgotten how to fight this turn.');
-    if (this.gs.current.actions.main <= 0) return this.flashHint('Melee needs a main action.');
+    const bonusAtk = this.gs.current.attackIsBonusAction();
+    const pool = bonusAtk ? this.gs.current.actions.bonus : this.gs.current.actions.main;
+    if (pool <= 0 && !Dev.infiniteActions)
+      return this.flashHint(bonusAtk ? 'That attack needs a bonus action.' : 'Melee needs a main action.');
+    const weapon = this.gs.current.activeWeapon();
+    if (weapon?.usesArrows && this.gs.current.arrows <= 0)
+      return this.flashHint('Out of arrows — buy more or switch weapons.');
     this.pendingSpell = null;
     this.mode = 'aiming-melee';
     this.flashHint('Click an enemy in melee range.');
     this.redraw();
+  }
+
+  /** Whether `me` can throw `itemId` at `target` (enemy alive, within throw range). */
+  private canThrowAt(me: Mage, target: Mage, itemId: ItemId): boolean {
+    const def = getItem(itemId);
+    if (!def.throwable || !target.alive) return false;
+    if (this.gs.isUntargetable(target, me)) return false;
+    return dist(me.pos, target.pos) <= def.throwable.rangePx;
+  }
+
+  private beginThrow(itemId: ItemId): void {
+    if (this.mode === 'reaction') return;
+    if (!this.humanActiveOrInventory) return;
+    const me = this.gs.current;
+    if (me.isItemBanned(itemId)) return this.flashHint('That item has been stifled forever.');
+    if (me.swordFormLocked()) return this.flashHint('Locked in sword form — cannot throw.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Throwing takes a bonus action.');
+    if (me.utility.indexOf(itemId) < 0) return this.flashHint('Nothing to throw.');
+    this.closeInventory();
+    this.throwPendingItem = itemId;
+    this.pendingSpell = null;
+    this.mode = 'aiming-throw';
+    this.flashHint('Click an enemy within throwing range.');
+    this.redraw();
+  }
+
+  /** Throw the first throwable item carried (bound to [T]). */
+  private beginThrowFirst(): void {
+    if (!this.humanActive) return;
+    const me = this.gs.current;
+    const itemId = me.utility.find((id) => getItem(id).throwable && !me.isItemBanned(id));
+    if (!itemId) return this.flashHint('Nothing to throw.');
+    this.beginThrow(itemId);
+  }
+
+  /** Mantle of Eldritch Truth: open the Attack / Defend / Restore menu. */
+  private beginEldritch(): void {
+    if (this.mode === 'reaction') return;
+    if (!this.humanActive) return;
+    const me = this.gs.current;
+    if (!me.hasEldritchMantle()) return;
+    if (me.isActionBanned('eldritch'))
+      return this.flashHint('Eldritch truth has been stifled forever.');
+    if (me.actions.main <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Eldritch is a main action.');
+    this.buildEldritchMenu();
+  }
+
+  private onEldritchChoice(choice: 'attack' | 'defend' | 'restore'): void {
+    this.hideEldritchMenu();
+    if (choice === 'attack') {
+      this.pendingSpell = null;
+      this.mode = 'aiming-eldritch';
+      this.flashHint('Click any enemy — eldritch truth ignores all defenses.');
+      this.redraw();
+      return;
+    }
+    this.mode = 'busy';
+    this.submitTurn({ t: 'eldritch', choice });
+  }
+
+  private hideEldritchMenu(): void {
+    this.eldritchMenu?.destroy();
+    this.eldritchMenu = undefined;
+    if (this.mode === 'eldritch-menu') this.mode = 'idle';
+  }
+
+  private buildEldritchMenu(): void {
+    this.hideEldritchMenu();
+    this.mode = 'eldritch-menu';
+    const cont = this.add.container(0, 0).setDepth(97);
+    const dim = this.add
+      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.6)
+      .setOrigin(0, 0)
+      .setInteractive();
+    dim.on('pointerdown', () => this.hideEldritchMenu());
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    const box = this.add
+      .rectangle(cx, cy, 460, 300, 0x120a1c, 0.98)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, 0x8a5cff);
+    const title = this.add
+      .text(cx, cy - 118, 'Mantle of Eldritch Truth', {
+        fontSize: '20px',
+        color: '#c9a6ff',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    cont.add([dim, box, title]);
+    const opts: { choice: 'attack' | 'defend' | 'restore'; label: string; desc: string }[] = [
+      { choice: 'attack', label: 'Attack', desc: '10 true damage to any one target' },
+      { choice: 'defend', label: 'Defend', desc: 'Void all damage until your next turn' },
+      { choice: 'restore', label: 'Restore', desc: '+5 HP, +10 mana, +2 of each word' },
+    ];
+    opts.forEach((o, i) => {
+      const y = cy - 60 + i * 58;
+      const btn = this.add
+        .text(cx, y, o.label, {
+          fontSize: '17px',
+          color: '#e8dcff',
+          backgroundColor: '#241633',
+          fontStyle: 'bold',
+          padding: { x: 14, y: 6 },
+          fixedWidth: 380,
+          align: 'center',
+        })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+      btn.on('pointerover', () => btn.setBackgroundColor('#3a2352'));
+      btn.on('pointerout', () => btn.setBackgroundColor('#241633'));
+      btn.on('pointerdown', () => this.onEldritchChoice(o.choice));
+      const desc = this.add
+        .text(cx, y + 20, o.desc, { fontSize: '11px', color: TEXT.dim })
+        .setOrigin(0.5);
+      cont.add([btn, desc]);
+    });
+    this.eldritchMenu = cont;
+  }
+
+  /** Blessing of Roaring Thunder: open the Charge Up / Discharge menu. */
+  private beginThunder(): void {
+    if (this.mode === 'reaction') return;
+    if (!this.humanActive) return;
+    const me = this.gs.current;
+    if (!me.hasThunderBlessing()) return;
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Thunder actions need a bonus action.');
+    this.buildThunderMenu();
+  }
+
+  private onThunderChoice(choice: 'charge' | 'discharge'): void {
+    this.hideThunderMenu();
+    const me = this.gs.current;
+    if (choice === 'charge') {
+      if (me.isActionBanned('thunder-charge'))
+        return this.flashHint('Charge Up has been stifled forever.');
+      this.mode = 'busy';
+      this.submitTurn({ t: 'thunder-charge' });
+      return;
+    }
+    if (me.isActionBanned('thunder-discharge'))
+      return this.flashHint('Discharge has been stifled forever.');
+    if (me.thunderStacks <= 0) return this.flashHint('No Thunder stacks to discharge.');
+    this.pendingSpell = null;
+    this.mode = 'aiming-discharge';
+    this.flashHint('Click a target to arc lightning into.');
+    this.redraw();
+  }
+
+  private hideThunderMenu(): void {
+    this.thunderMenu?.destroy();
+    this.thunderMenu = undefined;
+    if (this.mode === 'thunder-menu') this.mode = 'idle';
+  }
+
+  private buildThunderMenu(): void {
+    this.hideThunderMenu();
+    this.mode = 'thunder-menu';
+    const me = this.gs.current;
+    const cont = this.add.container(0, 0).setDepth(97);
+    const dim = this.add
+      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.6)
+      .setOrigin(0, 0)
+      .setInteractive();
+    dim.on('pointerdown', () => this.hideThunderMenu());
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    const box = this.add
+      .rectangle(cx, cy, 480, 280, 0x0a1420, 0.98)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, 0x5cc8ff);
+    const title = this.add
+      .text(cx, cy - 108, `Roaring Thunder — ${me.thunderStacks} stacks`, {
+        fontSize: '20px',
+        color: '#9cd8ff',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    cont.add([dim, box, title]);
+    const opts: { choice: 'charge' | 'discharge'; label: string; desc: string }[] = [
+      { choice: 'charge', label: 'Charge Up', desc: 'Spend mana + 1d6 true dmg; roll d4 stacks & color charges' },
+      { choice: 'discharge', label: 'Discharge', desc: 'Dump all stacks as bouncing lightning (1d3 per stack)' },
+    ];
+    opts.forEach((o, i) => {
+      const y = cy - 45 + i * 70;
+      const btn = this.add
+        .text(cx, y, o.label, {
+          fontSize: '17px',
+          color: '#dff2ff',
+          backgroundColor: '#16323f',
+          fontStyle: 'bold',
+          padding: { x: 14, y: 6 },
+          fixedWidth: 400,
+          align: 'center',
+        })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+      btn.on('pointerover', () => btn.setBackgroundColor('#22506a'));
+      btn.on('pointerout', () => btn.setBackgroundColor('#16323f'));
+      btn.on('pointerdown', () => this.onThunderChoice(o.choice));
+      const desc = this.add
+        .text(cx, y + 22, o.desc, { fontSize: '11px', color: TEXT.dim })
+        .setOrigin(0.5);
+      cont.add([btn, desc]);
+    });
+    this.thunderMenu = cont;
   }
 
   private cancelAiming(): void {
@@ -879,6 +2359,7 @@ export class GameScene extends Phaser.Scene {
     this.pendingSpell = null;
     this.pendingAbility = null;
     this.aimingSource = null;
+    this.throwPendingItem = null;
     this.mode = 'idle';
     this.redraw();
   }
@@ -890,10 +2371,373 @@ export class GameScene extends Phaser.Scene {
     }
     if (!this.humanActive || this.busy) return;
     this.resetSelection();
+    if (this.online) this.net?.send({ k: 'turn', cmd: { t: 'end' } satisfies TurnCommand });
     this.nextTurn();
   }
 
+  /** Drop a held item to the ground to free a hand slot (bonus action). */
+  private onDropItem(): void {
+    if (this.mode === 'reaction') return;
+    if (!this.humanActive) return;
+    const me = this.gs.current;
+    if (me.swordFormLocked())
+      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+    if (me.hands.length === 0) return this.flashHint('You have nothing in hand to drop.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Dropping an item needs a bonus action.');
+    // Prefer dropping a non-wand item so casting is freed up first.
+    const idx = me.hands.findIndex((id) => !getItem(id).isWand);
+    const itemId = me.hands[idx >= 0 ? idx : 0];
+    this.resetSelection();
+    this.submitTurn({ t: 'item-drop', itemId });
+  }
+
+  /** Pick the nearest of your dropped items back up (bonus action). */
+  private onPickUpItem(): void {
+    if (this.mode === 'reaction') return;
+    if (!this.humanActive) return;
+    const me = this.gs.current;
+    if (me.swordFormLocked())
+      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+    if (!me.hasFreeHand()) return this.flashHint('Both hands are full.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Picking up an item needs a bonus action.');
+    const drop = this.gs.nearestDropFor(me);
+    if (!drop) return this.flashHint('No dropped item of yours within reach.');
+    if (!me.canCarry(getItem(drop.itemId).weight))
+      return this.flashHint('Too heavy to carry that as well.');
+    this.resetSelection();
+    this.submitTurn({ t: 'item-pickup', dropId: drop.id });
+  }
+
+  /** Consume a specific utility item (bonus action), chosen from the inventory. */
+  private consumeItem(itemId: ItemId): void {
+    if (!this.humanActiveOrInventory) return;
+    const me = this.gs.current;
+    if (me.isItemBanned(itemId)) return this.flashHint('That item has been stifled forever.');
+    if (me.swordFormLocked())
+      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+    if (!me.utility.includes(itemId) || !getItem(itemId).potion) return;
+    const potion = getItem(itemId).potion;
+    if (potion === 'mana' && me.mana >= me.maxMana)
+      return this.flashHint('Your mana is already full.');
+    if (potion === 'health' && me.hp >= me.maxHp)
+      return this.flashHint('Your health is already full.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Consuming an item needs a bonus action.');
+    this.closeInventory();
+    this.resetSelection();
+    this.submitTurn({ t: 'item-use', itemId });
+  }
+
+  /** Drop a specific held item (bonus action), chosen from the inventory. */
+  private dropItemById(itemId: ItemId): void {
+    if (!this.humanActiveOrInventory) return;
+    const me = this.gs.current;
+    if (me.swordFormLocked())
+      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+    if (!me.hands.includes(itemId)) return;
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Dropping an item needs a bonus action.');
+    this.closeInventory();
+    this.resetSelection();
+    this.submitTurn({ t: 'item-drop', itemId });
+  }
+
+  /** Equip a hand item out of the bag (bonus action), chosen from the inventory. */
+  private equipItem(itemId: ItemId): void {
+    if (!this.humanActiveOrInventory) return;
+    const me = this.gs.current;
+    if (me.swordFormLocked())
+      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+    if (!me.bag.includes(itemId)) return;
+    if (!me.hasFreeHand()) return this.flashHint('Both hands are full — unequip something first.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Equipping an item needs a bonus action.');
+    this.closeInventory();
+    this.resetSelection();
+    this.submitTurn({ t: 'item-equip', itemId });
+  }
+
+  /** Stow a held item back into the bag (bonus action), chosen from the inventory. */
+  private unequipItem(itemId: ItemId): void {
+    if (!this.humanActiveOrInventory) return;
+    const me = this.gs.current;
+    if (me.swordFormLocked())
+      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+    if (!me.hands.includes(itemId)) return;
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Unequipping an item needs a bonus action.');
+    this.closeInventory();
+    this.resetSelection();
+    this.submitTurn({ t: 'item-unequip', itemId });
+  }
+
+  // --- Inventory overlay (items + status effects) ----------------------------
+
+  /** Toggle the inventory overlay open/closed. Opening it is free. */
+  private toggleInventory(): void {
+    if (this.mode === 'inventory') {
+      this.closeInventory();
+      return;
+    }
+    if (this.mode !== 'idle' || !this.humanActive) {
+      this.flashHint('Inventory is only available on your turn.');
+      return;
+    }
+    this.buildInventoryOverlay();
+    this.mode = 'inventory';
+    this.invPanel?.setVisible(true);
+    this.redraw();
+  }
+
+  private closeInventory(): void {
+    this.invPanel?.setVisible(false);
+    if (this.mode === 'inventory') this.mode = 'idle';
+    this.redraw();
+  }
+
+  /** A short, human-readable description of a status effect (for hover tips). */
+  private statusBlurb(s: Status): string {
+    const turns = `${s.duration} turn${s.duration === 1 ? '' : 's'} left`;
+    switch (s.kind) {
+      case 'invisibility':
+        return s.mode === 'full'
+          ? `Fully invisible — enemies cannot target you. (${turns})`
+          : `Partially veiled — breaks if an enemy gets close. (${turns})`;
+      case 'stun': {
+        const what =
+          s.stunType === 'full'
+            ? 'cannot act at all'
+            : s.stunType === 'movement'
+              ? 'cannot move'
+              : 'lose your main action';
+        return `Stunned — you ${what}. (${turns})`;
+      }
+      case 'dot':
+        return `Damage over time — takes damage at the start of your turn. (${turns})`;
+      case 'debuff': {
+        const parts: string[] = [];
+        if (s.mods.moveRange) parts.push(`move ${s.mods.moveRange > 0 ? '+' : ''}${s.mods.moveRange}`);
+        if (s.mods.damageDealt)
+          parts.push(`damage dealt ${s.mods.damageDealt > 0 ? '+' : ''}${s.mods.damageDealt}`);
+        if (s.mods.damageTaken)
+          parts.push(`damage taken ${s.mods.damageTaken > 0 ? '+' : ''}${s.mods.damageTaken}`);
+        return `${parts.join(', ') || 'Stat change'}. (${turns})`;
+      }
+      case 'ward':
+        return `Ward — negates the next mind/sanity hit. (${turns})`;
+      case 'auraDot':
+        return `Damaging aura — harms nearby enemies each turn. (${turns})`;
+      case 'control':
+        return `Compelled — your action is hijacked this turn. (${turns})`;
+      case 'shadowVeil':
+        return `Shadow veil — cloaked in shadow. (${turns})`;
+      case 'shadowTrail':
+        return `Shadow trail — leaves shadows where you walk. (${turns})`;
+      case 'forget':
+        return `Forgetful — part of your loadout is unusable. (${turns})`;
+      default:
+        return turns;
+    }
+  }
+
+  private buildInventoryOverlay(): void {
+    this.invPanel?.destroy();
+    this.invTooltip = undefined;
+    const me = this.gs.current;
+    const panel = this.add.container(0, 0).setDepth(96).setVisible(false);
+    const children: Phaser.GameObjects.GameObject[] = [];
+
+    const dim = this.add
+      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72)
+      .setOrigin(0, 0)
+      .setInteractive();
+    dim.on('pointerdown', () => this.closeInventory());
+    const box = this.add
+      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 920, 560, 0x10101c, 0.98)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, 0x5a5a88);
+    const title = this.add
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 250, `${me.name} — Inventory`, {
+        fontSize: '22px',
+        color: TEXT.warn,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    children.push(dim, box, title);
+
+    const leftX = GAME_WIDTH / 2 - 440;
+    const rightX = GAME_WIDTH / 2 + 20;
+    const topY = GAME_HEIGHT / 2 - 200;
+
+    children.push(
+      this.add.text(leftX, topY - 30, 'Items', { fontSize: '16px', color: TEXT.body, fontStyle: 'bold' })
+    );
+    const items: { id: ItemId; where: 'hand' | 'bag' | 'utility' }[] = [
+      ...me.hands.map((id) => ({ id, where: 'hand' as const })),
+      ...me.bag.map((id) => ({ id, where: 'bag' as const })),
+      ...me.utility.map((id) => ({ id, where: 'utility' as const })),
+    ];
+    if (items.length === 0) {
+      children.push(
+        this.add.text(leftX, topY, '(nothing carried)', { fontSize: '13px', color: TEXT.dim })
+      );
+    }
+    items.forEach((it, i) => {
+      const def = getItem(it.id);
+      const y = topY + i * 40;
+      const tag = it.where === 'hand' ? '  (held)' : it.where === 'bag' ? '  (in bag)' : '';
+      const label = this.add.text(leftX, y, `${def.name}${tag}`, {
+        fontSize: '13px',
+        color: it.where === 'bag' ? TEXT.dim : TEXT.body,
+        fixedWidth: 240,
+      });
+      children.push(label);
+      let bx = leftX + 250;
+      if (it.where === 'utility' && def.potion) {
+        const consume = this.add
+          .text(bx, y, '[ Consume ]', {
+            fontSize: '13px',
+            color: '#7cfc9a',
+            backgroundColor: '#181826',
+            padding: { x: 6, y: 3 },
+          })
+          .setInteractive({ useHandCursor: true });
+        consume.on('pointerdown', () => this.consumeItem(it.id));
+        children.push(consume);
+        bx += 120;
+      }
+      if (it.where === 'utility' && def.throwable) {
+        const throwBtn = this.add
+          .text(bx, y, '[ Throw ]', {
+            fontSize: '13px',
+            color: '#ffcf6b',
+            backgroundColor: '#181826',
+            padding: { x: 6, y: 3 },
+          })
+          .setInteractive({ useHandCursor: true });
+        throwBtn.on('pointerdown', () => this.beginThrow(it.id));
+        children.push(throwBtn);
+        bx += 120;
+      }
+      if (it.where === 'bag') {
+        const equip = this.add
+          .text(bx, y, '[ Equip ]', {
+            fontSize: '13px',
+            color: '#7cd0ff',
+            backgroundColor: '#181826',
+            padding: { x: 6, y: 3 },
+          })
+          .setInteractive({ useHandCursor: true });
+        equip.on('pointerdown', () => this.equipItem(it.id));
+        children.push(equip);
+        bx += 110;
+      }
+      if (it.where === 'hand') {
+        const unequip = this.add
+          .text(bx, y, '[ Unequip ]', {
+            fontSize: '13px',
+            color: '#7cd0ff',
+            backgroundColor: '#181826',
+            padding: { x: 6, y: 3 },
+          })
+          .setInteractive({ useHandCursor: true });
+        unequip.on('pointerdown', () => this.unequipItem(it.id));
+        children.push(unequip);
+        bx += 120;
+        const drop = this.add
+          .text(bx, y, '[ Drop ]', {
+            fontSize: '13px',
+            color: TEXT.warn,
+            backgroundColor: '#181826',
+            padding: { x: 6, y: 3 },
+          })
+          .setInteractive({ useHandCursor: true });
+        drop.on('pointerdown', () => this.dropItemById(it.id));
+        children.push(drop);
+      }
+    });
+
+    children.push(
+      this.add.text(rightX, topY - 30, 'Status Effects', {
+        fontSize: '16px',
+        color: TEXT.body,
+        fontStyle: 'bold',
+      })
+    );
+    if (me.statuses.length === 0) {
+      children.push(
+        this.add.text(rightX, topY, '(no active effects)', { fontSize: '13px', color: TEXT.dim })
+      );
+    }
+    me.statuses.forEach((s, i) => {
+      const y = topY + i * 34;
+      const row = this.add
+        .text(rightX, y, `${s.name}  (${s.duration})`, {
+          fontSize: '13px',
+          color: TEXT.body,
+          backgroundColor: '#181826',
+          padding: { x: 6, y: 3 },
+          fixedWidth: 380,
+        })
+        .setInteractive({ useHandCursor: true });
+      const blurb = this.statusBlurb(s);
+      row.on('pointerover', () => {
+        this.invTooltip
+          ?.setText(blurb)
+          .setPosition(rightX, y + 26)
+          .setVisible(true);
+      });
+      row.on('pointerout', () => this.invTooltip?.setVisible(false));
+      children.push(row);
+    });
+
+    this.invTooltip = this.add
+      .text(0, 0, '', {
+        fontSize: '12px',
+        color: TEXT.body,
+        backgroundColor: '#000000',
+        padding: { x: 8, y: 6 },
+        wordWrap: { width: 360 },
+      })
+      .setVisible(false);
+    children.push(this.invTooltip);
+
+    const close = this.add
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 240, '[ Close ]  (I / Esc)', {
+        fontSize: '16px',
+        color: TEXT.dim,
+        backgroundColor: '#181826',
+        padding: { x: 14, y: 6 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    close.on('pointerdown', () => this.closeInventory());
+    children.push(close);
+
+    panel.add(children);
+    this.invPanel = panel;
+  }
+
+  /** Activate every held weapon's ability at once (bonus action). */
+  private async onWeaponAction(): Promise<void> {
+    if (this.mode === 'reaction') return;
+    if (!this.humanActive || this.busy) return;
+    const me = this.gs.current;
+    if (!me.hasWeaponAction()) return this.flashHint('No weapon ability to activate.');
+    const firstAbility = me.weaponAbilityItems().map((id) => getItem(id).weaponAbility)[0];
+    if (firstAbility && me.isActionBanned(`weapon:${firstAbility}`))
+      return this.flashHint('That weapon action has been stifled forever.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('A weapon action needs a bonus action.');
+    this.resetSelection();
+    this.submitTurn({ t: 'weapon-action' });
+  }
+
   private onPointerDown(p: Phaser.Input.Pointer): void {
+    // The stat-assignment / shop overlays own all input while they're up.
+    if (this.mode === 'assign' || this.mode === 'shop') return;
     // A click consumed by the dev cheat panel must not also act on the field.
     if (this.devClickGuard) {
       this.devClickGuard = false;
@@ -931,19 +2775,50 @@ export class GameScene extends Phaser.Scene {
 
     if (this.mode === 'aiming-move') {
       const dest = stepTowards(me.pos, pt, me.moveRange());
-      me.spend('move');
-      this.mode = 'idle';
-      this.runStack(this.gs.makeMoveItem(me, dest));
+      this.mode = 'busy';
+      this.submitTurn({ t: 'move', x: dest.x, y: dest.y });
       return;
     }
     if (this.mode === 'aiming-melee') {
       const target = this.clickedMage(pt, me);
       if (target && this.gs.canMelee(me, target)) {
-        me.spend('main');
-        this.mode = 'idle';
-        this.runStack(this.gs.makeMeleeItem(me, target));
+        this.mode = 'busy';
+        this.submitTurn({ t: 'melee', target: target.team });
       } else {
         this.flashHint('No enemy in melee range there.');
+      }
+      return;
+    }
+    if (this.mode === 'aiming-throw') {
+      const itemId = this.throwPendingItem;
+      const target = this.clickedMage(pt, null);
+      if (itemId && target && target.team !== me.team && this.canThrowAt(me, target, itemId)) {
+        this.throwPendingItem = null;
+        this.mode = 'busy';
+        this.submitTurn({ t: 'item-throw', itemId, target: target.team });
+      } else {
+        this.flashHint('No enemy within throwing range there.');
+      }
+      return;
+    }
+    if (this.mode === 'aiming-eldritch') {
+      const target = this.clickedMage(pt, null);
+      if (target && target.team !== me.team && target.alive) {
+        this.mode = 'busy';
+        this.submitTurn({ t: 'eldritch', choice: 'attack', target: target.team });
+      } else {
+        this.flashHint('Choose an enemy to strike with eldritch truth.');
+      }
+      return;
+    }
+    if (this.mode === 'aiming-discharge') {
+      const target = this.clickedMage(pt, null);
+      const reach = this.gs.thunderDischargeRange(me.thunderStacks);
+      if (target && target !== me && target.alive && dist(me.pos, target.pos) <= reach) {
+        this.mode = 'busy';
+        this.submitTurn({ t: 'thunder-discharge', target: target.team });
+      } else {
+        this.flashHint('Discharge needs a target within range.');
       }
       return;
     }
@@ -952,7 +2827,7 @@ export class GameScene extends Phaser.Scene {
       if (this.reactionAiming && this.reactionPendingSpell) {
         const src = this.aimingSource!;
         const spell = this.reactionPendingSpell;
-        const target = this.clickedMage(pt, src);
+        const target = this.clickedMage(pt, spell.targeting === 'any' ? null : src);
         if (target && this.gs.isValidSpellTarget(spell, src, target)) {
           this.finishReactionAim({ spell, target });
         } else {
@@ -962,19 +2837,13 @@ export class GameScene extends Phaser.Scene {
       }
       const spell = this.pendingSpell;
       if (!spell) return;
-      const target = this.clickedMage(pt, me);
+      const target = this.clickedMage(pt, spell.targeting === 'any' ? null : me);
       if (target && this.gs.isValidSpellTarget(spell, me, target)) {
-        if (this.pendingAbility) {
-          this.payForColorAbility(me, this.pendingAbility);
-        } else {
-          this.payForSpell(me, spell);
-        }
-        this.mode = 'idle';
+        const ability = this.pendingAbility != null;
+        this.mode = 'busy';
         this.pendingSpell = null;
         this.pendingAbility = null;
-        const item = this.gs.makeSpellItem(me, spell, target, null);
-        this.resetSelection();
-        this.runStack(item);
+        this.submitTurn({ t: 'spell', spellId: spell.id, ability, target: target.team });
       } else {
         this.flashHint('Invalid target (out of range / unseen).');
       }
@@ -995,24 +2864,38 @@ export class GameScene extends Phaser.Scene {
         this.flashHint('Too close — aim farther away.');
         return;
       }
-      if (this.pendingAbility) {
-        this.payForColorAbility(me, this.pendingAbility);
-      } else {
-        this.payForSpell(me, spell);
-      }
-      this.mode = 'idle';
+      const ability = this.pendingAbility != null;
+      this.mode = 'busy';
       this.pendingSpell = null;
       this.pendingAbility = null;
-      const item = this.gs.makeSpellItem(me, spell, null, capped);
-      this.resetSelection();
-      this.runStack(item);
+      this.submitTurn({ t: 'spell', spellId: spell.id, ability, target: null, x: capped.x, y: capped.y });
+      return;
+    }
+    if (this.mode === 'aiming-wall') {
+      const spell = this.pendingSpell;
+      if (!spell) return;
+      const center = stepTowards(me.pos, pt, spell.range);
+      const ability = this.pendingAbility != null;
+      const angle = this.wallAimAngle;
+      this.mode = 'busy';
+      this.pendingSpell = null;
+      this.pendingAbility = null;
+      this.submitTurn({
+        t: 'spell',
+        spellId: spell.id,
+        ability,
+        target: null,
+        x: center.x,
+        y: center.y,
+        angle,
+      });
       return;
     }
   }
 
-  private clickedMage(pt: Vec2, exclude: Mage): Mage | null {
+  private clickedMage(pt: Vec2, exclude: Mage | null): Mage | null {
     for (const m of this.gs.mages) {
-      if (m === exclude) continue;
+      if (exclude && m === exclude) continue;
       if (dist(pt, m.pos) <= MAGE_RADIUS + 14) return m;
     }
     return null;
@@ -1020,9 +2903,30 @@ export class GameScene extends Phaser.Scene {
 
   private payForSpell(mage: Mage, spell: Spell): void {
     mage.spendCharges(spell.words);
-    mage.spendMana(wordSpellMana(spell.words, mage.profile));
+    let mana = wordSpellMana(spell.words, mage.profile);
+    // Mutivarg's Rod doubles the mana cost of anything cast through it.
+    if (mage.hands.includes('mutivargRod' as ItemId)) mana *= 2;
+    // Dark Mage's Cape: the first black-word spell each duel is free.
+    if (
+      mage.hasFreeBlackSpell() &&
+      !mage.firstBlackSpellUsed &&
+      spell.words.some((w) => WORD_COLOR[w] === 'black')
+    ) {
+      mage.firstBlackSpellUsed = true;
+      mana = 0;
+      this.gs.log(`${mage.name}'s Dark Mage's Cape swallows the cost — the spell is free.`);
+    }
+    mage.spendMana(mana);
     mage.hasCastThisTurn = true;
     mage.spend(spell.actionType === 'main' ? 'main' : 'bonus');
+    // Blessing of Roaring Thunder: each word cast (success or not) adds a stack.
+    if (mage.hasThunderBlessing() && spell.words.length > 0) {
+      mage.addThunderStacks(spell.words.length);
+      this.gs.log(
+        `${mage.name} draws ${spell.words.length} Thunder stack${spell.words.length > 1 ? 's' : ''} (now ${mage.thunderStacks}).`
+      );
+      this.gs.checkThunderDeath(mage);
+    }
   }
 
   // ===========================================================================
@@ -1079,6 +2983,10 @@ export class GameScene extends Phaser.Scene {
       this.flashHint('No color ability there.');
       return;
     }
+    if (me.isAbilityBanned(ability.id)) {
+      this.flashHint('That ability has been stifled forever.');
+      return;
+    }
     if (me.actions.bonus <= 0 && !Dev.infiniteActions) {
       this.flashHint('Color abilities need a bonus action.');
       return;
@@ -1088,15 +2996,26 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (ability.targeting === 'self' || ability.targeting === 'none') {
-      this.payForColorAbility(me, ability);
-      const item = this.gs.makeSpellItem(me, ability, ability.targeting === 'self' ? me : null, null);
       this.resetSelection();
-      this.runStack(item);
+      this.mode = 'busy';
+      this.submitTurn({
+        t: 'spell',
+        spellId: ability.id,
+        ability: true,
+        target: ability.targeting === 'self' ? me.team : null,
+      });
       return;
     }
     if (ability.targeting === 'point') {
       this.pendingAbility = ability;
       this.pendingSpell = ability;
+      if (ability.rotatableWall) {
+        this.wallAimAngle = 0;
+        this.mode = 'aiming-wall';
+        this.flashHint(`${ability.name} — move to place, [H] rotate, click to confirm.`);
+        this.redraw();
+        return;
+      }
       this.mode = 'aiming-point';
       this.flashHint(`${ability.name} — click a destination within range.`);
       this.redraw();
@@ -1136,8 +3055,11 @@ export class GameScene extends Phaser.Scene {
       this.mode = 'reaction';
       this.resetSelection();
       const abil = this.castableAbilities(reactor).length > 0 ? '  [Z/X] color ability' : '';
+      const block = this.canBlock(reactor) ? '  [B] block' : '';
+      const bash = this.canBash(reactor, top) ? '  [N] bash' : '';
+      const needle = this.canNeedle(reactor, top) ? '  [K] needle' : '';
       this.flashHint(
-        `${reactor.name}: REACTION — [1-4]+Enter to cast${abil}, or Space/E to pass.`
+        `${reactor.name}: REACTION — [1-4]+Enter to cast${abil}${block}${bash}${needle}, or Space/E to pass.`
       );
       this.redraw();
     });
@@ -1146,6 +3068,10 @@ export class GameScene extends Phaser.Scene {
   /** Cast the currently selected combo as a reaction, if it is a legal one. */
   private castReaction(): void {
     if (!this.reactor || !this.reactionTop) return;
+    if (this.reactor.blocksCasting()) {
+      this.flashHint('Both hands full — drop an item (G) to cast.');
+      return;
+    }
     const spell = this.currentComboSpell();
     if (!spell) {
       this.flashHint('No spell for that word combination.');
@@ -1175,6 +3101,10 @@ export class GameScene extends Phaser.Scene {
       this.flashHint('No color ability there.');
       return;
     }
+    if (this.reactor.isAbilityBanned(ability.id)) {
+      this.flashHint('That ability has been stifled forever.');
+      return;
+    }
     if (!this.canAffordAbility(this.reactor, ability)) {
       this.flashHint('Not enough color charges / mana.');
       return;
@@ -1186,6 +3116,30 @@ export class GameScene extends Phaser.Scene {
   private onReactionPass(): void {
     if (this.mode !== 'reaction') return;
     this.resolveReaction(null);
+  }
+
+  /** Spend a Needle of Serenity during the reaction window. */
+  private chooseNeedleReaction(): void {
+    if (!this.reactor || !this.reactionTop) return;
+    if (!this.canNeedle(this.reactor, this.reactionTop)) {
+      this.flashHint('The Needle can only stifle abilities or weapon strikes.');
+      return;
+    }
+    this.resolveReaction({ needle: true });
+  }
+
+  /** Choose a shield block/bash during the reaction window. */
+  private chooseShieldReaction(kind: 'block' | 'bash'): void {    if (!this.reactor || !this.reactionTop) return;
+    if (kind === 'block') {
+      if (!this.canBlock(this.reactor)) {
+        this.flashHint('No shield raised to block with.');
+        return;
+      }
+    } else if (!this.canBash(this.reactor, this.reactionTop)) {
+      this.flashHint('No shield bash available (need an adjacent attacker).');
+      return;
+    }
+    this.resolveReaction({ shield: kind });
   }
 
   private resolveReaction(choice: ReactionChoice | null): void {
@@ -1204,8 +3158,7 @@ export class GameScene extends Phaser.Scene {
     if (spell.targeting === 'self' || spell.targeting === 'ally') {
       this.resolveReaction({ spell, target: reactor });
       return;
-    }
-    if (spell.targeting === 'none') {
+    }    if (spell.targeting === 'none') {
       this.resolveReaction({ spell });
       return;
     }
@@ -1248,9 +3201,13 @@ export class GameScene extends Phaser.Scene {
       const reach = Math.max(opts.minRange ?? 0, Math.min(opts.maxRange, dist(origin, foe.pos)));
       return stepTowards(origin, foe.pos, reach);
     }
+    // Online: the caster picks; the other peer waits for the relayed point.
+    if (this.online && !this.isLocalDecider(source)) {
+      return this.recvSubPoint();
+    }
     // Reveal any dice already rolled so the player sees what they're reacting to.
     await this.playPendingDice();
-    return new Promise<Vec2 | null>((resolve) => {
+    const value = await new Promise<Vec2 | null>((resolve) => {
       this.subtargetResolve = resolve as (v: Vec2 | Mage | null) => void;
       this.subtargetSource = source;
       this.subtargetOrigin = origin;
@@ -1260,6 +3217,8 @@ export class GameScene extends Phaser.Scene {
       this.flashHint(opts.prompt ?? `${source.name}: pick a point  (Esc to skip).`);
       this.redraw();
     });
+    if (this.online) this.sendSubPoint(value);
+    return value;
   }
 
   /** Ask `source` (player or AI) for an extra enemy within range during a cast. */
@@ -1274,8 +3233,11 @@ export class GameScene extends Phaser.Scene {
         foe.alive && !this.gs.isUntargetable(foe, source) && dist(origin, foe.pos) <= opts.range;
       return reachable ? foe : null;
     }
+    if (this.online && !this.isLocalDecider(source)) {
+      return this.recvSubEnemy();
+    }
     await this.playPendingDice();
-    return new Promise<Mage | null>((resolve) => {
+    const value = await new Promise<Mage | null>((resolve) => {
       this.subtargetResolve = resolve as (v: Vec2 | Mage | null) => void;
       this.subtargetSource = source;
       this.subtargetOrigin = origin;
@@ -1285,6 +3247,8 @@ export class GameScene extends Phaser.Scene {
       this.flashHint(opts.prompt ?? `${source.name}: pick an enemy  (Esc to skip).`);
       this.redraw();
     });
+    if (this.online) this.sendSubEnemy(value);
+    return value;
   }
 
   /** Settle the pending sub-target promise and return to the busy resolution. */
@@ -1322,18 +3286,44 @@ export class GameScene extends Phaser.Scene {
 
   private buildHud(): void {
     this.turnText = this.add.text(FIELD.x, HUD_Y, '', { fontSize: '20px', color: TEXT.body, fontStyle: 'bold' });
-    this.comboText = this.add.text(FIELD.x, HUD_Y + 30, '', { fontSize: '16px', color: TEXT.warn });
-    this.actionText = this.add.text(FIELD.x, HUD_Y + 56, '', { fontSize: '16px', color: TEXT.body });
-    this.resourceText = this.add.text(FIELD.x, HUD_Y + 80, '', { fontSize: '15px', color: TEXT.warn });
-    this.hintText = this.add.text(FIELD.x, HUD_Y + 104, '', { fontSize: '15px', color: TEXT.dim });
+    this.comboText = this.add.text(FIELD.x, HUD_Y + 28, '', {
+      fontSize: '16px',
+      color: TEXT.warn,
+      wordWrap: { width: 440 },
+      lineSpacing: 2,
+    });
+    this.actionText = this.add.text(FIELD.x, HUD_Y + 114, '', { fontSize: '16px', color: TEXT.body });
+    this.resourceText = this.add.text(FIELD.x, HUD_Y + 138, '', { fontSize: '15px', color: TEXT.warn });
+    this.hintText = this.add.text(FIELD.x, HUD_Y + 162, '', { fontSize: '15px', color: TEXT.dim });
 
-    this.add.text(FIELD.x, HUD_Y + 132,
-      '[1-4] words  [Enter] cast  [Z/X] color ability  [M] move  [A] melee  [E] end turn  [Esc] cancel',
+    // A clear, always-visible resource read-out (top-left of the field).
+    this.resourceGfx = this.add.graphics().setDepth(40).setVisible(false);
+    for (let i = 0; i < 5; i++) {
+      this.resourceLabels.push(
+        this.add
+          .text(0, 0, '', { fontSize: '13px', color: TEXT.body, fontStyle: 'bold' })
+          .setDepth(41)
+          .setVisible(false)
+      );
+      this.resourceValues.push(
+        this.add
+          .text(0, 0, '', { fontSize: '12px', color: TEXT.body })
+          .setDepth(41)
+          .setOrigin(1, 0)
+          .setVisible(false)
+      );
+    }
+
+    this.add.text(FIELD.x, HUD_Y + 186,
+      '[1-4] words  [Enter] cast  [Z/X] ability  [M] move  [A] attack  [R] weapon  [G] drop  [H] pick up  [I] inventory  [E] end  [Esc] cancel',
       { fontSize: '13px', color: TEXT.dim });
 
+    // Word boxes laid out as a 2x2 grid so they clear the history panel.
     for (let i = 0; i < 4; i++) {
+      const col = i % 2;
+      const row = Math.floor(i / 2);
       this.wordTexts.push(
-        this.add.text(FIELD.x + 470 + i * 190, HUD_Y, '', {
+        this.add.text(FIELD.x + 470 + col * 195, HUD_Y + row * 60, '', {
           fontSize: '15px',
           color: TEXT.body,
           backgroundColor: '#181826',
@@ -1343,13 +3333,7 @@ export class GameScene extends Phaser.Scene {
       );
     }
 
-    this.logText = this.add
-      .text(GAME_WIDTH - 360, HUD_Y - 4, '', {
-        fontSize: '13px',
-        color: TEXT.dim,
-        wordWrap: { width: 350 },
-        lineSpacing: 2,
-      });
+    this.buildHistoryPanel();
 
     this.tooltip = this.add
       .text(0, 0, '', {
@@ -1375,6 +3359,107 @@ export class GameScene extends Phaser.Scene {
       .setVisible(false);
 
     this.buildDevPanel();
+  }
+
+  /**
+   * Build the dedicated, filterable combat-history panel. It sits in its own
+   * bordered box on the right of the HUD (so nothing overlaps it) and can be
+   * clicked to expand into a large overlay for reading the full log.
+   */
+  private buildHistoryPanel(): void {
+    this.historyPanel = this.add.container(0, 0).setDepth(45);
+    this.historyBg = this.add
+      .rectangle(0, 0, 10, 10, 0x05050c, 0.92)
+      .setOrigin(0, 0)
+      .setStrokeStyle(1, 0x5a5a88);
+    this.historyTitle = this.add
+      .text(10, 6, '', { fontSize: '14px', color: TEXT.warn, fontStyle: 'bold' })
+      .setInteractive({ useHandCursor: true });
+    this.historyTitle.on('pointerdown', () => {
+      this.historyExpanded = !this.historyExpanded;
+      this.layoutHistoryPanel();
+      this.drawLog();
+    });
+
+    const defs: { cat: 'cast' | 'roll' | 'event'; label: string }[] = [
+      { cat: 'cast', label: 'Casts/fails' },
+      { cat: 'roll', label: 'Rolls' },
+      { cat: 'event', label: 'Damage/events' },
+    ];
+    this.historyToggleTexts = defs.map((d) => {
+      const text = this.add
+        .text(0, 0, '', { fontSize: '12px', color: TEXT.body })
+        .setInteractive({ useHandCursor: true });
+      text.on('pointerdown', () => {
+        this.historyFilters[d.cat] = !this.historyFilters[d.cat];
+        this.refreshHistoryToggles();
+        this.drawLog();
+      });
+      return { cat: d.cat, text };
+    });
+
+    this.logText = this.add.text(0, 0, '', {
+      fontSize: '13px',
+      color: TEXT.dim,
+      wordWrap: { width: 340 },
+      lineSpacing: 2,
+    });
+
+    this.historyPanel.add([
+      this.historyBg,
+      this.historyTitle,
+      ...this.historyToggleTexts.map((t) => t.text),
+      this.logText,
+    ]);
+    this.layoutHistoryPanel();
+    this.refreshHistoryToggles();
+  }
+
+  /** Position and size the history panel for its current (collapsed/expanded) mode. */
+  private layoutHistoryPanel(): void {
+    const expanded = this.historyExpanded;
+    const w = expanded ? 760 : 360;
+    const h = expanded ? 540 : 224;
+    const px = expanded ? Math.round((GAME_WIDTH - w) / 2) : GAME_WIDTH - w - 6;
+    const py = expanded ? 80 : HUD_Y - 12;
+    this.historyPanel.setPosition(px, py).setDepth(expanded ? 70 : 45);
+    this.historyBg.setSize(w, h);
+    this.historyTitle.setText(`— History —   (${expanded ? 'click to shrink' : 'click to enlarge'})`);
+
+    let tx = 10;
+    const toggleY = 28;
+    for (const t of this.historyToggleTexts) {
+      t.text.setPosition(tx, toggleY);
+      tx += t.text.width + 16;
+    }
+    this.logText.setPosition(10, 50);
+    this.logText.setWordWrapWidth(w - 20);
+    this.logText.setFontSize(expanded ? 15 : 13);
+  }
+
+  /** Refresh the filter-toggle labels/colours to match their on/off state. */
+  private refreshHistoryToggles(): void {
+    for (const t of this.historyToggleTexts) {
+      const on = this.historyFilters[t.cat];
+      const label = t.cat === 'cast' ? 'Casts/fails' : t.cat === 'roll' ? 'Rolls' : 'Damage/events';
+      t.text.setText(`[${on ? 'x' : ' '}] ${label}`);
+      t.text.setColor(on ? '#7cfc9a' : TEXT.dim);
+    }
+    // Toggle widths changed, so re-flow their horizontal positions.
+    let tx = 10;
+    for (const t of this.historyToggleTexts) {
+      t.text.setPosition(tx, 28);
+      tx += t.text.width + 16;
+    }
+  }
+
+  /** Bucket a log line into one of the three history categories. */
+  private logCategory(text: string): 'cast' | 'roll' | 'event' {
+    if (/vs DC|counters |fizzles|no valid target|compelled|erupts instead|cannot act/i.test(text)) {
+      return 'cast';
+    }
+    if (/\brolls\b/i.test(text)) return 'roll';
+    return 'event';
   }
 
   /** Build the top-right dev cheat panel with clickable toggles. */
@@ -1438,8 +3523,14 @@ export class GameScene extends Phaser.Scene {
     // Reality-break barriers.
     this.drawBarriers(g);
 
+    // Mutivarg crushing fields.
+    this.drawMutivargZones(g);
+
     // Corrosion totems.
     this.drawTotems(g);
+
+    // Dropped equipment on the ground.
+    this.drawDroppedItems(g);
 
     // Aiming ranges.
     this.drawAimingRange(g);
@@ -1470,6 +3561,43 @@ export class GameScene extends Phaser.Scene {
       g.lineStyle(2, COLORS.totem, 0.5).strokeCircle(t.x, t.y, t.radius);
       g.fillStyle(COLORS.totem, 0.9).fillCircle(t.x, t.y, 9);
       g.lineStyle(2, tint, 0.9).strokeCircle(t.x, t.y, 9);
+    }
+  }
+
+  private dropLabels = new Map<number, Phaser.GameObjects.Text>();
+  private drawDroppedItems(g: Phaser.GameObjects.Graphics): void {
+    const live = new Set<number>();
+    for (const d of this.gs.droppedItems) {
+      live.add(d.id);
+      const tint = d.owner === 1 ? COLORS.team1 : COLORS.team2;
+      // A small diamond marker where the item rests.
+      g.fillStyle(0x000000, 0.45).fillCircle(d.x, d.y, 10);
+      g.fillStyle(tint, 0.85);
+      g.beginPath();
+      g.moveTo(d.x, d.y - 8);
+      g.lineTo(d.x + 8, d.y);
+      g.lineTo(d.x, d.y + 8);
+      g.lineTo(d.x - 8, d.y);
+      g.closePath();
+      g.fillPath();
+      g.lineStyle(2, 0xffffff, 0.8).strokeCircle(d.x, d.y, 10);
+
+      let t = this.dropLabels.get(d.id);
+      if (!t) {
+        t = this.add
+          .text(0, 0, '', { fontSize: '11px', color: TEXT.dim, align: 'center' })
+          .setOrigin(0.5);
+        this.dropLabels.set(d.id, t);
+      }
+      t.setText(getItem(d.itemId).name);
+      t.setPosition(d.x, d.y - 18).setVisible(true);
+    }
+    // Recycle labels for items that were picked back up.
+    for (const [id, t] of this.dropLabels) {
+      if (!live.has(id)) {
+        t.destroy();
+        this.dropLabels.delete(id);
+      }
     }
   }
 
@@ -1686,9 +3814,34 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Draw the 45° "reality break" wedges where movement is forbidden. */
+  private drawMutivargZones(g: Phaser.GameObjects.Graphics): void {
+    for (const z of this.gs.mutivargZones) {
+      const tint = z.owner === 1 ? COLORS.team1 : COLORS.team2;
+      g.fillStyle(0x6644cc, 0.16).fillCircle(z.x, z.y, z.radius);
+      g.lineStyle(2, tint, 0.6).strokeCircle(z.x, z.y, z.radius);
+      g.lineStyle(1, 0x9988ff, 0.4).strokeCircle(z.x, z.y, z.radius * 0.6);
+    }
+  }
+
   private drawBarriers(g: Phaser.GameObjects.Graphics): void {
     for (const b of this.gs.barriers) {
       const tint = b.owner === 1 ? COLORS.team1 : COLORS.team2;
+      if (b.shape === 'rect') {
+        const corners = this.rectCorners(b.x, b.y, b.angle, b.range, b.thickness);
+        g.fillStyle(0x6ad1ff, 0.18);
+        g.beginPath();
+        g.moveTo(corners[0].x, corners[0].y);
+        for (let i = 1; i < corners.length; i++) g.lineTo(corners[i].x, corners[i].y);
+        g.closePath();
+        g.fillPath();
+        g.lineStyle(2, tint, 0.85);
+        g.beginPath();
+        g.moveTo(corners[0].x, corners[0].y);
+        for (let i = 1; i < corners.length; i++) g.lineTo(corners[i].x, corners[i].y);
+        g.closePath();
+        g.strokePath();
+        continue;
+      }
       const steps = 18;
       const pts: Vec2[] = [{ x: b.x, y: b.y }];
       for (let i = 0; i <= steps; i++) {
@@ -1708,6 +3861,30 @@ export class GameScene extends Phaser.Scene {
       g.closePath();
       g.strokePath();
     }
+  }
+
+  /** The four corners of a rectangle centred at (cx,cy), oriented at `angle`. */
+  private rectCorners(
+    cx: number,
+    cy: number,
+    angle: number,
+    length: number,
+    thickness: number
+  ): Vec2[] {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const hl = length / 2;
+    const ht = thickness / 2;
+    const local: Vec2[] = [
+      { x: -hl, y: -ht },
+      { x: hl, y: -ht },
+      { x: hl, y: ht },
+      { x: -hl, y: ht },
+    ];
+    return local.map((p) => ({
+      x: cx + p.x * cos - p.y * sin,
+      y: cy + p.x * sin + p.y * cos,
+    }));
   }
 
   /** Draw a spell's area-of-effect footprint while aiming a point spell. */
@@ -1762,15 +3939,27 @@ export class GameScene extends Phaser.Scene {
     }
 
     const aiming = this.mode.startsWith('aiming');
-    const me = this.aimingSource ?? this.gs.current;
+    // While aiming, the origin is the active source (current mage on a turn, or
+    // the reactor while reaction-aiming). When merely previewing a selected
+    // combo, anchor the range to the mage whose hand is shown (the reactor
+    // during a reaction, the local player online) — never the enemy.
+    const me = aiming ? (this.aimingSource ?? this.gs.current) : this.viewMage;
     if (this.controllerIsAI(me) && !aiming) return;
 
     let range = 0;
     if (this.mode === 'aiming-move') range = me.moveRange();
-    else if (this.mode === 'aiming-melee') range = MELEE_RANGE;
-    else if (this.mode === 'aiming-spell' || this.mode === 'aiming-point') {
+    else if (this.mode === 'aiming-melee') {
+      const weapon = me.activeWeapon();
+      range = weapon ? weapon.rangePx : MELEE_RANGE;
+      // Draw the dead-zone of a minimum-range weapon (e.g. the sniper bow).
+      if (weapon?.minRangePx) {
+        g.lineStyle(1, COLORS.rangeStroke, 0.5).strokeCircle(me.x, me.y, weapon.minRangePx);
+      }
+    } else if (this.mode === 'aiming-spell' || this.mode === 'aiming-point') {
       const spell = this.reactionAiming ? this.reactionPendingSpell : this.pendingSpell;
       if (spell) range = spell.range;
+    } else if (this.mode === 'aiming-wall') {
+      if (this.pendingSpell) range = this.pendingSpell.range;
     } else {
       const spell = this.currentComboSpell();
       if (spell && spell.range > 0) range = spell.range;
@@ -1800,6 +3989,31 @@ export class GameScene extends Phaser.Scene {
         const toward = stepTowards(me.pos, this.pointer, reach);
         this.drawAoePreview(g, me.pos, toward, spell.aoe);
       }
+    }
+
+    // Rotatable rectangular wall preview (blue Wall ability).
+    if (aiming && this.mode === 'aiming-wall' && this.pendingSpell?.rotatableWall) {
+      const dims = this.pendingSpell.rotatableWall;
+      const center = stepTowards(me.pos, this.pointer, this.pendingSpell.range);
+      const corners = this.rectCorners(
+        center.x,
+        center.y,
+        this.wallAimAngle,
+        dims.length,
+        dims.thickness
+      );
+      g.fillStyle(0x6ad1ff, 0.18);
+      g.beginPath();
+      g.moveTo(corners[0].x, corners[0].y);
+      for (let i = 1; i < corners.length; i++) g.lineTo(corners[i].x, corners[i].y);
+      g.closePath();
+      g.fillPath();
+      g.lineStyle(2, COLORS.selected, 0.85);
+      g.beginPath();
+      g.moveTo(corners[0].x, corners[0].y);
+      for (let i = 1; i < corners.length; i++) g.lineTo(corners[i].x, corners[i].y);
+      g.closePath();
+      g.strokePath();
     }
   }
 
@@ -1990,6 +4204,8 @@ export class GameScene extends Phaser.Scene {
 
   private drawStack(g: Phaser.GameObjects.Graphics): void {
     const n = this.gs.stack.length;
+    // Hide any icons left over from a previous, larger stack.
+    for (let i = n; i < this.stackIcons.length; i++) this.stackIcons[i].setVisible(false);
     if (n === 0) return;
     const startX = GAME_WIDTH / 2 - ((n - 1) * 56) / 2;
     const y = FIELD.y + 30;
@@ -2000,12 +4216,27 @@ export class GameScene extends Phaser.Scene {
       g.fillStyle(col, 0.85).fillCircle(x, y, r);
       g.lineStyle(2, COLORS.stack, 1).strokeCircle(x, y, r);
       this.stackTokens.push({ x, y, r, item });
+
+      // Overlay the action-type icon (move / basic attack / spell cast).
+      const key = `stack-${item.kind}`;
+      let icon = this.stackIcons[i];
+      if (!icon) {
+        icon = this.add.image(x, y, key).setDepth(60);
+        this.stackIcons[i] = icon;
+      }
+      if (this.textures.exists(key)) {
+        if (icon.texture.key !== key) icon.setTexture(key);
+        const scale = (r * 1.6) / Math.max(icon.width, icon.height);
+        icon.setScale(scale).setPosition(x, y).setVisible(true);
+      } else {
+        icon.setVisible(false);
+      }
     });
     g.lineStyle(1, COLORS.stack, 0.5).strokeRect(startX - 30, y - 30, (n - 1) * 56 + 60, 60);
   }
 
   private drawHud(): void {
-    const me = this.actor;
+    const me = this.viewMage;
     if (this.mode === 'reaction' && this.reactor) {
       const abil = this.castableAbilities(this.reactor).length > 0 ? ', [Z/X] color ability' : '';
       this.turnText.setText(
@@ -2028,8 +4259,9 @@ export class GameScene extends Phaser.Scene {
     } else if (spell) {
       const rng = Number.isFinite(spell.range) ? `rng ${spell.range}` : 'any range';
       const mana = wordSpellMana(spell.words, me.profile);
+      const desc = spell.description ? `\n${spell.description}` : '';
       this.comboText.setText(
-        `Selection: ${sel}  →  ${spell.name} (${spell.actionType}, ${rng}, ${mana} mana)`
+        `Selection: ${sel}  →  ${spell.name} (${spell.actionType}, ${rng}, ${mana} mana)${desc}`
       );
     } else {
       this.comboText.setText(`Selection: ${sel}  →  (no spell)`);
@@ -2041,6 +4273,7 @@ export class GameScene extends Phaser.Scene {
     );
 
     this.drawResourceText(me);
+    this.drawResourcePanel(me);
 
     // Word boxes for the active human.
     for (let i = 0; i < 4; i++) {
@@ -2061,7 +4294,7 @@ export class GameScene extends Phaser.Scene {
     this.drawLog();
   }
 
-  /** Show the active mage's mana, color charges and primary-color abilities. */
+  /** Show the active mage's colour identity, abilities, stats and carried gear. */
   private drawResourceText(me: Mage): void {
     if (this.controllerIsAI(me)) {
       this.resourceText.setText('');
@@ -2080,14 +4313,92 @@ export class GameScene extends Phaser.Scene {
           })
           .join('   ')
       : 'none';
+    const statText = me.statsAssigned
+      ? `   STR ${me.effectiveStr()}  DEX ${me.effectiveDex()}%  INT ${me.effectiveInt()}  Luck ${me.luck}/${me.maxLuck}`
+      : '';
+    const hands = me.hands.length ? me.hands.map((id) => getItem(id).name).join(' + ') : '—';
+    const worn = [me.head, me.torso, me.boots, ...me.accessories]
+      .filter((id): id is ItemId => !!id)
+      .map((id) => getItem(id).name);
+    const wornText = worn.length ? worn.join(', ') : '—';
+    const potions = me.utility.length;
+    const utilBits: string[] = [];
+    if (me.arrows > 0) utilBits.push(`${me.arrows} arrows`);
+    if (potions > 0) utilBits.push(`${potions} potion${potions > 1 ? 's' : ''}`);
+    const utilText = utilBits.length ? `   ${utilBits.join(', ')}` : '';
+    const bagText = me.bag.length
+      ? `\nBag: ${me.bag.map((id) => getItem(id).name).join(', ')}`
+      : '';
+    const cap = me.carryCap();
+    const capText = Number.isFinite(cap) ? `${cap}kg` : '∞';
+    const gearText =
+      `\nHands: ${hands}   Worn: ${wornText}${utilText}` +
+      `   Wt ${me.carriedWeight()}/${capText}${bagText}`;
     this.resourceText.setText(
-      `Mana ${me.mana}/${me.maxMana}   Color ${me.colorCharges}/${me.maxColorCharges}   [${identity}]   ${abilText}`
+      `[${identity}]   ${abilText}${statText}${gearText}`
     );
   }
 
+  /**
+   * Render the clear resource read-out panel in the top-left of the field:
+   * labelled bars for HP, Mana, Sanity and Colour charges, plus the Blessing of
+   * Roaring Thunder's stacks when the mage carries it.
+   */
+  private drawResourcePanel(me: Mage): void {
+    const g = this.resourceGfx;
+    g.clear();
+    if (this.controllerIsAI(me) || this.gs.isOver) {
+      g.setVisible(false);
+      for (const t of this.resourceLabels) t.setVisible(false);
+      for (const t of this.resourceValues) t.setVisible(false);
+      return;
+    }
+    const rows: { label: string; cur: number; max: number; color: number }[] = [
+      { label: 'HP', cur: me.hp, max: me.maxHp, color: COLORS.hp },
+      { label: 'Mana', cur: me.mana, max: me.maxMana, color: 0x38bdf8 },
+      { label: 'Sanity', cur: me.sanity, max: me.maxSanity, color: COLORS.sanity },
+      { label: 'Color', cur: me.colorCharges, max: me.maxColorCharges, color: 0xffd166 },
+    ];
+    if (me.hasThunderBlessing()) {
+      rows.push({ label: 'Thunder', cur: me.thunderStacks, max: 15, color: 0xffa53b });
+    }
+
+    const x = FIELD.x + 8;
+    const y = FIELD.y + 8;
+    const w = 214;
+    const rowH = 22;
+    const pad = 8;
+    const h = pad * 2 + rows.length * rowH;
+    g.fillStyle(0x05050c, 0.82).fillRect(x, y, w, h);
+    g.lineStyle(1, 0x5a5a88, 0.9).strokeRect(x, y, w, h);
+    g.setVisible(true);
+
+    const barX = x + 66;
+    const barW = 104;
+    const barH = 11;
+    rows.forEach((r, i) => {
+      const ry = y + pad + i * rowH;
+      const label = this.resourceLabels[i];
+      label.setText(r.label).setPosition(x + 10, ry).setVisible(true);
+      const frac = r.max > 0 ? Math.max(0, Math.min(1, r.cur / r.max)) : 0;
+      g.fillStyle(0x1a1a2a, 1).fillRect(barX, ry + 2, barW, barH);
+      g.fillStyle(r.color, 1).fillRect(barX, ry + 2, barW * frac, barH);
+      g.lineStyle(1, 0x000000, 0.5).strokeRect(barX, ry + 2, barW, barH);
+      const val = this.resourceValues[i];
+      val.setText(`${r.cur}/${r.max}`).setPosition(x + w - 8, ry).setVisible(true);
+    });
+    for (let i = rows.length; i < this.resourceLabels.length; i++) {
+      this.resourceLabels[i].setVisible(false);
+      this.resourceValues[i].setVisible(false);
+    }
+  }
+
   private drawLog(): void {
-    const lines = this.gs.logLines.slice(-12);
-    this.logText.setText(['— Log —', ...lines].join('\n'));
+    if (!this.logText) return;
+    const max = this.historyExpanded ? 26 : 9;
+    const filtered = this.gs.logLines.filter((l) => this.historyFilters[this.logCategory(l)]);
+    const lines = filtered.slice(-max);
+    this.logText.setText(lines.length ? lines.join('\n') : '(no entries)');
   }
 
   private updateHover(): void {
@@ -2102,7 +4413,41 @@ export class GameScene extends Phaser.Scene {
         return;
       }
     }
+
+    // Field areas (shadows, reality breaks, totems) describe their effect on hover.
+    const area = this.areaUnderPointer();
+    if (area) {
+      this.tooltip
+        .setText(area)
+        .setPosition(this.pointer.x + 18, this.pointer.y + 18)
+        .setVisible(true);
+      return;
+    }
+
     this.tooltip.setVisible(false);
+  }
+
+  /** A short flavourless description of any field area under the pointer. */
+  private areaUnderPointer(): string | null {
+    const p = this.pointer;
+    for (const b of this.gs.barriers) {
+      if (barrierContains(b, p)) {
+        return 'Reality break — a rift no mage can enter. A mage that runs into it stops at the edge and is rooted; dashes and movement spells end at its border. Blocks everyone, including its caster.';
+      }
+    }
+    for (const s of this.gs.shadows) {
+      if (dist(p, s) <= s.radius) {
+        return 'Shadow pool — its owner may cast spells from here (extending their reach), and any mage standing inside takes extra spell damage.';
+      }
+    }
+    for (const t of this.gs.totems) {
+      if (dist(p, t) <= t.radius) {
+        return t.lifesteal
+          ? 'Corrosion totem — each round it saps the health of mages within its aura and heals its owner for the damage dealt.'
+          : 'Corrosion totem — each round it saps the health of every mage standing within its aura.';
+      }
+    }
+    return null;
   }
 
   private flashHint(msg: string): void {
@@ -2127,6 +4472,9 @@ export class GameScene extends Phaser.Scene {
   /** Play the animation for a resolving action before its effect lands. */
   private playActionVisual(item: StackItem): Promise<void> {
     if (item.kind === 'move') return this.animateMove(item.source, item.targetPoint ?? item.source.pos);
+    // Generic actions (item use / throw / Eldritch / Thunder / weapon action)
+    // paint their own effects inside resolve — no default cast animation.
+    if (item.kind === 'action') return Promise.resolve();
 
     const from = item.source.pos;
     const to: Vec2 | null = item.target ? item.target.pos : item.targetPoint ?? null;
@@ -2154,6 +4502,10 @@ export class GameScene extends Phaser.Scene {
         return this.vfxBurst(to ?? from, v.color, v.size ?? 45, v.speed ?? 1);
       case 'nova':
         return this.vfxNova(to ?? from, v);
+      case 'conjure':
+        return this.vfxConjure(to ?? from, v);
+      case 'heal':
+        return this.vfxHeal(to ?? from, v);
     }
     return Promise.resolve();
   }
@@ -2175,7 +4527,13 @@ export class GameScene extends Phaser.Scene {
 
   private defaultVisual(item: StackItem): SpellVisual {
     const color = item.source.team === 1 ? COLORS.team1 : COLORS.team2;
-    if (item.spell?.targeting === 'self' || item.spell?.targeting === 'none') {
+    const targeting = item.spell?.targeting;
+    // Buffs / heals / team spells (self, ally, or any-target support) get the
+    // positive heal glow; area/none spells keep the caster-centred nova.
+    if (targeting === 'self' || targeting === 'ally' || targeting === 'any') {
+      return { preset: 'heal', color: 0x7cfc9a, size: 40, speed: 1 };
+    }
+    if (targeting === 'none') {
       return { preset: 'nova', color, size: 55, speed: 1 };
     }
     return { preset: 'projectile', color, size: 10, speed: 1 };
@@ -2200,6 +4558,78 @@ export class GameScene extends Phaser.Scene {
           this.vfxBurst(to, v.color, size * 2.4, speed).then(resolve);
         },
       });
+    });
+  }
+
+  /** A conjured attack that simply erupts on the target — no projectile travel. */
+  private vfxConjure(at: Vec2, v: SpellVisual): Promise<void> {
+    return new Promise((resolve) => {
+      const speed = v.speed ?? 1;
+      const size = v.size ?? 26;
+      // A quick gathering flash, then a sharp shockwave at the target.
+      const spark = this.add.circle(at.x, at.y, size * 0.4, 0xffffff, 0.9).setDepth(31);
+      this.tweens.add({
+        targets: spark,
+        scale: { from: 0.2, to: 1.6 },
+        alpha: { from: 0.9, to: 0 },
+        duration: 200 / speed,
+        ease: 'Quad.Out',
+        onComplete: () => spark.destroy(),
+      });
+      // A few jagged shards stabbing inward.
+      for (let i = 0; i < 6; i++) {
+        const ang = (Math.PI * 2 * i) / 6;
+        const r0 = size * 1.8;
+        const shard = this.add
+          .circle(at.x + Math.cos(ang) * r0, at.y + Math.sin(ang) * r0, size * 0.22, v.color, 1)
+          .setDepth(31);
+        this.tweens.add({
+          targets: shard,
+          x: at.x,
+          y: at.y,
+          alpha: { from: 1, to: 0.2 },
+          duration: 220 / speed,
+          ease: 'Quad.In',
+          onComplete: () => shard.destroy(),
+        });
+      }
+      this.vfxBurst(at, v.color, size * 2.2, speed).then(resolve);
+    });
+  }
+
+  /** A positive glow with rising sparkles on the target (heals / buffs / team). */
+  private vfxHeal(at: Vec2, v: SpellVisual): Promise<void> {
+    return new Promise((resolve) => {
+      const speed = v.speed ?? 1;
+      const size = v.size ?? 30;
+      // A soft glow that swells and fades around the target.
+      const glow = this.add.circle(at.x, at.y, size, v.color, 0.5).setDepth(29);
+      glow.setStrokeStyle(3, 0xffffff, 0.8);
+      this.tweens.add({
+        targets: glow,
+        scale: { from: 0.4, to: 1.5 },
+        alpha: { from: 0.6, to: 0 },
+        duration: 620 / speed,
+        ease: 'Sine.Out',
+        onComplete: () => glow.destroy(),
+      });
+      // Rising sparkles.
+      for (let i = 0; i < 8; i++) {
+        const dx = (i / 7 - 0.5) * size * 2;
+        const sparkle = this.add
+          .circle(at.x + dx, at.y + size * 0.6, 3, 0xffffff, 1)
+          .setDepth(31);
+        this.tweens.add({
+          targets: sparkle,
+          y: at.y - size * 1.2,
+          alpha: { from: 1, to: 0 },
+          duration: 520 / speed,
+          delay: (i * 40) / speed,
+          ease: 'Sine.Out',
+          onComplete: () => sparkle.destroy(),
+        });
+      }
+      this.time.delayedCall(640 / speed, resolve);
     });
   }
 
@@ -2340,9 +4770,13 @@ export class GameScene extends Phaser.Scene {
 }
 
 interface ReactionChoice {
-  spell: Spell;
+  spell?: Spell;
   target?: Mage;
   point?: Vec2;
+  /** A shield reaction (block or bash) instead of a spell. */
+  shield?: 'block' | 'bash';
+  /** A Needle of Serenity reaction: stifle & permanently ban the action. */
+  needle?: boolean;
 }
 
 function dots(remaining: number, total: number): string {

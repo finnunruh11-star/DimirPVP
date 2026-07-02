@@ -4,6 +4,7 @@ import {
   FIELD,
   MANA_CAP,
   MOVE_RANGE,
+  RANGE_UNIT,
   START_COLOR_CHARGES,
   START_HP,
   START_MANA,
@@ -14,6 +15,11 @@ import type { WordId } from './Words';
 import { WORDS } from './Words';
 import type { ColorProfile } from './Colors';
 import { computeColorProfile } from './Colors';
+import type { DieResult } from './Stats';
+import { STAT_ORDER } from './Stats';
+import type { DamageType, DamageClass } from './Damage';
+import type { ItemId, WeaponMod, ShieldMod } from './Items';
+import { getItem, carryCapacity, SLOT_CAPS } from './Items';
 import type {
   ForgetStatus,
   InvisibilityStatus,
@@ -63,6 +69,79 @@ export class Mage {
 
   /** Mana actually paid for the most recent color ability (Rejuvenate reads it). */
   lastAbilityManaPaid = 0;
+
+  // ---- Assigned character stats (set during the pre-duel assignment phase) ---
+  /** Flat bonus damage added to basic (melee) attacks. */
+  statStrength = 0;
+  /** Move-range bonus, as a percentage of the base range. */
+  statDex = 0;
+  /** Raw intellect points; every 3 lower a spell's DC by 1. */
+  statInt = 0;
+  /** Remaining luck this duel (spent to push a spell roll up to its DC). */
+  luck = 0;
+  /** The luck pool size assigned at the start of the duel. */
+  maxLuck = 0;
+  /** Whether this mage has had its stat dice assigned yet. */
+  statsAssigned = false;
+
+  // ---- Equipment (bought in the shop phase) ---------------------------------
+  /** Items held in hand (max 2). Wands don't block casting; other pairs do. */
+  hands: ItemId[] = [];
+  /**
+   * Hand-slot items carried but not currently held. Everything bought for the
+   * hands starts here; equipping/unequipping (a bonus action) moves items
+   * between the bag and the hands. Bag items grant no passive effects.
+   */
+  bag: ItemId[] = [];
+  /** Worn head armour, if any. */
+  head: ItemId | null = null;
+  /** Worn torso armour / robe, if any. */
+  torso: ItemId | null = null;
+  /** Worn boots, if any. */
+  boots: ItemId | null = null;
+  /** Equipped accessories / rings (max 2). */
+  accessories: ItemId[] = [];
+  /** Utility items carried (potions). Unlimited slots. */
+  utility: ItemId[] = [];
+  /** Arrows carried as ammunition for bows. */
+  arrows = 0;
+  /** Silver remaining after shopping (kept for display/debug). 10s = 1g. */
+  silver = 0;
+
+  /** Whether this mage moved during the current turn (momentum / anchor boots). */
+  movedThisTurn = false;
+  /** Consecutive turns spent moving (Momentum Boots). */
+  momentumStacks = 0;
+  /** Consecutive turns spent stationary (Anchor Boots, capped at 4). */
+  anchorStacks = 0;
+  /** One-shot bonus fraction applied to the next basic attack (Tantrum Gloves). */
+  rageBonus = 0;
+
+  /** Bastion Sword form: false = sword (offence), true = shield (defence). */
+  bastionShieldForm = false;
+  /** Whether the once-per-duel shield bash has already triggered. */
+  shieldBashUsed = false;
+  /** A raised-shield block queued as a reaction; consumed by the next physical hit. */
+  blockPending = false;
+  /** Turns remaining before a fired crossbow can shoot again (0 = loaded). */
+  reloadTurns = 0;
+  /** Dark Mage's Cape: whether the once-per-duel free black spell has been spent. */
+  firstBlackSpellUsed = false;
+  /** Gaze Timez Bracelet: whether its once-per-duel mana mill has fired. */
+  manaMilledOnce = false;
+  /** Blessing of Roaring Thunder: accumulated Thunder stacks. */
+  thunderStacks = 0;
+  /** Mantle of Eldritch Truth (Defend): voids all incoming damage until next turn. */
+  eldritchDefend = false;
+  /** Orientation (radians) chosen for the next rotatable wall this mage places. */
+  wallAngle = 0;
+
+  /** Item ids permanently disabled for this mage by a Needle of Serenity. */
+  bannedItemIds = new Set<ItemId>();
+  /** Colour-ability ids permanently disabled for this mage by a Needle of Serenity. */
+  bannedAbilityIds = new Set<string>();
+  /** Whether this mage's unarmed strike has been disabled by a Needle of Serenity. */
+  unarmedBanned = false;
 
   statuses: Status[] = [];
   actions: ActionPool = { ...ACTIONS_PER_TURN };
@@ -201,6 +280,13 @@ export class Mage {
     }
   }
 
+  /** Mantle of Eldritch Truth (Restore): grant `n` charges of each loadout word. */
+  grantEldritchCharges(n: number): void {
+    for (const w of this.loadout) {
+      this.charges[w] = (this.charges[w] ?? 0) + n;
+    }
+  }
+
   // ---- Statuses -------------------------------------------------------------
 
   getStatus<T extends Status>(kind: T['kind']): T | undefined {
@@ -208,6 +294,8 @@ export class Mage {
   }
 
   getInvisibility(): InvisibilityStatus | undefined {
+    // A Roaring Thunder blaze (9+ stacks) lights the wielder up — no hiding.
+    if (this.thunderGlowing()) return undefined;
     return this.getStatus<InvisibilityStatus>('invisibility');
   }
 
@@ -252,7 +340,494 @@ export class Mage {
   moveRange(): number {
     // Dev cheat: reach anywhere on the field.
     if (Dev.infiniteMove) return Math.hypot(FIELD.w, FIELD.h);
-    return Math.max(0, MOVE_RANGE + this.modifier('moveRange'));
+    const base = MOVE_RANGE * (1 + this.effectiveDex() / 100);
+    let px = Math.round(base * this.equipMoveMult() * this.thunderMoveMult());
+    if (this.hasMomentumBoots()) px += this.momentumStacks * RANGE_UNIT;
+    const slowed = px + this.modifier('moveRange');
+    // Gaze Timez Bracelet: slow debuffs can never cut movement below the cap
+    // (roots / movement-stuns bypass this entirely — they aren't slows).
+    const cap = this.slowCap();
+    const floor = cap < 1 ? Math.round(px * (1 - cap)) : 0;
+    return Math.max(floor, Math.max(0, slowed));
+  }
+
+  // ---- Character stats ------------------------------------------------------
+
+  /**
+   * Apply an assignment of the shared stat dice. `order[i]` is the index of the
+   * die handed to the stat at slot `i` of {@link STAT_ORDER}. HP and mana pools
+   * are raised (and refilled), the remaining stats are stored for combat use.
+   */
+  applyStatAllocation(dice: DieResult[], order: number[]): void {
+    const valueOf = (key: (typeof STAT_ORDER)[number]): number => {
+      const slot = STAT_ORDER.indexOf(key);
+      const die = dice[order[slot]];
+      return die ? die.value : 0;
+    };
+    this.statStrength = valueOf('strength');
+    this.statDex = valueOf('dex');
+    this.statInt = valueOf('int');
+    this.maxMana += valueOf('mana');
+    this.mana = this.maxMana;
+    this.maxHp += valueOf('hp');
+    this.hp = this.maxHp;
+    this.maxLuck = valueOf('luck');
+    this.luck = this.maxLuck;
+    this.statsAssigned = true;
+  }
+
+  /** Effective Strength including equipment stat tweaks (Bracelet of Might). */
+  effectiveStr(): number {
+    return this.statStrength + this.itemSum((d) => d.statMods?.str ?? 0);
+  }
+
+  /** Effective Dexterity including equipment stat tweaks. */
+  effectiveDex(): number {
+    return this.statDex + this.itemSum((d) => d.statMods?.dex ?? 0);
+  }
+
+  /** Effective Intellect including a worn Caster Robe / rings. */
+  effectiveInt(): number {
+    return this.statInt + this.itemSum((d) => d.statMods?.int ?? 0);
+  }
+
+  /** How much a spell's DC is reduced by this mage's intellect. */
+  dcReduction(): number {
+    return Math.floor(this.effectiveInt() / 3);
+  }
+
+  /** Spend up to `amount` luck (never below zero); returns the amount spent. */
+  spendLuck(amount: number): number {
+    const spent = Math.max(0, Math.min(this.luck, Math.floor(amount)));
+    this.luck -= spent;
+    return spent;
+  }
+
+  // ---- Equipment ------------------------------------------------------------
+
+  /** Every worn / carried item (for stat sums; arrow ammo is tracked separately). */
+  equippedItems(): ItemId[] {
+    const out: ItemId[] = [...this.hands, ...this.accessories, ...this.utility];
+    if (this.head) out.push(this.head);
+    if (this.torso) out.push(this.torso);
+    if (this.boots) out.push(this.boots);
+    return out;
+  }
+
+  /** Sum a numeric property across all equipped items. */
+  private itemSum(pick: (def: ReturnType<typeof getItem>) => number): number {
+    return this.equippedItems().reduce((acc, id) => acc + pick(getItem(id)), 0);
+  }
+
+  /** True if an equipped item satisfies `pred`. */
+  private hasItemWhere(pred: (def: ReturnType<typeof getItem>) => boolean): boolean {
+    return this.equippedItems().some((id) => pred(getItem(id)));
+  }
+
+  hasManaWand(): boolean {
+    return this.hasItemWhere((d) => !!d.manaDiscount);
+  }
+
+  hasWitchWand(): boolean {
+    return this.hasItemWhere((d) => !!d.doubleDebuffs);
+  }
+
+  /** Mana restored each time this mage takes damage (Channeling Ring). */
+  manaOnHit(): number {
+    return this.itemSum((d) => d.manaOnHit ?? 0);
+  }
+
+  /** Is item `id` currently equipped? */
+  hasItem(id: ItemId): boolean {
+    return this.equippedItems().includes(id);
+  }
+
+  /** Combined multiplier on HP healing this mage receives (Blood Charm). */
+  healMult(): number {
+    let mult = 1;
+    for (const id of this.equippedItems()) {
+      const m = getItem(id).healMult;
+      if (m != null) mult *= m;
+    }
+    return mult;
+  }
+
+  /** Total melee damage reflected to attackers (Thorn Ring). */
+  thornsTotal(): number {
+    return this.itemSum((d) => d.thorns ?? 0);
+  }
+
+  /** Sanity hits below this amount are fully negated (Aluminium Hat). */
+  sanityWardBelow(): number {
+    return this.equippedItems().reduce(
+      (max, id) => Math.max(max, getItem(id).sanityWardBelow ?? 0),
+      0
+    );
+  }
+
+  /** Does worn gear turn melee damage dealt into mana (Battle Robe)? */
+  hasMeleeManaLeech(): boolean {
+    return this.hasItemWhere((d) => !!d.manaPerMeleeDmg);
+  }
+
+  /** Bonus dagger-damage fraction granted while veiled (Assassin's Cloak). */
+  veiledDaggerBonus(): number {
+    return this.itemSum((d) => d.veiledDaggerBonus ?? 0);
+  }
+
+  private hasMomentumBoots(): boolean {
+    return this.boots != null && !!getItem(this.boots).momentumBoots;
+  }
+
+  private hasAnchorBoots(): boolean {
+    return this.boots != null && !!getItem(this.boots).anchorBoots;
+  }
+
+  /** Extra flat armour from raised shields (Buckler; Bastion shield form). */
+  bonusArmorFlat(): number {
+    return this.heldShields().reduce((a, s) => a + s.armorFlat, 0);
+  }
+
+  /** Extra flat *magic* armour from raised shields (Greatshield shield form). */
+  bonusMagicArmorFlat(): number {
+    return this.heldShields().reduce((a, s) => a + (s.magicFlat ?? 0), 0);
+  }
+
+  /** Flat mental-damage reduction from worn gear (Neforpubi's Headpiece). */
+  mentalReduce(): number {
+    return this.itemSum((d) => d.mentalReduce ?? 0);
+  }
+
+  /** Flat bonus added to melee swings from worn gear (Fighter's Gloves). */
+  meleeDamageBonus(): number {
+    return this.itemSum((d) => d.meleeDamageBonus ?? 0);
+  }
+
+  /** Does this mage carry a Bag of Holding (no carry-weight limit)? */
+  hasBagOfHolding(): boolean {
+    return this.hasItemWhere((d) => !!d.bagOfHolding);
+  }
+
+  /** Does this mage wear the Mantle of Eldritch Truth (grants the Eldritch action)? */
+  hasEldritchMantle(): boolean {
+    return this.hasItemWhere((d) => !!d.eldritchMantle);
+  }
+
+  /** Does this mage carry the Blessing of Roaring Thunder? */
+  hasThunderBlessing(): boolean {
+    return this.hasItemWhere((d) => !!d.thunderBlessing);
+  }
+
+  /** Does this mage wear the Second Ring of Lareneg? */
+  hasLaranegRing(): boolean {
+    return this.hasItemWhere((d) => !!d.laranegRing);
+  }
+
+  /** Does this mage carry an unused Needle of Serenity? */
+  hasNeedle(): boolean {
+    return this.utility.some((id) => !!getItem(id).needleOfSerenity);
+  }
+
+  /** Spend one Needle of Serenity (one-time use). */
+  consumeNeedle(): boolean {
+    const i = this.utility.findIndex((id) => !!getItem(id).needleOfSerenity);
+    if (i < 0) return false;
+    this.utility.splice(i, 1);
+    return true;
+  }
+
+  /** Is weapon/item `id` disabled for this mage by a Needle of Serenity? */
+  isItemBanned(id: ItemId): boolean {
+    return this.bannedItemIds.has(id);
+  }
+
+  /** Is colour-ability `id` disabled for this mage by a Needle of Serenity? */
+  isAbilityBanned(id: string): boolean {
+    return this.bannedAbilityIds.has(id);
+  }
+
+  /** Is action/ability keyed `key` (eldritch, thunder, weapon action) disabled? */
+  isActionBanned(key: string): boolean {
+    return this.bannedAbilityIds.has(key);
+  }
+
+  /** Piecewise move multiplier from the Roaring Thunder stack count. */
+  thunderMoveMult(): number {
+    if (!this.hasThunderBlessing()) return 1;
+    const s = this.thunderStacks;
+    if (s >= 14) return 4.0; // +300%
+    if (s >= 12) return 0.5; // -50%
+    if (s >= 9) return 2.0; //  +100%
+    if (s >= 6) return 1.5; //  +50%
+    if (s >= 3) return 1.0; //  +0%
+    return 0.25; //             -75%
+  }
+
+  /** At 9+ Thunder stacks the wielder blazes and can no longer hide. */
+  thunderGlowing(): boolean {
+    return this.hasThunderBlessing() && this.thunderStacks >= 9;
+  }
+
+  /** Add Thunder stacks (no-op without the Blessing). */
+  addThunderStacks(n: number): void {
+    if (!this.hasThunderBlessing() || n <= 0) return;
+    this.thunderStacks += n;
+  }
+
+  /** Best slow-cap fraction from gear (Gaze Timez: slows capped at 75%), or 1. */
+  slowCap(): number {
+    let cap = 1;
+    for (const id of this.equippedItems()) {
+      const c = getItem(id).slowCapPct;
+      if (c != null) cap = Math.min(cap, c);
+    }
+    return cap;
+  }
+
+  /** Does gear grant one free black spell per duel (Dark Mage's Cape)? */
+  hasFreeBlackSpell(): boolean {
+    return this.hasItemWhere((d) => !!d.firstBlackSpellFree);
+  }
+
+  /** Does a held wand double spell costs (mutivarg's rod)? */
+  spellCostMultiplier(): number {
+    return this.hasItemWhere((d) => !!d.doublesSpellCost) ? 2 : 1;
+  }
+
+  /** Greatshield sword form binds the wielder: no bag actions or weapon swaps. */
+  swordFormLocked(): boolean {
+    return this.hands.includes('bastionSword') && !this.bastionShieldForm;
+  }
+
+  /**
+   * Apply on-fizzle gear perks (Soul Battery / Soul Locket / Tantrum Gloves).
+   * Returns log lines describing what triggered.
+   */
+  onSpellFizzle(): string[] {
+    const log: string[] = [];
+    const healAmt = this.itemSum((d) => d.onFizzleHeal ?? 0);
+    if (healAmt > 0) {
+      const healed = Math.round(healAmt * this.healMult());
+      this.hp = Math.min(this.maxHp, this.hp + healed);
+      log.push(`${this.name}'s Soul Battery turns the failure into ${healed} health.`);
+    }
+    const manaAmt = this.itemSum((d) => d.onFizzleMana ?? 0);
+    if (manaAmt > 0) {
+      this.gainMana(manaAmt);
+      log.push(`${this.name}'s Soul Locket draws ${manaAmt} mana from the fizzle.`);
+    }
+    const rage = this.itemSum((d) => d.onFizzleRage ?? 0);
+    if (rage > 0) {
+      this.rageBonus = rage;
+      log.push(
+        `${this.name} channels frustration — next attack +${Math.round(rage * 100)}% damage.`
+      );
+    }
+    return log;
+  }
+
+  /** Combined multiplicative move-range factor from equipped gear. */
+  private equipMoveMult(): number {
+    let mult = 1;
+    for (const id of this.equippedItems()) {
+      const m = getItem(id).moveMult;
+      if (m != null) mult *= m;
+    }
+    return mult;
+  }
+
+  /** Apply one-time multiplicative HP / sanity changes from equipped gear. */
+  applyEquipmentVitals(): void {
+    let hpMult = 1;
+    let sanMult = 1;
+    let hpFlat = 0;
+    for (const id of this.equippedItems()) {
+      const d = getItem(id);
+      if (d.hpMult != null) hpMult *= d.hpMult;
+      if (d.sanityMult != null) sanMult *= d.sanityMult;
+      if (d.hpFlat != null) hpFlat += d.hpFlat;
+    }
+    this.maxHp = Math.max(1, Math.round(this.maxHp * hpMult) + hpFlat);
+    this.hp = this.maxHp;
+    this.maxSanity = Math.max(1, Math.round(this.maxSanity * sanMult));
+    this.sanity = this.maxSanity;
+  }
+
+  /** Total weight (kg) currently carried (gear + stowed bag + arrow ammo). */
+  carriedWeight(): number {
+    const bagWeight = this.bag.reduce((acc, id) => acc + getItem(id).weight, 0);
+    return this.itemSum((d) => d.weight) + bagWeight + this.arrows * getItem('arrow').weight;
+  }
+
+  /** Carry capacity (kg), scaling with Strength. Bag of Holding lifts the cap. */
+  carryCap(): number {
+    if (this.hasBagOfHolding()) return Infinity;
+    return carryCapacity(this.statStrength);
+  }
+
+  /** Can this mage take on `extraKg` more weight? */
+  canCarry(extraKg: number): boolean {
+    return this.carriedWeight() + extraKg <= this.carryCap();
+  }
+
+  /** Hand items that are not wands — two of these block spellcasting. */
+  private nonWandHandCount(): number {
+    return this.hands.filter((id) => !getItem(id).isWand).length;
+  }
+
+  /** Holding two non-wand hand items locks you out of casting spells. */
+  blocksCasting(): boolean {
+    return this.nonWandHandCount() >= 2;
+  }
+
+  hasFreeHand(): boolean {
+    return this.hands.length < SLOT_CAPS.hand;
+  }
+
+  /** Equip a hand item out of the bag, if a hand slot is free. Returns success. */
+  equipHand(id: ItemId): boolean {
+    const i = this.bag.indexOf(id);
+    if (i < 0 || this.hands.length >= SLOT_CAPS.hand) return false;
+    this.bag.splice(i, 1);
+    this.hands.push(id);
+    return true;
+  }
+
+  /** Stow a held hand item back into the bag. Returns success. */
+  unequipHand(id: ItemId): boolean {
+    const i = this.hands.indexOf(id);
+    if (i < 0) return false;
+    this.hands.splice(i, 1);
+    this.bag.push(id);
+    return true;
+  }
+
+  /** The weapon that powers the basic attack — the first weapon held, if any. */
+  activeWeapon(): WeaponMod | null {
+    for (const id of this.hands) {
+      const def = getItem(id);
+      // A weapon disabled by a Needle of Serenity can never swing again.
+      if (this.isItemBanned(id)) continue;
+      // Greatshield in shield form swings with its blunt shield-side profile.
+      if (id === 'bastionSword' && this.bastionShieldForm) {
+        if (def.shieldWeapon) return def.shieldWeapon;
+        continue;
+      }
+      if (!def.weapon) continue;
+      return def.weapon;
+    }
+    return null;
+  }
+
+  /** The item id of the active weapon (for one-shot consumption). */
+  activeWeaponId(): ItemId | null {
+    for (const id of this.hands) {
+      const def = getItem(id);
+      if (this.isItemBanned(id)) continue;
+      if (id === 'bastionSword') {
+        // The greatshield can attack in either form.
+        if (this.bastionShieldForm ? def.shieldWeapon : def.weapon) return id;
+        continue;
+      }
+      if (!def.weapon) continue;
+      return id;
+    }
+    return null;
+  }
+
+  /** Shields currently raised: Buckler always; Bastion only in shield form. */
+  heldShields(): ShieldMod[] {
+    const out: ShieldMod[] = [];
+    for (const id of this.hands) {
+      const def = getItem(id);
+      if (!def.shield) continue;
+      if (id === 'bastionSword' && !this.bastionShieldForm) continue;
+      out.push(def.shield);
+    }
+    return out;
+  }
+
+  /** Fraction of incoming physical damage blocked by raised shields (best wins). */
+  blockReduction(): number {
+    return this.heldShields().reduce((m, s) => Math.max(m, s.blockPct), 0);
+  }
+
+  /** Strength-swing multiplier for an available shield bash, or null if none/used. */
+  shieldBashMult(): number | null {
+    if (this.shieldBashUsed) return null;
+    let best: number | null = null;
+    for (const s of this.heldShields()) best = best == null ? s.bashMult : Math.max(best, s.bashMult);
+    return best;
+  }
+
+  /** Does this mage wield a gold-earning Gambler's Blade? */
+  hasGamblerBlade(): boolean {
+    return this.hands.some((id) => getItem(id).gamblerGold);
+  }
+
+  /** Held weapons that expose a Weapon-Action ability. */
+  weaponAbilityItems(): ItemId[] {
+    return this.hands.filter((id) => !!getItem(id).weaponAbility);
+  }
+
+  /** True if the Weapon Action would do anything (any held weapon has an ability). */
+  hasWeaponAction(): boolean {
+    return this.weaponAbilityItems().length > 0;
+  }
+
+  /** Does the active weapon strike as a bonus action (Gambler's Blade)? */
+  attackIsBonusAction(): boolean {
+    const id = this.activeWeaponId();
+    return id != null && !!getItem(id).bonusActionAttack;
+  }
+
+  /** Reduce an incoming hit by worn armour (physical / magic / mental split). */
+  reduceIncoming(amount: number, type: DamageType, damageClass: DamageClass): number {
+    if (damageClass === 'sanity') {
+      // Mental damage: armour does nothing; only mind-warding gear helps.
+      return Math.max(0, amount - this.mentalReduce());
+    }
+    const isPhysical = type === 'pierce' || type === 'slashing' || type === 'shatter';
+    const isMagical = type === 'shadow' || type === 'corrosive';
+    let flat = 0;
+    if (isPhysical) {
+      for (const id of this.equippedItems()) {
+        const mod = getItem(id).armor;
+        if (mod) flat += mod.flat;
+      }
+      // Raised shields add flat physical armour while held.
+      flat += this.bonusArmorFlat();
+      // Anchor Boots add a stack of flat armour for each turn spent stationary.
+      if (this.hasAnchorBoots()) flat += Math.min(4, this.anchorStacks);
+    } else if (isMagical) {
+      for (const id of this.equippedItems()) {
+        const mag = getItem(id).armor?.magicFlat;
+        if (mag) flat += mag;
+      }
+      flat += this.bonusMagicArmorFlat();
+    } else {
+      // Typeless / unclassified damage ignores armour entirely.
+      return amount;
+    }
+    return Math.max(0, amount - flat);
+  }
+
+  /**
+   * Combined damage-type multiplier from resistances / immunities / weaknesses
+   * across all equipped gear (immune ×0, each resist ×0.5, each weak ×2). Applied
+   * AFTER flat armour. Returns 1 when nothing affects this damage type.
+   */
+  resistMultiplier(type: DamageType): number {
+    let immune = false;
+    let mult = 1;
+    for (const id of this.equippedItems()) {
+      const r = getItem(id).resist;
+      if (!r) continue;
+      if (r.immune?.includes(type)) immune = true;
+      if (r.resist?.includes(type)) mult *= 0.5;
+      if (r.weak?.includes(type)) mult *= 2;
+    }
+    return immune ? 0 : mult;
   }
 
   /** Spend one action of the given kind, unless dev toggles make it free. */
@@ -266,8 +841,21 @@ export class Mage {
 
   /** Reset the action pool for a fresh turn, respecting any stuns. */
   beginTurn(): void {
+    // Update momentum / anchor stacks from whether we moved on our last turn.
+    if (this.movedThisTurn) {
+      this.momentumStacks += 1;
+      this.anchorStacks = 0;
+    } else {
+      this.momentumStacks = 0;
+      this.anchorStacks = Math.min(4, this.anchorStacks + 1);
+    }
+    this.movedThisTurn = false;
     this.actions = { ...ACTIONS_PER_TURN };
     this.hasCastThisTurn = false;
+    // Eldritch Truth's shroud lasts only until the start of the wielder's next turn.
+    this.eldritchDefend = false;
+    // A fired crossbow reloads one step at the start of each of the wielder's turns.
+    if (this.reloadTurns > 0) this.reloadTurns -= 1;
     if (this.isStunned('full')) {
       this.actions = { move: 0, main: 0, bonus: 0 };
     } else {

@@ -2,7 +2,15 @@
 // (the flavour / future resistance hooks).
 
 export type DamageClass = 'physical' | 'sanity';
-export type DamageType = 'pierce' | 'shatter' | 'shadow' | 'corrosive';
+export type DamageType =
+  | 'pierce'
+  | 'shatter'
+  | 'shadow'
+  | 'corrosive'
+  | 'slashing'
+  | 'fire'
+  | 'heat'
+  | 'light';
 
 export interface DamageInstance {
   amount: number;

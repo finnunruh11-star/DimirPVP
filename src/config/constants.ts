@@ -7,16 +7,26 @@ export const GAME_HEIGHT = 720;
 export const FIELD = { x: 20, y: 20, w: 1240, h: 470 };
 
 // Action economy granted at the start of every turn.
-// One move, one main spell, and one bonus spell — at most two spells per turn.
-export const ACTIONS_PER_TURN = { move: 1, main: 1, bonus: 1 };
+// One move, one main spell, and two bonus actions (spells / color abilities /
+// item actions like drop, pick up and drinking potions).
+export const ACTIONS_PER_TURN = { move: 1, main: 1, bonus: 2 };
 
 // Movement / melee tuning (all distances are in pixels).
 export const MOVE_RANGE = 175;
 export const MELEE_RANGE = 72;
 export const MELEE_DAMAGE = 6;
 
-// Starting vitals for a mage.
-export const START_HP = 30;
+// Equipment phase. Money is tracked internally in *silver*; 10 silver = 1 gold.
+// Each duellist starts with START_GOLD gold (= START_SILVER silver). Carry
+// capacity (kg) is BASE_CARRY_KG before Strength is added.
+export const SILVER_PER_GOLD = 10;
+export const START_GOLD = 30;
+export const START_SILVER = START_GOLD * SILVER_PER_GOLD;
+export const BASE_CARRY_KG = 10;
+
+// Starting vitals for a mage. HP is deliberately low: each point of Vitality
+// adds exactly +1 max HP (see Mage.applyStatAllocation), so pools stay sane.
+export const START_HP = 12;
 export const START_SANITY = 20;
 
 // Mana powers word-spells and color abilities; color-charges power only color
@@ -39,6 +49,8 @@ export const SHADOW_DAMAGE_BONUS = 2;
 // Abstract spell range. Designers pick a comparison number (5 = poor, 10 =
 // average, 15 = good) and the engine converts it to pixels with RANGE_UNIT.
 export const RANGE_UNIT = 45;
+// How close (px) you must be to pick a dropped item up off the ground.
+export const PICKUP_RANGE = RANGE_UNIT * 2;
 // Cone spells (e.g. Shatter) sweep this total arc, centred on the aim direction.
 export const CONE_DEGREES = 90;
 // Totems (Corrode+Curse) persist this many rounds before crumbling.

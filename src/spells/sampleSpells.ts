@@ -144,14 +144,14 @@ registerSpell({
   words: ['veil'],
   actionType: 'bonus',
   range: 0,
-  targeting: 'self',
+  targeting: 'any',
   dc: 6,
   reaction: true, // can flicker out of sight in response to an incoming attack
   description:
-    'Slip behind a half veil for 2 cycles: targeted attacks miss more often the further the attacker stands (50% point-blank, up to 95% at long range). Any landed hit — or an enemy stepping within 1 — drops it. Castable as a reaction, so it can make an incoming spell miss.',
-  visual: { preset: 'nova', color: 0xb98bff, size: 60, speed: 1 },
+    'Slip a chosen mage behind a half veil for 2 cycles: targeted attacks miss more often the further the attacker stands (50% point-blank, up to 95% at long range). Any landed hit — or an enemy stepping within 1 — drops it. Castable as a reaction, so it can make an incoming spell miss.',
+  visual: { preset: 'heal', color: 0xb98bff, size: 44, speed: 1 },
   cast(ctx) {
-    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+    applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'partial' });
   },
 });
 
@@ -289,13 +289,13 @@ registerSpell({
   words: ['mind', 'veil'],
   actionType: 'bonus',
   range: 0,
-  targeting: 'self',
+  targeting: 'any',
   dc: 9,
   reaction: true,
-  description: 'Ready a Mind Dodge that negates the next instance of sanity damage or mental compulsion.',
-  visual: { preset: 'nova', color: 0xd8a0ff, size: 55, speed: 1 },
+  description: 'Ready a Mind Dodge on a chosen mage that negates the next instance of sanity damage or mental compulsion.',
+  visual: { preset: 'heal', color: 0xd8a0ff, size: 44, speed: 1 },
   cast(ctx) {
-    applyWard(ctx, ctx.caster, { name: 'Mind Dodge', against: 'mind', duration: 5 });
+    applyWard(ctx, ctx.target ?? ctx.caster, { name: 'Mind Dodge', against: 'mind', duration: 5 });
   },
 });
 
@@ -344,7 +344,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description: '2d6 shadow damage and the target is fully rooted for 3 turns (range 15).',
-  visual: { preset: 'projectile', color: 0x8a6bff, size: 12, speed: 1.1 },
+  visual: { preset: 'conjure', color: 0x8a6bff, size: 30, speed: 1.1 },
   cast(ctx) {
     if (!ctx.target) return;
     const amount = rollDice(ctx, '2d6', 'Shadow Bind');
@@ -358,13 +358,13 @@ registerSpell({
   words: ['shadow', 'veil'],
   actionType: 'bonus',
   range: 0,
-  targeting: 'self',
+  targeting: 'any',
   dc: 9,
   reaction: true,
-  description: 'For 3 turns you are fully invisible whenever you stand inside a shadow.',
-  visual: { preset: 'nova', color: 0x8a6bff, size: 55, speed: 1.2 },
+  description: 'For 3 turns a chosen mage is fully invisible whenever it stands inside a shadow.',
+  visual: { preset: 'heal', color: 0x8a6bff, size: 44, speed: 1.2 },
   cast(ctx) {
-    applyShadowVeil(ctx, ctx.caster, { duration: 4 });
+    applyShadowVeil(ctx, ctx.target ?? ctx.caster, { duration: 4 });
   },
 });
 
@@ -400,7 +400,7 @@ registerSpell({
   dc: 12,
   description:
     'Strike from the dark for 1d6 shadow + 1d6 pierce damage. Must be cast from one of your own shadows (range 5).',
-  visual: { preset: 'projectile', color: 0xb09bff, size: 10, speed: 1.7 },
+  visual: { preset: 'conjure', color: 0xb09bff, size: 28, speed: 1.2 },
   cast(ctx) {
     if (!ctx.target) return;
     const tgt = ctx.target;
@@ -424,9 +424,8 @@ registerSpell({
   targeting: 'point',
   dc: 10,
   reaction: true,
-  counters: true, // as a reaction it counters the triggering action
   description:
-    'Blink up to range 10 and bind an enemy you reach, locking down its movement and attacks. As a reaction it counters the triggering spell.',
+    'Blink up to range 10 and bind an enemy you reach, locking down its movement and attacks. May be cast as a reaction, but does not counter the triggering spell.',
   visual: { preset: 'projectile', color: 0x9ad8ff, size: 10, speed: 1.7 },
   cast(ctx) {
     if (ctx.targetPoint) dash(ctx, ctx.caster, { toPoint: ctx.targetPoint, distance: R(10) });
@@ -564,10 +563,10 @@ registerSpell({
   words: ['shatter', 'veil'],
   actionType: 'main',
   range: 0,
-  targeting: 'self',
+  targeting: 'any',
   dc: 11,
   description:
-    'Erupt with anti-stealth force: every veiled entity takes 1d6 shatter and is stunned, all veils across the field are torn down, then you slip behind a half veil for 2 turns.',
+    'Erupt with anti-stealth force: every veiled entity takes 1d6 shatter and is stunned, all veils across the field are torn down, then a chosen mage slips behind a half veil for 2 turns.',
   visual: { preset: 'nova', color: 0xff8be0, size: 70, speed: 1.4 },
   cast(ctx) {
     const isVeiled = (m: Mage) =>
@@ -580,7 +579,7 @@ registerSpell({
       applyStun(ctx, m, { duration: 2, type: 'full' });
     }
     for (const m of ctx.game.mages) dispelVeil(ctx, m);
-    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+    applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'partial' });
   },
 });
 
@@ -683,6 +682,148 @@ registerSpell({
   },
 });
 
+registerSpell({
+  name: 'Bind Veil',
+  words: ['bind', 'veil'],
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'any',
+  dc: 10,
+  reaction: true,
+  description:
+    'Vanish and ensnare: slip a chosen mage behind a half veil for 2 turns and root the nearest enemy within range 10 for 2 turns, so nothing can give chase. Castable as a reaction.',
+  visual: { preset: 'nova', color: 0x8ad1ff, size: 60, speed: 1.1 },
+  cast(ctx) {
+    applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'partial' });
+    const foe = enemyNear(ctx, ctx.caster.pos, R(10));
+    if (foe) applyStun(ctx, foe, { duration: 2, type: 'movement' });
+  },
+});
+
+registerSpell({
+  name: 'Bind Corrode',
+  words: ['bind', 'corrode'],
+  actionType: 'main',
+  range: R(10),
+  targeting: 'enemy',
+  dc: 11,
+  description:
+    '1d6 corrosive damage and the target is rooted for 2 turns as caustic rot sets in, bleeding 1d3 corrosive each turn for 3 turns (range 10).',
+  visual: { preset: 'projectile', color: 0x9be870, size: 11, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Bind Corrode'), 'corrosive', 'physical'));
+    applyStun(ctx, ctx.target, { duration: 2, type: 'movement' });
+    applyDot(ctx, ctx.target, {
+      name: 'Corrosion',
+      duration: 3,
+      damage: dmg(1, 'corrosive', 'physical'),
+      damageSpec: '1d3',
+    });
+  },
+});
+
+registerSpell({
+  name: 'Bind Curse',
+  words: ['bind', 'curse'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 12,
+  description:
+    'A shackling hex (range 15): for 4 turns the target is rooted in place and withers for 1d3 shadow damage at the start of each of its turns.',
+  visual: { preset: 'beam', color: 0x6a7bd0, size: 6, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyStun(ctx, ctx.target, { duration: 4, type: 'movement' });
+    applyDot(ctx, ctx.target, {
+      name: 'Bind Curse',
+      duration: 4,
+      damage: dmg(2, 'shadow', 'physical'),
+      damageSpec: '1d3',
+    });
+  },
+});
+
+registerSpell({
+  name: 'Veil Corrode',
+  words: ['veil', 'corrode'],
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'any',
+  dc: 10,
+  aoe: { kind: 'circle', radius: R(2) },
+  description:
+    'Cloak a chosen mage in a caustic haze: it slips behind a half veil for 2 turns while every enemy within range 2 of the caster takes 1d6 corrosive damage and is slowed.',
+  visual: { preset: 'nova', color: 0x9be870, size: 60, speed: 1 },
+  cast(ctx) {
+    applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'partial' });
+    const hits = areaDamage(
+      ctx,
+      ctx.caster.pos,
+      R(2),
+      dmg(rollDice(ctx, '1d6', 'Veil Corrode'), 'corrosive', 'physical')
+    );
+    for (const m of hits) {
+      applyDebuff(ctx, m, {
+        name: 'Etched',
+        duration: 2,
+        mods: { moveRange: -Math.round(MOVE_RANGE * 0.3) },
+      });
+    }
+  },
+});
+
+registerSpell({
+  name: 'Veil Curse',
+  words: ['veil', 'curse'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 11,
+  description:
+    'Hex from hiding (range 15): the target bleeds 1d3 shadow damage each turn for 4 turns, and you slip behind a half veil for 2 turns as the curse takes hold.',
+  visual: { preset: 'beam', color: 0xb98bff, size: 6, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Veil Curse',
+      duration: 4,
+      damage: dmg(2, 'shadow', 'physical'),
+      damageSpec: '1d3',
+    });
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+  },
+});
+
+registerSpell({
+  name: 'Pierce Corrode',
+  words: ['pierce', 'corrode'],
+  actionType: 'main',
+  range: R(10),
+  targeting: 'enemy',
+  dc: 11,
+  description:
+    'A corrosive lance (range 10): 1d6 pierce + 1d6 corrosive damage, leaving the target bleeding 1d3 corrosive each turn for 2 turns and slowed.',
+  visual: { preset: 'projectile', color: 0xc6f08a, size: 9, speed: 1.6 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Pierce Corrode'), 'pierce', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Pierce Corrode'), 'corrosive', 'physical'));
+    applyDot(ctx, ctx.target, {
+      name: 'Corrosion',
+      duration: 2,
+      damage: dmg(1, 'corrosive', 'physical'),
+      damageSpec: '1d3',
+    });
+    applyDebuff(ctx, ctx.target, {
+      name: 'Etched',
+      duration: 2,
+      mods: { moveRange: -Math.round(MOVE_RANGE * 0.3) },
+    });
+  },
+});
+
 // ---------------------------------------------------------------------------
 //  3-WORD COMBO
 // ---------------------------------------------------------------------------
@@ -692,10 +833,10 @@ registerSpell({
   words: ['veil', 'mind', 'pierce'],
   actionType: 'main',
   range: 0,
-  targeting: 'self',
+  targeting: 'any',
   dc: 4,
   description:
-    'A push-your-luck flurry: roll a d6 and, for each fresh result, blink to a point within R(4) then lash an enemy within R(5) of you for 1d3 sanity + 1d3 pierce. The moment a number repeats you turn fully invisible for 2 rounds and the flurry ends.',
+    'A push-your-luck flurry: roll a d6 and, for each fresh result, blink to a point within R(4) then lash an enemy within R(5) of you for 1d3 sanity + 1d3 pierce. The moment a number repeats, a chosen mage turns fully invisible for 2 rounds and the flurry ends.',
   visual: { preset: 'nova', color: 0xd9c0ff, size: 60, speed: 1.3 },
   async cast(ctx) {
     const seen = new Set<number>();
@@ -704,7 +845,7 @@ registerSpell({
     for (let i = 0; i < 6; i++) {
       const roll = rollDice(ctx, '1d6', 'Veil Mind Pierce');
       if (seen.has(roll)) {
-        applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+        applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'full' });
         ctx.log(`${ctx.caster.name} glimpses a familiar number and vanishes completely.`);
         return;
       }
@@ -731,7 +872,7 @@ registerSpell({
         dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Mind Pierce'), 'pierce', 'physical'));
       }
     }
-    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+    applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'full' });
   },
 });
 

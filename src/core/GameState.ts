@@ -1,11 +1,13 @@
 import { Dice } from './Dice';
 import { Mage } from './Mage';
-import type { StackItem } from './Stack';
+import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
 import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
 import { dealDamage, heal } from '../effects/effects';
 import { dmg } from './Damage';
 import type { DamageType, DamageClass } from './Damage';
+import type { ItemId } from './Items';
+import { getItem } from './Items';
 import { dist, stepTowards, type Vec2 } from './utils';
 import {
   CONE_DEGREES,
@@ -14,6 +16,7 @@ import {
   MELEE_DAMAGE,
   MELEE_RANGE,
   MOVE_RANGE,
+  PICKUP_RANGE,
   RANGE_UNIT,
   SCARAB,
   SHADOW_RADIUS,
@@ -44,6 +47,32 @@ export interface GlobalEscalation {
   potency: number;
 }
 
+/** An item lying on the ground, droppable/retrievable as a bonus action. */
+export interface DroppedItem {
+  id: number;
+  itemId: ItemId;
+  x: number;
+  y: number;
+  owner: 1 | 2;
+}
+
+/**
+ * A Mutivarg's Rod slow-circle. Anyone who starts their turn inside is crushed
+ * (start-of-turn damage) and pinned (cannot move); the wall also blocks anyone
+ * trying to dash through it. Lasts a fixed number of the owner's turn-starts.
+ */
+export interface MutivargZone {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+  /** Mana the owner paid to raise it (drives radius, slow and crush damage). */
+  manaPaid: number;
+  owner: 1 | 2;
+  /** Remaining owner turn-starts before it collapses. */
+  turnsLeft: number;
+}
+
 /**
  * The pure (Phaser-free) game model: two mages, whose turn it is, the round
  * counter, the reaction stack, dice and a rolling log. The Phaser scene drives
@@ -70,6 +99,12 @@ export class GameState {
 
   /** Board-wide escalating damage effects (Necrosis). */
   globalEscalations: GlobalEscalation[] = [];
+
+  /** Items dropped on the ground, awaiting pickup by their owner. */
+  droppedItems: DroppedItem[] = [];
+
+  /** Active Mutivarg's Rod slow-circles. */
+  mutivargZones: MutivargZone[] = [];
 
   /** Alive summon (scarab) count per team at last regen, to score deaths since. */
   private prevScarabAlive: Record<1 | 2, number> = { 1: 0, 2: 0 };
@@ -150,6 +185,8 @@ export class GameState {
     this.applyTotemAuras(m);
     this.applyAuraDots(m);
     this.applyDotDamage(m);
+    this.applyMutivargZones(m);
+    this.applyThunderBlessing(m);
     this.tickScarabs(m);
     const ticks = m.tickStatuses();
     for (const line of ticks) this.log(line);
@@ -589,6 +626,8 @@ export class GameState {
    * is always targetable (its protection is the dodge, resolved on the hit).
    */
   isUntargetable(m: Mage, from?: Mage): boolean {
+    // Second Ring of Lareneg: untouchable to hostiles during turn cycles 3 & 4.
+    if (from && from.team !== m.team && this.isLaranegUntouchable(m)) return true;
     const inv = m.getInvisibility();
     if (inv?.mode === 'full') {
       if (!from) return true;
@@ -596,6 +635,15 @@ export class GameState {
     }
     if (m.statuses.some((s) => s.kind === 'shadowVeil') && this.isInShadow(m)) return true;
     return false;
+  }
+
+  /**
+   * Second Ring of Lareneg: during turn cycles 3 and 4 the wearer cannot be
+   * affected by anything hostile — no damage, stuns, movement impairment or
+   * debuffs. "You basically do not exist to anything hostile."
+   */
+  isLaranegUntouchable(m: Mage): boolean {
+    return m.hasLaranegRing() && (this.round === 3 || this.round === 4);
   }
 
   /**
@@ -618,6 +666,230 @@ export class GameState {
         this.log(`${m.name}'s veil collapses — an enemy is too close.`);
       }
     }
+  }
+
+  /**
+   * An active shield-bash reaction: the basher smashes an adjacent attacker
+   * once per duel. Returns true if the bash landed.
+   */
+  shieldBash(basher: Mage, attacker: Mage): boolean {
+    const bashMult = basher.shieldBashMult();
+    if (bashMult == null || !basher.alive || !attacker.alive) return false;
+    if (dist(attacker.pos, basher.pos) > MELEE_RANGE) return false;
+    basher.shieldBashUsed = true;
+    const bashBase =
+      MELEE_DAMAGE + basher.effectiveStr() + (basher.profile.blackPrimaryTier ? 1 : 0);
+    const bashDmg = Math.max(0, Math.round(bashBase * bashMult));
+    this.log(`${basher.name} smashes back with the shield!`);
+    const back = this.effectContext(basher, attacker, null);
+    dealDamage(back, attacker, dmg(bashDmg, 'shatter', 'physical'), { canMiss: false });
+    return true;
+  }
+
+  /** Throw a consumable weapon (e.g. Throwing Dagger) at a target, consuming one. */
+  throwItem(source: Mage, target: Mage, itemId: ItemId): void {
+    const def = getItem(itemId);
+    const spec = def.throwable;
+    if (!spec) return;
+    const i = source.utility.indexOf(itemId);
+    if (i < 0) return;
+    source.utility.splice(i, 1);
+    const amount = this.rng.roll(spec.rollSpec).total;
+    this.log(`${source.name} hurls ${def.name} at ${target.name}.`);
+    const ctx = this.effectContext(source, target, null);
+    dealDamage(ctx, target, dmg(amount, 'pierce', 'physical'), { canMiss: false });
+  }
+
+  /** Mantle of Eldritch Truth: resolve the chosen Eldritch action. */
+  useEldritch(source: Mage, choice: 'attack' | 'defend' | 'restore', target: Mage | null): void {
+    switch (choice) {
+      case 'attack': {
+        if (!target || !target.alive) return;
+        this.log(`${source.name} unleashes eldritch truth upon ${target.name}!`);
+        const ctx = this.effectContext(source, target, null);
+        dealDamage(ctx, target, dmg(10, 'shatter', 'physical'), { canMiss: false, trueDamage: true });
+        break;
+      }
+      case 'defend': {
+        source.eldritchDefend = true;
+        this.log(`${source.name} wreathes themselves in eldritch truth — all damage is void until their next turn.`);
+        break;
+      }
+      case 'restore': {
+        source.hp = Math.min(source.maxHp, source.hp + 5);
+        source.gainMana(10);
+        source.grantEldritchCharges(2);
+        this.log(`${source.name} restores 5 HP, 10 mana, and 2 of each word.`);
+        break;
+      }
+    }
+  }
+
+  // ---- Blessing of Roaring Thunder -----------------------------------------
+
+  /** Start-of-turn glow / burn / lethal check for a Thunder-blessed mage. */
+  private applyThunderBlessing(m: Mage): void {
+    if (!m.alive || !m.hasThunderBlessing()) return;
+    if (this.checkThunderDeath(m)) return;
+    const s = m.thunderStacks;
+    if (s < 9) return;
+    const self = this.effectContext(m, m, null);
+    if (s >= 14) {
+      const fire = this.rng.roll('1d20').total;
+      const mill = this.rng.roll('1d10').total;
+      this.log(`Roaring thunder ravages ${m.name} (${fire} fire, ${mill} mill).`);
+      dealDamage(self, m, dmg(fire, 'fire', 'physical'), { canMiss: false });
+      dealDamage(self, m, dmg(mill, 'shatter', 'sanity'), { canMiss: false });
+      const blast = 10 * RANGE_UNIT;
+      for (const other of this.mages) {
+        if (other === m || !other.alive) continue;
+        if (dist(other.pos, m.pos) > blast) continue;
+        const ctx = this.effectContext(m, other, null);
+        const light = this.rng.roll('1d6').total;
+        dealDamage(ctx, other, dmg(light, 'light', 'physical'), { canMiss: false });
+      }
+    } else if (s >= 12) {
+      const fire = this.rng.roll('1d6').total;
+      const mill = this.rng.roll('1d3').total;
+      this.log(`${m.name} smoulders under the blessing (${fire} fire, ${mill} mill).`);
+      dealDamage(self, m, dmg(fire, 'fire', 'physical'), { canMiss: false });
+      dealDamage(self, m, dmg(mill, 'shatter', 'sanity'), { canMiss: false });
+    } else {
+      const fire = this.rng.roll('1d3').total;
+      this.log(`${m.name} glows with roaring thunder (${fire} fire).`);
+      dealDamage(self, m, dmg(fire, 'fire', 'physical'), { canMiss: false });
+    }
+    this.checkThunderDeath(m);
+  }
+
+  /** Detonate a Thunder-blessed mage that has reached 15 stacks. Returns true if it fired. */
+  checkThunderDeath(m: Mage): boolean {
+    if (!m.alive || !m.hasThunderBlessing() || m.thunderStacks < 15) return false;
+    this.log(`${m.name} is consumed by roaring thunder and erupts!`);
+    const blast = 10 * RANGE_UNIT;
+    for (const other of this.mages) {
+      if (other === m || !other.alive) continue;
+      if (dist(other.pos, m.pos) > blast) continue;
+      const ctx = this.effectContext(m, other, null);
+      const fire = this.rng.roll('1d20').total;
+      const heat = this.rng.roll('1d20').total;
+      dealDamage(ctx, other, dmg(fire, 'fire', 'physical'), { canMiss: false });
+      dealDamage(ctx, other, dmg(heat, 'heat', 'physical'), { canMiss: false });
+    }
+    m.thunderStacks = 0;
+    m.hp = 0;
+    return true;
+  }
+
+  /** Charge Up (bonus): pay mana + 1d6 true damage to roll d4 extra stacks & color charges. */
+  chargeUpThunder(source: Mage): void {
+    if (!source.hasThunderBlessing()) return;
+    const cost = Math.min(15, Math.floor(source.mana * 0.33));
+    source.spendMana(cost);
+    const self = this.effectContext(source, source, null);
+    const bite = this.rng.roll('1d6').total;
+    this.log(`${source.name} charges the storm — spends ${cost} mana and takes ${bite} true damage.`);
+    dealDamage(self, source, dmg(bite, 'heat', 'physical'), { canMiss: false, trueDamage: true });
+    if (!source.alive) return;
+    const gained = this.rng.roll('1d4').total;
+    source.addThunderStacks(gained);
+    source.colorCharges = Math.min(source.maxColorCharges, source.colorCharges + gained);
+    this.log(`${source.name} gains ${gained} Thunder stacks and color charges (now ${source.thunderStacks} stacks).`);
+    this.checkThunderDeath(source);
+  }
+
+  /** Bounce schedule (range + damage %) for a Discharge of `stacks` stacks. */
+  private thunderDischargeSchedule(stacks: number): { rangePx: number; pct: number }[] {
+    const U = RANGE_UNIT;
+    if (stacks >= 14)
+      return [
+        { rangePx: Infinity, pct: 3.0 },
+        { rangePx: 30 * U, pct: 2.0 },
+        { rangePx: 20 * U, pct: 1.0 },
+        { rangePx: 10 * U, pct: 0.51 },
+      ];
+    if (stacks >= 10)
+      return [
+        { rangePx: 20 * U, pct: 1.51 },
+        { rangePx: 14 * U, pct: 1.0 },
+        { rangePx: 7 * U, pct: 0.76 },
+        { rangePx: 4 * U, pct: 0.51 },
+        { rangePx: 1 * U, pct: 0.26 },
+      ];
+    if (stacks >= 7)
+      return [
+        { rangePx: 14 * U, pct: 1.0 },
+        { rangePx: 7 * U, pct: 0.76 },
+        { rangePx: 4 * U, pct: 0.51 },
+        { rangePx: 1 * U, pct: 0.26 },
+      ];
+    if (stacks >= 4)
+      return [
+        { rangePx: 7 * U, pct: 0.76 },
+        { rangePx: 3 * U, pct: 0.51 },
+        { rangePx: 1 * U, pct: 0.26 },
+      ];
+    return [
+      { rangePx: 4 * U, pct: 0.51 },
+      { rangePx: 1 * U, pct: 0.26 },
+    ];
+  }
+
+  /** Furthest reach at which Discharge can pick its first (primary) target. */
+  thunderDischargeRange(stacks: number): number {
+    return this.thunderDischargeSchedule(stacks)[0].rangePx;
+  }
+
+  /** Discharge (bonus): dump all stacks as a bouncing lightning chain from `primary`. */
+  dischargeThunder(source: Mage, primary: Mage): void {
+    if (!source.hasThunderBlessing()) return;
+    const stacks = source.thunderStacks;
+    if (stacks <= 0) {
+      this.log(`${source.name} has no Thunder to discharge.`);
+      return;
+    }
+    const schedule = this.thunderDischargeSchedule(stacks);
+    this.log(`${source.name} discharges ${stacks} Thunder stacks in a chain of lightning!`);
+    source.thunderStacks = 0;
+    const struck = new Set<Mage>();
+    let fromPos = source.pos;
+    let preferred: Mage | null = primary;
+    for (const hop of schedule) {
+      let target: Mage | null = null;
+      if (
+        preferred &&
+        preferred.alive &&
+        !struck.has(preferred) &&
+        dist(fromPos, preferred.pos) <= hop.rangePx
+      ) {
+        target = preferred;
+      } else {
+        const candidates = this.mages
+          .filter((g) => g !== source && g.alive && !struck.has(g) && dist(fromPos, g.pos) <= hop.rangePx)
+          .sort((a, b) => dist(fromPos, a.pos) - dist(fromPos, b.pos));
+        target = candidates[0] ?? null;
+      }
+      if (!target) break;
+      this.dealThunderBolt(source, target, stacks, hop.pct);
+      struck.add(target);
+      fromPos = target.pos;
+      preferred = null;
+    }
+    // A 14-stack overcharge also arcs back into the caster (51%).
+    if (stacks >= 14 && source.alive) this.dealThunderBolt(source, source, stacks, 0.51);
+    this.checkThunderDeath(source);
+  }
+
+  /** One lightning bounce: (stacks)d3 x pct, split heat/light/typeless, armour-ignoring. */
+  private dealThunderBolt(source: Mage, target: Mage, stacks: number, pct: number): void {
+    const dice = this.rng.roll(`${stacks}d3`).total;
+    const total = Math.ceil(dice * pct); // reduce dice by % but round favourably
+    if (total <= 0) return;
+    const ctx = this.effectContext(source, target, null);
+    // 34% heat / 33% light / 32% magical-typeless — mechanically identical (all
+    // unblocked by armour), so dealt as a single heat bolt for clarity.
+    dealDamage(ctx, target, dmg(total, 'heat', 'physical'), { canMiss: false, ignoreArmor: true });
+    this.log(`Lightning strikes ${target.name} for ${total} (${Math.round(pct * 100)}%).`);
   }
 
   // ---- Stack ----------------------------------------------------------------
@@ -663,6 +935,9 @@ export class GameState {
         return target === source;
       case 'ally':
         return target === source;
+      case 'any':
+        // Castable on any living mage — yourself, an ally, or an enemy.
+        return true;
       case 'enemy': {
         if (target === source) return false;
         if (this.isUntargetable(target, source)) return false;
@@ -689,29 +964,102 @@ export class GameState {
 
   canMelee(source: Mage, target: Mage): boolean {
     if (source.hasForgotten('melee')) return false;
-    return (
-      target !== source &&
-      target.alive &&
-      !this.isUntargetable(target, source) &&
-      dist(source.pos, target.pos) <= MELEE_RANGE
-    );
+    if (target === source || !target.alive || this.isUntargetable(target, source)) return false;
+    const weapon = source.activeWeapon();
+    // A Needle of Serenity can permanently disable the unarmed strike itself.
+    if (!weapon && source.unarmedBanned) return false;
+    // Bows need ammunition to fire.
+    if (weapon?.usesArrows && source.arrows <= 0) return false;
+    // A crossbow that has just fired cannot shoot again until it reloads.
+    if (weapon?.toHit && source.reloadTurns > 0) return false;
+    const reach = weapon ? weapon.rangePx : MELEE_RANGE;
+    const min = weapon?.minRangePx ?? 0;
+    const d = dist(source.pos, target.pos);
+    return d <= reach && d >= min;
+  }
+
+  // ---- Dropped items --------------------------------------------------------
+
+  /** Drop a held item onto the ground at the mage's feet. */
+  dropItem(source: Mage, itemId: ItemId): boolean {
+    const i = source.hands.indexOf(itemId);
+    if (i < 0) return false;
+    // The Greatshield is bound while in sword form — it cannot be dropped.
+    if (itemId === 'bastionSword' && !source.bastionShieldForm) {
+      this.log(`${source.name}'s greatshield is bound in sword form — it cannot be dropped.`);
+      return false;
+    }
+    source.hands.splice(i, 1);
+    this.droppedItems.push({
+      id: this.nextId++,
+      itemId,
+      x: source.pos.x,
+      y: source.pos.y,
+      owner: source.team,
+    });
+    this.log(`${source.name} drops ${getItem(itemId).name}.`);
+    return true;
+  }
+
+  /** Pick a dropped item back up (must own it, be near it, have room + capacity). */
+  pickUpItem(source: Mage, dropId: number): boolean {
+    const idx = this.droppedItems.findIndex((d) => d.id === dropId);
+    if (idx < 0) return false;
+    const drop = this.droppedItems[idx];
+    const def = getItem(drop.itemId);
+    if (
+      drop.owner !== source.team ||
+      !source.hasFreeHand() ||
+      !source.canCarry(def.weight) ||
+      dist(source.pos, { x: drop.x, y: drop.y }) > PICKUP_RANGE
+    ) {
+      return false;
+    }
+    this.droppedItems.splice(idx, 1);
+    source.hands.push(drop.itemId);
+    this.log(`${source.name} picks up ${def.name}.`);
+    return true;
+  }
+
+  /** The nearest of this mage's own dropped items within pickup range, if any. */
+  nearestDropFor(source: Mage): DroppedItem | null {
+    let best: DroppedItem | null = null;
+    let bestDist = Infinity;
+    for (const d of this.droppedItems) {
+      if (d.owner !== source.team) continue;
+      const dd = dist(source.pos, { x: d.x, y: d.y });
+      if (dd <= PICKUP_RANGE && dd < bestDist) {
+        best = d;
+        bestDist = dd;
+      }
+    }
+    return best;
   }
 
   // ---- Reality-break barriers ----------------------------------------------
 
-  /** Place a wedge barrier owned by `owner`. */
+  /** Place a barrier (wedge or rectangle) owned by `owner`. */
   addBarrier(
-    apex: Vec2,
+    at: Vec2,
     angle: number,
-    opts: { halfAngle: number; range: number; owner: 1 | 2; ttl: number }
+    opts: {
+      shape?: 'wedge' | 'rect';
+      halfAngle?: number;
+      range: number;
+      thickness?: number;
+      owner: 1 | 2;
+      ttl: number;
+    }
   ): BarrierZone {
     const zone: BarrierZone = {
       id: this.nextId++,
-      x: apex.x,
-      y: apex.y,
+      shape: opts.shape ?? 'wedge',
+      x: at.x,
+      y: at.y,
       angle,
-      halfAngle: opts.halfAngle,
+      halfAngle: opts.halfAngle ?? 0,
       range: opts.range,
+      thickness: opts.thickness ?? 0,
       owner: opts.owner,
       ttl: opts.ttl,
     };
@@ -778,6 +1126,119 @@ export class GameState {
     return to;
   }
 
+  // ---- Mutivarg's Rod & weapon abilities ------------------------------------
+
+  /** Raise a crushing field (one per owner) sized by the mana paid. */
+  addMutivargZone(at: Vec2, owner: 1 | 2, manaPaid: number): MutivargZone {
+    // Only one zone per owner at a time — the old one collapses.
+    this.mutivargZones = this.mutivargZones.filter((z) => z.owner !== owner);
+    const zone: MutivargZone = {
+      id: this.nextId++,
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y)),
+      radius: (manaPaid / 4) * RANGE_UNIT,
+      manaPaid,
+      owner,
+      turnsLeft: 2,
+    };
+    this.mutivargZones.push(zone);
+    return zone;
+  }
+
+  /** Crush & pin any mage starting their turn inside a field; age the owner's. */
+  private applyMutivargZones(m: Mage): void {
+    if (this.mutivargZones.length === 0) return;
+    for (const z of this.mutivargZones) {
+      if (!m.alive) break;
+      // A caster is unharmed by their own field — it only crushes enemies.
+      if (z.owner === m.team) continue;
+      if (dist(m.pos, { x: z.x, y: z.y }) > z.radius) continue;
+      const crushDice = Math.max(0, z.manaPaid - 3);
+      if (crushDice > 0) {
+        let total = 0;
+        for (let i = 0; i < crushDice; i++) total += this.rng.roll('1d3').total;
+        // The weak (low Strength) or over-encumbered are crushed twice as hard.
+        const weak =
+          m.effectiveStr() < z.manaPaid * 2 || m.carryCap() - m.carriedWeight() < 2;
+        if (weak) total *= 2;
+        const ctx = this.effectContext(m, m, null);
+        // 67% blunt shatter, otherwise a resist-ignoring magical crush.
+        if (this.rng.chance(0.67)) {
+          dealDamage(ctx, m, dmg(total, 'shatter', 'physical'), { canMiss: false, aoe: true });
+        } else {
+          dealDamage(ctx, m, dmg(total, 'corrosive', 'physical'), {
+            canMiss: false,
+            aoe: true,
+            ignoreResist: true,
+          });
+        }
+      }
+      // Slow past 100% — the field pins them in place this turn.
+      addOrExtendStatus(
+        m.statuses,
+        { key: 'stun:movement', name: 'Crushing Field', kind: 'stun', duration: 2, stunType: 'movement' },
+        false,
+      );
+      this.log(`${m.name} is ground down by the crushing field.`);
+    }
+    // The field lasts two of the owner's turn-starts.
+    for (const z of this.mutivargZones) if (z.owner === m.team) z.turnsLeft -= 1;
+    const gone = this.mutivargZones.filter((z) => z.turnsLeft <= 0);
+    if (gone.length) this.log(`The crushing field disperses.`);
+    this.mutivargZones = this.mutivargZones.filter((z) => z.turnsLeft > 0);
+  }
+
+  /** True if a straight path would cross into a crushing field (a wall). */
+  clampToMutivargZones(mover: Mage, from: Vec2, to: Vec2): { dest: Vec2; blocked: boolean } {
+    // The mover's own fields are walls only to the enemy, not to its caster.
+    const walls = this.mutivargZones.filter((z) => z.owner !== mover.team);
+    if (walls.length === 0) return { dest: to, blocked: false };
+    const inAnyZone = (p: Vec2) =>
+      walls.some((z) => dist(p, { x: z.x, y: z.y }) <= z.radius);
+    // Already trapped inside? Movement is handled by the pin, don't double-block.
+    if (inAnyZone(from)) return { dest: to, blocked: false };
+    const total = dist(from, to);
+    if (total < 1) return { dest: to, blocked: false };
+    const steps = Math.max(2, Math.ceil(total / 8));
+    let last: Vec2 = { ...from };
+    for (let i = 1; i <= steps; i++) {
+      const p = stepTowards(from, to, (total * i) / steps);
+      if (inAnyZone(p)) return { dest: last, blocked: true };
+      last = p;
+    }
+    return { dest: to, blocked: false };
+  }
+
+  /** Mutivarg's Rod weapon command: pay 25% mana to raise a crushing field. */
+  castMutivargZone(source: Mage): void {
+    const paid = Math.ceil(source.mana * 0.25);
+    if (paid <= 3) {
+      this.log(`${source.name} channels the rod, but only ${paid} mana answers — the field fizzles.`);
+      return;
+    }
+    source.spendMana(paid);
+    // Drop the field on the enemy — never under the caster's own feet, or they
+    // would pin themselves and be unable to move out of it.
+    const center = this.opponentOf(source)?.pos ?? source.pos;
+    this.addMutivargZone(center, source.team, paid);
+    this.log(`${source.name} pays ${paid} mana and raises a crushing field (radius ${paid}).`);
+  }
+
+  /** Bastion Sword weapon command: swap between sword and shield form. */
+  swapBastionForm(source: Mage): void {
+    source.bastionShieldForm = !source.bastionShieldForm;
+    this.log(
+      `${source.name} reforges the Bastion Sword into ${source.bastionShieldForm ? 'shield' : 'sword'} form.`,
+    );
+  }
+
+  /** Remove a held item from a mage's hands (Gambler's Blade self-destruct). */
+  destroyHeldItem(source: Mage, id: ItemId): void {
+    const i = source.hands.indexOf(id);
+    if (i >= 0) source.hands.splice(i, 1);
+    this.log(`${source.name}'s ${getItem(id).name} shatters into shards.`);
+  }
+
   // ---- Stack item factories -------------------------------------------------
 
   makeMoveItem(source: Mage, destination: Vec2): StackItem {
@@ -787,8 +1248,10 @@ export class GameState {
     };
     // A reality-break barrier halts a runner at its edge and roots them.
     const clamp = this.clampToBarriers(source.pos, fieldDest);
+    // A Mutivarg crushing field is a wall — you cannot dash through it.
+    const mut = this.clampToMutivargZones(source, source.pos, clamp.dest);
     // Stop short of running into the other mage's body.
-    const dest = this.clampToMages(source, source.pos, clamp.dest);
+    const dest = this.clampToMages(source, source.pos, mut.dest);
     return {
       id: this.nextId++,
       kind: 'move',
@@ -800,6 +1263,7 @@ export class GameState {
       resolve: (game) => {
         source.x = dest.x;
         source.y = dest.y;
+        source.movedThisTurn = true;
         game.updateAttachedScarabs();
         game.log(`${source.name} repositions.`);
         if (clamp.blocked) {
@@ -815,20 +1279,159 @@ export class GameState {
     };
   }
 
+  /**
+   * A generic action (item use, throw, Eldritch, Thunder, weapon action, drop,
+   * pickup) wrapped as a stack item so it opens a reaction window before it
+   * resolves. `resolve` performs the real effect; if the action is stifled by a
+   * Needle of Serenity it is removed from the stack and never runs.
+   */
+  makeActionItem(opts: {
+    source: Mage;
+    label: string;
+    description?: string;
+    needleBan?: NeedleBan;
+    isStillValid?: (game: GameState) => boolean;
+    resolve: (game: GameState) => void | Promise<void>;
+  }): StackItem {
+    return {
+      id: this.nextId++,
+      kind: 'action',
+      source: opts.source,
+      label: opts.label,
+      description: opts.description ?? opts.label,
+      needleBan: opts.needleBan,
+      isStillValid: opts.isStillValid ?? (() => opts.source.alive),
+      resolve: opts.resolve,
+    };
+  }
+
   makeMeleeItem(source: Mage, target: Mage): StackItem {
+    const weapon = source.activeWeapon();
+    const label =
+      weapon?.toHit || weapon?.oneShotSpec
+        ? 'Shot'
+        : weapon?.kind === 'dex'
+          ? 'Shot'
+          : 'Melee';
     return {
       id: this.nextId++,
       kind: 'melee',
       source,
       target,
-      label: 'Melee',
-      description: `${source.name} strikes ${target.name} in melee.`,
+      label,
+      description: `${source.name} attacks ${target.name}.`,
       isStillValid: (game) => game.canMelee(source, target),
       resolve: (game) => {
         const ctx = game.effectContext(source, target, null);
-        // Black primary tier sharpens every melee blow.
-        const bonus = source.profile.blackPrimaryTier ? 1 : 0;
-        dealDamage(ctx, target, dmg(MELEE_DAMAGE + bonus, 'shatter', 'physical'));
+        const w = source.activeWeapon();
+        let amount: number;
+        let type: DamageType;
+        let missed = false;
+        const distUnits = Math.hypot(target.x - source.x, target.y - source.y) / RANGE_UNIT;
+        if (w?.toHit) {
+          // Crossbow: roll d20 to hit versus DC = floor(distance in tiles) × dcPerUnit.
+          const dc = Math.floor(distUnits) * w.toHit.dcPerUnit;
+          const roll = game.rng.roll('1d20').total;
+          type = w.damageType;
+          if (roll >= dc) {
+            let dmgTotal = game.rng.roll(w.toHit.rollSpec).total;
+            if (w.toHit.bonusDice && w.toHit.bonusBelow != null && roll < w.toHit.bonusBelow) {
+              dmgTotal += game.rng.roll(w.toHit.bonusDice).total;
+            }
+            amount = dmgTotal;
+            game.log(`${source.name} fires the crossbow (d20 ${roll} vs DC ${dc}) — a hit for ${amount}.`);
+          } else {
+            amount = 0;
+            missed = true;
+            game.log(`${source.name} fires the crossbow (d20 ${roll} vs DC ${dc}) — a miss.`);
+          }
+          // Firing empties the chamber; it must be reloaded over the coming turns.
+          source.reloadTurns = w.toHit.reloadTurns;
+        } else if (w?.oneShotSpec) {
+          amount = game.rng.roll(w.oneShotSpec).total;
+          type = w.damageType;
+        } else if (w?.kind === 'dex') {
+          // Dex attack: floor((d20 + dex + bonus - 10) / 2), one roll per hit.
+          const dex = source.effectiveDex();
+          const bonus = (w.dexBonus ?? 0) + Math.floor(dex * (w.dexBonusPct ?? 0));
+          const hits = w.hits ?? 1;
+          type = w.damageType;
+          // Range-accuracy bows can whiff at the edge of their reach.
+          if (w.rangeAccuracy) {
+            const px = distUnits * RANGE_UNIT;
+            if (px > w.rangeAccuracy.maxRange) {
+              missed = true;
+            } else if (px > w.rangeAccuracy.autoWithin && !game.rng.chance(w.rangeAccuracy.farChance)) {
+              missed = true;
+            }
+          }
+          const rolls: number[] = [];
+          let total = 0;
+          if (!missed) {
+            for (let h = 0; h < hits; h++) {
+              const roll = game.rng.roll('1d20').total;
+              rolls.push(roll);
+              total += Math.max(0, Math.floor((roll + dex + bonus - 10) / 2));
+            }
+          }
+          amount = total;
+          if (missed) {
+            game.log(`${source.name}'s shot sails wide.`);
+          } else {
+            game.log(`${source.name} attacks (d20 ${rolls.join('+')} + dex ${dex} + ${bonus}).`);
+          }
+          // Bows consume one arrow per shot (hit or miss).
+          if (w.usesArrows) {
+            source.arrows = Math.max(0, source.arrows - 1);
+            game.log(`${source.name} looses an arrow (${source.arrows} left).`);
+          }
+        } else {
+          // Strength swing: (base melee + Strength + gloves) scaled by the weapon.
+          const base =
+            MELEE_DAMAGE +
+            source.effectiveStr() +
+            (source.profile.blackPrimaryTier ? 1 : 0) +
+            source.meleeDamageBonus();
+          amount = Math.round(base * (w?.multiplier ?? 1));
+          type = w?.damageType ?? 'shatter';
+          if (w?.critChance && game.rng.chance(w.critChance)) {
+            amount *= 2;
+            game.log(`${source.name} lands a critical hit!`);
+          }
+        }
+        // Tantrum Gloves: a stored fizzle supercharges this strike.
+        if (source.rageBonus > 0) {
+          amount = Math.round(amount * (1 + source.rageBonus));
+          game.log(`${source.name} swings in a fury (+${Math.round(source.rageBonus * 100)}%).`);
+          source.rageBonus = 0;
+        }
+        const dealt =
+          amount > 0
+            ? dealDamage(ctx, target, dmg(amount, type, 'physical'), {
+                ignoreResist: !!w?.ignoreResist,
+                ignoreArmor: !!w?.ignoreArmor,
+              })
+            : 0;
+        // Battle Robe: melee damage you deal feeds your mana pool.
+        if (dealt > 0 && source.hasMeleeManaLeech()) {
+          source.gainMana(dealt);
+          game.log(`${source.name}'s battle robe drinks ${dealt} mana from the blow.`);
+        }
+        // Thorn Ring: the struck mage's thorns bite the attacker back.
+        const thorns = target.thornsTotal();
+        if (thorns > 0 && dealt > 0 && source.alive) {
+          const back = game.effectContext(target, source, null);
+          dealDamage(back, source, dmg(thorns, 'pierce', 'physical'), { canMiss: false });
+        }
+        // A one-shot weapon is spent after firing.
+        if (w?.oneShotSpec) {
+          const id = source.activeWeaponId();
+          if (id) {
+            const i = source.hands.indexOf(id);
+            if (i >= 0) source.hands.splice(i, 1);
+            game.log(`${source.name}'s ${getItem(id).name} is spent.`);
+          }
+        }
       },
     };
   }
