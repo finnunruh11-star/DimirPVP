@@ -10,7 +10,7 @@ export interface Totem {
   x: number;
   y: number;
   radius: number;
-  owner: 1 | 2;
+  owner: number;
   ttl: number;
   /** Dice spec rolled for each victim each turn (e.g. "1d3"). */
   damageSpec: string;

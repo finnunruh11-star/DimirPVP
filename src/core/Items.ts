@@ -18,6 +18,16 @@ import {
 
 export type ItemSlot = 'hand' | 'head' | 'torso' | 'boots' | 'accessory' | 'utility';
 
+/**
+ * Which toggleable catalogue an item belongs to. The start screen lets players
+ * enable/disable whole sets before a duel; the draft only offers items whose
+ * set is active. Untagged items default to 'original'.
+ *   - original: the base Dimir catalogue.
+ *   - finns:    Finn's Additions (extra sidegrade gear).
+ *   - dlc:      Dimir Faithful DLC (Buckler, Throwing Dagger).
+ */
+export type ItemSet = 'original' | 'finns' | 'dlc';
+
 /** How many items each slot can hold. Utility (potions / arrows) is unlimited. */
 export const SLOT_CAPS: Record<ItemSlot, number> = {
   hand: 2,
@@ -46,9 +56,34 @@ export type ItemId =
   | 'needleOfSerenity'
   | 'secondRingOfLareneg'
   | 'throwingDagger'
+  | 'ironwallGreatshield'
+  | 'lungingEdge'
+  | 'warHammer'
   | 'arrow'
   | 'manaPotion'
-  | 'healthPotion';
+  | 'healthPotion'
+  // ---- Finn's Additions ----
+  | 'bloodCharm'
+  | 'bloodRing'
+  | 'momentumBoots'
+  | 'smartRing'
+  | 'gamblersBlade'
+  | 'anchorBoots'
+  | 'battleRobe'
+  | 'soulBattery'
+  | 'soulLocket'
+  | 'tantrumGloves'
+  | 'thornRing'
+  | 'aluminiumHat'
+  | 'assassinsCloak'
+  // ---- Rare additions (original set) ----
+  | 'channelingRing'
+  | 'ironCap'
+  | 'travelerBoots'
+  | 'silverShortsword'
+  | 'manaWand'
+  // ---- Rare additions (original set) ----
+  | 'wordVial';
 
 /**
  * Rarity tiers, ordered from most common to rarest. The shop draft rolls a
@@ -133,6 +168,10 @@ export interface WeaponMod {
   ignoreResist?: boolean;
   /** This weapon's strikes ignore worn armour entirely (Greatshield sword form). */
   ignoreArmor?: boolean;
+  /** On a landed strength strike, shove the target back this many range-units (War Hammer). */
+  knockbackUnits?: number;
+  /** After landing a strike, the attacker may dash this many range-units (Lunging Edge). */
+  dashAfterHitUnits?: number;
   /**
    * Range-based accuracy (regular bow): a shot within `autoWithin` px always
    * hits; between there and `maxRange` px it hits with `farChance`; beyond
@@ -202,6 +241,8 @@ export interface ItemDef {
   id: ItemId;
   name: string;
   slot: ItemSlot;
+  /** Which toggleable catalogue this item belongs to (defaults to 'original'). */
+  set?: ItemSet;
   /** Rarity tier, driving the shop draft. */
   rarity: Rarity;
   /** Price in SILVER (10 silver = 1 gold). Vestigial under the draft shop. */
@@ -221,7 +262,7 @@ export interface ItemDef {
   /** Witch wand: debuffs you apply last twice as long. */
   doubleDebuffs?: boolean;
   /** Consumable potion, drunk as a bonus action. */
-  potion?: 'mana' | 'health';
+  potion?: 'mana' | 'health' | 'word';
   /** Arrows: stack as a numeric count and fuel bows. */
   ammo?: boolean;
   /** Gain this much mana whenever you take damage (Channeling Ring). */
@@ -234,8 +275,14 @@ export interface ItemDef {
   moveMult?: number;
   /** Flat max-HP change applied once on equip (negative = fragile). */
   hpFlat?: number;
-  /** Multiplies HP healing this mage receives (Blood Charm). */
+  /** Multiplies HP healing this mage receives (Blood Ring). */
   healMult?: number;
+  /** Each spell you cast drains this fraction of your max HP (Blood Charm). */
+  spellHealthCostPct?: number;
+  /** Spells you cast heal you for this fraction of the damage dealt (Blood Charm). */
+  spellLifestealPct?: number;
+  /** Melee hits heal you for this much (before healMult) (Blood Ring). */
+  meleeHealOnHit?: number;
   /** Battle Robe: gain mana equal to the melee damage you deal. */
   manaPerMeleeDmg?: boolean;
   /** Reflect this much damage onto anyone who melee-strikes you (Thorn Ring). */
@@ -259,11 +306,11 @@ export interface ItemDef {
   /** Basic-attack profile used while this item is in shield form (Greatshield). */
   shieldWeapon?: WeaponMod;
   /** What this weapon does when its owner takes the Weapon Action. */
-  weaponAbility?: 'bastionSwap' | 'mutivargZone';
+  weaponAbility?: 'bastionSwap' | 'mutivargZone' | 'gamblerCash';
   /** This weapon's basic attack is a bonus action (Gambler's Blade). */
   bonusActionAttack?: boolean;
-  /** Earn floor(1d3) gold whenever its wielder deals any damage (Gambler's Blade). */
-  gamblerGold?: boolean;
+  /** Gambler's Blade: each hit (melee or spell) grants 1d3 Greed stacks. */
+  gamblerGreed?: boolean;
   // ---- New-catalogue mechanics --------------------------------------------
   /** Reduce every incoming mental (sanity) hit by this flat amount (Neforpubi's Headpiece). */
   mentalReduce?: number;
@@ -375,6 +422,42 @@ export const ITEM_DEFS: ItemDef[] = [
   },
   // ---- Unreal -------------------------------------------------------------
   {
+    id: 'ironwallGreatshield',
+    name: 'Ironwall Greatshield',
+    slot: 'hand',
+    set: 'dlc',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 22,
+    blurb:
+      'A colossal slab of iron. Counts as a shield: +2 physical & +1 magic armour, block reaction removes 60% of a physical/magical blow, enables shield-bash. Strikes at 30% Strength (shatter). Weighs a tremendous amount.',
+    weapon: {
+      rangePx: MELEE_RANGE,
+      kind: 'strength',
+      multiplier: 0.3,
+      damageType: 'shatter',
+    },
+    shield: { blockPct: 0.6, armorFlat: 2, magicFlat: 1, bashMult: 0.5 },
+  },
+  {
+    id: 'lungingEdge',
+    name: 'Lunging Edge',
+    slot: 'hand',
+    set: 'dlc',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 3,
+    blurb:
+      '+75% Strength slashing damage. After you land a hit, dash up to 3 tiles in any direction.',
+    weapon: {
+      rangePx: MELEE_RANGE + U,
+      kind: 'strength',
+      multiplier: 1.75,
+      damageType: 'slashing',
+      dashAfterHitUnits: 3,
+    },
+  },
+  {
     id: 'mutivargRod',
     name: "Mutivarg's Rod",
     slot: 'hand',
@@ -428,10 +511,28 @@ export const ITEM_DEFS: ItemDef[] = [
   },
   // ---- Epic ---------------------------------------------------------------
   {
+    id: 'warHammer',
+    name: 'War Hammer',
+    slot: 'hand',
+    set: 'dlc',
+    rarity: 'epic',
+    cost: g(0),
+    weight: 12,
+    blurb:
+      '+50% Strength blunt (shatter) damage. Each hit knocks the target back 3 tiles. Fairly heavy.',
+    weapon: {
+      rangePx: MELEE_RANGE,
+      kind: 'strength',
+      multiplier: 1.5,
+      damageType: 'shatter',
+      knockbackUnits: 3,
+    },
+  },
+  {
     id: 'woodenBow',
     name: 'Wooden Bow',
     slot: 'hand',
-    rarity: 'epic',
+    rarity: 'rare',
     cost: g(0),
     weight: 1,
     blurb:
@@ -485,6 +586,63 @@ export const ITEM_DEFS: ItemDef[] = [
   },
   // ---- Rare ---------------------------------------------------------------
   {
+    id: 'channelingRing',
+    name: 'Channeling Ring',
+    slot: 'accessory',
+    rarity: 'rare',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Gain 2 mana whenever you take damage.',
+    manaOnHit: 2,
+  },
+  {
+    id: 'ironCap',
+    name: 'Iron Cap',
+    slot: 'head',
+    rarity: 'rare',
+    cost: g(0),
+    weight: 3,
+    blurb: '+1 physical armour.',
+    armor: { flat: 1 },
+  },
+  {
+    id: 'travelerBoots',
+    name: 'Traveler\'s Boots',
+    slot: 'boots',
+    rarity: 'rare',
+    cost: g(0),
+    weight: 1,
+    blurb: '+25% movement range.',
+    moveMult: 1.25,
+  },
+  {
+    id: 'silverShortsword',
+    name: 'Silver Shortsword',
+    slot: 'hand',
+    rarity: 'rare',
+    cost: g(0),
+    weight: 2,
+    blurb: 'Standard Strength slashing attack with a 20% chance to deal double damage.',
+    weapon: {
+      rangePx: MELEE_RANGE,
+      kind: 'strength',
+      multiplier: 1.0,
+      damageType: 'slashing',
+      critChance: 0.2,
+    },
+  },
+  {
+    id: 'manaWand',
+    name: 'Mana Wand',
+    slot: 'hand',
+    rarity: 'rare',
+    cost: g(0),
+    weight: 1,
+    blurb: 'Wand (never blocks casting). Your word-spells cost 1 less mana.',
+    isWand: true,
+    manaDiscount: 1,
+  },
+  {
     id: 'razorSword',
     name: 'Razor Sword',
     slot: 'hand',
@@ -503,6 +661,7 @@ export const ITEM_DEFS: ItemDef[] = [
     id: 'buckler',
     name: 'Buckler',
     slot: 'hand',
+    set: 'dlc',
     rarity: 'rare',
     cost: g(0),
     weight: 2,
@@ -531,6 +690,7 @@ export const ITEM_DEFS: ItemDef[] = [
     id: 'throwingDagger',
     name: 'Throwing Dagger',
     slot: 'utility',
+    set: 'dlc',
     rarity: 'consumeable',
     cost: g(1),
     weight: 1,
@@ -566,6 +726,176 @@ export const ITEM_DEFS: ItemDef[] = [
     weight: 1,
     blurb: 'Bonus action: heal 2d3 HP, then consumed.',
     potion: 'health',
+  },
+
+  // ===========================================================================
+  //  FINN'S ADDITIONS  (set: 'finns')
+  // ===========================================================================
+  {
+    id: 'bloodCharm',
+    name: 'Blood Charm',
+    slot: 'accessory',
+    set: 'finns',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 1,
+    blurb:
+      'Each spell you cast costs 15% of your max HP. In exchange, your spells have 15% lifesteal — you heal for 15% of the HP damage they deal to enemies.',
+    spellHealthCostPct: 0.15,
+    spellLifestealPct: 0.15,
+  },
+  {
+    id: 'bloodRing',
+    name: 'Blood Ring',
+    slot: 'accessory',
+    set: 'finns',
+    rarity: 'epic',
+    cost: g(0),
+    weight: 1,
+    blurb:
+      '−8 max HP. Healing you receive is 50% more effective, and your melee hits heal you for 2 (3 with the bonus).',
+    hpFlat: -8,
+    healMult: 1.5,
+    meleeHealOnHit: 2,
+  },
+  {
+    id: 'momentumBoots',
+    name: 'Momentum Boots',
+    slot: 'boots',
+    set: 'finns',
+    rarity: 'epic',
+    cost: g(0),
+    weight: 2,
+    blurb:
+      '−5 Dex. Each turn you move more than 80% of your max movement you gain +1 tile of movement (stacking). Standing still resets it.',
+    statMods: { dex: -5 },
+    momentumBoots: true,
+  },
+  {
+    id: 'smartRing',
+    name: 'Smart Ring',
+    slot: 'accessory',
+    set: 'finns',
+    rarity: 'rare',
+    cost: g(0),
+    weight: 1,
+    blurb: '+2 Intellect.',
+    statMods: { int: 2 },
+  },
+  {
+    id: 'gamblersBlade',
+    name: "Gambler's Blade",
+    slot: 'hand',
+    set: 'finns',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 3,
+    blurb:
+      'A sword that strikes as a bonus action for \u221250% Strength damage (slashing). Each hit (melee or spell, once per action) grants 1d3 Greed stacks. Weapon Action (bonus): shatter the blade and draft one item \u2014 choose one of three \u2014 for every 5 Greed stacks you hold.',
+    weapon: {
+      rangePx: MELEE_RANGE,
+      kind: 'strength',
+      multiplier: 0.5,
+      damageType: 'slashing',
+    },
+    bonusActionAttack: true,
+    gamblerGreed: true,
+    weaponAbility: 'gamblerCash',
+  },
+  {
+    id: 'anchorBoots',
+    name: 'Anchor Boots',
+    slot: 'boots',
+    set: 'finns',
+    rarity: 'epic',
+    cost: g(0),
+    weight: 3,
+    blurb:
+      '−30% movement. Gain +1 physical armour for each turn you do not move, up to +4.',
+    moveMult: 0.7,
+    anchorBoots: true,
+  },
+  {
+    id: 'battleRobe',
+    name: 'Battle Robe',
+    slot: 'torso',
+    set: 'finns',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 2,
+    blurb:
+      '−4 Dex. You gain mana equal to the melee damage you deal (does not work with bows / crossbows).',
+    statMods: { dex: -4 },
+    manaPerMeleeDmg: true,
+  },
+  {
+    id: 'soulBattery',
+    name: 'Soul Battery',
+    slot: 'accessory',
+    set: 'finns',
+    rarity: 'rare',
+    cost: g(0),
+    weight: 1,
+    blurb: '−2 Intellect. A failed spell heals you for 4.',
+    statMods: { int: -2 },
+    onFizzleHeal: 4,
+  },
+  {
+    id: 'soulLocket',
+    name: 'Soul Locket',
+    slot: 'accessory',
+    set: 'finns',
+    rarity: 'epic',
+    cost: g(0),
+    weight: 1,
+    blurb: '−2 Intellect. A failed spell grants you 4 mana.',
+    statMods: { int: -2 },
+    onFizzleMana: 4,
+  },
+  {
+    id: 'tantrumGloves',
+    name: 'Tantrum Gloves',
+    slot: 'accessory',
+    set: 'finns',
+    rarity: 'epic',
+    cost: g(0),
+    weight: 1,
+    blurb: '−2 Intellect. Failing a spell adds +50% damage to your next basic attack.',
+    statMods: { int: -2 },
+    onFizzleRage: 0.5,
+  },
+  {
+    id: 'thornRing',
+    name: 'Thorn Ring',
+    slot: 'accessory',
+    set: 'finns',
+    rarity: 'rare',
+    cost: g(0),
+    weight: 1,
+    blurb: 'Melee attackers take 2 damage whenever they hit you.',
+    thorns: 2,
+  },
+  {
+    id: 'aluminiumHat',
+    name: 'Aluminium Hat',
+    slot: 'head',
+    set: 'finns',
+    rarity: 'epic',
+    cost: g(0),
+    weight: 1,
+    blurb: 'Fully negates any mill (sanity) hit that would deal less than 3.',
+    sanityWardBelow: 3,
+  },
+  {
+    id: 'assassinsCloak',
+    name: "Assassin's Cloak",
+    slot: 'torso',
+    set: 'finns',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 2,
+    blurb: '+50% Dex-attack damage while you are veiled (invisible).',
+    veiledDaggerBonus: 0.5,
   },
 ];
 
@@ -643,9 +973,26 @@ export function rarityRank(rarity: Rarity): number {
   return RARITY_ORDER.indexOf(rarity);
 }
 
-/** All catalogue items of a given rarity tier. */
+/**
+ * Which item sets the current match draws its draft pool from. Configured once
+ * at match start (identically on both online peers) via {@link setActiveItemSets}.
+ * Defaults to the base catalogue only.
+ */
+let ACTIVE_ITEM_SETS: Set<ItemSet> = new Set<ItemSet>(['original']);
+
+/** Choose which item sets the draft offers. Empty selection falls back to 'original'. */
+export function setActiveItemSets(sets: Partial<Record<ItemSet, boolean>>): void {
+  const next = new Set<ItemSet>();
+  if (sets.original) next.add('original');
+  if (sets.finns) next.add('finns');
+  if (sets.dlc) next.add('dlc');
+  if (next.size === 0) next.add('original');
+  ACTIVE_ITEM_SETS = next;
+}
+
+/** All catalogue items of a given rarity tier, limited to the active item sets. */
 export function itemsOfRarity(rarity: Rarity): ItemDef[] {
-  return ITEM_DEFS.filter((d) => d.rarity === rarity);
+  return ITEM_DEFS.filter((d) => d.rarity === rarity && ACTIVE_ITEM_SETS.has(d.set ?? 'original'));
 }
 
 /**

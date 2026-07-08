@@ -99,7 +99,7 @@ export interface ShadowVeilStatus extends BaseStatus {
  */
 export interface ShadowTrailStatus extends BaseStatus {
   kind: 'shadowTrail';
-  team: 1 | 2;
+  team: number;
   /** TTL (in rounds) of each shadow the trail drops. */
   perShadowTtl: number;
 }

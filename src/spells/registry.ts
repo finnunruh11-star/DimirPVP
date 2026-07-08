@@ -1,6 +1,7 @@
 import type { WordId } from '../core/Words';
 import { comboKey, WORDS } from '../core/Words';
 import type { Spell } from './Spell';
+import type { ItemSet } from '../core/Items';
 
 // =============================================================================
 //  SPELL REGISTRY
@@ -12,6 +13,27 @@ import type { Spell } from './Spell';
 
 const registry = new Map<string, Spell>();
 
+/**
+ * Which spell sets are active this match. Mirrors {@link setActiveItemSets} and
+ * is always set to the same value (both are driven by config.itemSets at match
+ * start) so that the item and spell Finn's-toggle stay in sync.
+ */
+let ACTIVE_SPELL_SETS: Set<ItemSet> = new Set<ItemSet>(['original']);
+
+/** Choose which spell sets are castable. Empty selection falls back to 'original'. */
+export function setActiveSpellSets(sets: Partial<Record<ItemSet, boolean>>): void {
+  const next = new Set<ItemSet>();
+  if (sets.original) next.add('original');
+  if (sets.finns) next.add('finns');
+  if (sets.dlc) next.add('dlc');
+  if (next.size === 0) next.add('original');
+  ACTIVE_SPELL_SETS = next;
+}
+
+function spellActive(s: Spell): boolean {
+  return ACTIVE_SPELL_SETS.has(s.set ?? 'original');
+}
+
 export function registerSpell(spell: Omit<Spell, 'id'> & { id?: string }): Spell {
   const id = spell.id ?? comboKey(spell.words);
   const full: Spell = { ...spell, id } as Spell;
@@ -21,15 +43,16 @@ export function registerSpell(spell: Omit<Spell, 'id'> & { id?: string }): Spell
 
 /** Look up the spell for a given set of selected words, if any exists. */
 export function getSpell(words: WordId[]): Spell | undefined {
-  return registry.get(comboKey(words));
+  const s = registry.get(comboKey(words));
+  return s && spellActive(s) ? s : undefined;
 }
 
 export function hasSpell(words: WordId[]): boolean {
-  return registry.has(comboKey(words));
+  return getSpell(words) !== undefined;
 }
 
 export function allSpells(): Spell[] {
-  return [...registry.values()];
+  return [...registry.values()].filter(spellActive);
 }
 
 /** All reaction-capable spells castable from a given loadout. */

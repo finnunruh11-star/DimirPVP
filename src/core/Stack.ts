@@ -33,6 +33,13 @@ export interface StackItem {
   /** For `action` items: what a Needle of Serenity would ban if it stifles this. */
   needleBan?: NeedleBan;
 
+  /**
+   * If true, purely defensive physical reactions (Dodge / Block / shield-Bash)
+   * are not offered against this item — used for triggers that aren't attacks,
+   * such as an end-of-turn window or a blink step.
+   */
+  noPhysicalReaction?: boolean;
+
   /** If this item is a reaction, the id of the item it was cast in response to. */
   respondingTo?: number;
   /** If true and respondingTo is still on the stack, remove it on resolve. */

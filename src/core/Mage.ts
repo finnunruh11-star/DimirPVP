@@ -3,6 +3,9 @@ import {
   COLOR_CHARGE_CAP,
   FIELD,
   MANA_CAP,
+  MAX_ABILITY_CASTS_PER_COMBAT,
+  MAX_LEAPS_PER_COMBAT,
+  MAX_WORD_SPELL_REACTIONS,
   MOVE_RANGE,
   RANGE_UNIT,
   START_COLOR_CHARGES,
@@ -38,7 +41,7 @@ export interface ActionPool {
 export class Mage {
   name: string;
   isAI: boolean;
-  team: 1 | 2;
+  team: number;
 
   x: number;
   y: number;
@@ -110,12 +113,20 @@ export class Mage {
 
   /** Whether this mage moved during the current turn (momentum / anchor boots). */
   movedThisTurn = false;
+  /** Total distance (px) moved so far this turn (Momentum Boots threshold). */
+  distMovedThisTurn = 0;
   /** Consecutive turns spent moving (Momentum Boots). */
   momentumStacks = 0;
   /** Consecutive turns spent stationary (Anchor Boots, capped at 4). */
   anchorStacks = 0;
   /** One-shot bonus fraction applied to the next basic attack (Tantrum Gloves). */
   rageBonus = 0;
+  /** Greed stacks accrued by a Gambler's Blade (1d3 per hit). */
+  greedStacks = 0;
+  /** Armed for a single Greed gain during the current damaging action (dedup). */
+  greedArmed = false;
+  /** Set while a cast spell is resolving, for spell-lifesteal bookkeeping (Blood Charm). */
+  spellcastActive = false;
 
   /** Bastion Sword form: false = sword (offence), true = shield (defence). */
   bastionShieldForm = false;
@@ -136,6 +147,11 @@ export class Mage {
   /** Orientation (radians) chosen for the next rotatable wall this mage places. */
   wallAngle = 0;
 
+  /** Training sandbox: this mage cannot die (HP/sanity never drop it below alive). */
+  unkillable = false;
+  /** Training sandbox: this mage never takes a turn action and declines reactions. */
+  trainingPassive = false;
+
   /** Item ids permanently disabled for this mage by a Needle of Serenity. */
   bannedItemIds = new Set<ItemId>();
   /** Colour-ability ids permanently disabled for this mage by a Needle of Serenity. */
@@ -148,6 +164,51 @@ export class Mage {
 
   /** Whether this mage has a reaction available this turn cycle. */
   reactionAvailable = false;
+
+  /**
+   * Whether this mage has already spent their single reaction this turn cycle.
+   * Every reaction except a Dexterity dodge (a separate per-combat resource)
+   * consumes it; it refreshes each round in {@link GameState.startRound}.
+   */
+  reactedThisCycle = false;
+
+  /**
+   * Word-spell reactions spent this combat. Casting a word-spell as a reaction
+   * requires at least one blue word and is capped at
+   * {@link MAX_WORD_SPELL_REACTIONS} per combat.
+   */
+  wordSpellReactionsUsed = 0;
+
+  /**
+   * Colour-ability casts spent this combat, keyed by ability id. Each distinct
+   * ability may be cast up to {@link MAX_ABILITY_CASTS_PER_COMBAT} times per
+   * combat (counting both proactive casts and reactions).
+   */
+  abilityCastsUsed: Record<string, number> = {};
+
+  /**
+   * Dodges left this combat. A dexterous mage (Dex >= 6) may spend one to try
+   * to evade an incoming attack. Refilled once at the start of the duel to
+   * {@link maxDodges}. This is a separate resource from the once-per-turn
+   * reaction.
+   */
+  dodgesRemaining = 0;
+
+  /** Leaps (bonus-action bounds) spent this combat, capped at {@link MAX_LEAPS_PER_COMBAT}. */
+  leapsUsed = 0;
+
+  /** Whether the once-per-combat Focus action has been used. */
+  focusUsed = false;
+
+  /** Whether the once-per-combat Cleave action has been used. */
+  cleaveUsed = false;
+
+  /**
+   * One-shot Focus buff: while set, the next word spell cast this turn costs 50%
+   * less mana and rolls its DC twice (advantage). Consumed by that spell and
+   * cleared at the start of the next turn if it went unused.
+   */
+  focusNextSpell = false;
 
   /** Whether this mage has already cast a spell on its current turn. */
   hasCastThisTurn = false;
@@ -172,7 +233,7 @@ export class Mage {
   constructor(opts: {
     name: string;
     isAI: boolean;
-    team: 1 | 2;
+    team: number;
     position: Vec2;
     loadout: WordId[];
   }) {
@@ -201,6 +262,7 @@ export class Mage {
   }
 
   get alive(): boolean {
+    if (this.unkillable) return true;
     return this.hp > 0 && this.sanity > 0;
   }
 
@@ -219,6 +281,47 @@ export class Mage {
 
   hasReaction(): boolean {
     return this.canEverReact && this.reactionAvailable;
+  }
+
+  /**
+   * True if this mage may still cast a word-spell as a reaction this combat:
+   * it needs at least one blue word and some of its per-combat budget left.
+   */
+  canWordSpellReact(): boolean {
+    return (
+      this.profile.bluePrimaryTier &&
+      this.wordSpellReactionsUsed < MAX_WORD_SPELL_REACTIONS
+    );
+  }
+
+  /** How many more times the colour ability `abilityId` may be cast this combat. */
+  abilityCastsLeft(abilityId: string): number {
+    return MAX_ABILITY_CASTS_PER_COMBAT - (this.abilityCastsUsed[abilityId] ?? 0);
+  }
+
+  /** Reset the per-combat reaction / colour-ability pools. Call when a duel begins. */
+  resetCombatReactions(): void {
+    this.wordSpellReactionsUsed = 0;
+    this.abilityCastsUsed = {};
+    this.leapsUsed = 0;
+    this.focusUsed = false;
+    this.cleaveUsed = false;
+    this.focusNextSpell = false;
+  }
+
+  /** How many Leaps this mage has left this combat. */
+  leapsLeft(): number {
+    return MAX_LEAPS_PER_COMBAT - this.leapsUsed;
+  }
+
+  /** How many dodges this mage gets per combat: one for every 6 Dexterity. */
+  maxDodges(): number {
+    return Math.floor(this.effectiveDex() / 6);
+  }
+
+  /** Refill the per-combat dodge pool. Call once when the duel begins. */
+  resetDodges(): void {
+    this.dodgesRemaining = this.maxDodges();
   }
 
   // ---- Mana & color charges -------------------------------------------------
@@ -376,6 +479,22 @@ export class Mage {
     this.statsAssigned = true;
   }
 
+  /** Training sandbox: give every stat the same flat value and refill vitals. */
+  assignFlatStats(value: number): void {
+    this.statStrength = value;
+    this.statDex = value;
+    this.statInt = value;
+    this.maxMana = MANA_CAP + value;
+    this.mana = this.maxMana;
+    this.maxHp = START_HP + value;
+    this.hp = this.maxHp;
+    this.maxSanity = START_SANITY;
+    this.sanity = this.maxSanity;
+    this.maxLuck = value;
+    this.luck = value;
+    this.statsAssigned = true;
+  }
+
   /** Effective Strength including equipment stat tweaks (Bracelet of Might). */
   effectiveStr(): number {
     return this.statStrength + this.itemSum((d) => d.statMods?.str ?? 0);
@@ -437,12 +556,17 @@ export class Mage {
     return this.itemSum((d) => d.manaOnHit ?? 0);
   }
 
+  /** Total flat mana discount on word-spells (stacks across all equipped wands). */
+  manaDiscountSum(): number {
+    return this.itemSum((d) => d.manaDiscount ?? 0);
+  }
+
   /** Is item `id` currently equipped? */
   hasItem(id: ItemId): boolean {
     return this.equippedItems().includes(id);
   }
 
-  /** Combined multiplier on HP healing this mage receives (Blood Charm). */
+  /** Combined multiplier on HP healing this mage receives (Blood Ring). */
   healMult(): number {
     let mult = 1;
     for (const id of this.equippedItems()) {
@@ -450,6 +574,27 @@ export class Mage {
       if (m != null) mult *= m;
     }
     return mult;
+  }
+
+  /** Fraction of max HP each spell costs to cast (Blood Charm). */
+  spellHealthCostPct(): number {
+    return this.equippedItems().reduce(
+      (max, id) => Math.max(max, getItem(id).spellHealthCostPct ?? 0),
+      0
+    );
+  }
+
+  /** Fraction of spell damage returned to the caster as healing (Blood Charm). */
+  spellLifestealPct(): number {
+    return this.equippedItems().reduce(
+      (max, id) => Math.max(max, getItem(id).spellLifestealPct ?? 0),
+      0
+    );
+  }
+
+  /** Flat HP healed on each landing melee hit, before healMult (Blood Ring). */
+  meleeHealOnHit(): number {
+    return this.itemSum((d) => d.meleeHealOnHit ?? 0);
   }
 
   /** Total melee damage reflected to attackers (Thorn Ring). */
@@ -760,9 +905,9 @@ export class Mage {
     return best;
   }
 
-  /** Does this mage wield a gold-earning Gambler's Blade? */
+  /** Does this mage wield a Greed-hoarding Gambler's Blade? */
   hasGamblerBlade(): boolean {
-    return this.hands.some((id) => getItem(id).gamblerGold);
+    return this.hands.some((id) => getItem(id).gamblerGreed);
   }
 
   /** Held weapons that expose a Weapon-Action ability. */
@@ -841,17 +986,23 @@ export class Mage {
 
   /** Reset the action pool for a fresh turn, respecting any stuns. */
   beginTurn(): void {
-    // Update momentum / anchor stacks from whether we moved on our last turn.
+    // Update momentum / anchor stacks from how we spent our last turn.
+    // Momentum only builds on turns we covered >80% of our movement range;
+    // it resets only when we stand completely still. Anchor builds while idle.
     if (this.movedThisTurn) {
-      this.momentumStacks += 1;
+      const maxMove = this.moveRange();
+      if (maxMove > 0 && this.distMovedThisTurn >= 0.8 * maxMove) this.momentumStacks += 1;
       this.anchorStacks = 0;
     } else {
       this.momentumStacks = 0;
       this.anchorStacks = Math.min(4, this.anchorStacks + 1);
     }
     this.movedThisTurn = false;
+    this.distMovedThisTurn = 0;
     this.actions = { ...ACTIONS_PER_TURN };
     this.hasCastThisTurn = false;
+    // A Focus buff expires if its empowered word spell was never cast.
+    this.focusNextSpell = false;
     // Eldritch Truth's shroud lasts only until the start of the wielder's next turn.
     this.eldritchDefend = false;
     // A fired crossbow reloads one step at the start of each of the wielder's turns.

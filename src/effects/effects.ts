@@ -21,7 +21,7 @@ import {
   type StunType,
 } from '../core/Status';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
-import { FIELD, RANGE_UNIT, SCARAB, SHADOW_DAMAGE_BONUS, SILVER_PER_GOLD, VEIL } from '../config/constants';
+import { FIELD, RANGE_UNIT, SCARAB, SHADOW_DAMAGE_BONUS, VEIL } from '../config/constants';
 import { Dev } from '../config/dev';
 
 /**
@@ -69,6 +69,11 @@ export interface SubTargetEnemyOpts {
 export interface SubTargeter {
   requestPoint(source: Mage, opts: SubTargetPointOpts): Promise<Vec2 | null>;
   requestEnemy(source: Mage, opts: SubTargetEnemyOpts): Promise<Mage | null>;
+  /**
+   * Open a reaction window mid-resolution so opponents may spend their reaction
+   * in response to the current step (e.g. one blink of a multi-step flurry).
+   */
+  reactionWindow(source: Mage, label: string, at?: Vec2): Promise<void>;
 }
 
 export interface EffectContext {
@@ -92,6 +97,11 @@ export interface EffectContext {
    * headless logic, so always call it as `await ctx.requestEnemy?.(...)`.
    */
   requestEnemy?(opts: SubTargetEnemyOpts): Promise<Mage | null>;
+  /**
+   * Open a reaction window mid-resolution so opponents may respond to the
+   * current step. Absent in headless logic — call as `await ctx.reactionWindow?.(...)`.
+   */
+  reactionWindow?(label: string, at?: Vec2): Promise<void>;
 }
 
 // -----------------------------------------------------------------------------
@@ -219,10 +229,11 @@ export function dealDamage(
     }
   }
 
+  const floorVital = target.unkillable ? 1 : 0;
   if (damage.damageClass === 'sanity') {
-    target.sanity = Math.max(0, target.sanity - amount);
+    target.sanity = Math.max(floorVital, target.sanity - amount);
   } else {
-    target.hp = Math.max(0, target.hp - amount);
+    target.hp = Math.max(floorVital, target.hp - amount);
   }
   ctx.log(
     `${target.name} takes ${amount} ${damage.type} ${damage.damageClass} damage.`
@@ -246,11 +257,28 @@ export function dealDamage(
       tryMillMana(ctx.caster, ctx);
       tryMillMana(target, ctx);
     }
-    // A Gambler's Blade turns every wound it helps inflict into coin.
-    if (ctx.caster.hasGamblerBlade()) {
-      const gold = ctx.rng.roll('1d3').total;
-      ctx.caster.silver += gold * SILVER_PER_GOLD;
-      ctx.log(`${ctx.caster.name}'s Gambler's Blade rakes in ${gold}g.`);
+    // A Gambler's Blade hoards Greed — 1d3 per damaging action (dedup per action).
+    if (ctx.caster.greedArmed && ctx.caster.hasGamblerBlade()) {
+      ctx.caster.greedArmed = false;
+      const gained = ctx.rng.roll('1d3').total;
+      ctx.caster.greedStacks += gained;
+      ctx.log(
+        `${ctx.caster.name}'s Gambler's Blade hoards ${gained} Greed (now ${ctx.caster.greedStacks}).`
+      );
+    }
+    // Blood Charm: spells you cast heal you for a slice of the HP damage dealt.
+    if (
+      damage.damageClass !== 'sanity' &&
+      ctx.caster.spellcastActive &&
+      target.team !== ctx.caster.team &&
+      ctx.caster.spellLifestealPct() > 0 &&
+      ctx.caster.alive
+    ) {
+      const leech = Math.round(amount * ctx.caster.spellLifestealPct() * ctx.caster.healMult());
+      if (leech > 0) {
+        ctx.caster.hp = Math.min(ctx.caster.maxHp, ctx.caster.hp + leech);
+        ctx.log(`${ctx.caster.name}'s blood charm drinks ${leech} health from the spell.`);
+      }
     }
   }
   return amount;
@@ -453,6 +481,37 @@ export function dash(
   } else {
     ctx.log(`${mover.name} dashes ${Math.round(opts.distance)} away.`);
   }
+}
+
+/**
+ * Teleport a mage ("blinkstep"). Unlike {@link dash} this is instantaneous
+ * displacement, not physical travel: it ignores every movement modifier —
+ * reality-break barriers, Mutivarg crushing fields and roots — and only the
+ * playfield edge bounds where the mage may appear.
+ */
+export function blinkstep(
+  ctx: EffectContext,
+  mover: Mage,
+  opts: { toPoint?: Vec2; direction?: Vec2; distance: number }
+): void {
+  let dest: Vec2;
+  if (opts.toPoint) {
+    dest = stepTowards(mover.pos, opts.toPoint, opts.distance);
+  } else if (opts.direction) {
+    const len = Math.hypot(opts.direction.x, opts.direction.y) || 1;
+    dest = {
+      x: mover.x + (opts.direction.x / len) * opts.distance,
+      y: mover.y + (opts.direction.y / len) * opts.distance,
+    };
+  } else {
+    return;
+  }
+  const from = { x: mover.x, y: mover.y };
+  // Clamp only to the field edge — barriers and crushing fields never stop a blink.
+  mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x));
+  mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y));
+  ctx.vfx?.dash?.(mover, from);
+  ctx.log(`${mover.name} blinksteps ${Math.round(opts.distance)} away.`);
 }
 
 /** Distance helper exposed for spells that scale with range. */

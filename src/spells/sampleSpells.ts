@@ -31,6 +31,7 @@ import {
   applyStun,
   applyWard,
   areaDamage,
+  blinkstep,
   coneDamage,
   dash,
   dealDamage,
@@ -836,7 +837,7 @@ registerSpell({
   targeting: 'any',
   dc: 4,
   description:
-    'A push-your-luck flurry: roll a d6 and, for each fresh result, blink to a point within R(4) then lash an enemy within R(5) of you for 1d3 sanity + 1d3 pierce. The moment a number repeats, a chosen mage turns fully invisible for 2 rounds and the flurry ends.',
+    'A push-your-luck flurry: roll a d6 and, for each fresh result, blinkstep (a teleport that ignores movement modifiers) to a point within R(4) then lash an enemy within R(5) of you for 1d3 sanity + 1d3 pierce. Each blink invites a reaction. The moment a number repeats, you turn fully invisible for 2 rounds and the flurry ends.',
   visual: { preset: 'nova', color: 0xd9c0ff, size: 60, speed: 1.3 },
   async cast(ctx) {
     const seen = new Set<number>();
@@ -845,7 +846,7 @@ registerSpell({
     for (let i = 0; i < 6; i++) {
       const roll = rollDice(ctx, '1d6', 'Veil Mind Pierce');
       if (seen.has(roll)) {
-        applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'full' });
+        applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
         ctx.log(`${ctx.caster.name} glimpses a familiar number and vanishes completely.`);
         return;
       }
@@ -859,7 +860,11 @@ registerSpell({
           })
         : ctx.caster.pos;
       const center = point ?? ctx.caster.pos;
-      dash(ctx, ctx.caster, { toPoint: center, distance: R(4) });
+      // A teleport, not a physical dash — unaffected by roots, shatter zones, etc.
+      blinkstep(ctx, ctx.caster, { toPoint: center, distance: R(4) });
+      // Each blink is its own step: opponents may react at this exact timing.
+      await ctx.reactionWindow?.('Veil Mind Pierce — blink', ctx.caster.pos);
+      if (!ctx.caster.alive) return;
       const foe = ctx.requestEnemy
         ? await ctx.requestEnemy({
             range: R(5),
@@ -872,7 +877,7 @@ registerSpell({
         dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Mind Pierce'), 'pierce', 'physical'));
       }
     }
-    applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'full' });
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
   },
 });
 
@@ -1043,3 +1048,517 @@ registerSpell({
     summonScarabs(ctx, ctx.targetPoint);
   },
 });
+
+// ===========================================================================
+//  FINN'S ADDITIONS — 3-WORD SPELLS   (set: 'finns')
+//  Only available when Finn's Additions is enabled on the start screen.
+//  DC 13–15; every spell delivers one "over-the-top" payoff.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+//  VEIL + MIND + BIND   —   Foreseen Snare
+//  Reaction capstone for all three reaction-granting words.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Foreseen Snare',
+  words: ['veil', 'mind', 'bind'],
+  set: 'finns',
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'any',
+  dc: 13,
+  reaction: true,
+  description:
+    'Foresee the blow and slip aside: drop behind a full veil for 2 turns (often dodging the triggering attack), root the nearest enemy within range 12 for 2 turns, and mark them — no reaction and +2 damage next turn. Does not counter the action.',
+  visual: { preset: 'nova', color: 0xb98bff, size: 60, speed: 1.1 },
+  cast(ctx) {
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+    const foe = enemyNear(ctx, ctx.caster.pos, R(12));
+    if (foe) {
+      applyStun(ctx, foe, { duration: 2, type: 'movement' });
+      applyControl(ctx, foe, { name: 'Foreseen', mode: 'expose', duration: 2 });
+      applyDebuff(ctx, foe, { name: 'Foreseen', duration: 2, mods: { damageTaken: 2 } });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  VEIL + SHADOW + MIND   —   Ghostwalk
+//  Utility capstone: vanish, blink to a shadow, mark the nearest foe.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Ghostwalk',
+  words: ['veil', 'shadow', 'mind'],
+  set: 'finns',
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'self',
+  dc: 12,
+  description:
+    'Step out of the world: turn fully invisible for 2 turns and blinkstep to your nearest shadow pool. The nearest enemy within range 10 is foreseen — no reaction and +2 damage taken next turn. With no shadow on the field you vanish where you stand.',
+  visual: { preset: 'nova', color: 0x8a6bff, size: 60, speed: 1.2 },
+  cast(ctx) {
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+    const pools = ctx.game.shadowsOf(ctx.caster.team);
+    if (pools.length > 0) {
+      let best = pools[0];
+      for (const s of pools) {
+        if (
+          Math.hypot(s.x - ctx.caster.x, s.y - ctx.caster.y) <
+          Math.hypot(best.x - ctx.caster.x, best.y - ctx.caster.y)
+        )
+          best = s;
+      }
+      blinkstep(ctx, ctx.caster, { toPoint: { x: best.x, y: best.y }, distance: 99999 });
+    }
+    const foe = enemyNear(ctx, ctx.caster.pos, R(10));
+    if (foe) {
+      applyControl(ctx, foe, { name: 'Foreseen', mode: 'expose', duration: 2 });
+      applyDebuff(ctx, foe, { name: 'Foreseen', duration: 2, mods: { damageTaken: 2 } });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + MIND + PIERCE   —   Umbral Flurry
+//  Chain-dash through every own shadow, lancing whoever is close.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Umbral Flurry',
+  words: ['shadow', 'mind', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 13,
+  description:
+    'Chain-blinkstep through up to 4 of your own shadows (nearest first), lancing the nearest enemy within range 3 of each pool for 1d6 pierce + 1d4 sanity. Each blink invites a reaction. With no shadows on the field the flurry fizzles.',
+  visual: { preset: 'projectile', color: 0x9b7bff, size: 10, speed: 1.8 },
+  async cast(ctx) {
+    const pools = ctx.game.shadowsOf(ctx.caster.team).slice();
+    if (pools.length === 0) {
+      ctx.log(`${ctx.caster.name} reaches for shadows that aren't there — the flurry fizzles.`);
+      return;
+    }
+    pools.sort(
+      (a, b) =>
+        Math.hypot(a.x - ctx.caster.x, a.y - ctx.caster.y) -
+        Math.hypot(b.x - ctx.caster.x, b.y - ctx.caster.y)
+    );
+    for (const s of pools.slice(0, 4)) {
+      if (!ctx.caster.alive) return;
+      blinkstep(ctx, ctx.caster, { toPoint: { x: s.x, y: s.y }, distance: 99999 });
+      await ctx.reactionWindow?.('Umbral Flurry — blink', ctx.caster.pos);
+      if (!ctx.caster.alive) return;
+      const foe = enemyNear(ctx, ctx.caster.pos, R(3));
+      if (foe) {
+        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Umbral Flurry'), 'pierce', 'physical'));
+        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d4', 'Umbral Flurry'), 'shadow', 'sanity'));
+      }
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHATTER + MIND + PIERCE   —   Skullpierce
+//  Precise burst with an execute threshold.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Skullpierce',
+  words: ['shatter', 'mind', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 15,
+  description:
+    'Drive a spike of force through mind and body (range 12): 2d6 pierce + 1d6 sanity damage. If the target is left below a quarter of its HP or sanity, the wound splits open for 3d6 true pierce damage.',
+  visual: { preset: 'projectile', color: 0xffb0e0, size: 11, speed: 1.9 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const foe = ctx.target;
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Skullpierce'), 'pierce', 'physical'));
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Skullpierce'), 'shadow', 'sanity'));
+    if (foe.alive && (foe.hp <= foe.maxHp * 0.25 || foe.sanity <= foe.maxSanity * 0.25)) {
+      ctx.log(`${foe.name} is broken open — the lance finds the crack.`);
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '3d6', 'Skullpierce — execute'), 'pierce', 'physical'), {
+        trueDamage: true,
+        canMiss: false,
+      });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHATTER + SHADOW + VEIL   —   Null Pulse
+//  Anti-stealth burst: strips all veils, conjures a shadow, you vanish.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Null Pulse',
+  words: ['shatter', 'shadow', 'veil'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'any',
+  dc: 13,
+  aoe: { kind: 'circle', radius: R(4) },
+  description:
+    'Unleash an anti-magic pulse: 1d6 shatter to every enemy within range 4, strip all veils from the field, conjure a shadow pool at your feet, then slip behind a full veil yourself.',
+  visual: { preset: 'nova', color: 0xff8be0, size: 70, speed: 1.3 },
+  cast(ctx) {
+    areaDamage(
+      ctx,
+      ctx.caster.pos,
+      R(4),
+      dmg(rollDice(ctx, '1d6', 'Null Pulse'), 'shatter', 'physical'),
+      { canMiss: false }
+    );
+    for (const m of ctx.game.mages) dispelVeil(ctx, m);
+    placeShadow(ctx, ctx.caster.pos);
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHATTER + MIND + BIND   —   Mind Fracture
+//  Heavy close-range combo; grants an extra turn if the target's mind breaks.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Mind Fracture',
+  words: ['shatter', 'mind', 'bind'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(4),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Crack the target\'s mind with shattering force (range 4): 2d4 shatter + 2d4 sanity damage and root for 3 turns. If this drops them below a quarter sanity, you are granted an extra turn.',
+  visual: { preset: 'conjure', color: 0xff8be0, size: 40, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const foe = ctx.target;
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d4', 'Mind Fracture'), 'shatter', 'physical'));
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d4', 'Mind Fracture'), 'shadow', 'sanity'));
+    applyStun(ctx, foe, { duration: 3, type: 'movement' });
+    if (foe.alive && foe.sanity <= foe.maxSanity * 0.25) {
+      ctx.log(`${foe.name}'s mind shatters — the surge carries ${ctx.caster.name} forward.`);
+      grantExtraTurn(ctx, ctx.caster);
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + CORRODE + PIERCE   —   Venomfang
+//  Blinkstep to nearest shadow, then fire a heavy corrosive lance.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Venomfang',
+  words: ['shadow', 'corrode', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Blinkstep to the nearest shadow pool, then lance a target within range 12 for 2d6 pierce + 1d6 corrosive, leaving a corroding wound that bleeds 1d3 each turn for 3 turns. Without a shadow on the field you fire a weaker 1d6 lance from where you stand.',
+  visual: { preset: 'projectile', color: 0xa8d88a, size: 11, speed: 1.8 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const pools = ctx.game.shadowsOf(ctx.caster.team);
+    if (pools.length === 0) {
+      ctx.log(`${ctx.caster.name} finds no shadow to strike from — the fang is blunted.`);
+      dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Venomfang'), 'pierce', 'physical'));
+      return;
+    }
+    let best = pools[0];
+    for (const s of pools) {
+      if (
+        Math.hypot(s.x - ctx.caster.x, s.y - ctx.caster.y) <
+        Math.hypot(best.x - ctx.caster.x, best.y - ctx.caster.y)
+      )
+        best = s;
+    }
+    blinkstep(ctx, ctx.caster, { toPoint: { x: best.x, y: best.y }, distance: 99999 });
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Venomfang'), 'pierce', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Venomfang'), 'corrosive', 'physical'));
+    applyDot(ctx, ctx.target, {
+      name: 'Venomfang',
+      duration: 3,
+      damage: dmg(1, 'corrosive', 'physical'),
+      damageSpec: '1d3',
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHATTER + VEIL + CURSE   —   Dreambreaker
+//  Nightmare cone that strips veils and seeds sanity rot.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Dreambreaker',
+  words: ['shatter', 'veil', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(6),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'cone', radius: R(6), degrees: CONE_DEGREES },
+  description:
+    'Fire a 90° cone of nightmare shatter (range 6): 1d6 shatter to every enemy caught. Veiled targets are stripped and take an extra 1d6. All targets struck are cursed with a sanity rot: 1d3 sanity damage per turn for 3 turns.',
+  visual: { preset: 'burst', color: 0xff7bb0, size: 60, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const hits = coneDamage(
+      ctx,
+      ctx.targetPoint,
+      R(6),
+      CONE_DEGREES,
+      dmg(rollDice(ctx, '1d6', 'Dreambreaker'), 'shatter', 'physical')
+    );
+    for (const m of hits) {
+      if (m.isInvisible() || m.statuses.some((s) => s.kind === 'shadowVeil')) {
+        dealDamage(
+          ctx,
+          m,
+          dmg(rollDice(ctx, '1d6', 'Dreambreaker — nightmare'), 'shatter', 'physical'),
+          { canMiss: false }
+        );
+        dispelVeil(ctx, m);
+      }
+      applyDot(ctx, m, {
+        name: 'Nightmare',
+        duration: 3,
+        damage: dmg(2, 'shadow', 'sanity'),
+        damageSpec: '1d3',
+      });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + BIND + CURSE   —   Grasping Dark
+//  Zone prison: root + curse DoT inside a persistent shadow.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Grasping Dark',
+  words: ['shadow', 'bind', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(10),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'circle', radius: R(3) },
+  description:
+    'Open a 3-range pool of grasping shadow (range 10): every enemy caught is rooted for 3 turns and cursed to bleed 1d3 shadow damage each turn for 4 turns. The shadow lingers for 5 turns.',
+  visual: { preset: 'burst', color: 0x7a5bd0, size: 60, speed: 1.1 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const hits = ctx.game
+      .magesInRadius(ctx.targetPoint, R(3), ctx.caster)
+      .filter((m) => m.team !== ctx.caster.team && m.alive);
+    for (const m of hits) {
+      applyStun(ctx, m, { duration: 3, type: 'movement' });
+      applyDot(ctx, m, {
+        name: 'Grasping Dark',
+        duration: 4,
+        damage: dmg(2, 'shadow', 'physical'),
+        damageSpec: '1d3',
+      });
+    }
+    placeShadow(ctx, ctx.targetPoint, 5);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + CORRODE + CURSE   —   Rotting Shackles
+//  Hard lock + stacking DoT; zero burst, pure attrition.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Rotting Shackles',
+  words: ['bind', 'corrode', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 12,
+  description:
+    'Bind the target in corroding chains (range 15): rooted for 4 turns, bleeding 1d3 corrosive each turn for 4 turns, and slowed by 50% even after the root breaks.',
+  visual: { preset: 'beam', color: 0x9be870, size: 6, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyStun(ctx, ctx.target, { duration: 4, type: 'movement' });
+    applyDot(ctx, ctx.target, {
+      name: 'Rotting Shackles',
+      duration: 4,
+      damage: dmg(1, 'corrosive', 'physical'),
+      damageSpec: '1d3',
+    });
+    applyDebuff(ctx, ctx.target, {
+      name: 'Etched',
+      duration: 6,
+      mods: { moveRange: -Math.round(MOVE_RANGE * 0.5) },
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHATTER + CORRODE + CURSE   —   Blightburst
+//  AoE nuke that seeds a corrosive plague.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Blightburst',
+  words: ['shatter', 'corrode', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 14,
+  aoe: { kind: 'circle', radius: R(3) },
+  description:
+    'Detonate a 3-range blight (range 12): 1d6 shatter + 1d6 corrosive to all enemies caught, a 25% chance to fully stun each, and a corrosive plague bleeding 1d3 per turn for 3 turns.',
+  visual: { preset: 'burst', color: 0xc6e08a, size: 62, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const hits = areaDamage(
+      ctx,
+      ctx.targetPoint,
+      R(3),
+      dmg(rollDice(ctx, '1d6', 'Blightburst'), 'shatter', 'physical'),
+      { canMiss: false }
+    );
+    for (const m of hits) {
+      dealDamage(ctx, m, dmg(rollDice(ctx, '1d6', 'Blightburst'), 'corrosive', 'physical'), {
+        aoe: true,
+        canMiss: false,
+      });
+      if (ctx.rng.chance(0.25)) applyStun(ctx, m, { duration: 2, type: 'full' });
+      applyDot(ctx, m, {
+        name: 'Blight',
+        duration: 3,
+        damage: dmg(1, 'corrosive', 'physical'),
+        damageSpec: '1d3',
+      });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + VEIL + BIND   —   Phantom Cage
+//  Root the enemy, drop a shadow on them, slip into a full veil. Reaction.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Phantom Cage',
+  words: ['shadow', 'veil', 'bind'],
+  set: 'finns',
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'any',
+  dc: 12,
+  reaction: true,
+  description:
+    'Root the nearest enemy within range 10 for 3 turns, conjure a shadow pool at their location, then slip behind a full veil for 2 turns. Castable as a reaction.',
+  visual: { preset: 'nova', color: 0x8ad1ff, size: 60, speed: 1.1 },
+  cast(ctx) {
+    const foe = enemyNear(ctx, ctx.caster.pos, R(10));
+    if (foe) {
+      applyStun(ctx, foe, { duration: 3, type: 'movement' });
+      placeShadow(ctx, foe.pos);
+    }
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHATTER + BIND + CORRODE   —   Calcifying Strike
+//  Point-blank two-stage lock: full stun then root, calcification slow lingers.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Calcifying Strike',
+  words: ['shatter', 'bind', 'corrode'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(1),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Smash corrosive crystal into an adjacent foe (range 1): 1d6 shatter + 1d6 corrosive damage, a brief full stun that hardens into a 3-turn root, then a calcification slow that persists for 6 turns.',
+  visual: { preset: 'conjure', color: 0xc6e08a, size: 30, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Calcifying Strike'), 'shatter', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Calcifying Strike'), 'corrosive', 'physical'));
+    applyStun(ctx, ctx.target, { duration: 2, type: 'full' });
+    applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
+    applyDebuff(ctx, ctx.target, {
+      name: 'Calcified',
+      duration: 6,
+      mods: { moveRange: -Math.round(MOVE_RANGE * 0.4) },
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  MIND + CORRODE + CURSE   —   Mind Plague
+//  Triple-stacked debuff + expose; no burst, pure attrition.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Mind Plague',
+  words: ['mind', 'corrode', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Seed a spreading mental plague (range 15): expose the target for 2 turns (no reaction, +2 damage taken), inflict a 1d3 sanity rot for 4 turns, and a 1d3 corrosive wound for 4 turns. Zero burst — pure attrition.',
+  visual: { preset: 'beam', color: 0xff8be0, size: 6, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyControl(ctx, ctx.target, { name: 'Plagued', mode: 'expose', duration: 2 });
+    applyDebuff(ctx, ctx.target, { name: 'Plagued', duration: 2, mods: { damageTaken: 2 } });
+    applyDot(ctx, ctx.target, {
+      name: 'Mind Plague',
+      key: 'dot:mindPlague:sanity',
+      duration: 4,
+      damage: dmg(2, 'shadow', 'sanity'),
+      damageSpec: '1d3',
+    });
+    applyDot(ctx, ctx.target, {
+      name: 'Corrosive Plague',
+      key: 'dot:mindPlague:corrode',
+      duration: 4,
+      damage: dmg(1, 'corrosive', 'physical'),
+      damageSpec: '1d3',
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHATTER + CURSE + PIERCE   —   Harrowing Lance
+//  Long-range cursed shard that stuns with each tick.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Harrowing Lance',
+  words: ['shatter', 'curse', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(18),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Hurl a cursed piercing shard at long range (range 18): 2d6 pierce damage and a harrowing curse that deals 1d6 shatter each turn for 3 turns, with a 33% chance to fully stun on each tick.',
+  visual: { preset: 'projectile', color: 0xffd08a, size: 9, speed: 1.7 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Harrowing Lance'), 'pierce', 'physical'));
+    applyDot(ctx, ctx.target, {
+      name: 'Harrowing Lance',
+      duration: 3,
+      damage: dmg(0, 'shatter', 'physical'),
+      damageSpec: '1d6',
+      stunChance: 0.33,
+      stunType: 'full',
+    });
+  },
+});
+

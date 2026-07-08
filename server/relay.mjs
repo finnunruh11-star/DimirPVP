@@ -15,12 +15,14 @@
 //                    lobby auto-connects its WebSocket to wss://<host>/ws.
 //
 //  WS protocol (client -> relay):
-//    { k: 'join', room, role }   first message; registers the socket
-//    <anything else>             forwarded verbatim to the other peer
+//    { k: 'join', room, size }   first message; registers the socket. The first
+//                                joiner's `size` (2-4) fixes the room capacity.
+//    <anything else>             forwarded verbatim to every other peer
 //  WS protocol (relay -> client):
-//    { k: 'ready' }   both players are present, start the handshake
-//    { k: 'full' }    the room already has two players
-//    { k: 'bye' }     the other player disconnected
+//    { k: 'seat', seat, size }   your seat index (0-based) and the room size
+//    { k: 'ready', size }        every seat is filled, start the handshake
+//    { k: 'full' }               the room is already at capacity
+//    { k: 'bye' }                another player disconnected
 // =============================================================================
 
 import { createServer } from 'node:http';
@@ -50,7 +52,7 @@ const MIME = {
   '.map': 'application/json; charset=utf-8',
 };
 
-/** room code -> Set of sockets (max 2). */
+/** room code -> { sockets: WebSocket[], capacity: number }. */
 const rooms = new Map();
 
 // --- static file server (the built game) -------------------------------------
@@ -84,6 +86,28 @@ const httpServer = createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ noServer: true });
 
+// Keep proxied WebSocket connections (e.g. Cloudflare tunnels) from idling out
+// during long reaction windows. Intermediaries close "quiet" sockets after ~100s
+// with no traffic, which surfaced as a bogus "Opponent disconnected" mid-game.
+// Ping every 30s (browsers auto-reply with pong, so a live-but-idle client stays
+// up) and reap only sockets that actually miss a pong.
+const HEARTBEAT_MS = 30_000;
+const heartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) {
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    try {
+      ws.ping();
+    } catch {
+      /* socket already gone */
+    }
+  }
+}, HEARTBEAT_MS);
+wss.on('close', () => clearInterval(heartbeat));
+
 httpServer.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname !== '/ws') {
@@ -95,6 +119,11 @@ httpServer.on('upgrade', (req, socket, head) => {
 
 wss.on('connection', (ws) => {
   let room = null;
+  // Heartbeat bookkeeping (see the interval above).
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
 
   ws.on('message', (raw) => {
     let msg;
@@ -106,42 +135,62 @@ wss.on('connection', (ws) => {
 
     if (msg && msg.k === 'join') {
       room = String(msg.room ?? '');
-      let set = rooms.get(room);
-      if (!set) {
-        set = new Set();
-        rooms.set(room, set);
+      let entry = rooms.get(room);
+      if (!entry) {
+        // The first joiner (the host) fixes the room capacity, clamped 2-4.
+        const n = Math.max(2, Math.min(4, Number(msg.size) || 2));
+        entry = { sockets: [], capacity: n };
+        rooms.set(room, entry);
       }
-      if (set.size >= 2) {
+      if (entry.sockets.length >= entry.capacity) {
         ws.send(JSON.stringify({ k: 'full' }));
         ws.close();
         return;
       }
-      set.add(ws);
-      if (set.size === 2) {
-        for (const peer of set) {
-          if (peer.readyState === peer.OPEN) peer.send(JSON.stringify({ k: 'ready' }));
+      const seat = entry.sockets.length;
+      entry.sockets.push(ws);
+      ws.send(JSON.stringify({ k: 'seat', seat, size: entry.capacity }));
+      if (entry.sockets.length === entry.capacity) {
+        for (const peer of entry.sockets) {
+          if (peer.readyState === peer.OPEN)
+            peer.send(JSON.stringify({ k: 'ready', size: entry.capacity }));
         }
       }
       return;
     }
 
-    // Forward everything else to the other peer in the room.
-    const set = room ? rooms.get(room) : null;
-    if (!set) return;
-    for (const peer of set) {
+    // Forward everything else to every other peer in the room.
+    const entry = room ? rooms.get(room) : null;
+    if (!entry) return;
+    for (const peer of entry.sockets) {
       if (peer !== ws && peer.readyState === peer.OPEN) peer.send(raw.toString());
     }
   });
 
   ws.on('close', () => {
-    const set = room ? rooms.get(room) : null;
-    if (!set) return;
-    set.delete(ws);
-    for (const peer of set) {
+    const entry = room ? rooms.get(room) : null;
+    if (!entry) return;
+    entry.sockets = entry.sockets.filter((p) => p !== ws);
+    for (const peer of entry.sockets) {
       if (peer.readyState === peer.OPEN) peer.send(JSON.stringify({ k: 'bye' }));
     }
-    if (set.size === 0) rooms.delete(room);
+    if (entry.sockets.length === 0) rooms.delete(room);
   });
+});
+
+httpServer.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(
+      `\n[relay] Port ${PORT} is already in use — an old relay is probably still running.\n` +
+        `        That stale server does NOT have the keepalive fix, so players will keep\n` +
+        `        hitting spurious "Opponent disconnected". Stop it first, then retry:\n` +
+        `          Windows:  Get-Process node | Stop-Process -Force\n` +
+        `        …or just close the old relay's terminal, then run "npm run relay" again.\n`
+    );
+  } else {
+    console.error('[relay] Server error:', err);
+  }
+  process.exit(1);
 });
 
 httpServer.listen(PORT, () => {

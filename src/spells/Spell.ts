@@ -80,6 +80,16 @@ export interface Spell {
   visual?: SpellVisual;
 
   /**
+   * Which toggleable catalogue this spell belongs to. The start screen lets
+   * players enable/disable whole sets before a duel; only spells whose set is
+   * active are offered in the combo grid. Untagged spells default to 'original'.
+   *   - original: the base Dimir catalogue.
+   *   - finns:    Finn's Additions (extra sidegrade spells, coupled to the item toggle).
+   *   - dlc:      reserved for future DLC spells.
+   */
+  set?: import('../core/Items').ItemSet;
+
+  /**
    * If set, this point-targeted spell/ability places a rotatable rectangular
    * wall the caster positions within `range` and rotates with H while aiming.
    * The chosen orientation is read from the caster's `wallAngle`.

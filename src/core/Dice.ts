@@ -31,6 +31,11 @@ export class Dice {
     return Math.floor(this.next() * sides) + 1;
   }
 
+  /** Raw float in [0, 1) from the underlying generator (for weighted rolls). */
+  float(): number {
+    return this.next();
+  }
+
   /**
    * Roll a dice spec such as "2d6+1", "d20", "3d8-2" or "1d4".
    * Returns the total plus the individual rolls.

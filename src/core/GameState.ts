@@ -6,11 +6,12 @@ import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
 import { dealDamage, heal } from '../effects/effects';
 import { dmg } from './Damage';
 import type { DamageType, DamageClass } from './Damage';
-import type { ItemId } from './Items';
-import { getItem } from './Items';
+import type { ItemId, ItemDef } from './Items';
+import { getItem, SLOT_CAPS } from './Items';
 import { dist, stepTowards, type Vec2 } from './utils';
 import {
   CONE_DEGREES,
+  CLEAVE_DEGREES,
   FIELD,
   MAGE_BODY_RADIUS,
   MELEE_DAMAGE,
@@ -53,7 +54,7 @@ export interface DroppedItem {
   itemId: ItemId;
   x: number;
   y: number;
-  owner: 1 | 2;
+  owner: number;
 }
 
 /**
@@ -68,7 +69,7 @@ export interface MutivargZone {
   radius: number;
   /** Mana the owner paid to raise it (drives radius, slow and crush damage). */
   manaPaid: number;
-  owner: 1 | 2;
+  owner: number;
   /** Remaining owner turn-starts before it collapses. */
   turnsLeft: number;
 }
@@ -79,11 +80,21 @@ export interface MutivargZone {
  * the flow (prompts, animation) and calls into this for all rules.
  */
 export class GameState {
-  mages: [Mage, Mage];
-  currentIndex: 0 | 1 = 0;
+  mages: Mage[];
+  currentIndex = 0;
   round = 1;
   stack: StackItem[] = [];
   rng: Dice;
+
+  /**
+   * Initiative turn order: mage indices sorted by their start-of-match roll
+   * (d20 + Dex, highest first). `turnPtr` walks this list; the round advances
+   * when it wraps back to the top.
+   */
+  initiativeOrder: number[] = [];
+  private turnPtr = 0;
+  /** The initiative roll each mage made (for display / logging). */
+  initiativeRolls: number[] = [];
 
   /** Active shadow zones placed by the Shadow word. */
   shadows: ShadowZone[] = [];
@@ -107,7 +118,7 @@ export class GameState {
   mutivargZones: MutivargZone[] = [];
 
   /** Alive summon (scarab) count per team at last regen, to score deaths since. */
-  private prevScarabAlive: Record<1 | 2, number> = { 1: 0, 2: 0 };
+  private prevScarabAlive: Record<number, number> = {};
 
   /** Mages queued for an extra turn (Shatter+Mind+Reality), taken in order. */
   extraTurnQueue: Mage[] = [];
@@ -130,9 +141,29 @@ export class GameState {
 
   private nextId = 1;
 
-  constructor(mages: [Mage, Mage], seed?: number) {
+  constructor(mages: Mage[], seed?: number) {
     this.mages = mages;
     this.rng = new Dice(seed);
+    this.rollInitiative();
+  }
+
+  /**
+   * Roll each mage's initiative (d20 + Dex) once at the start of the match and
+   * derive the turn order (highest first). Ties break by the shared RNG so both
+   * peers agree. This runs on the seeded RNG, keeping every client in lockstep.
+   */
+  private rollInitiative(): void {
+    const scored = this.mages.map((m, i) => {
+      const roll = this.rng.roll('1d20').total;
+      const total = roll + m.effectiveDex();
+      return { i, total, tie: this.rng.roll('1d1000').total };
+    });
+    scored.sort((a, b) => b.total - a.total || b.tie - a.tie);
+    this.initiativeOrder = scored.map((s) => s.i);
+    this.initiativeRolls = [];
+    for (const s of scored) this.initiativeRolls[s.i] = s.total;
+    this.turnPtr = 0;
+    this.currentIndex = this.initiativeOrder[0] ?? 0;
   }
 
   // ---- Accessors ------------------------------------------------------------
@@ -142,11 +173,50 @@ export class GameState {
   }
 
   get other(): Mage {
-    return this.mages[this.currentIndex === 0 ? 1 : 0];
+    return this.opponentOf(this.current);
   }
 
+  /** Every mage that is not on `m`'s team (alive or dead), excluding `m`. */
+  enemiesOf(m: Mage): Mage[] {
+    return this.mages.filter((o) => o !== m && o.team !== m.team);
+  }
+
+  /** Living enemies of `m`. */
+  livingEnemiesOf(m: Mage): Mage[] {
+    return this.enemiesOf(m).filter((o) => o.alive);
+  }
+
+  /** Team-mates of `m` (same team), excluding `m` itself. */
+  alliesOf(m: Mage): Mage[] {
+    return this.mages.filter((o) => o !== m && o.team === m.team);
+  }
+
+  /**
+   * The single "primary" opponent of `m` — the nearest living enemy, falling
+   * back to any enemy, then any other mage. Keeps 1v1-era call sites working
+   * while multi-target logic is layered on top.
+   */
   opponentOf(m: Mage): Mage {
-    return this.mages[0] === m ? this.mages[1] : this.mages[0];
+    const living = this.livingEnemiesOf(m);
+    const pool = living.length > 0 ? living : this.enemiesOf(m);
+    if (pool.length === 0) return this.mages.find((o) => o !== m) ?? m;
+    let best = pool[0];
+    let bestD = dist(m.pos, best.pos);
+    for (const o of pool) {
+      const d = dist(m.pos, o.pos);
+      if (d < bestD) {
+        best = o;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+
+  /** Distinct teams that still have at least one living mage. */
+  teamsAlive(): number[] {
+    const teams = new Set<number>();
+    for (const m of this.mages) if (m.alive) teams.add(m.team);
+    return [...teams];
   }
 
   log(msg: string): void {
@@ -155,16 +225,21 @@ export class GameState {
     this.onLog?.(msg);
   }
 
+  /** The winning team number once the match is over, else null. */
+  get winningTeam(): number | null {
+    const teams = this.teamsAlive();
+    return teams.length === 1 ? teams[0] : null;
+  }
+
+  /** A living representative of the winning team (for display), else null. */
   get winner(): Mage | null {
-    const [a, b] = this.mages;
-    if (!a.alive && !b.alive) return null;
-    if (!a.alive) return b;
-    if (!b.alive) return a;
-    return null;
+    const team = this.winningTeam;
+    if (team == null) return null;
+    return this.mages.find((m) => m.alive && m.team === team) ?? null;
   }
 
   get isOver(): boolean {
-    return !this.mages[0].alive || !this.mages[1].alive;
+    return this.teamsAlive().length <= 1;
   }
 
   // ---- Turn lifecycle -------------------------------------------------------
@@ -173,6 +248,7 @@ export class GameState {
   startRound(): void {
     for (const m of this.mages) {
       m.reactionAvailable = m.canEverReact;
+      m.reactedThisCycle = false;
     }
   }
 
@@ -202,15 +278,35 @@ export class GameState {
       this.mindSwapTurns = this.pendingMindSwap;
       this.pendingMindSwap = 0;
     }
-    this.currentIndex = this.currentIndex === 0 ? 1 : 0;
-    if (this.currentIndex === 0) {
-      this.round += 1;
-      this.tickShadows();
-      this.tickTotems();
-      this.tickBarriers();
-      this.tickGlobalEscalations();
-      this.startRound();
+    this.advanceTurn();
+  }
+
+  /**
+   * Step to the next living mage in initiative order. Whenever the pointer
+   * wraps past the end of the order a new round begins (shadows/totems tick).
+   * Dead mages are skipped.
+   */
+  private advanceTurn(): void {
+    const n = this.initiativeOrder.length;
+    if (n === 0) return;
+    for (let step = 0; step < n; step++) {
+      this.turnPtr += 1;
+      if (this.turnPtr >= n) {
+        this.turnPtr = 0;
+        this.round += 1;
+        this.tickShadows();
+        this.tickTotems();
+        this.tickBarriers();
+        this.tickGlobalEscalations();
+        this.startRound();
+      }
+      const idx = this.initiativeOrder[this.turnPtr];
+      if (this.mages[idx]?.alive) {
+        this.currentIndex = idx;
+        return;
+      }
     }
+    // Everyone else is dead — leave currentIndex as-is (match is over).
   }
 
   /** Whether control is currently swapped between the two players. */
@@ -264,13 +360,14 @@ export class GameState {
 
   /** Make `m` the current mage without a round rollover (for extra turns). */
   setCurrent(m: Mage): void {
-    this.currentIndex = this.mages[0] === m ? 0 : 1;
+    const idx = this.mages.indexOf(m);
+    if (idx >= 0) this.currentIndex = idx;
   }
 
   // ---- Shadows --------------------------------------------------------------
 
   /** Place a shadow zone (clamped to the field) owned by `owner`. */
-  addShadow(at: Vec2, owner: 1 | 2, ttl?: number): ShadowZone {
+  addShadow(at: Vec2, owner: number, ttl?: number): ShadowZone {
     const zone: ShadowZone = {
       id: this.nextId++,
       x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x)),
@@ -291,7 +388,7 @@ export class GameState {
     this.shadows = this.shadows.filter((s) => s.ttl > 0);
   }
 
-  shadowsOf(team: 1 | 2): ShadowZone[] {
+  shadowsOf(team: number): ShadowZone[] {
     return this.shadows.filter((s) => s.owner === team);
   }
   /** The shadow zone containing `pos`, if any. */
@@ -318,7 +415,7 @@ export class GameState {
   /** Place a damaging totem owned by `owner`. */
   addTotem(
     at: Vec2,
-    owner: 1 | 2,
+    owner: number,
     opts: { radius: number; damageSpec: string; slow: number; ttl?: number; lifesteal?: boolean }
   ): Totem {
     const totem: Totem = {
@@ -374,7 +471,7 @@ export class GameState {
   // ---- Scarabs --------------------------------------------------------------
 
   /** Spawn `count` scarabs scattered around `center`, owned by team `owner`. */
-  addScarabs(center: Vec2, owner: 1 | 2, count: number): void {
+  addScarabs(center: Vec2, owner: number, count: number): void {
     for (let i = 0; i < count; i++) {
       const ang = (this.rng.die(360) - 1) * (Math.PI / 180);
       const r = SCARAB.spawnRadius * (0.35 + 0.65 * ((this.rng.die(100) - 1) / 99));
@@ -482,7 +579,7 @@ export class GameState {
   damageScarabsInRadius(
     at: Vec2,
     radius: number,
-    attackerTeam: 1 | 2,
+    attackerTeam: number,
     amount: number,
     sanity: boolean
   ): void {
@@ -579,11 +676,72 @@ export class GameState {
     if (!trail) return;
     this.addShadow({ x: m.pos.x, y: m.pos.y }, trail.team, trail.perShadowTtl);
   }
+
+  /**
+   * Shove `target` directly away from `source` by `units` range-units (War
+   * Hammer). Clamped to the field, reality barriers, Mutivarg zones and the
+   * other mage's body so it never phases through obstacles. Deterministic, so it
+   * stays in lockstep online.
+   */
+  knockbackMage(source: Mage, target: Mage, units: number): void {
+    if (!target.alive) return;
+    const dx = target.x - source.x;
+    const dy = target.y - source.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const reach = units * RANGE_UNIT;
+    const raw = { x: target.x + (dx / len) * reach, y: target.y + (dy / len) * reach };
+    const fieldDest = {
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, raw.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, raw.y)),
+    };
+    const clamp = this.clampToBarriers(target.pos, fieldDest);
+    const mut = this.clampToMutivargZones(target, target.pos, clamp.dest);
+    const dest = this.clampToMages(target, target.pos, mut.dest);
+    target.x = dest.x;
+    target.y = dest.y;
+    this.updateAttachedScarabs();
+    this.dropTrailShadows(target);
+    this.log(`${target.name} is knocked back!`);
+  }
+
+  /**
+   * After landing a hit, let `source` dash up to `units` range-units to a chosen
+   * spot (Lunging Edge). The destination is picked through the sub-targeter, so
+   * it is relayed identically to both peers online; absent a sub-targeter
+   * (headless), it is a no-op.
+   */
+  async dashAfterHit(source: Mage, units: number): Promise<void> {
+    if (!source.alive) return;
+    const picked = this.subTargeter
+      ? await this.subTargeter.requestPoint(source, {
+          maxRange: units * RANGE_UNIT,
+          prompt: `${source.name}: dash up to ${units} tiles (click a spot, Esc to stay).`,
+        })
+      : null;
+    if (!picked) return;
+    const fieldDest = {
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, picked.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, picked.y)),
+    };
+    const clamp = this.clampToBarriers(source.pos, fieldDest);
+    const mut = this.clampToMutivargZones(source, source.pos, clamp.dest);
+    const dest = this.clampToMages(source, source.pos, mut.dest);
+    const step = Math.hypot(dest.x - source.x, dest.y - source.y);
+    source.x = dest.x;
+    source.y = dest.y;
+    source.movedThisTurn = true;
+    source.distMovedThisTurn += step;
+    this.updateAttachedScarabs();
+    this.dropTrailShadows(source);
+    this.log(`${source.name} dashes ${units} tiles after the blow.`);
+  }
+
   private applyControlOnTurnStart(m: Mage): void {
     const ctrl = m.statuses.find((s) => s.kind === 'control') as ControlStatus | undefined;
     if (ctrl && ctrl.mode === 'expose') {
       // Their intentions are laid bare — they cannot hold a reaction this turn.
       m.reactionAvailable = false;
+      m.reactedThisCycle = true;
     }
   }
 
@@ -924,6 +1082,9 @@ export class GameState {
       requestEnemy: this.subTargeter
         ? (opts) => this.subTargeter!.requestEnemy(source, opts)
         : undefined,
+      reactionWindow: this.subTargeter
+        ? (label, at) => this.subTargeter!.reactionWindow(source, label, at)
+        : undefined,
     };
   }
 
@@ -1047,7 +1208,7 @@ export class GameState {
       halfAngle?: number;
       range: number;
       thickness?: number;
-      owner: 1 | 2;
+      owner: number;
       ttl: number;
     }
   ): BarrierZone {
@@ -1129,7 +1290,7 @@ export class GameState {
   // ---- Mutivarg's Rod & weapon abilities ------------------------------------
 
   /** Raise a crushing field (one per owner) sized by the mana paid. */
-  addMutivargZone(at: Vec2, owner: 1 | 2, manaPaid: number): MutivargZone {
+  addMutivargZone(at: Vec2, owner: number, manaPaid: number): MutivargZone {
     // Only one zone per owner at a time — the old one collapses.
     this.mutivargZones = this.mutivargZones.filter((z) => z.owner !== owner);
     const zone: MutivargZone = {
@@ -1239,7 +1400,172 @@ export class GameState {
     this.log(`${source.name}'s ${getItem(id).name} shatters into shards.`);
   }
 
+  /**
+   * Gambler's Blade weapon command: shatter the blade. The interactive draft
+   * that follows (choose 1 of 3 per 5 Greed stacks) is driven by the scene so a
+   * human can pick; the pure state change lives here.
+   */
+  shatterGamblerBlade(source: Mage): number {
+    const bladeId = source.hands.find((id) => getItem(id).gamblerGreed);
+    const n = Math.floor(source.greedStacks / 5);
+    if (bladeId) this.destroyHeldItem(source, bladeId);
+    source.greedStacks = 0;
+    return n;
+  }
+
+  /** Add a freshly-drafted item to a mage, honouring slot caps and vitals. */
+  grantItem(mage: Mage, id: ItemId): void {
+    const def = getItem(id);
+    switch (def.slot) {
+      case 'hand':
+        mage.bag.push(id);
+        break;
+      case 'head':
+        if (!mage.head) mage.head = id;
+        else mage.bag.push(id);
+        break;
+      case 'torso':
+        if (!mage.torso) mage.torso = id;
+        else mage.bag.push(id);
+        break;
+      case 'boots':
+        if (!mage.boots) mage.boots = id;
+        else mage.bag.push(id);
+        break;
+      case 'accessory':
+        if (mage.accessories.length < SLOT_CAPS.accessory) mage.accessories.push(id);
+        else mage.bag.push(id);
+        break;
+      case 'utility':
+        if (def.ammo) mage.arrows += 1;
+        else mage.utility.push(id);
+        break;
+    }
+    this.applyGrantedVitals(mage, def);
+  }
+
+  /** Apply a single freshly-granted item's one-time HP / sanity changes. */
+  private applyGrantedVitals(mage: Mage, def: ItemDef): void {
+    if (def.hpMult != null) mage.maxHp = Math.max(1, Math.round(mage.maxHp * def.hpMult));
+    if (def.hpFlat != null) mage.maxHp = Math.max(1, mage.maxHp + def.hpFlat);
+    if (def.sanityMult != null) mage.maxSanity = Math.max(1, Math.round(mage.maxSanity * def.sanityMult));
+    mage.hp = Math.min(mage.hp, mage.maxHp);
+    mage.sanity = Math.min(mage.sanity, mage.maxSanity);
+  }
+
+  /**
+   * Training sandbox: strip one copy of an item from a mage (from wherever it
+   * sits) and reverse its one-time vital changes. Returns whether one was found.
+   */
+  removeItem(mage: Mage, id: ItemId): boolean {
+    const def = getItem(id);
+    const pull = (arr: ItemId[]): boolean => {
+      const i = arr.indexOf(id);
+      if (i < 0) return false;
+      arr.splice(i, 1);
+      return true;
+    };
+    let removed = false;
+    if (def.ammo) {
+      if (mage.arrows > 0) {
+        mage.arrows -= 1;
+        removed = true;
+      }
+    } else if (pull(mage.hands) || pull(mage.bag) || pull(mage.accessories) || pull(mage.utility)) {
+      removed = true;
+    } else if (mage.head === id) {
+      mage.head = null;
+      removed = true;
+    } else if (mage.torso === id) {
+      mage.torso = null;
+      removed = true;
+    } else if (mage.boots === id) {
+      mage.boots = null;
+      removed = true;
+    }
+    if (removed) this.reverseGrantedVitals(mage, def);
+    return removed;
+  }
+
+  /** Undo the one-time HP / sanity changes {@link applyGrantedVitals} applied. */
+  private reverseGrantedVitals(mage: Mage, def: ItemDef): void {
+    if (def.sanityMult != null && def.sanityMult !== 0)
+      mage.maxSanity = Math.max(1, Math.round(mage.maxSanity / def.sanityMult));
+    if (def.hpFlat != null) mage.maxHp = Math.max(1, mage.maxHp - def.hpFlat);
+    if (def.hpMult != null && def.hpMult !== 0)
+      mage.maxHp = Math.max(1, Math.round(mage.maxHp / def.hpMult));
+    mage.hp = Math.min(mage.hp, mage.maxHp);
+    mage.sanity = Math.min(mage.sanity, mage.maxSanity);
+  }
+
+  /** Training sandbox: wipe every transient field object (soft reset). */
+  clearFieldObjects(): void {
+    this.shadows = [];
+    this.totems = [];
+    this.scarabs = [];
+    this.barriers = [];
+    this.globalEscalations = [];
+    this.droppedItems = [];
+    this.mutivargZones = [];
+    this.extraTurnQueue = [];
+    this.stack = [];
+    this.mindSwapTurns = 0;
+    this.pendingMindSwap = 0;
+  }
+
   // ---- Stack item factories -------------------------------------------------
+
+  /**
+   * Move `source` to `dest`, clamped by the field edge, reality-break barriers,
+   * Mutivarg zones and the other body. Used by the Leap bonus action.
+   */
+  leapMove(source: Mage, dest: Vec2): void {
+    const fieldDest = {
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y)),
+    };
+    const clamp = this.clampToBarriers(source.pos, fieldDest);
+    const mut = this.clampToMutivargZones(source, source.pos, clamp.dest);
+    const final = this.clampToMages(source, source.pos, mut.dest);
+    source.x = final.x;
+    source.y = final.y;
+    source.movedThisTurn = true;
+    this.updateAttachedScarabs();
+    this.dropTrailShadows(source);
+  }
+
+  /**
+   * Resolve the Cleave main action: a 180° sweep at melee reach that deals
+   * double a normal strength swing's damage to every enemy caught in the arc.
+   */
+  resolveCleave(source: Mage, aim: Vec2): void {
+    const w = source.activeWeapon();
+    const reach = w ? w.rangePx : MELEE_RANGE;
+    const base =
+      MELEE_DAMAGE +
+      source.effectiveStr() +
+      (source.profile.blackPrimaryTier ? 1 : 0) +
+      source.meleeDamageBonus();
+    const perHit = Math.round(base * (w?.multiplier ?? 1)) * 2;
+    const type: DamageType = w?.damageType ?? 'shatter';
+    const targets = this.magesInCone(source.pos, aim, reach, CLEAVE_DEGREES, source).filter(
+      (m) => m.team !== source.team
+    );
+    if (targets.length === 0) {
+      this.log(`${source.name} cleaves the air — nothing in reach.`);
+      return;
+    }
+    for (const t of targets) {
+      const ctx = this.effectContext(source, t, null);
+      dealDamage(ctx, t, dmg(perHit, type, 'physical'), {
+        ignoreResist: !!w?.ignoreResist,
+        ignoreArmor: !!w?.ignoreArmor,
+      });
+    }
+    this.log(
+      `${source.name} cleaves ${targets.length} foe${targets.length > 1 ? 's' : ''} for ${perHit} each!`
+    );
+  }
 
   makeMoveItem(source: Mage, destination: Vec2): StackItem {
     const fieldDest = {
@@ -1261,9 +1587,11 @@ export class GameState {
       targetPoint: dest,
       isStillValid: () => source.alive,
       resolve: (game) => {
+        const step = Math.hypot(dest.x - source.x, dest.y - source.y);
         source.x = dest.x;
         source.y = dest.y;
         source.movedThisTurn = true;
+        source.distMovedThisTurn += step;
         game.updateAttachedScarabs();
         game.log(`${source.name} repositions.`);
         if (clamp.blocked) {
@@ -1321,7 +1649,9 @@ export class GameState {
       label,
       description: `${source.name} attacks ${target.name}.`,
       isStillValid: (game) => game.canMelee(source, target),
-      resolve: (game) => {
+      resolve: async (game) => {
+        // Arm a single Greed gain for this attack (Gambler's Blade dedup).
+        source.greedArmed = true;
         const ctx = game.effectContext(source, target, null);
         const w = source.activeWeapon();
         let amount: number;
@@ -1374,6 +1704,10 @@ export class GameState {
               total += Math.max(0, Math.floor((roll + dex + bonus - 10) / 2));
             }
           }
+          // Assassin's Cloak: Dex strikes hit harder while veiled.
+          if (!missed && source.isInvisible() && source.veiledDaggerBonus() > 0) {
+            total = Math.round(total * (1 + source.veiledDaggerBonus()));
+          }
           amount = total;
           if (missed) {
             game.log(`${source.name}'s shot sails wide.`);
@@ -1412,16 +1746,31 @@ export class GameState {
                 ignoreArmor: !!w?.ignoreArmor,
               })
             : 0;
-        // Battle Robe: melee damage you deal feeds your mana pool.
-        if (dealt > 0 && source.hasMeleeManaLeech()) {
+        // Battle Robe: melee damage you deal feeds your mana pool (not bows).
+        const isRanged = !!(w?.usesArrows || w?.toHit || w?.rangeAccuracy || w?.oneShotSpec);
+        if (dealt > 0 && !isRanged && source.hasMeleeManaLeech()) {
           source.gainMana(dealt);
           game.log(`${source.name}'s battle robe drinks ${dealt} mana from the blow.`);
+        }
+        // Blood Ring: landing a melee blow siphons a little life back.
+        if (dealt > 0 && !isRanged && source.meleeHealOnHit() > 0 && source.alive) {
+          const heal = Math.round(source.meleeHealOnHit() * source.healMult());
+          source.hp = Math.min(source.maxHp, source.hp + heal);
+          game.log(`${source.name}'s blood ring draws ${heal} health from the strike.`);
         }
         // Thorn Ring: the struck mage's thorns bite the attacker back.
         const thorns = target.thornsTotal();
         if (thorns > 0 && dealt > 0 && source.alive) {
           const back = game.effectContext(target, source, null);
           dealDamage(back, source, dmg(thorns, 'pierce', 'physical'), { canMiss: false });
+        }
+        // War Hammer: a solid blow hurls the target backwards.
+        if (w?.knockbackUnits && !missed && target.alive) {
+          game.knockbackMage(source, target, w.knockbackUnits);
+        }
+        // Lunging Edge: dash after connecting with the strike.
+        if (w?.dashAfterHitUnits && !missed && source.alive) {
+          await game.dashAfterHit(source, w.dashAfterHitUnits);
         }
         // A one-shot weapon is spent after firing.
         if (w?.oneShotSpec) {
@@ -1464,7 +1813,25 @@ export class GameState {
       },
       resolve: (game) => {
         const ctx = game.effectContext(source, target, targetPoint);
-        return spell.cast(ctx);
+        // Mark the caster so spell damage can grant Blood Charm lifesteal and
+        // arm a single Greed gain for this cast (Gambler's Blade dedup).
+        source.spellcastActive = true;
+        source.greedArmed = true;
+        const done = () => {
+          source.spellcastActive = false;
+        };
+        const result = spell.cast(ctx);
+        if (result && typeof (result as Promise<void>).then === 'function') {
+          return (result as Promise<void>).then(
+            () => done(),
+            (err) => {
+              done();
+              throw err;
+            }
+          );
+        }
+        done();
+        return result;
       },
     };
   }

@@ -11,7 +11,7 @@ export interface ShadowZone {
   y: number;
   radius: number;
   /** Team that conjured the shadow (only its owner casts through it). */
-  owner: 1 | 2;
+  owner: number;
   /** Rounds remaining before the shadow fades. */
   ttl: number;
 }

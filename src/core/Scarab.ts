@@ -14,7 +14,7 @@ export interface Scarab {
   x: number;
   y: number;
   /** The team that summoned the scarab and is healed when it returns. */
-  owner: 1 | 2;
+  owner: number;
   hp: number;
   maxHp: number;
   sanity: number;

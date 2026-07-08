@@ -3,15 +3,41 @@ import { COLORS, GAME_HEIGHT, GAME_WIDTH, LOADOUT_SIZE, TEXT } from '../config/c
 import { WORDS, WORD_ORDER, type WordId } from '../core/Words';
 import { Net, type NetRole, type NetMessage } from '../net/Net';
 
-export type MatchMode = 'hotseat' | 'ai' | 'online';
+export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training';
+
+/** Which toggleable item catalogues the draft draws from. */
+export interface ItemSetSelection {
+  original: boolean;
+  finns: boolean;
+  dlc: boolean;
+}
+
+/** One combatant's seat in a match (used for N-player teamfights / battle royale). */
+export interface SeatConfig {
+  name: string;
+  /** Team number; seats sharing a team fight together. FFA = every seat its own team. */
+  team: number;
+  isAI: boolean;
+  loadout: WordId[];
+}
 
 export interface MatchConfig {
   mode: MatchMode;
   loadouts: [WordId[], WordId[]];
+  /**
+   * Optional explicit seat list for N-player matches (up to 4). When present it
+   * fully describes every combatant and their team; when absent the classic
+   * two-mage layout is derived from `loadouts` + `mode`.
+   */
+  seats?: SeatConfig[];
+  /** Item sets enabled for the draft (defaults to original only). */
+  itemSets?: ItemSetSelection;
   /** Online play: the live connection to the opponent (lockstep relay). */
   net?: Net;
   /** Online play: which team this client controls (1 = host, 2 = guest). */
-  localTeam?: 1 | 2;
+  localTeam?: number;
+  /** Online play: which seat index this client controls (0-based). */
+  localSeat?: number;
   /** Online play: shared RNG seed so both peers simulate identically. */
   seed?: number;
 }
@@ -33,12 +59,23 @@ function defaultRelayUrl(): string {
 /** Loadout / mode selection before the duel begins. */
 export class MenuScene extends Phaser.Scene {
   private mode: MatchMode = 'ai';
-  private stage: 1 | 2 = 1;
   private selected: WordId[] = [];
-  private loadout1: WordId[] = [];
+  /** Local N-player match setup. */
+  private seatCount = 2;
+  private teamMode: 'teams' | 'ffa' = 'teams';
+  /** How many seats are filled by AI. Humans take the first (seatCount - aiCount) seats. */
+  private aiCount = 1;
+  /** Team number per seat (teams mode). Lets you build mixed player+AI teams. */
+  private seatTeams: number[] = [];
+  /** Index into humanSeats() of the seat currently drafting (local play). */
+  private draftIndex = 0;
+  /** Collected loadouts per seat while drafting a local match. */
+  private draftLoadouts: WordId[][] = [];
   private typed = '';
   private nadActive = false;
   private katActive = false;
+  /** Enabled item sets for the draft (host decides in online play). */
+  private itemSets: ItemSetSelection = { original: true, finns: false, dlc: false };
 
   private wordCells: { rect: Phaser.GameObjects.Rectangle; word: WordId; label: Phaser.GameObjects.Text }[] = [];
   private titleText!: Phaser.GameObjects.Text;
@@ -46,6 +83,15 @@ export class MenuScene extends Phaser.Scene {
   private modeAiBtn!: Phaser.GameObjects.Text;
   private modeHsBtn!: Phaser.GameObjects.Text;
   private modeOnlineBtn!: Phaser.GameObjects.Text;
+  private modeTrainingBtn!: Phaser.GameObjects.Text;
+  private setOriginalBtn!: Phaser.GameObjects.Text;
+  private setFinnsBtn!: Phaser.GameObjects.Text;
+  private setDlcBtn!: Phaser.GameObjects.Text;
+  private playersBtn!: Phaser.GameObjects.Text;
+  private formatBtn!: Phaser.GameObjects.Text;
+  private aiFillBtn!: Phaser.GameObjects.Text;
+  /** One team-toggle button per seat (teams mode with 3+ combatants). */
+  private seatBtns: Phaser.GameObjects.Text[] = [];
   private startBtn!: Phaser.GameObjects.Text;
   private hostBtn!: Phaser.GameObjects.Text;
   private joinBtn!: Phaser.GameObjects.Text;
@@ -102,9 +148,30 @@ export class MenuScene extends Phaser.Scene {
     });
 
     // Mode buttons.
-    this.modeAiBtn = this.makeButton(GAME_WIDTH / 2 - 220, 560, 'Vs AI', () => this.setMode('ai'));
-    this.modeHsBtn = this.makeButton(GAME_WIDTH / 2, 560, 'Hotseat (2P)', () => this.setMode('hotseat'));
-    this.modeOnlineBtn = this.makeButton(GAME_WIDTH / 2 + 220, 560, 'Online', () => this.setMode('online'));
+    this.modeAiBtn = this.makeButton(GAME_WIDTH / 2 - 330, 560, 'Vs AI', () => this.setMode('ai'));
+    this.modeHsBtn = this.makeButton(GAME_WIDTH / 2 - 110, 560, 'Hotseat (2P)', () => this.setMode('hotseat'));
+    this.modeOnlineBtn = this.makeButton(GAME_WIDTH / 2 + 110, 560, 'Online', () => this.setMode('online'));
+    this.modeTrainingBtn = this.makeButton(GAME_WIDTH / 2 + 330, 560, 'Training', () => this.setMode('training'));
+
+    // Item-set toggles (host decides in online play).
+    this.setOriginalBtn = this.makeButton(GAME_WIDTH / 2 - 300, 500, '', () => this.toggleSet('original'));
+    this.setFinnsBtn = this.makeButton(GAME_WIDTH / 2, 500, '', () => this.toggleSet('finns'));
+    this.setDlcBtn = this.makeButton(GAME_WIDTH / 2 + 300, 500, '', () => this.toggleSet('dlc'));
+
+    // Local N-player setup: number of combatants, team layout, and AI fill.
+    this.playersBtn = this.makeButton(GAME_WIDTH / 2 - 280, 445, '', () => this.cyclePlayers());
+    this.formatBtn = this.makeButton(GAME_WIDTH / 2, 445, '', () => this.toggleFormat());
+    this.aiFillBtn = this.makeButton(GAME_WIDTH / 2 + 280, 445, '', () => this.cycleAiFill());
+
+    // Per-seat team pickers (teams mode with 3+ combatants) — build mixed sides
+    // such as player + AI vs player + AI. Compact so the row fits under the modes.
+    for (let s = 0; s < 4; s++) {
+      const btn = this.makeButton(0, 600, '', () => this.cycleSeatTeam(s));
+      btn.setFontSize(15).setPadding(12, 6);
+      btn.setVisible(false);
+      this.seatBtns.push(btn);
+    }
+    this.syncSeatTeams();
 
     this.startBtn = this.makeButton(GAME_WIDTH / 2, 640, 'Confirm', () => this.confirm());
     this.hostBtn = this.makeButton(GAME_WIDTH / 2 - 120, 640, 'Host Game', () => this.startOnline('host'));
@@ -167,7 +234,117 @@ export class MenuScene extends Phaser.Scene {
   private setMode(mode: MatchMode): void {
     if (this.connecting) return;
     this.mode = mode;
+    // Sensible default AI fill per mode: "vs AI" fills every seat but yours.
+    if (mode === 'ai') this.aiCount = this.seatCount - 1;
+    else this.aiCount = 0; // hotseat / online / training start all-human
+    this.clampAiCount();
+    this.resetDraft();
     this.refresh();
+  }
+
+  /** Toggle an item set on/off; never allow every set to be disabled. */
+  private toggleSet(set: keyof ItemSetSelection): void {
+    if (this.connecting) return;
+    const next = { ...this.itemSets, [set]: !this.itemSets[set] };
+    if (!next.original && !next.finns && !next.dlc) return;
+    this.itemSets = next;
+    this.refresh();
+  }
+
+  /** Cycle the local combatant count 2 → 3 → 4 → 2. */
+  private cyclePlayers(): void {
+    if (this.connecting) return;
+    this.seatCount = this.seatCount >= 4 ? 2 : this.seatCount + 1;
+    // Keep "vs AI" meaning 1 human vs the rest as the table resizes.
+    if (this.mode === 'ai') this.aiCount = this.seatCount - 1;
+    this.clampAiCount();
+    this.syncSeatTeams();
+    this.resetDraft();
+    this.refresh();
+  }
+
+  /** Cycle how many seats the AI fills: 0 → 1 → … → (seatCount-1) → 0. */
+  private cycleAiFill(): void {
+    if (this.connecting) return;
+    this.aiCount = this.aiCount >= this.seatCount - 1 ? 0 : this.aiCount + 1;
+    this.resetDraft();
+    this.refresh();
+  }
+
+  private clampAiCount(): void {
+    this.aiCount = Math.max(0, Math.min(this.seatCount - 1, this.aiCount));
+  }
+
+  /** Number of human-controlled seats. Humans take seats 0..humanCount-1. */
+  private humanCount(): number {
+    return Math.max(1, this.seatCount - this.aiCount);
+  }
+
+  /** Flip between balanced teams and free-for-all. */
+  private toggleFormat(): void {
+    if (this.connecting) return;
+    this.teamMode = this.teamMode === 'teams' ? 'ffa' : 'teams';
+    this.syncSeatTeams();
+    this.refresh();
+  }
+
+  /** Reset every seat to the balanced positional team split. */
+  private syncSeatTeams(): void {
+    const half = Math.ceil(this.seatCount / 2);
+    this.seatTeams = Array.from({ length: this.seatCount }, (_, s) => (s < half ? 1 : 2));
+  }
+
+  /** Flip a seat between team 1 and 2, never leaving a team empty. */
+  private cycleSeatTeam(seat: number): void {
+    if (this.connecting) return;
+    if (seat < 0 || seat >= this.seatCount) return;
+    const next = this.seatTeams[seat] === 1 ? 2 : 1;
+    const prev = this.seatTeams[seat];
+    this.seatTeams[seat] = next;
+    // Reject a flip that would wipe out a whole side of a teams match.
+    const t1 = this.seatTeams.slice(0, this.seatCount).filter((t) => t === 1).length;
+    if (t1 === 0 || t1 === this.seatCount) {
+      this.seatTeams[seat] = prev;
+      return;
+    }
+    this.refresh();
+  }
+
+  /** Seats controlled by a local human player, in draft order. */
+  private humanSeats(): number[] {
+    if (this.mode === 'online' || this.mode === 'training') return [0];
+    return Array.from({ length: this.humanCount() }, (_, i) => i);
+  }
+
+  /** Team number for a seat under the current layout. */
+  private teamOf(seat: number): number {
+    if (this.teamMode === 'ffa') return seat + 1;
+    const half = Math.ceil(this.seatCount / 2);
+    return this.seatTeams[seat] ?? (seat < half ? 1 : 2);
+  }
+
+  private seatName(seat: number, human: boolean): string {
+    if (human) return `Player ${seat + 1}`;
+    return this.seatCount > 2 ? `AI ${seat + 1}` : 'AI';
+  }
+
+  /** Human-readable label for the current match format. */
+  private formatLabel(): string {
+    if (this.teamMode === 'ffa') return this.seatCount <= 2 ? 'Duel' : 'Free-for-all';
+    if (this.seatCount === 2) return '1v1';
+    let t1 = 0;
+    for (let s = 0; s < this.seatCount; s++) if (this.teamOf(s) === 1) t1++;
+    const t2 = this.seatCount - t1;
+    return `${Math.max(t1, t2)}v${Math.min(t1, t2)}`;
+  }
+
+  /** Clear any in-progress local draft (when the setup changes). */
+  private resetDraft(): void {
+    this.draftIndex = 0;
+    this.draftLoadouts = [];
+    this.selected = [];
+    this.nadActive = false;
+    this.katActive = false;
   }
 
   private toggleWord(word: WordId): void {
@@ -183,14 +360,25 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private refresh(): void {
-    const who = this.stage === 1 ? 'Player 1' : 'Player 2';
+    const firstScreen = this.draftIndex === 0;
+    const humans = this.humanSeats();
+    const draftingSeat = humans[this.draftIndex] ?? 0;
+    const who = `Player ${draftingSeat + 1}`;
     this.titleText.setText(`${who}: choose ${LOADOUT_SIZE} words  (${this.selected.length}/${LOADOUT_SIZE})`);
     if (this.nadActive) {
       this.hintText.setText('✨ NAD unlocked: Mind · Shatter · Twist · Reality');
     } else if (this.katActive) {
       this.hintText.setText('✨ KAT unlocked: Corrode · Curse · Shadow · Drain');
     } else if (this.mode === 'online') {
-      this.hintText.setText('Online: pick your words, then Host or Join with a shared room code.');
+      const humans = this.humanCount();
+      const fill = this.aiCount > 0 ? ` + ${this.aiCount} AI` : '';
+      this.hintText.setText(
+        `Online ${this.formatLabel()} (${humans} human${humans > 1 ? 's' : ''}${fill}) — host sets Players/Format/AI; then Host or Join with a shared room code.`
+      );
+    } else if (this.mode === 'training') {
+      this.hintText.setText('Training: solo sandbox — spawn dummies, grant items, tweak HP/mana/stacks, reset the field.');
+    } else if (this.seatCount > 2) {
+      this.hintText.setText(`${this.formatLabel()} — each player drafts their own words in turn.`);
     } else {
       this.hintText.setText('Click words to select. Bind / Veil / Mind grant a reaction.');
     }
@@ -204,21 +392,68 @@ export class MenuScene extends Phaser.Scene {
     const aiOn = this.mode === 'ai';
     const hsOn = this.mode === 'hotseat';
     const onlineOn = this.mode === 'online';
+    const trainingOn = this.mode === 'training';
     this.modeAiBtn.setStyle({ backgroundColor: aiOn ? '#3a3a66' : '#23233a' });
     this.modeHsBtn.setStyle({ backgroundColor: hsOn ? '#3a3a66' : '#23233a' });
     this.modeOnlineBtn.setStyle({ backgroundColor: onlineOn ? '#3a3a66' : '#23233a' });
-    // Mode is only chosen on stage 1.
-    this.modeAiBtn.setVisible(this.stage === 1);
-    this.modeHsBtn.setVisible(this.stage === 1);
-    this.modeOnlineBtn.setVisible(this.stage === 1);
+    this.modeTrainingBtn.setStyle({ backgroundColor: trainingOn ? '#3a3a66' : '#23233a' });
+    // Mode is only chosen on the first draft screen.
+    this.modeAiBtn.setVisible(firstScreen);
+    this.modeHsBtn.setVisible(firstScreen);
+    this.modeOnlineBtn.setVisible(firstScreen);
+    this.modeTrainingBtn.setVisible(firstScreen);
+
+    // Item-set toggles (first screen only; the guest inherits the host's choice).
+    const setBtns: [Phaser.GameObjects.Text, keyof ItemSetSelection, string][] = [
+      [this.setOriginalBtn, 'original', 'Original Dimir'],
+      [this.setFinnsBtn, 'finns', "Finn's Additions"],
+      [this.setDlcBtn, 'dlc', 'Dimir Faithful DLC'],
+    ];
+    const showSets = firstScreen;
+    for (const [btn, key, label] of setBtns) {
+      const on = this.itemSets[key];
+      btn.setText(`${label}: ${on ? 'ON' : 'off'}`);
+      btn.setStyle({ backgroundColor: on ? '#2f5d3a' : '#23233a' });
+      btn.setVisible(showSets);
+    }
+
+    // Player-count / format controls: local teamfights & online room setup.
+    const showSetup = firstScreen && this.mode !== 'training';
+    this.playersBtn.setText(`Players: ${this.seatCount}`);
+    this.playersBtn.setVisible(showSetup);
+    this.formatBtn.setText(`Format: ${this.formatLabel()}`);
+    this.formatBtn.setVisible(showSetup);
+    this.aiFillBtn.setText(`AI: ${this.aiCount}`);
+    this.aiFillBtn.setVisible(showSetup);
+
+    // Per-seat team pickers: only for teams mode with 3+ combatants, where the
+    // split is actually a choice (e.g. player + AI vs player + AI).
+    const showSeatTeams = showSetup && this.teamMode === 'teams' && this.seatCount >= 3;
+    const spacing = 210;
+    for (let s = 0; s < this.seatBtns.length; s++) {
+      const btn = this.seatBtns[s];
+      if (showSeatTeams && s < this.seatCount) {
+        const human = s < this.humanCount();
+        const who = human ? `P${s + 1}` : `AI${s + 1}`;
+        btn.setText(`${who} → Team ${this.teamOf(s)}`);
+        btn.setX(GAME_WIDTH / 2 + (s - (this.seatCount - 1) / 2) * spacing);
+        btn.setStyle({ backgroundColor: this.teamOf(s) === 1 ? '#3a2a55' : '#22405a' });
+        btn.setVisible(true);
+      } else {
+        btn.setVisible(false);
+      }
+    }
 
     const ready = this.selected.length === LOADOUT_SIZE;
+    const moreSeats = this.draftIndex < humans.length - 1;
     // Online shows Host/Join buttons; the other modes show a single Confirm.
-    this.startBtn.setVisible(!onlineOn || this.stage === 2);
+    this.startBtn.setVisible(!onlineOn);
     this.startBtn.setAlpha(ready ? 1 : 0.4);
-    this.startBtn.setText(this.stage === 1 && this.mode === 'hotseat' ? 'Next' : 'Start Duel');
-    this.hostBtn.setVisible(onlineOn && this.stage === 1);
-    this.joinBtn.setVisible(onlineOn && this.stage === 1);
+    this.startBtn.setText(
+      moreSeats ? 'Next' : this.mode === 'training' ? 'Start Training' : 'Start Duel'
+    );
+    this.hostBtn.setVisible(onlineOn && firstScreen);
+    this.joinBtn.setVisible(onlineOn && firstScreen);
     const lobbyEnabled = ready && !this.connecting;
     this.hostBtn.setAlpha(lobbyEnabled ? 1 : 0.4);
     this.joinBtn.setAlpha(lobbyEnabled ? 1 : 0.4);
@@ -226,22 +461,45 @@ export class MenuScene extends Phaser.Scene {
 
   private confirm(): void {
     if (this.selected.length !== LOADOUT_SIZE) return;
-
-    if (this.stage === 1) {
-      this.loadout1 = [...this.selected];
-      if (this.mode === 'hotseat') {
-        this.stage = 2;
-        this.selected = [];
-        this.refresh();
-        return;
-      }
-      // Vs AI: give the AI a random-ish loadout that includes a reaction word.
-      this.start(this.loadout1, this.randomAILoadout());
+    if (this.mode === 'online') return; // online starts via Host / Join
+    if (this.mode === 'training') {
+      // Solo sandbox: a single loadout against a training dummy.
+      this.start(this.selected, this.randomAILoadout());
       return;
     }
 
-    // Stage 2 (hotseat player 2).
-    this.start(this.loadout1, [...this.selected]);
+    // Hotseat / vs-AI: draft each human seat in sequence, then launch.
+    const humans = this.humanSeats();
+    const seat = humans[this.draftIndex];
+    this.draftLoadouts[seat] = [...this.selected];
+    if (this.draftIndex < humans.length - 1) {
+      this.draftIndex++;
+      this.selected = [];
+      this.nadActive = false;
+      this.katActive = false;
+      this.refresh();
+      return;
+    }
+    this.startSeats();
+  }
+
+  /** Assemble the seat list for a local match and hand off to the duel. */
+  private startSeats(): void {
+    const humanSet = new Set(this.humanSeats());
+    const seats: SeatConfig[] = [];
+    for (let s = 0; s < this.seatCount; s++) {
+      const human = humanSet.has(s);
+      const loadout =
+        human && this.draftLoadouts[s]?.length ? this.draftLoadouts[s] : this.randomAILoadout();
+      seats.push({ name: this.seatName(s, human), team: this.teamOf(s), isAI: !human, loadout });
+    }
+    const config: MatchConfig = {
+      mode: this.mode,
+      loadouts: [seats[0].loadout, seats[1]?.loadout ?? seats[0].loadout],
+      seats,
+      itemSets: { ...this.itemSets },
+    };
+    this.scene.start('Game', config);
   }
 
   private randomAILoadout(): WordId[] {
@@ -255,7 +513,7 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private start(l1: WordId[], l2: WordId[]): void {
-    const config: MatchConfig = { mode: this.mode, loadouts: [l1, l2] };
+    const config: MatchConfig = { mode: this.mode, loadouts: [l1, l2], itemSets: { ...this.itemSets } };
     this.scene.start('Game', config);
   }
 
@@ -263,11 +521,15 @@ export class MenuScene extends Phaser.Scene {
   //  ONLINE LOBBY  (lockstep relay handshake)
   // ===========================================================================
 
-  /** Begin an online match as host (team 1) or guest (team 2). */
+  /** Begin an online match. Seat 0 (the first to join) hosts the handshake. */
   private async startOnline(role: NetRole): Promise<void> {
     if (this.connecting) return;
     if (this.selected.length !== LOADOUT_SIZE) {
       this.statusText.setText('Pick your full loadout first.');
+      return;
+    }
+    if (role === 'host' && this.humanCount() < 2) {
+      this.statusText.setText('Online needs at least 2 human seats — lower the AI count.');
       return;
     }
 
@@ -292,25 +554,75 @@ export class MenuScene extends Phaser.Scene {
     }
 
     try {
-      net.send({ k: 'join', room, role });
-      this.setStatus('Waiting for the other player…');
+      // Relay capacity is the *human* seat count; the host appends any AI seats
+      // locally so no network slot is reserved for them.
+      const humanSize = role === 'host' ? this.humanCount() : 0;
+      net.send({ k: 'join', room, size: humanSize });
+
+      // The relay assigns our seat (join order) and reports how many humans.
+      const seatMsg = await this.waitFor(net, 'seat');
+      const mySeat = Number(seatMsg.seat) | 0;
+      const roomHumans = Math.max(2, Math.min(4, Number(seatMsg.size) || 2));
+      this.setStatus(`Seat ${mySeat + 1} of ${roomHumans} — waiting for players…`);
       await this.waitFor(net, 'ready');
 
+      // Every human announces their loadout; seat 0 assembles the match.
+      net.send({ k: 'hello', seat: mySeat, loadout: myLoadout });
+
       let config: MatchConfig;
-      if (role === 'host') {
-        this.setStatus('Connected — waiting for opponent’s loadout…');
-        const hello = await this.waitFor(net, 'hello');
-        const guestLoadout = this.sanitizeLoadout(hello.loadout);
+      if (mySeat === 0) {
+        // Host: gather human loadouts (seats 0..roomHumans-1), then append AI.
+        const loadouts = new Map<number, WordId[]>();
+        loadouts.set(0, myLoadout);
+        while (loadouts.size < roomHumans) {
+          const hello = await this.waitFor(net, 'hello');
+          const seat = Number(hello.seat) | 0;
+          if (seat >= 0 && seat < roomHumans) loadouts.set(seat, this.sanitizeLoadout(hello.loadout));
+        }
+        // Humans take seats 0..roomHumans-1; the rest of the table is AI.
+        const totalSeats = Math.max(roomHumans, Math.min(4, this.seatCount));
+        const seats: SeatConfig[] = [];
+        for (let s = 0; s < totalSeats; s++) {
+          const human = s < roomHumans;
+          seats.push({
+            name: this.seatName(s, human),
+            team: this.teamOf(s),
+            isAI: !human,
+            loadout: human ? (loadouts.get(s) ?? this.randomAILoadout()) : this.randomAILoadout(),
+          });
+        }
         const seed = (Math.floor(Math.random() * 0x7fffffff) + 1) | 0;
-        net.send({ k: 'start', seed, loadouts: [myLoadout, guestLoadout] });
-        config = { mode: 'online', loadouts: [myLoadout, guestLoadout], net, localTeam: 1, seed };
+        net.send({ k: 'start', seed, seats, itemSets: this.itemSets });
+        config = {
+          mode: 'online',
+          loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],
+          seats,
+          net,
+          localTeam: seats[0].team,
+          localSeat: 0,
+          seed,
+          itemSets: { ...this.itemSets },
+        };
       } else {
-        net.send({ k: 'hello', loadout: myLoadout });
+        // Guest: wait for the host's assembled match definition.
         this.setStatus('Connected — waiting for host to start…');
         const startMsg = await this.waitFor(net, 'start');
-        const loadouts = this.sanitizeLoadoutPair(startMsg.loadouts);
+        const totalSeats = Array.isArray(startMsg.seats)
+          ? Math.max(2, Math.min(4, startMsg.seats.length))
+          : roomHumans;
+        const seats = this.sanitizeSeats(startMsg.seats, totalSeats);
         const seed = Number(startMsg.seed) | 0;
-        config = { mode: 'online', loadouts, net, localTeam: 2, seed };
+        const itemSets = this.sanitizeItemSets(startMsg.itemSets);
+        config = {
+          mode: 'online',
+          loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],
+          seats,
+          net,
+          localTeam: seats[mySeat]?.team ?? 2,
+          localSeat: mySeat,
+          seed,
+          itemSets,
+        };
       }
 
       this.connecting = false;
@@ -373,8 +685,31 @@ export class MenuScene extends Phaser.Scene {
     return out;
   }
 
-  private sanitizeLoadoutPair(value: unknown): [WordId[], WordId[]] {
+  /** Coerce an untrusted seat layout from the host into a safe SeatConfig[]. */
+  private sanitizeSeats(value: unknown, size: number): SeatConfig[] {
     const arr = Array.isArray(value) ? value : [];
-    return [this.sanitizeLoadout(arr[0]), this.sanitizeLoadout(arr[1])];
+    const out: SeatConfig[] = [];
+    for (let s = 0; s < size; s++) {
+      const v = (arr[s] ?? {}) as Partial<SeatConfig>;
+      out.push({
+        name: typeof v.name === 'string' ? v.name : `Player ${s + 1}`,
+        team: typeof v.team === 'number' && Number.isFinite(v.team) ? v.team : s + 1,
+        isAI: v.isAI === true,
+        loadout: this.sanitizeLoadout(v.loadout),
+      });
+    }
+    return out;
+  }
+
+  /** Coerce a networked item-set selection into a safe, non-empty selection. */
+  private sanitizeItemSets(value: unknown): ItemSetSelection {
+    const v = (value ?? {}) as Partial<Record<keyof ItemSetSelection, unknown>>;
+    const sets: ItemSetSelection = {
+      original: !!v.original,
+      finns: !!v.finns,
+      dlc: !!v.dlc,
+    };
+    if (!sets.original && !sets.finns && !sets.dlc) sets.original = true;
+    return sets;
   }
 }

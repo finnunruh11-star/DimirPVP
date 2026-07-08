@@ -6,7 +6,9 @@ import {
   GAME_HEIGHT,
   GAME_WIDTH,
   MAX_SPELL_WORDS,
+  MAX_WORD_SPELL_REACTIONS,
   MELEE_RANGE,
+  RANGE_UNIT,
   SCARAB,
   TEXT,
 } from '../config/constants';
@@ -42,17 +44,19 @@ import {
   draftChoices,
   DRAFT_ROUNDS,
   RARITY_COLOR,
+  setActiveItemSets,
+  ITEM_DEFS,
   type ItemId,
 } from '../core/Items';
 import type { StackItem } from '../core/Stack';
 import type { ShadowZone } from '../core/Shadow';
 import { barrierContains } from '../core/Barrier';
 import type { Spell, SpellVisual } from '../spells/Spell';
-import { allSpells, getSpell, reactionSpellsFor } from '../spells/registry';
+import { allSpells, getSpell, setActiveSpellSets } from '../spells/registry';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type { SubTargetPointOpts, SubTargetEnemyOpts } from '../effects/effects';
 import { SimpleAI, type AIDecision } from '../ai/SimpleAI';
-import type { MatchConfig } from './MenuScene';
+import type { MatchConfig, SeatConfig } from './MenuScene';
 import type { Net, NetMessage } from '../net/Net';
 
 // Pixel-art mage animations. Frames live under src/Sprites/<Action>/; Vite's
@@ -153,6 +157,8 @@ type InputMode =
   | 'aiming-eldritch'
   | 'aiming-discharge'
   | 'aiming-move'
+  | 'aiming-leap'
+  | 'aiming-cleave'
   | 'aiming-wall'
   | 'subtarget-point'
   | 'subtarget-enemy'
@@ -163,6 +169,8 @@ type InputMode =
   | 'inventory'
   | 'eldritch-menu'
   | 'thunder-menu'
+  | 'action-menu'
+  | 'training'
   | 'over';
 
 interface DiceRoll {
@@ -170,6 +178,74 @@ interface DiceRoll {
   total: number;
   rolls: number[];
   label?: string;
+}
+
+/**
+ * One entry in the context-aware action menu / on-screen action list. The
+ * registry that produces these is the single source of truth for "what can I do
+ * right now", so adding a new action is just adding one entry — it then shows up
+ * as a clickable button with its label, hotkey badge and description, and stays
+ * filtered to only appear when relevant. Hotkeys remain optional shortcuts.
+ */
+interface ActionEntry {
+  /** Stable id (used for keys / dedup). */
+  id: string;
+  /** Button label, e.g. 'Move' or 'Cast Fireball'. */
+  label: string;
+  /** Hotkey badge shown on the button, e.g. 'M' or '1–4 / Enter'. */
+  hotkey: string;
+  /** One-line description of what the action does. */
+  desc: string;
+  /** Whether the action can be used right now (false ⇒ greyed out with `reason`). */
+  enabled: boolean;
+  /** Why the action is unavailable, shown when `enabled` is false. */
+  reason?: string;
+  /** Perform the action (only invoked when `enabled`). */
+  run: () => void;
+}
+
+/** The reward tier of a dodge roll (see {@link analyzeDodge}). */
+type DodgeTier = 'none' | 'pair' | 'triple' | 'quad';
+
+/** A follow-up action offered after a strong dodge (triple / quad). */
+type DodgeChoice =
+  | { kind: 'attack' }
+  | { kind: 'spell'; spell: Spell }
+  | { kind: 'ability'; ability: ColorAbility };
+
+/**
+ * Classify a dodge dice roll (Nd6) into its reward tier:
+ *  - none   : no repeated value — the dodge fails.
+ *  - pair   : one repeated value — evade + reposition.
+ *  - triple : three of a kind OR two pairs — pair + a free bonus action.
+ *  - quad   : four of a kind OR three pairs — triple + the option to riposte.
+ */
+function analyzeDodge(rolls: number[]): DodgeTier {
+  const counts = new Map<number, number>();
+  for (const r of rolls) counts.set(r, (counts.get(r) ?? 0) + 1);
+  let pairs = 0;
+  let maxCount = 0;
+  for (const c of counts.values()) {
+    if (c >= 2) pairs++;
+    if (c > maxCount) maxCount = c;
+  }
+  if (maxCount >= 4 || pairs >= 3) return 'quad';
+  if (maxCount >= 3 || pairs >= 2) return 'triple';
+  if (maxCount >= 2) return 'pair';
+  return 'none';
+}
+
+function dodgeTierLabel(t: DodgeTier): string {
+  switch (t) {
+    case 'pair':
+      return 'a clean evade';
+    case 'triple':
+      return 'an evade + free action';
+    case 'quad':
+      return 'an evade + riposte';
+    default:
+      return 'no match — the dodge fails';
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -184,33 +260,40 @@ interface DiceRoll {
 /** A top-level turn action chosen by the active player. */
 type TurnCommand =
   | { t: 'move'; x: number; y: number }
-  | { t: 'melee'; target: 1 | 2 }
-  | { t: 'spell'; spellId: string; ability: boolean; target: 1 | 2 | null; x?: number; y?: number; angle?: number }
+  | { t: 'melee'; target: number }
+  | { t: 'spell'; spellId: string; ability: boolean; target: number | null; x?: number; y?: number; angle?: number }
   | { t: 'item-drop'; itemId: string }
   | { t: 'item-pickup'; dropId: number }
   | { t: 'item-use'; itemId: string }
   | { t: 'item-equip'; itemId: string }
   | { t: 'item-unequip'; itemId: string }
-  | { t: 'item-throw'; itemId: string; target: 1 | 2 }
-  | { t: 'eldritch'; choice: 'attack' | 'defend' | 'restore'; target?: 1 | 2 }
+  | { t: 'item-throw'; itemId: string; target: number }
+  | { t: 'eldritch'; choice: 'attack' | 'defend' | 'restore'; target?: number }
   | { t: 'thunder-charge' }
-  | { t: 'thunder-discharge'; target: 1 | 2 }
+  | { t: 'thunder-discharge'; target: number }
   | { t: 'cast-random' }
   | { t: 'weapon-action' }
+  | { t: 'leap'; x: number; y: number }
+  | { t: 'focus' }
+  | { t: 'cleave'; x: number; y: number }
   | { t: 'end' };
 
 /** A reaction-window choice (a counter/response, or a pass). */
 type ReactionCommand =
-  | { t: 'react'; spellId: string; ability: boolean; target: 1 | 2 | null; x?: number; y?: number }
+  | { t: 'react'; spellId: string; ability: boolean; target: number | null; x?: number; y?: number }
   | { t: 'shield'; kind: 'block' | 'bash' }
   | { t: 'needle' }
+  | { t: 'dodge' }
   | { t: 'pass' };
 
 /** A mid-cast sub-target choice. */
 type SubCommand =
   | { t: 'sub-point'; x: number; y: number }
-  | { t: 'sub-enemy'; target: 1 | 2 }
+  | { t: 'sub-enemy'; target: number }
   | { t: 'sub-none' };
+
+/** A mid-resolution draft pick (Gambler's Blade cash-out): the chosen card index. */
+type DraftCommand = { t: 'draft'; index: number };
 
 const MAGE_RADIUS = 22;
 const HUD_Y = FIELD.y + FIELD.h + 18;
@@ -222,11 +305,31 @@ export class GameScene extends Phaser.Scene {
   // Online play (lockstep relay). `net` is null for local matches.
   private net: Net | null = null;
   private online = false;
-  private localTeam: 1 | 2 = 1;
+  private localTeam = 1;
+  /** Online play: the seat index this client controls (0-based). */
+  private localSeat = 0;
   private opponentLeft = false;
 
   private mode: InputMode = 'idle';
   private busy = false;
+
+  // Training sandbox (offline only). Enabled when the match mode is 'training'.
+  private training = false;
+  /** Spawn points restored on a training soft reset. */
+  private playerSpawn: Vec2 = { x: 0, y: 0 };
+  private enemySpawn: Vec2 = { x: 0, y: 0 };
+  /** Home position of each seat, indexed by seat number (used for resets). */
+  private spawns: Vec2[] = [];
+  /** Which team the training overlay's vital/stack/item controls target. */
+  private trainTarget = 2;
+  /** Current training enemy configuration. */
+  private trainEnemyKind: 'dummy' | 'passive' | 'ai' = 'ai';
+  /** Which page of the training overlay is showing. */
+  private trainPage: 'main' | 'items' = 'main';
+  private trainPanel?: Phaser.GameObjects.Container;
+  private trainTitle?: Phaser.GameObjects.Text;
+  /** Dynamically rebuilt controls inside the training overlay. */
+  private trainWidgets: Phaser.GameObjects.GameObject[] = [];
 
   // Human spell-building state (indices into the current mage's loadout).
   private selectedIdx: number[] = [];
@@ -259,10 +362,12 @@ export class GameScene extends Phaser.Scene {
   private gfx!: Phaser.GameObjects.Graphics;
   private gfxFx!: Phaser.GameObjects.Graphics;
   private gfxScarab!: Phaser.GameObjects.Graphics;
+  private hoverGfx!: Phaser.GameObjects.Graphics;
   private dicePanel!: Phaser.GameObjects.Container;
   private turnText!: Phaser.GameObjects.Text;
   private comboText!: Phaser.GameObjects.Text;
   private hintText!: Phaser.GameObjects.Text;
+  private hintDim?: Phaser.Time.TimerEvent;
   private logText!: Phaser.GameObjects.Text;
   private actionText!: Phaser.GameObjects.Text;
   private resourceText!: Phaser.GameObjects.Text;
@@ -311,6 +416,11 @@ export class GameScene extends Phaser.Scene {
   private shopMage: Mage | null = null;
   private shopLocked = false;
   private shopResolve: ((items: ItemId[]) => void) | null = null;
+  /** Resolves the current Gambler's Blade cash-out pick (index of the 3 cards). */
+  private gamblerResolve: ((index: number) => void) | null = null;
+  /** Progress display for the Gambler's Blade cash-out draft (round/total). */
+  private gamblerRound = 0;
+  private gamblerTotal = 0;
 
   // Inventory overlay (items + status effects, opened with [I]).
   private invPanel?: Phaser.GameObjects.Container;
@@ -322,10 +432,21 @@ export class GameScene extends Phaser.Scene {
   // Blessing of Roaring Thunder action menu.
   private thunderMenu?: Phaser.GameObjects.Container;
 
+  // Context-aware "everything you can do right now" action menu (Tab / button /
+  // right-click). Its contents are generated from the action registry so new
+  // actions appear automatically without any extra hotkey to learn.
+  private actionMenu?: Phaser.GameObjects.Container;
+  /** The mode to restore when the action menu closes ('idle' or 'reaction'). */
+  private actionMenuReturn: InputMode = 'idle';
+  /** The always-visible button that opens the action menu. */
+  private actionMenuButton?: Phaser.GameObjects.Text;
+
   // Dev / testing cheat panel.
   private devPanel!: Phaser.GameObjects.Container;
   private devToggles: { key: DevToggle; label: string; hot: string; text: Phaser.GameObjects.Text }[] = [];
   private devClickGuard = false;
+  /** Swallows the field click that opened an aiming mode from the action menu. */
+  private menuClickGuard = false;
 
   // Reaction prompt.
   private reactor: Mage | null = null;
@@ -357,30 +478,63 @@ export class GameScene extends Phaser.Scene {
   create(config: MatchConfig): void {
     this.cameras.main.setBackgroundColor(COLORS.bg);
 
+    // Restrict the draft pool to the item sets chosen on the start screen.
+    setActiveItemSets(config.itemSets ?? { original: true });
+    // Keep spell availability in sync with the item-set toggle.
+    setActiveSpellSets(config.itemSets ?? { original: true });
+
     this.online = config.mode === 'online';
     this.net = config.net ?? null;
     this.localTeam = config.localTeam ?? 1;
+    this.localSeat = config.localSeat ?? this.localTeam - 1;
     this.opponentLeft = false;
+    this.training = config.mode === 'training';
 
-    const onlineName = (team: 1 | 2): string =>
+    const onlineName = (team: number): string =>
       team === this.localTeam ? `Player ${team} (You)` : `Player ${team}`;
 
-    const m1 = new Mage({
-      name: this.online ? onlineName(1) : 'Player 1',
-      isAI: false,
-      team: 1,
-      position: { x: FIELD.x + 180, y: FIELD.y + FIELD.h / 2 },
-      loadout: config.loadouts[0],
-    });
-    const m2 = new Mage({
-      name: this.online ? onlineName(2) : config.mode === 'ai' ? 'AI' : 'Player 2',
-      isAI: config.mode === 'ai',
-      team: 2,
-      position: { x: FIELD.x + FIELD.w - 180, y: FIELD.y + FIELD.h / 2 },
-      loadout: config.loadouts[1],
-    });
+    // Determine the combatants. An explicit seat list drives N-player matches;
+    // otherwise fall back to the classic two-mage layout derived from mode.
+    const seats: SeatConfig[] = config.seats?.length
+      ? config.seats
+      : [
+          {
+            name: this.online ? onlineName(1) : 'Player 1',
+            isAI: false,
+            team: 1,
+            loadout: config.loadouts[0],
+          },
+          {
+            name: this.online
+              ? onlineName(2)
+              : this.training
+                ? 'Enemy'
+                : config.mode === 'ai'
+                  ? 'AI'
+                  : 'Player 2',
+            isAI: config.mode === 'ai' || this.training,
+            team: 2,
+            loadout: config.loadouts[1],
+          },
+        ];
 
-    this.gs = new GameState([m1, m2], config.seed);
+    this.spawns = this.computeSpawns(seats.map((s) => s.team));
+    // Legacy anchors kept for the two-mage training / soft-reset paths.
+    this.playerSpawn = this.spawns[0] ?? { x: FIELD.x + 180, y: FIELD.y + FIELD.h / 2 };
+    this.enemySpawn = this.spawns[1] ?? { x: FIELD.x + FIELD.w - 180, y: FIELD.y + FIELD.h / 2 };
+
+    const mages = seats.map(
+      (s, i) =>
+        new Mage({
+          name: this.online && i === this.localSeat ? `${s.name} (You)` : s.name,
+          isAI: s.isAI,
+          team: s.team,
+          position: { ...this.spawns[i] },
+          loadout: s.loadout,
+        })
+    );
+
+    this.gs = new GameState(mages, config.seed);
     this.gs.onLog = () => this.drawLog();
     this.gs.vfxSink = {
       diceRoll: (spec, total, rolls, label) => this.pendingDice.push({ spec, total, rolls, label }),
@@ -390,6 +544,7 @@ export class GameScene extends Phaser.Scene {
     this.gs.subTargeter = {
       requestPoint: (source, opts) => this.requestSubtargetPoint(source, opts),
       requestEnemy: (source, opts) => this.requestSubtargetEnemy(source, opts),
+      reactionWindow: (source, label, at) => this.offerReactionWindow(source, label, { at }),
     };
     for (const m of this.gs.mages) if (m.isAI) this.ais.set(m, new SimpleAI(this.gs, m));
 
@@ -412,15 +567,66 @@ export class GameScene extends Phaser.Scene {
     void this.beginDuel();
   }
 
+  /**
+   * Home positions for every seat given each seat's team. Two teams face off in
+   * left / right columns; three or four teams take additional sides (top, then
+   * bottom) so a free-for-all spreads combatants around the arena. Members of a
+   * team stack along their side, centred on the anchor.
+   */
+  private computeSpawns(teams: number[]): Vec2[] {
+    const cx = FIELD.x + FIELD.w / 2;
+    const cy = FIELD.y + FIELD.h / 2;
+    const sides: { anchor: Vec2; spread: Vec2 }[] = [
+      { anchor: { x: FIELD.x + 180, y: cy }, spread: { x: 0, y: 130 } }, // left column
+      { anchor: { x: FIELD.x + FIELD.w - 180, y: cy }, spread: { x: 0, y: 130 } }, // right column
+      { anchor: { x: cx, y: FIELD.y + 120 }, spread: { x: 180, y: 0 } }, // top row
+      { anchor: { x: cx, y: FIELD.y + FIELD.h - 120 }, spread: { x: 180, y: 0 } }, // bottom row
+    ];
+    const distinct = [...new Set(teams)];
+    const teamSide = new Map<number, number>();
+    distinct.forEach((t, i) => teamSide.set(t, i % sides.length));
+    const totals = new Map<number, number>();
+    for (const t of teams) totals.set(t, (totals.get(t) ?? 0) + 1);
+    const placed = new Map<number, number>();
+    return teams.map((t) => {
+      const side = sides[teamSide.get(t)!];
+      const total = totals.get(t)!;
+      const idx = placed.get(t) ?? 0;
+      placed.set(t, idx + 1);
+      const offset = idx - (total - 1) / 2; // centre the column/row on the anchor
+      return {
+        x: side.anchor.x + side.spread.x * offset,
+        y: side.anchor.y + side.spread.y * offset,
+      };
+    });
+  }
+
   /** Roll the shared stat dice, run the assignment phase, then start the duel. */
   private async beginDuel(): Promise<void> {
     this.redraw();
+    if (this.training) {
+      this.setupTraining();
+      this.gs.startRound();
+      this.startTurn();
+      return;
+    }
     await this.runAssignmentPhase();
     if (this.opponentLeft) return;
     await this.runShopPhase();
     if (this.opponentLeft) return;
+    for (const m of this.gs.mages) m.resetDodges();
+    for (const m of this.gs.mages) m.resetCombatReactions();
     this.gs.startRound();
     this.startTurn();
+  }
+
+  /** Training sandbox: give both mages flat stats and arm the default AI enemy. */
+  private setupTraining(): void {
+    for (const m of this.gs.mages) m.assignFlatStats(5);
+    for (const m of this.gs.mages) m.resetDodges();
+    for (const m of this.gs.mages) m.resetCombatReactions();
+    this.applyTrainingEnemyKind(this.mageByTeam(2), this.trainEnemyKind);
+    this.gs.log('Training sandbox — press [P] to open the training tools.');
   }
 
   /** Drink a potion: spend it from the utility belt and apply its effect. */
@@ -432,10 +638,14 @@ export class GameScene extends Phaser.Scene {
     if (def.potion === 'mana') {
       mage.gainMana(10);
       this.gs.log(`${mage.name} drinks a Mana Potion (+10 mana).`);
-    } else {
+    } else if (def.potion === 'health') {
       const amt = this.gs.rng.roll('2d3').total;
       mage.hp = Math.min(mage.maxHp, mage.hp + amt);
       this.gs.log(`${mage.name} drinks a Health Potion (+${amt} HP).`);
+    } else {
+      // Word Vial: restore 1 charge to every word in the loadout.
+      mage.grantEldritchCharges(1);
+      this.gs.log(`${mage.name} uncorks a Word Vial — each word regains 1 charge.`);
     }
   }
 
@@ -451,17 +661,30 @@ export class GameScene extends Phaser.Scene {
     this.gs.log(`Stat dice: ${this.statDice.map((d) => `${d.spec}=${d.value}`).join(', ')}`);
 
     if (this.online && this.net) {
-      const myTeam = this.localTeam;
-      const oppTeam: 1 | 2 = myTeam === 1 ? 2 : 1;
-      const myMage = this.mageByTeam(myTeam);
+      // AI seats allocate deterministically on every client — no network needed.
+      for (const m of this.gs.mages) {
+        if (m.isAI) m.applyStatAllocation(this.statDice, aiAssignment(this.statDice));
+      }
+      const humanCount = this.gs.mages.filter((m) => !m.isAI).length;
+      const mySeat = this.localSeat;
+      const myMage = this.mageBySeat(mySeat);
       const myOrder = await this.promptAssignment(`${myMage.name} — assign your dice`);
       if (this.opponentLeft) return;
-      this.net.send({ k: 'assign', order: myOrder });
+      this.net.send({ k: 'assign', seat: mySeat, order: myOrder });
       this.showAssignWaiting();
-      const oppOrder = await this.awaitOpponentAssign();
+      // Collect every *human* seat's allocation (keyed by seat); AI already applied.
+      const orders = new Map<number, number[]>();
+      orders.set(mySeat, myOrder);
+      while (orders.size < humanCount && !this.opponentLeft && this.net) {
+        const msg = await this.net.recv();
+        if (msg.k === 'bye') break;
+        if (msg.k === 'assign' && typeof msg.seat === 'number') {
+          const order = isValidAssignment(msg.order) ? (msg.order as number[]) : defaultAssignment();
+          orders.set(msg.seat, order);
+        }
+      }
       if (this.opponentLeft) return;
-      this.mageByTeam(myTeam).applyStatAllocation(this.statDice, myOrder);
-      this.mageByTeam(oppTeam).applyStatAllocation(this.statDice, oppOrder);
+      for (const [seat, order] of orders) this.mageBySeat(seat).applyStatAllocation(this.statDice, order);
     } else {
       for (const m of this.gs.mages) {
         if (m.isAI) {
@@ -674,17 +897,27 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'shop';
 
     if (this.online && this.net) {
-      const myTeam = this.localTeam;
-      const oppTeam: 1 | 2 = myTeam === 1 ? 2 : 1;
-      const myMage = this.mageByTeam(myTeam);
+      // AI seats draft deterministically from the shared RNG on every client.
+      for (const m of this.gs.mages) {
+        if (m.isAI) this.applyCart(m, aiDraft(m.maxLuck, DRAFT_ROUNDS, () => this.gs.rng.float()));
+      }
+      const humanCount = this.gs.mages.filter((m) => !m.isAI).length;
+      const mySeat = this.localSeat;
+      const myMage = this.mageBySeat(mySeat);
       const myCart = await this.promptShop(myMage);
       if (this.opponentLeft) return;
-      this.net.send({ k: 'buy', items: myCart });
+      this.net.send({ k: 'buy', seat: mySeat, items: myCart });
       this.showShopWaiting();
-      const oppCart = await this.awaitOpponentBuy();
+      // Collect every *human* seat's cart (keyed by seat); AI already applied.
+      const carts = new Map<number, ItemId[]>();
+      carts.set(mySeat, myCart);
+      while (carts.size < humanCount && !this.opponentLeft && this.net) {
+        const msg = await this.net.recv();
+        if (msg.k === 'bye') break;
+        if (msg.k === 'buy' && typeof msg.seat === 'number') carts.set(msg.seat, asItemIds(msg.items));
+      }
       if (this.opponentLeft) return;
-      this.applyCart(myMage, myCart);
-      this.applyCart(this.mageByTeam(oppTeam), oppCart);
+      for (const [seat, cart] of carts) this.applyCart(this.mageBySeat(seat), cart);
     } else {
       for (const m of this.gs.mages) {
         if (m.isAI) {
@@ -804,6 +1037,17 @@ export class GameScene extends Phaser.Scene {
 
   /** Player chose option `idx` of the current round. */
   private onDraftPick(idx: number): void {
+    // Gambler's Blade cash-out: a single mid-combat pick resolves its own promise.
+    if (this.gamblerResolve) {
+      if (this.shopLocked) return;
+      const id = this.shopOptions[idx];
+      if (!id) return;
+      const resolve = this.gamblerResolve;
+      this.gamblerResolve = null;
+      if (this.shopPanel) this.shopPanel.setVisible(false);
+      resolve(idx);
+      return;
+    }
     if (this.shopLocked) return;
     const id = this.shopOptions[idx];
     if (!id) return;
@@ -889,12 +1133,19 @@ export class GameScene extends Phaser.Scene {
     const cap = carryCapacity(this.shopMage.statStrength);
     const rarity = this.shopOptions.length ? getItem(this.shopOptions[0]).rarity : 'common';
     const rarityName = rarity.charAt(0).toUpperCase() + rarity.slice(1);
-    this.shopTitle.setText(
-      `${this.shopMage.name} — Draft ${this.shopRound}/${DRAFT_ROUNDS}`
-    );
-    this.shopTitle.setColor(TEXT.warn);
-    this.shopInfo.setText(`A ${rarityName} appears — choose one of three (carry ${cap}kg)`);
-    this.shopInfo.setColor(RARITY_COLOR[rarity]);
+    if (this.gamblerResolve) {
+      this.shopTitle.setText(
+        `${this.shopMage.name} — Gambler's Blade  (${this.gamblerRound}/${this.gamblerTotal})`
+      );
+      this.shopTitle.setColor(TEXT.warn);
+      this.shopInfo.setText(`A ${rarityName} appears — choose one of three to draft (carry ${cap}kg)`);
+      this.shopInfo.setColor(RARITY_COLOR[rarity]);
+    } else {
+      this.shopTitle.setText(`${this.shopMage.name} — Draft ${this.shopRound}/${DRAFT_ROUNDS}`);
+      this.shopTitle.setColor(TEXT.warn);
+      this.shopInfo.setText(`A ${rarityName} appears — choose one of three (carry ${cap}kg)`);
+      this.shopInfo.setColor(RARITY_COLOR[rarity]);
+    }
     this.shopOptionTexts.forEach((t, i) => {
       const id = this.shopOptions[i];
       if (!id) {
@@ -908,6 +1159,10 @@ export class GameScene extends Phaser.Scene {
       );
       t.setColor(RARITY_COLOR[def.rarity]);
     });
+    if (this.gamblerResolve) {
+      this.shopCartText.setText('Pick a card to draft that item.');
+      return;
+    }
     const pickNames = this.shopPicks.map((id) => getItem(id).name);
     this.shopCartText.setText(
       `Drafted: ${pickNames.length ? pickNames.join(', ') : '(nothing yet)'}`
@@ -979,14 +1234,14 @@ export class GameScene extends Phaser.Scene {
       this.mode = 'busy';
       await this.runAITurn();
       if (this.gs.isOver) return this.endGame();
-      this.nextTurn();
+      await this.nextTurn();
     } else if (this.online && !this.isLocalTurn()) {
       // The opponent pilots this turn; drive it from their relayed commands.
       this.mode = 'busy';
       this.redraw();
       await this.runRemoteTurn();
       if (this.gs.isOver) return this.endGame();
-      this.nextTurn();
+      await this.nextTurn();
     } else {
       this.mode = 'idle';
       this.redraw();
@@ -1007,7 +1262,7 @@ export class GameScene extends Phaser.Scene {
       await this.delay(300);
     }
     if (this.gs.isOver) return this.endGame();
-    this.nextTurn();
+    await this.nextTurn();
   }
 
   /** Rebuild a stack item from a mage's recorded last action, paying its cost. */
@@ -1091,7 +1346,14 @@ export class GameScene extends Phaser.Scene {
   }
 
 
-  private nextTurn(): void {
+  private async nextTurn(): Promise<void> {
+    // As the acting mage moves to end their turn, opponents get one last chance
+    // to spend their reaction (counter-magic only) before the turn passes.
+    await this.offerReactionWindow(this.gs.current, 'End of Turn', {
+      description: `${this.gs.current.name} moves to end their turn.`,
+    });
+    if (this.gs.isOver) return this.endGame();
+
     // A queued extra turn (Shatter Mind Reality) jumps the queue before the
     // normal rotation, and does not advance the round.
     const extra = this.gs.takeExtraTurn();
@@ -1105,8 +1367,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private async runAITurn(): Promise<void> {
-    // Dev: a passive AI simply forfeits its turn.
-    if (Dev.aiPassive) {
+    // Dev: a passive AI simply forfeits its turn. Training dummies do the same.
+    if (Dev.aiPassive || this.gs.current.trainingPassive) {
       await this.delay(250);
       return;
     }
@@ -1164,17 +1426,27 @@ export class GameScene extends Phaser.Scene {
   /** True when the local client owns the mage whose turn it currently is. */
   private isLocalTurn(): boolean {
     if (!this.online) return true;
-    return this.gs.current.team === this.localTeam;
+    return this.seatOf(this.gs.current) === this.localSeat;
   }
 
   /** True when the local client decides for `m` (turn action / reaction / sub-target). */
   private isLocalDecider(m: Mage): boolean {
     if (!this.online) return true;
-    return m.team === this.localTeam;
+    return this.seatOf(m) === this.localSeat;
   }
 
-  private mageByTeam(team: 1 | 2): Mage {
-    return this.gs.mages[0].team === team ? this.gs.mages[0] : this.gs.mages[1];
+  private mageByTeam(team: number): Mage {
+    return this.gs.mages.find((m) => m.team === team) ?? this.gs.mages[0];
+  }
+
+  /** A mage's seat index (its position in the shared mage list) — the wire id. */
+  private seatOf(m: Mage): number {
+    return this.gs.mages.indexOf(m);
+  }
+
+  /** Resolve a seat index (as sent over the wire) back to its mage. */
+  private mageBySeat(seat: number): Mage {
+    return this.gs.mages[seat] ?? this.gs.mages[0];
   }
 
   /** Resolve a serialized spell / color-ability id back to its definition. */
@@ -1202,7 +1474,7 @@ export class GameScene extends Phaser.Scene {
         await this.runStack(this.gs.makeMoveItem(me, { x: cmd.x, y: cmd.y }));
         break;
       case 'melee': {
-        const target = this.mageByTeam(cmd.target);
+        const target = this.mageBySeat(cmd.target);
         me.spend(me.attackIsBonusAction() ? 'bonus' : 'main');
         await this.runStack(this.gs.makeMeleeItem(me, target));
         break;
@@ -1219,7 +1491,7 @@ export class GameScene extends Phaser.Scene {
           spell.targeting === 'self'
             ? me
             : cmd.target != null
-            ? this.mageByTeam(cmd.target)
+            ? this.mageBySeat(cmd.target)
             : null;
         const point = cmd.x != null && cmd.y != null ? { x: cmd.x, y: cmd.y } : null;
         if (cmd.angle != null) me.wallAngle = cmd.angle;
@@ -1343,7 +1615,7 @@ export class GameScene extends Phaser.Scene {
           break;
         }
         me.spend('bonus');
-        const target = this.mageByTeam(cmd.target);
+        const target = this.mageBySeat(cmd.target);
         await this.runStack(
           this.gs.makeActionItem({
             source: me,
@@ -1363,7 +1635,7 @@ export class GameScene extends Phaser.Scene {
           break;
         }
         me.spend('main');
-        const target = cmd.target ? this.mageByTeam(cmd.target) : null;
+        const target = cmd.target ? this.mageBySeat(cmd.target) : null;
         await this.runStack(
           this.gs.makeActionItem({
             source: me,
@@ -1400,7 +1672,7 @@ export class GameScene extends Phaser.Scene {
           break;
         }
         me.spend('bonus');
-        const target = this.mageByTeam(cmd.target);
+        const target = this.mageBySeat(cmd.target);
         await this.runStack(
           this.gs.makeActionItem({
             source: me,
@@ -1430,13 +1702,71 @@ export class GameScene extends Phaser.Scene {
             needleBan: firstAbility
               ? { kind: 'ability', key: `weapon:${firstAbility}`, label: 'that weapon action' }
               : undefined,
-            resolve: (game) => {
+            resolve: async (game) => {
               for (const id of me.weaponAbilityItems()) {
                 const ability = getItem(id).weaponAbility;
                 if (ability === 'bastionSwap') game.swapBastionForm(me);
                 else if (ability === 'mutivargZone') game.castMutivargZone(me);
+                else if (ability === 'gamblerCash') await this.gamblerCashOut(me);
               }
             },
+          })
+        );
+        break;
+      }
+      case 'leap': {
+        me.spend('bonus');
+        me.leapsUsed += 1;
+        // Roll the d6 deterministically so both peers agree on the distance.
+        const roll = this.gs.rng.roll('1d6').total;
+        const distPx = (roll / 6) * (1 + 0.25 * me.effectiveDex()) * RANGE_UNIT;
+        const aim = { x: cmd.x, y: cmd.y };
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Leap',
+            description: `${me.name} leaps.`,
+            resolve: (game) => {
+              const dest = stepTowards(me.pos, aim, distPx);
+              game.leapMove(me, dest);
+              game.log(`${me.name} leaps (d6=${roll}) ${(distPx / RANGE_UNIT).toFixed(1)}R.`);
+            },
+          })
+        );
+        break;
+      }
+      case 'focus': {
+        me.focusUsed = true;
+        me.focusNextSpell = true;
+        // Focus burns all remaining bonus actions and this turn cycle's reaction.
+        me.actions.bonus = 0;
+        me.reactionAvailable = false;
+        me.reactedThisCycle = true;
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Focus',
+            description: `${me.name} focuses.`,
+            resolve: (game) => {
+              game.log(
+                `${me.name} focuses — the next word spell this turn costs half mana and rolls its DC twice.`
+              );
+            },
+          })
+        );
+        break;
+      }
+      case 'cleave': {
+        me.spend('main');
+        me.cleaveUsed = true;
+        const aim = { x: cmd.x, y: cmd.y };
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Cleave',
+            description: `${me.name} cleaves in a wide arc.`,
+            isStillValid: () => me.alive && !!me.activeWeapon(),
+            resolve: (game) => game.resolveCleave(me, aim),
           })
         );
         break;
@@ -1481,11 +1811,14 @@ export class GameScene extends Phaser.Scene {
     if (choice.shield) {
       return { k: 'react', cmd: { t: 'shield', kind: choice.shield } satisfies ReactionCommand };
     }
+    if (choice.dodge) {
+      return { k: 'react', cmd: { t: 'dodge' } satisfies ReactionCommand };
+    }
     const cmd: ReactionCommand = {
       t: 'react',
       spellId: choice.spell!.id,
       ability: this.isColorAbility(choice.spell!),
-      target: (choice.target?.team ?? null) as 1 | 2 | null,
+      target: (choice.target ? this.seatOf(choice.target) : null),
       x: choice.point?.x,
       y: choice.point?.y,
     };
@@ -1497,10 +1830,11 @@ export class GameScene extends Phaser.Scene {
     if (!cmd) return null;
     if (cmd.t === 'needle') return { needle: true };
     if (cmd.t === 'shield') return { shield: cmd.kind };
+    if (cmd.t === 'dodge') return { dodge: true };
     if (cmd.t !== 'react') return null;
     const spell = this.resolveSpellId(cmd.spellId);
     if (!spell) return null;
-    const target = cmd.target != null ? this.mageByTeam(cmd.target) : undefined;
+    const target = cmd.target != null ? this.mageBySeat(cmd.target) : undefined;
     const point = cmd.x != null && cmd.y != null ? { x: cmd.x, y: cmd.y } : undefined;
     return { spell, target, point };
   }
@@ -1517,7 +1851,7 @@ export class GameScene extends Phaser.Scene {
   private async recvSubEnemy(): Promise<Mage | null> {
     const msg = await this.net!.recv();
     const cmd = msg.cmd as SubCommand | undefined;
-    if (cmd && cmd.t === 'sub-enemy') return this.mageByTeam(cmd.target);
+    if (cmd && cmd.t === 'sub-enemy') return this.mageBySeat(cmd.target);
     return null;
   }
 
@@ -1527,8 +1861,89 @@ export class GameScene extends Phaser.Scene {
   }
 
   private sendSubEnemy(m: Mage | null): void {
-    const cmd: SubCommand = m ? { t: 'sub-enemy', target: m.team as 1 | 2 } : { t: 'sub-none' };
+    const cmd: SubCommand = m ? { t: 'sub-enemy', target: this.seatOf(m) } : { t: 'sub-none' };
     this.net?.send({ k: 'sub', cmd });
+  }
+
+  // --- Gambler's Blade cash-out (interactive mid-combat draft) ---------------
+
+  /**
+   * Gambler's Blade weapon command: shatter the blade, then draft one item per
+   * 5 Greed stacks. The three options per pick are rolled from the shared RNG
+   * (identical on both peers); the human chooses and the index is relayed.
+   */
+  private async gamblerCashOut(mage: Mage): Promise<void> {
+    const game = this.gs;
+    const n = game.shatterGamblerBlade(mage);
+    if (n <= 0) {
+      game.log(`${mage.name} cashes out the Gambler's Blade, but greed was too thin to pay out.`);
+      return;
+    }
+    const drafted: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const rarity = rollRarity(() => game.rng.float(), mage.maxLuck);
+      const options = draftChoices(rarity, () => game.rng.float(), 3);
+      if (!options.length) continue;
+      const idx = await this.chooseGamblerItem(mage, options, i + 1, n);
+      const id = options[Math.max(0, Math.min(options.length - 1, idx))];
+      game.grantItem(mage, id);
+      drafted.push(getItem(id).name);
+    }
+    game.log(
+      `${mage.name} cashes out the Gambler's Blade for ${drafted.length} item${drafted.length === 1 ? '' : 's'}: ${drafted.join(', ') || 'nothing'}.`
+    );
+  }
+
+  /** Resolve one Gambler cash-out pick (AI rolls, remote relays, human picks). */
+  private async chooseGamblerItem(
+    mage: Mage,
+    options: ItemId[],
+    round: number,
+    total: number
+  ): Promise<number> {
+    if (this.controllerIsAI(mage)) {
+      return Math.floor(this.gs.rng.float() * options.length);
+    }
+    // Online: the acting player picks; the other peer waits for the relayed index.
+    if (this.online && !this.isLocalDecider(mage)) {
+      return this.recvDraftPick(options.length);
+    }
+    await this.playPendingDice();
+    const idx = await this.showGamblerPicker(mage, options, round, total);
+    if (this.online) this.sendDraftPick(idx);
+    return idx;
+  }
+
+  /** Show the draft overlay for a single Gambler pick and resolve the chosen index. */
+  private showGamblerPicker(
+    mage: Mage,
+    options: ItemId[],
+    round: number,
+    total: number
+  ): Promise<number> {
+    this.shopMage = mage;
+    this.shopOptions = [...options];
+    this.gamblerRound = round;
+    this.gamblerTotal = total;
+    this.buildShopOverlay();
+    this.shopLocked = false;
+    if (this.shopPanel) this.shopPanel.setVisible(true);
+    this.refreshShopOverlay();
+    return new Promise<number>((resolve) => {
+      this.gamblerResolve = resolve;
+    });
+  }
+
+  private sendDraftPick(idx: number): void {
+    const cmd: DraftCommand = { t: 'draft', index: idx };
+    this.net?.send({ k: 'draft', cmd });
+  }
+
+  private async recvDraftPick(count: number): Promise<number> {
+    const msg = await this.net!.recv();
+    const cmd = msg.cmd as DraftCommand | undefined;
+    const idx = cmd && cmd.t === 'draft' ? Number(cmd.index) : 0;
+    return Number.isFinite(idx) ? Math.max(0, Math.min(count - 1, idx)) : 0;
   }
 
   /** The opponent dropped: freeze the duel and offer a return to the menu. */
@@ -1569,73 +1984,7 @@ export class GameScene extends Phaser.Scene {
     if (initial.kind === 'spell') this.setCharging(initial.source, true);
     await this.delay(250);
 
-    const passed = new Set<number>();
-    while (this.gs.stack.length > 0) {
-      const top = this.gs.stack[this.gs.stack.length - 1];
-      const reactor = this.gs.opponentOf(top.source);
-
-      if (!passed.has(top.id) && this.reactorCanRespond(reactor, top)) {
-        const choice = await this.getReaction(reactor, top);
-        if (choice && choice.needle) {
-          // Needle of Serenity: stifle the ability/strike (it never resolves)
-          // and disable it against this reactor forever. One-time use.
-          this.applyNeedle(reactor, top);
-          this.gs.removeStackItem(top.id);
-          this.redraw();
-          await this.delay(250);
-          if (this.gs.isOver) break;
-          continue;
-        }
-        if (choice && choice.shield) {
-          // Shield reactions are not put on the stack. Block raises a shield for
-          // the next physical hit (free, unlimited); bash smashes the attacker
-          // once per duel. Neither consumes the once-per-turn reaction.
-          if (choice.shield === 'block') {
-            reactor.blockPending = true;
-            this.gs.log(`${reactor.name} raises a shield to block.`);
-          } else {
-            this.gs.shieldBash(reactor, top.source);
-          }
-          this.redraw();
-          await this.delay(250);
-          if (this.gs.isOver) break;
-          passed.add(top.id);
-          continue;
-        }
-        if (choice && choice.spell) {
-          if (this.isColorAbility(choice.spell)) {
-            this.payForColorAbility(reactor, choice.spell);
-          } else {
-            this.payForSpell(reactor, choice.spell);
-          }
-          reactor.reactionAvailable = false;
-          reactor.reactionUsedRecently = true;
-          const item = this.gs.makeSpellItem(
-            reactor,
-            choice.spell,
-            choice.target ?? null,
-            choice.point ?? null,
-            top.id
-          );
-          this.gs.pushStack(item);
-          this.redraw();
-          this.setCharging(reactor, true);
-          await this.delay(250);
-          continue;
-        }
-        passed.add(top.id);
-      }
-
-      const resolved = await this.resolveTop();
-      // A mage carrying a Shadow Trail leaves a pool of shadow where it walks.
-      if (resolved && resolved.kind === 'move') this.gs.dropTrailShadows(resolved.source);
-      // Repositioning (moves, dashes) can bring an enemy point-blank, which
-      // collapses any half veil they were hiding behind.
-      this.gs.breakProximityVeils();
-      this.redraw();
-      if (this.gs.isOver) break;
-      await this.delay(200);
-    }
+    await this.resolveStackLoop();
 
     this.busy = false;
     if (this.gs.isOver) {
@@ -1649,6 +1998,146 @@ export class GameScene extends Phaser.Scene {
       this.mode = 'idle';
     }
     this.redraw();
+  }
+
+  /**
+   * Open a self-contained reaction window mid-flow (end of turn, or between the
+   * steps of a multi-step spell) so opponents may spend their reaction against a
+   * synthetic no-op trigger. Reuses the normal stack-resolution loop so any
+   * reaction cast here resolves exactly as it would during a regular action.
+   * Only counter-magic is offered — never a Dodge/Block/Bash (nothing to defend).
+   */
+  private async offerReactionWindow(
+    source: Mage,
+    label: string,
+    opts: { at?: Vec2; description?: string } = {}
+  ): Promise<void> {
+    if (this.gs.isOver || !source.alive) return;
+    const trigger = this.gs.makeActionItem({
+      source,
+      label,
+      description: opts.description ?? `${source.name}: ${label}.`,
+      resolve: () => {},
+    });
+    trigger.noPhysicalReaction = true;
+    if (opts.at) trigger.targetPoint = opts.at;
+    // Skip the window entirely when nobody could answer it — keeps play snappy
+    // and avoids exchanging empty reaction messages online. Deterministic on
+    // both peers because it reads only shared game state.
+    if (!this.reactorsFor(trigger).some((r) => this.reactorCanRespond(r, trigger))) return;
+    const prevMode = this.mode;
+    const wasBusy = this.busy;
+    this.busy = true;
+    this.gs.pushStack(trigger);
+    this.redraw();
+    await this.resolveStackLoop();
+    this.busy = wasBusy;
+    if (!this.gs.isOver) this.mode = prevMode;
+    this.redraw();
+  }
+
+  /**
+   * Resolve every item currently on the stack, opening a reaction window on the
+   * top item before it resolves. Extracted from {@link runStack} so mid-flow
+   * windows ({@link offerReactionWindow}) can re-enter the exact same logic.
+   */
+  private async resolveStackLoop(): Promise<void> {
+    // `${itemId}:${seat}` — a reactor has already had its window on that item.
+    const passed = new Set<string>();
+    while (this.gs.stack.length > 0) {
+      const top = this.gs.stack[this.gs.stack.length - 1];
+
+      // --- Reaction window: every living ENEMY of the acting mage gets a
+      //     single chance to answer the action, offered in initiative order.
+      //     Any reaction that removes the item or pushes a counter re-opens the
+      //     loop on the new top; Block/Bash just modify state and let the next
+      //     enemy respond before the action finally resolves.
+      let stackChanged = false;
+      for (const reactor of this.reactorsFor(top)) {
+        const key = `${top.id}:${this.seatOf(reactor)}`;
+        if (passed.has(key)) continue;
+        if (!this.reactorCanRespond(reactor, top)) {
+          passed.add(key);
+          continue;
+        }
+        const choice = await this.getReaction(reactor, top);
+        if (choice && choice.needle) {
+          // Needle of Serenity: stifle the ability/strike (it never resolves)
+          // and disable it against this reactor forever. One-time use.
+          reactor.reactedThisCycle = true;
+          this.applyNeedle(reactor, top);
+          this.gs.removeStackItem(top.id);
+          stackChanged = true;
+          break;
+        }
+        if (choice && choice.spell) {
+          if (this.isColorAbility(choice.spell)) {
+            // payForColorAbility tracks the per-combat cast cap for us.
+            this.payForColorAbility(reactor, choice.spell);
+          } else {
+            this.payForSpell(reactor, choice.spell);
+            reactor.wordSpellReactionsUsed += 1;
+          }
+          reactor.reactedThisCycle = true;
+          reactor.reactionUsedRecently = true;
+          const item = this.gs.makeSpellItem(
+            reactor,
+            choice.spell,
+            choice.target ?? null,
+            choice.point ?? null,
+            top.id
+          );
+          this.gs.pushStack(item);
+          this.setCharging(reactor, true);
+          stackChanged = true;
+          break;
+        }
+        if (choice && choice.dodge) {
+          // A dodge rolls to slip aside; on a hit the whole action is negated.
+          const negated = await this.performDodge(reactor, top);
+          if (negated) {
+            this.gs.removeStackItem(top.id);
+            stackChanged = true;
+            break;
+          }
+          passed.add(key);
+        } else if (choice && choice.shield === 'block') {
+          // Arm the shield; the physical blow is blunted as it lands.
+          reactor.reactedThisCycle = true;
+          reactor.blockPending = true;
+          this.gs.log(`${reactor.name} raises a shield against ${top.label}.`);
+          this.redraw();
+          passed.add(key);
+        } else if (choice && choice.shield === 'bash') {
+          // A bash answers the blow, smashing the attacker; the action still lands.
+          reactor.reactedThisCycle = true;
+          this.gs.shieldBash(reactor, top.source);
+          this.redraw();
+          passed.add(key);
+        } else {
+          passed.add(key);
+        }
+      }
+
+      if (stackChanged) {
+        this.redraw();
+        await this.delay(250);
+        if (this.gs.isOver) break;
+        continue;
+      }
+
+      // Resolve the top item now that the reaction window has closed.
+      const resolved = await this.resolveTop();
+      // A mage carrying a Shadow Trail leaves a pool of shadow where it walks.
+      if (resolved && resolved.kind === 'move') this.gs.dropTrailShadows(resolved.source);
+      // Repositioning (moves, dashes) can bring an enemy point-blank, which
+      // collapses any half veil they were hiding behind.
+      this.gs.breakProximityVeils();
+
+      this.redraw();
+      if (this.gs.isOver) break;
+      await this.delay(200);
+    }
   }
 
   private async resolveTop(): Promise<StackItem | null> {
@@ -1691,6 +2180,7 @@ export class GameScene extends Phaser.Scene {
     //    one-shot (synced to the projectile) as the effect travels to its target.
     if (item.kind === 'spell') await this.finishChargeThenAttack(item.source);
     await this.playActionVisual(item);
+
     // 2) Apply the effect. Dice rolled inside cast() queue up in pendingDice.
     //    A spell may await interactive sub-targeting here, so resolve is async.
     this.pendingDice = [];
@@ -1710,25 +2200,33 @@ export class GameScene extends Phaser.Scene {
     // Blue primary tier and assigned Intellect both lower a spell's difficulty.
     // A flat +3 raises the baseline difficulty of every spell.
     const dc = (spell.dc ?? 0) + 3 - (source.profile.bluePrimaryTier ? 2 : 0) - source.dcReduction();
+    // Focus grants advantage on this one cast: roll the DC twice, keep the best.
+    const focused = source.focusNextSpell;
     const r = this.gs.rng.roll('1d20');
+    let best = r;
+    if (focused) {
+      const r2 = this.gs.rng.roll('1d20');
+      if (r2.total > best.total) best = r2;
+      source.focusNextSpell = false;
+    }
     this.pendingDice.push({
       spec: '1d20',
-      total: r.total,
-      rolls: r.rolls,
-      label: `${spell.name} — success?`,
+      total: best.total,
+      rolls: best.rolls,
+      label: `${spell.name} — success?${focused ? ' (focus)' : ''}`,
     });
-    let ok = Dev.autoSuccess || r.total >= dc;
+    let ok = Dev.autoSuccess || best.total >= dc;
     // Luck can turn a near-miss into a hit: spend the minimum needed to reach
     // the DC. Both peers know the roll and the luck pool, so this stays in
     // lockstep without any extra network decision.
     let luckSpent = 0;
-    if (!ok && source.luck > 0 && dc - r.total <= source.luck) {
-      luckSpent = source.spendLuck(dc - r.total);
+    if (!ok && source.luck > 0 && dc - best.total <= source.luck) {
+      luckSpent = source.spendLuck(dc - best.total);
       ok = true;
     }
     const luckNote = luckSpent > 0 ? ` (+${luckSpent} luck → ${source.luck} left)` : '';
     this.gs.log(
-      `${source.name}'s ${spell.name}: 1d20=${r.total} vs DC ${dc} — ${ok ? 'success!' : 'fizzles.'}${luckNote}`
+      `${source.name}'s ${spell.name}: 1d20=${best.total} vs DC ${dc} — ${ok ? 'success!' : 'fizzles.'}${luckNote}`
     );
     // A failed spell can still pay out through gear (Soul Battery / Locket / Tantrum).
     if (!ok) {
@@ -1739,12 +2237,12 @@ export class GameScene extends Phaser.Scene {
 
   /** Reaction spells the reactor could actually cast right now (charges + valid target). */
   private castableReactions(reactor: Mage): Spell[] {
+    // Casting a word-spell as a reaction requires at least one blue word and is
+    // capped per combat. Defensive reactions (Dodge/Block/Bash/Needle) are
+    // handled separately and stay available regardless of words.
+    if (!reactor.canWordSpellReact()) return [];
     const forgotten = reactor.forgotten();
-    // Blue primary tier lets a mage respond with ANY of its word-spells, not
-    // just reaction-flagged ones; otherwise use the normal reaction set.
-    const pool = reactor.profile.bluePrimaryTier
-      ? allSpells().filter((s) => s.words.every((w) => reactor.loadout.includes(w)))
-      : reactionSpellsFor(reactor.loadout);
+    const pool = allSpells().filter((s) => s.words.every((w) => reactor.loadout.includes(w)));
     return pool.filter((s) => {
       if (!reactor.hasCharges(s.words)) return false;
       if (!reactor.hasMana(wordSpellMana(s.words, reactor.profile))) return false;
@@ -1771,18 +2269,75 @@ export class GameScene extends Phaser.Scene {
   private castableAbilities(reactor: Mage): ColorAbility[] {
     if (!this.canReactWithAbilities(reactor)) return [];
     return getColorAbilitiesFor(reactor.profile.primary).filter(
-      (ab) => !reactor.isAbilityBanned(ab.id) && this.canAffordAbility(reactor, ab)
+      (ab) =>
+        !reactor.isAbilityBanned(ab.id) &&
+        reactor.abilityCastsLeft(ab.id) > 0 &&
+        this.canAffordAbility(reactor, ab)
     );
   }
 
+  /**
+   * Every living enemy of `top.source`, ordered by initiative — the sequence in
+   * which they are offered a reaction window against the action.
+   */
+  private reactorsFor(top: StackItem): Mage[] {
+    const order = this.gs.initiativeOrder.length
+      ? this.gs.initiativeOrder
+      : this.gs.mages.map((_, i) => i);
+    return order
+      .map((i) => this.gs.mages[i])
+      .filter(
+        (m) =>
+          m &&
+          m.alive &&
+          m !== top.source &&
+          m !== this.gs.current &&
+          m.team !== top.source.team
+      );
+  }
+
+  /**
+   * True if `reactor` may open a reaction window against `top`. A single window
+   * offers every reaction the mage can afford: a counter-spell / colour ability,
+   * the Needle of Serenity, and — when `top` is an attack aimed at the reactor —
+   * a Dodge, Block or shield-Bash.
+   */
   private reactorCanRespond(reactor: Mage, top: StackItem): boolean {
     if (reactor === top.source) return false;
+    // You may never react during your own turn.
+    if (reactor === this.gs.current) return false;
+    // Physical reactions are meaningless against non-attack triggers (end of
+    // turn, a blink step) — only counter-magic answers those.
+    const physical = !top.noPhysicalReaction;
+    // A Dexterity dodge is a separate per-combat resource, independent of the
+    // single reaction allowed each turn cycle — offer it whenever it is ready.
+    if (physical && this.canDodge(reactor)) return true;
+    // Every other reaction spends the one reaction available per turn cycle.
+    if (reactor.reactedThisCycle) return false;
     if (this.canNeedle(reactor, top)) return true;
-    if (this.canBlock(reactor) || this.canBash(reactor, top)) return true;
-    if (!reactor.hasReaction()) return false;
-    return (
-      this.castableReactions(reactor).length > 0 || this.castableAbilities(reactor).length > 0
-    );
+    // Open the window whenever the mage still has their reaction available —
+    // even if temporarily out of mana or charges. The cast attempt will fail
+    // inside castReaction with the real reason rather than a misleading one.
+    if (reactor.hasReaction()) return true;
+    if (this.castableAbilities(reactor).length > 0) return true;
+    // Physical reactions (Block / shield-Bash) need no blue word — they are
+    // available when the mage has the gear for them and their reaction is unspent.
+    return physical && (this.canBlock(reactor) || this.canBash(reactor, top));
+  }
+
+  /** True if `top` is an attack (melee or spell) aimed squarely at `reactor`. */
+  private isIncomingAttack(top: StackItem, reactor: Mage): boolean {
+    return top.target === reactor && (top.kind === 'melee' || top.kind === 'spell');
+  }
+
+  /**
+   * True if `reactor` can spend a Dexterity dodge. Dodges are a per-combat
+   * resource unlocked at Dex 6 (one more every 6 Dex), independent of the
+   * once-per-turn reaction.
+   */
+  private canDodge(reactor: Mage): boolean {
+    if (!reactor.alive) return false;
+    return reactor.dodgesRemaining > 0 && reactor.maxDodges() > 0;
   }
 
   /**
@@ -1853,18 +2408,24 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
-  private async getReaction(reactor: Mage, top: StackItem): Promise<ReactionChoice | null> {
+  private async getReaction(
+    reactor: Mage,
+    top: StackItem
+  ): Promise<ReactionChoice | null> {
     if (this.controllerIsAI(reactor)) {
-      // Dev: a passive AI never reacts.
-      if (Dev.aiPassive) return null;
+      // Dev: a passive AI never reacts. Training dummies stay inert too.
+      if (Dev.aiPassive || reactor.trainingPassive) return null;
+      // Prefer a counter-spell / colour ability if the AI wants one…
       const ai = this.aiFor(reactor);
       const r = ai.chooseReaction(true) ?? null;
       if (r) return { spell: r.spell, target: r.target, point: r.point };
-      // No spell reaction — fall back to a defensive shield reaction so the AI
-      // still profits from its shield now that block/bash are no longer passive.
-      const incoming = top.kind === 'melee' || (top.kind === 'spell' && top.target === reactor);
-      if (incoming && this.canBash(reactor, top)) return { shield: 'bash' };
-      if (incoming && this.canBlock(reactor)) return { shield: 'block' };
+      // …otherwise defend against an incoming attack: dodge first (fully shrugs
+      // off the blow for a per-combat charge), then a bash, then a block.
+      if (this.isIncomingAttack(top, reactor)) {
+        if (this.canDodge(reactor)) return { dodge: true };
+        if (this.canBash(reactor, top)) return { shield: 'bash' };
+        if (this.canBlock(reactor)) return { shield: 'block' };
+      }
       return null;
     }
     // Online: the opponent's reaction arrives over the wire; ours is relayed.
@@ -1906,6 +2467,12 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-T', () => this.beginThrowFirst());
     kb.on('keydown-Q', () => this.beginEldritch());
     kb.on('keydown-C', () => this.beginThunder());
+    kb.on('keydown-L', () => this.beginLeap());
+    kb.on('keydown-F', () => this.castFocus());
+    kb.on('keydown-V', () => this.beginCleave());
+    kb.on('keydown-P', () => this.toggleTrainingOverlay());
+    kb.addCapture('TAB');
+    kb.on('keydown-TAB', () => this.toggleActionMenu());
     kb.on('keydown-SPACE', () => {
       if (this.mode === 'reaction') this.onReactionPass();
     });
@@ -1918,7 +2485,14 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-K', () => {
       if (this.mode === 'reaction') this.chooseNeedleReaction();
     });
+    kb.on('keydown-D', () => {
+      if (this.mode === 'reaction') this.chooseDodgeReaction();
+    });
     kb.on('keydown-ESC', () => {
+      if (this.mode === 'action-menu') {
+        this.hideActionMenu();
+        return;
+      }
       if (this.mode === 'inventory') {
         this.closeInventory();
         return;
@@ -1931,6 +2505,10 @@ export class GameScene extends Phaser.Scene {
         this.hideThunderMenu();
         return;
       }
+      if (this.mode === 'training') {
+        this.closeTrainingOverlay();
+        return;
+      }
       this.cancelAiming();
     });
 
@@ -1941,6 +2519,9 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-F3', () => this.toggleDev('infiniteActions'));
     kb.on('keydown-F4', () => this.toggleDev('aiPassive'));
     kb.on('keydown-BACKTICK', () => this.devPanel.setVisible(!this.devPanel.visible));
+
+    // Right-click opens the action menu, so suppress the browser context menu.
+    this.input.mouse?.disableContextMenu();
 
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       this.pointer = { x: p.worldX, y: p.worldY };
@@ -1962,7 +2543,7 @@ export class GameScene extends Phaser.Scene {
    * shared screen always shows the player who is about to act.
    */
   private get viewMage(): Mage {
-    return this.online ? this.mageByTeam(this.localTeam) : this.actor;
+    return this.online ? this.mageBySeat(this.localSeat) : this.actor;
   }
 
   /**
@@ -2075,7 +2656,7 @@ export class GameScene extends Phaser.Scene {
         t: 'spell',
         spellId: spell.id,
         ability: false,
-        target: spell.targeting === 'self' ? me.team : null,
+        target: spell.targeting === 'self' ? this.seatOf(me) : null,
       });
       return;
     }
@@ -2084,19 +2665,22 @@ export class GameScene extends Phaser.Scene {
       if (spell.rotatableWall) {
         this.wallAimAngle = 0;
         this.mode = 'aiming-wall';
-        this.flashHint('Move to place the wall, [H] rotate, click to confirm.');
+        this.flashHint(`${spell.name}: move to place the wall, [H] rotate, click to confirm.`, true);
         this.redraw();
         return;
       }
       this.mode = 'aiming-point';
-      this.flashHint('Click a destination within range.');
+      this.flashHint(`${spell.name}: click a target point within range.`, true);
       this.redraw();
       return;
     }
     // enemy / ally
     this.pendingSpell = spell;
     this.mode = 'aiming-spell';
-    this.flashHint('Click a valid target.');
+    this.flashHint(
+      `${spell.name}: click ${spell.targeting === 'ally' ? 'an ally' : 'a target'} within range.`,
+      true
+    );
     this.redraw();
   }
 
@@ -2108,7 +2692,7 @@ export class GameScene extends Phaser.Scene {
     if (this.gs.current.actions.move <= 0) return this.flashHint('No move action left.');
     this.pendingSpell = null;
     this.mode = 'aiming-move';
-    this.flashHint('Click where to move (within range).');
+    this.flashHint('Move: click where to walk (within range).', true);
     this.redraw();
   }
 
@@ -2126,7 +2710,48 @@ export class GameScene extends Phaser.Scene {
       return this.flashHint('Out of arrows — buy more or switch weapons.');
     this.pendingSpell = null;
     this.mode = 'aiming-melee';
-    this.flashHint('Click an enemy in melee range.');
+    this.flashHint('Melee attack: click an enemy in range.', true);
+    this.redraw();
+  }
+
+  /** Leap: pick a direction, then bound a d6-scaled distance that way. */
+  private beginLeap(): void {
+    if (this.mode === 'reaction') return;
+    if (!this.humanActive) return;
+    const me = this.gs.current;
+    if (me.leapsLeft() <= 0) return this.flashHint('No leaps left this combat.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Leap needs a bonus action.');
+    this.pendingSpell = null;
+    this.mode = 'aiming-leap';
+    this.flashHint('Leap: click a direction (distance is a d6 roll).', true);
+    this.redraw();
+  }
+
+  /** Focus: burn all bonus actions + your reaction to empower the next word spell. */
+  private castFocus(): void {
+    if (this.mode === 'reaction') return;
+    if (!this.humanActive) return;
+    const me = this.gs.current;
+    if (me.focusUsed) return this.flashHint('You have already focused this combat.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Focus needs a bonus action.');
+    this.mode = 'busy';
+    this.submitTurn({ t: 'focus' });
+  }
+
+  /** Cleave: pick a direction, then sweep a 180° arc for double melee damage. */
+  private beginCleave(): void {
+    if (this.mode === 'reaction') return;
+    if (!this.humanActive) return;
+    const me = this.gs.current;
+    if (me.cleaveUsed) return this.flashHint('You have already cleaved this combat.');
+    if (!me.activeWeapon()) return this.flashHint('Cleave needs a weapon in hand.');
+    if (me.actions.main <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Cleave is a main action.');
+    this.pendingSpell = null;
+    this.mode = 'aiming-cleave';
+    this.flashHint('Click a direction to swing your 180° cleave.');
     this.redraw();
   }
 
@@ -2338,6 +2963,434 @@ export class GameScene extends Phaser.Scene {
     this.thunderMenu = cont;
   }
 
+  // ===========================================================================
+  //  ACTION MENU  —  a context-aware, click-to-use list of everything the
+  //  current mage can do this instant. Built from a data-driven registry so
+  //  new actions appear automatically; a player never has to memorise hotkeys.
+  // ===========================================================================
+
+  /** Everything the active mage can do on its own turn, in menu order. */
+  private turnActionEntries(): ActionEntry[] {
+    const me = this.gs.current;
+    const inf = Dev.infiniteActions;
+    const entries: ActionEntry[] = [];
+
+    // Cast the currently-composed word spell.
+    const spell = this.currentComboSpell();
+    const affordSpell =
+      !!spell &&
+      me.hasCharges(spell.words) &&
+      me.hasMana(wordSpellMana(spell.words, me.profile)) &&
+      (spell.actionType === 'main' ? me.actions.main : me.actions.bonus) > 0;
+    entries.push({
+      id: 'cast',
+      label: spell ? `Cast ${spell.name}` : 'Cast spell',
+      hotkey: '1–4 / Enter',
+      desc: spell
+        ? `${spell.actionType} action · ${wordSpellMana(spell.words, me.profile)} mana`
+        : 'Click words in the panel to compose a spell, then cast.',
+      enabled: !!spell && (affordSpell || inf) && !me.hasCastThisTurn && !me.blocksCasting(),
+      reason: !spell
+        ? 'Select a valid word combination first.'
+        : me.hasCastThisTurn
+          ? 'Already cast a spell this turn.'
+          : me.blocksCasting()
+            ? 'Both hands full — drop an item to cast.'
+            : 'Not enough charges / mana / actions.',
+      run: () => this.onCast(),
+    });
+
+    // Colour abilities (one entry each).
+    getColorAbilitiesFor(me.profile.primary).forEach((ab, i) => {
+      const left = me.abilityCastsLeft(ab.id);
+      entries.push({
+        id: `ability-${ab.id}`,
+        label: `Cast ${ab.name}`,
+        hotkey: i === 0 ? 'Z' : i === 1 ? 'X' : '—',
+        desc: `Colour ability · ${this.abilityChargeCost(me, ab)}c / ${this.abilityManaCost(me, ab)}m · ${left} left this combat`,
+        enabled:
+          this.canAffordAbility(me, ab) &&
+          (me.actions.bonus > 0 || inf) &&
+          !me.isAbilityBanned(ab.id) &&
+          left > 0,
+        reason: me.isAbilityBanned(ab.id)
+          ? 'Stifled forever.'
+          : left <= 0
+            ? 'Spent for this combat.'
+            : 'Needs a bonus action + charges / mana.',
+        run: () => this.castColorAbility(i),
+      });
+    });
+
+    // Move.
+    entries.push({
+      id: 'move',
+      label: 'Move',
+      hotkey: 'M',
+      desc: 'Reposition within your movement range.',
+      enabled: (me.actions.move > 0 || inf) && !me.hasForgotten('move'),
+      reason: me.hasForgotten('move') ? 'Forgotten how to move this turn.' : 'No move action left.',
+      run: () => this.beginMove(),
+    });
+
+    // Attack (basic weapon strike).
+    const bonusAtk = me.attackIsBonusAction();
+    const atkPool = bonusAtk ? me.actions.bonus : me.actions.main;
+    const weapon = me.activeWeapon();
+    const outOfArrows = !!weapon?.usesArrows && me.arrows <= 0;
+    entries.push({
+      id: 'attack',
+      label: 'Attack',
+      hotkey: 'A',
+      desc: 'Strike an enemy with your equipped weapon.',
+      enabled: (atkPool > 0 || inf) && !me.hasForgotten('melee') && !outOfArrows,
+      reason: me.hasForgotten('melee')
+        ? 'Forgotten how to fight this turn.'
+        : outOfArrows
+          ? 'Out of arrows.'
+          : bonusAtk
+            ? 'Needs a bonus action.'
+            : 'Needs a main action.',
+      run: () => this.beginMelee(),
+    });
+
+    // Leap (bonus-action bound; d6 distance scaled by dex).
+    entries.push({
+      id: 'leap',
+      label: 'Leap',
+      hotkey: 'L',
+      desc: `Bound a d6 distance in any direction · ${me.leapsLeft()} left this combat.`,
+      enabled: (me.actions.bonus > 0 || inf) && me.leapsLeft() > 0,
+      reason: me.leapsLeft() <= 0 ? 'No leaps left this combat.' : 'Needs a bonus action.',
+      run: () => this.beginLeap(),
+    });
+
+    // Focus (bonus action; empowers the next word spell this turn).
+    entries.push({
+      id: 'focus',
+      label: 'Focus',
+      hotkey: 'F',
+      desc: 'Burn all bonus + your reaction; next word spell: half mana, roll DC twice.',
+      enabled: (me.actions.bonus > 0 || inf) && !me.focusUsed,
+      reason: me.focusUsed ? 'Already focused this combat.' : 'Needs a bonus action.',
+      run: () => this.castFocus(),
+    });
+
+    // Cleave (main action; needs a weapon; 180° double-damage sweep).
+    const cleaveWeapon = me.activeWeapon();
+    entries.push({
+      id: 'cleave',
+      label: 'Cleave',
+      hotkey: 'V',
+      desc: 'Sweep a 180° arc for double melee damage (once per combat).',
+      enabled: (me.actions.main > 0 || inf) && !me.cleaveUsed && !!cleaveWeapon,
+      reason: !cleaveWeapon
+        ? 'Need a weapon in hand.'
+        : me.cleaveUsed
+          ? 'Already cleaved this combat.'
+          : 'Needs a main action.',
+      run: () => this.beginCleave(),
+    });
+
+    // Weapon action (only if a carried weapon has one).
+    if (me.hasWeaponAction()) {
+      entries.push({
+        id: 'weapon',
+        label: 'Weapon action',
+        hotkey: 'R',
+        desc: 'Trigger your weapon\u2019s special ability.',
+        enabled: me.actions.bonus > 0 || inf,
+        reason: 'Needs a bonus action.',
+        run: () => void this.onWeaponAction(),
+      });
+    }
+
+    // Throw (only if carrying a throwable).
+    const throwId = me.utility.find((id) => getItem(id).throwable && !me.isItemBanned(id));
+    if (throwId) {
+      entries.push({
+        id: 'throw',
+        label: `Throw ${getItem(throwId).name}`,
+        hotkey: 'T',
+        desc: 'Hurl a throwable item at an enemy.',
+        enabled: (me.actions.bonus > 0 || inf) && !me.swordFormLocked(),
+        reason: me.swordFormLocked() ? 'Locked in sword form.' : 'Needs a bonus action.',
+        run: () => this.beginThrowFirst(),
+      });
+    }
+
+    // Mantle of Eldritch Truth.
+    if (me.hasEldritchMantle()) {
+      entries.push({
+        id: 'eldritch',
+        label: 'Eldritch truth',
+        hotkey: 'Q',
+        desc: 'Attack / Defend / Restore (main action).',
+        enabled: (me.actions.main > 0 || inf) && !me.isActionBanned('eldritch'),
+        reason: me.isActionBanned('eldritch') ? 'Stifled forever.' : 'Needs a main action.',
+        run: () => this.beginEldritch(),
+      });
+    }
+
+    // Blessing of Roaring Thunder.
+    if (me.hasThunderBlessing()) {
+      entries.push({
+        id: 'thunder',
+        label: 'Roaring thunder',
+        hotkey: 'C',
+        desc: 'Charge up or discharge your thunder stacks.',
+        enabled: me.actions.bonus > 0 || inf,
+        reason: 'Needs a bonus action.',
+        run: () => this.beginThunder(),
+      });
+    }
+
+    // Inventory.
+    entries.push({
+      id: 'inventory',
+      label: 'Inventory',
+      hotkey: 'I',
+      desc: 'Use potions, throw or inspect carried items.',
+      enabled: true,
+      run: () => this.toggleInventory(),
+    });
+
+    // Drop a held item.
+    if (me.hands.length > 0) {
+      entries.push({
+        id: 'drop',
+        label: 'Drop item',
+        hotkey: 'G',
+        desc: 'Drop a held item to free a hand (bonus action).',
+        enabled: (me.actions.bonus > 0 || inf) && !me.swordFormLocked(),
+        reason: me.swordFormLocked() ? 'Sword form locks your bag.' : 'Needs a bonus action.',
+        run: () => this.onDropItem(),
+      });
+    }
+
+    // Pick up a nearby dropped item.
+    const drop = this.gs.nearestDropFor(me);
+    if (drop) {
+      entries.push({
+        id: 'pickup',
+        label: `Pick up ${getItem(drop.itemId).name}`,
+        hotkey: 'H',
+        desc: 'Retrieve one of your dropped items (bonus action).',
+        enabled: (me.actions.bonus > 0 || inf) && me.hasFreeHand() && !me.swordFormLocked(),
+        reason: !me.hasFreeHand()
+          ? 'Both hands full.'
+          : me.swordFormLocked()
+            ? 'Sword form locks your bag.'
+            : 'Needs a bonus action.',
+        run: () => this.onPickUpItem(),
+      });
+    }
+
+    // End turn.
+    entries.push({
+      id: 'end',
+      label: 'End turn',
+      hotkey: 'E',
+      desc: 'Pass your remaining actions and end the turn.',
+      enabled: true,
+      run: () => this.onEndTurn(),
+    });
+
+    return entries;
+  }
+
+  /** Everything the reactor can do during a reaction window, in menu order. */
+  private reactionActionEntries(): ActionEntry[] {
+    const reactor = this.reactor;
+    const top = this.reactionTop;
+    if (!reactor || !top) return [];
+    const entries: ActionEntry[] = [];
+
+    // Cast a word spell as a reaction (compose in the word panel first).
+    const spell = this.currentComboSpell();
+    const castable = this.castableReactions(reactor);
+    entries.push({
+      id: 'react-cast',
+      label: spell ? `Cast ${spell.name}` : 'Cast reaction spell',
+      hotkey: '1–4 / Enter',
+      desc: spell ? 'Respond with the composed spell.' : 'Click words in the panel, then cast.',
+      enabled: !!spell && castable.some((s) => s.id === spell.id),
+      reason: spell ? 'That spell can\u2019t be cast as a reaction now.' : 'Select a reaction spell first.',
+      run: () => this.castReaction(),
+    });
+
+    // Colour ability reactions.
+    this.castableAbilities(reactor).forEach((ab, i) => {
+      entries.push({
+        id: `react-ability-${ab.id}`,
+        label: `Cast ${ab.name}`,
+        hotkey: i === 0 ? 'Z' : i === 1 ? 'X' : '—',
+        desc: `Colour ability reaction · ${this.abilityChargeCost(reactor, ab)}c / ${this.abilityManaCost(reactor, ab)}m`,
+        enabled: true,
+        run: () => this.castAbilityReaction(i),
+      });
+    });
+
+    entries.push({
+      id: 'needle',
+      label: 'Needle of Serenity',
+      hotkey: 'K',
+      desc: 'Stifle the incoming ability or weapon strike.',
+      enabled: this.canNeedle(reactor, top),
+      reason: 'Nothing here can be stifled.',
+      run: () => this.chooseNeedleReaction(),
+    });
+
+    // Defensive reactions — available to any mage with the gear or stamina,
+    // but only against an actual attack (never an end-of-turn or blink trigger).
+    const physical = !top.noPhysicalReaction;
+    entries.push({
+      id: 'block',
+      label: 'Block',
+      hotkey: 'B',
+      desc: 'Raise your shield to soak the incoming blow.',
+      enabled: physical && this.canBlock(reactor),
+      reason: 'No shield, or nothing to block.',
+      run: () => this.chooseShieldReaction('block'),
+    });
+    entries.push({
+      id: 'bash',
+      label: 'Shield bash',
+      hotkey: 'N',
+      desc: 'Bash the adjacent attacker (once per duel).',
+      enabled: physical && this.canBash(reactor, top),
+      reason: 'No shield, the attacker is out of reach, or nothing to bash.',
+      run: () => this.chooseShieldReaction('bash'),
+    });
+    entries.push({
+      id: 'dodge',
+      label: 'Dodge',
+      hotkey: 'D',
+      desc: 'Spend a dodge to try to shrug off the attack.',
+      enabled: physical && this.canDodge(reactor),
+      reason: 'No dodge available, or nothing to dodge.',
+      run: () => this.chooseDodgeReaction(),
+    });
+
+    // Pass.
+    entries.push({
+      id: 'pass',
+      label: 'Pass',
+      hotkey: 'Space',
+      desc: 'Do nothing and let the action resolve.',
+      enabled: true,
+      run: () => this.onReactionPass(),
+    });
+
+    return entries;
+  }
+
+  /** Toggle the context-aware action menu (Tab / on-screen button / right-click). */
+  private toggleActionMenu(): void {
+    if (this.actionMenu) {
+      this.hideActionMenu();
+      return;
+    }
+    const isReaction = this.mode === 'reaction';
+    // Only openable on your own turn, or during your reaction window.
+    if (!isReaction && !(this.mode === 'idle' && this.humanActive)) return;
+    this.actionMenuReturn = isReaction ? 'reaction' : 'idle';
+    this.buildActionMenu();
+  }
+
+  private hideActionMenu(): void {
+    this.actionMenu?.destroy();
+    this.actionMenu = undefined;
+    if (this.mode === 'action-menu') this.mode = this.actionMenuReturn;
+    this.redraw();
+  }
+
+  private buildActionMenu(): void {
+    this.hideActionMenu();
+    const reaction = this.actionMenuReturn === 'reaction';
+    const entries = reaction ? this.reactionActionEntries() : this.turnActionEntries();
+    this.mode = 'action-menu';
+
+    const cont = this.add.container(0, 0).setDepth(98);
+    const dim = this.add
+      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.55)
+      .setOrigin(0, 0)
+      .setInteractive();
+    dim.on('pointerdown', () => this.hideActionMenu());
+
+    const cx = GAME_WIDTH / 2;
+    const panelW = 580;
+    const rowH = 42;
+    const headH = 74;
+    const panelH = headH + entries.length * rowH + 14;
+    const top0 = Math.max(30, Math.round((GAME_HEIGHT - panelH) / 2));
+    const box = this.add
+      .rectangle(cx, top0 + panelH / 2, panelW, panelH, 0x0c0c18, 0.98)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, reaction ? 0xff8a5c : 0x6a6ad0);
+    const titleT = this.add
+      .text(cx, top0 + 22, reaction ? 'Reaction — choose a response' : 'Actions', {
+        fontSize: '20px',
+        color: reaction ? '#ffb98a' : TEXT.warn,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    const hintT = this.add
+      .text(cx, top0 + 48, 'Click an action, or use its hotkey.  [Tab] / [Esc] to close.', {
+        fontSize: '12px',
+        color: TEXT.dim,
+      })
+      .setOrigin(0.5);
+    cont.add([dim, box, titleT, hintT]);
+
+    const left = cx - panelW / 2;
+    entries.forEach((e, i) => {
+      const y = top0 + headH + i * rowH;
+      const rowBg = this.add
+        .rectangle(cx, y + rowH / 2 - 4, panelW - 28, rowH - 6, e.enabled ? 0x1b1b30 : 0x141420, 1)
+        .setOrigin(0.5)
+        .setStrokeStyle(1, e.enabled ? 0x3a3a66 : 0x24243a);
+      const key = this.add
+        .text(left + 22, y + 7, e.hotkey, {
+          fontSize: '12px',
+          color: e.enabled ? TEXT.warn : TEXT.dim,
+          backgroundColor: '#00000066',
+          padding: { x: 6, y: 3 },
+          fixedWidth: 92,
+          align: 'center',
+        })
+        .setOrigin(0, 0);
+      const label = this.add
+        .text(left + 128, y + 3, e.label, {
+          fontSize: '16px',
+          color: e.enabled ? TEXT.body : TEXT.dim,
+          fontStyle: 'bold',
+        })
+        .setOrigin(0, 0);
+      const desc = this.add
+        .text(left + 128, y + 22, e.enabled ? e.desc : e.reason ?? e.desc, {
+          fontSize: '11px',
+          color: e.enabled ? TEXT.dim : TEXT.bad,
+        })
+        .setOrigin(0, 0);
+      cont.add([rowBg, key, label, desc]);
+      if (e.enabled) {
+        rowBg.setInteractive({ useHandCursor: true });
+        rowBg.on('pointerover', () => rowBg.setFillStyle(0x2a2a4a));
+        rowBg.on('pointerout', () => rowBg.setFillStyle(0x1b1b30));
+        rowBg.on('pointerdown', () => {
+          // The very same click reaches the field's global pointerdown right
+          // after this. Guard it so an action that starts aiming doesn't also
+          // pick a target here — the player aims on their NEXT click.
+          this.menuClickGuard = true;
+          this.hideActionMenu();
+          e.run();
+        });
+      }
+    });
+    this.actionMenu = cont;
+  }
+
   private cancelAiming(): void {
     // Skipping an interactive sub-target resolves it as "no target".
     if (this.mode === 'subtarget-point' || this.mode === 'subtarget-enemy') {
@@ -2372,7 +3425,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.humanActive || this.busy) return;
     this.resetSelection();
     if (this.online) this.net?.send({ k: 'turn', cmd: { t: 'end' } satisfies TurnCommand });
-    this.nextTurn();
+    void this.nextTurn();
   }
 
   /** Drop a held item to the ground to free a hand slot (bonus action). */
@@ -2738,9 +3791,23 @@ export class GameScene extends Phaser.Scene {
   private onPointerDown(p: Phaser.Input.Pointer): void {
     // The stat-assignment / shop overlays own all input while they're up.
     if (this.mode === 'assign' || this.mode === 'shop') return;
+    // While the action menu is open, its own dim overlay handles clicks.
+    if (this.mode === 'action-menu') return;
     // A click consumed by the dev cheat panel must not also act on the field.
     if (this.devClickGuard) {
       this.devClickGuard = false;
+      return;
+    }
+    // A click that just chose an action-menu option must not also target the
+    // field: swallow it so the player selects their target on the next click.
+    if (this.menuClickGuard) {
+      this.menuClickGuard = false;
+      return;
+    }
+    // Right-click anywhere opens the context action menu — a mouse-only way to
+    // reach every action without knowing any hotkeys.
+    if (p.rightButtonDown()) {
+      this.toggleActionMenu();
       return;
     }
     const pt = { x: p.worldX, y: p.worldY };
@@ -2779,11 +3846,21 @@ export class GameScene extends Phaser.Scene {
       this.submitTurn({ t: 'move', x: dest.x, y: dest.y });
       return;
     }
+    if (this.mode === 'aiming-leap') {
+      this.mode = 'busy';
+      this.submitTurn({ t: 'leap', x: pt.x, y: pt.y });
+      return;
+    }
+    if (this.mode === 'aiming-cleave') {
+      this.mode = 'busy';
+      this.submitTurn({ t: 'cleave', x: pt.x, y: pt.y });
+      return;
+    }
     if (this.mode === 'aiming-melee') {
       const target = this.clickedMage(pt, me);
       if (target && this.gs.canMelee(me, target)) {
         this.mode = 'busy';
-        this.submitTurn({ t: 'melee', target: target.team });
+        this.submitTurn({ t: 'melee', target: this.seatOf(target) });
       } else {
         this.flashHint('No enemy in melee range there.');
       }
@@ -2795,7 +3872,7 @@ export class GameScene extends Phaser.Scene {
       if (itemId && target && target.team !== me.team && this.canThrowAt(me, target, itemId)) {
         this.throwPendingItem = null;
         this.mode = 'busy';
-        this.submitTurn({ t: 'item-throw', itemId, target: target.team });
+        this.submitTurn({ t: 'item-throw', itemId, target: this.seatOf(target) });
       } else {
         this.flashHint('No enemy within throwing range there.');
       }
@@ -2805,7 +3882,7 @@ export class GameScene extends Phaser.Scene {
       const target = this.clickedMage(pt, null);
       if (target && target.team !== me.team && target.alive) {
         this.mode = 'busy';
-        this.submitTurn({ t: 'eldritch', choice: 'attack', target: target.team });
+        this.submitTurn({ t: 'eldritch', choice: 'attack', target: this.seatOf(target) });
       } else {
         this.flashHint('Choose an enemy to strike with eldritch truth.');
       }
@@ -2816,7 +3893,7 @@ export class GameScene extends Phaser.Scene {
       const reach = this.gs.thunderDischargeRange(me.thunderStacks);
       if (target && target !== me && target.alive && dist(me.pos, target.pos) <= reach) {
         this.mode = 'busy';
-        this.submitTurn({ t: 'thunder-discharge', target: target.team });
+        this.submitTurn({ t: 'thunder-discharge', target: this.seatOf(target) });
       } else {
         this.flashHint('Discharge needs a target within range.');
       }
@@ -2843,7 +3920,7 @@ export class GameScene extends Phaser.Scene {
         this.mode = 'busy';
         this.pendingSpell = null;
         this.pendingAbility = null;
-        this.submitTurn({ t: 'spell', spellId: spell.id, ability, target: target.team });
+        this.submitTurn({ t: 'spell', spellId: spell.id, ability, target: this.seatOf(target) });
       } else {
         this.flashHint('Invalid target (out of range / unseen).');
       }
@@ -2901,11 +3978,15 @@ export class GameScene extends Phaser.Scene {
     return null;
   }
 
-  private payForSpell(mage: Mage, spell: Spell): void {
+  private payForSpell(mage: Mage, spell: Spell, free = false): void {
     mage.spendCharges(spell.words);
     let mana = wordSpellMana(spell.words, mage.profile);
+    // Focus: the empowered word spell costs 50% less mana.
+    if (mage.focusNextSpell) mana = Math.ceil(mana * 0.5);
     // Mutivarg's Rod doubles the mana cost of anything cast through it.
     if (mage.hands.includes('mutivargRod' as ItemId)) mana *= 2;
+    // Mana Wand (and any other item with manaDiscount) reduces spell cost.
+    mana = Math.max(0, mana - mage.manaDiscountSum());
     // Dark Mage's Cape: the first black-word spell each duel is free.
     if (
       mage.hasFreeBlackSpell() &&
@@ -2917,8 +3998,19 @@ export class GameScene extends Phaser.Scene {
       this.gs.log(`${mage.name}'s Dark Mage's Cape swallows the cost — the spell is free.`);
     }
     mage.spendMana(mana);
-    mage.hasCastThisTurn = true;
-    mage.spend(spell.actionType === 'main' ? 'main' : 'bonus');
+    // A "free" cast (a dodge follow-up) costs no action and does not use up the
+    // one-spell-per-turn allowance — but still pays charges, mana and blood.
+    if (!free) {
+      mage.hasCastThisTurn = true;
+      mage.spend(spell.actionType === 'main' ? 'main' : 'bonus');
+    }
+    // Blood Charm: every spell is paid for in blood as well as mana.
+    const bloodPct = mage.spellHealthCostPct();
+    if (bloodPct > 0) {
+      const bloodCost = Math.max(1, Math.round(mage.maxHp * bloodPct));
+      mage.hp = Math.max(0, mage.hp - bloodCost);
+      this.gs.log(`${mage.name}'s blood charm exacts ${bloodCost} HP for the casting.`);
+    }
     // Blessing of Roaring Thunder: each word cast (success or not) adds a stack.
     if (mage.hasThunderBlessing() && spell.words.length > 0) {
       mage.addThunderStacks(spell.words.length);
@@ -2938,10 +4030,18 @@ export class GameScene extends Phaser.Scene {
     return Math.max(0, ability.chargeCost - (me.profile.blueSecondaryTier ? 1 : 0));
   }
 
+  /**
+   * Effective mana cost for a colour ability. A mage carrying no black words
+   * pays no mana for colour spells at all (a fully blue caster casts for free).
+   */
+  private abilityManaCost(me: Mage, ability: ColorAbility): number {
+    return me.profile.blackPrimaryTier ? ability.manaCost : 0;
+  }
+
   /** Whether `me` can pay for `ability` (color-charges, optional life, mana). */
   private canAffordAbility(me: Mage, ability: ColorAbility): boolean {
     if (Dev.infiniteActions) return true;
-    if (!me.hasMana(ability.manaCost)) return false;
+    if (!me.hasMana(this.abilityManaCost(me, ability))) return false;
     const charge = this.abilityChargeCost(me, ability);
     if (me.colorCharges >= charge) return true;
     // Black secondary may substitute up to 2 missing charges with 5% life each.
@@ -2952,7 +4052,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Spend a color ability's full cost (charges, substituted life, mana, bonus). */
-  private payForColorAbility(me: Mage, ability: ColorAbility): void {
+  private payForColorAbility(me: Mage, ability: ColorAbility, free = false): void {
     const charge = this.abilityChargeCost(me, ability);
     let fromCharges = Math.min(charge, me.colorCharges);
     let fromLife = charge - fromCharges;
@@ -2965,9 +4065,13 @@ export class GameScene extends Phaser.Scene {
       this.gs.log(`${me.name} pays ${lifeCost} life for ${fromLife} color charge${fromLife > 1 ? 's' : ''}.`);
     }
     me.spendColorCharges(fromCharges);
-    me.spendMana(ability.manaCost);
-    me.lastAbilityManaPaid = ability.manaCost;
-    me.spend('bonus');
+    const manaCost = this.abilityManaCost(me, ability);
+    me.spendMana(manaCost);
+    me.lastAbilityManaPaid = manaCost;
+    if (!free) me.spend('bonus');
+    // Count the cast toward this ability's per-combat cap (both proactive casts
+    // and reactions share the same budget). Runs on both peers in lockstep.
+    me.abilityCastsUsed[ability.id] = (me.abilityCastsUsed[ability.id] ?? 0) + 1;
   }
 
   /** Cast the idx-th color ability granted by the current mage's primary color. */
@@ -2985,6 +4089,10 @@ export class GameScene extends Phaser.Scene {
     }
     if (me.isAbilityBanned(ability.id)) {
       this.flashHint('That ability has been stifled forever.');
+      return;
+    }
+    if (me.abilityCastsLeft(ability.id) <= 0) {
+      this.flashHint(`${ability.name} is spent for this combat.`);
       return;
     }
     if (me.actions.bonus <= 0 && !Dev.infiniteActions) {
@@ -3047,7 +4155,10 @@ export class GameScene extends Phaser.Scene {
   //  REACTION PROMPT (human)
   // ===========================================================================
 
-  private promptReaction(reactor: Mage, top: StackItem): Promise<ReactionChoice | null> {
+  private promptReaction(
+    reactor: Mage,
+    top: StackItem
+  ): Promise<ReactionChoice | null> {
     return new Promise((resolve) => {
       this.reactor = reactor;
       this.reactionTop = top;
@@ -3055,11 +4166,13 @@ export class GameScene extends Phaser.Scene {
       this.mode = 'reaction';
       this.resetSelection();
       const abil = this.castableAbilities(reactor).length > 0 ? '  [Z/X] color ability' : '';
-      const block = this.canBlock(reactor) ? '  [B] block' : '';
-      const bash = this.canBash(reactor, top) ? '  [N] bash' : '';
       const needle = this.canNeedle(reactor, top) ? '  [K] needle' : '';
+      const physical = !top.noPhysicalReaction;
+      const block = physical && this.canBlock(reactor) ? '  [B] block' : '';
+      const bash = physical && this.canBash(reactor, top) ? '  [N] bash' : '';
+      const dodge = physical && this.canDodge(reactor) ? `  [D] dodge (${reactor.dodgesRemaining})` : '';
       this.flashHint(
-        `${reactor.name}: REACTION — [1-4]+Enter to cast${abil}${block}${bash}${needle}, or Space/E to pass.`
+        `${reactor.name}: REACTION — [1-4]+Enter to cast${abil}${block}${bash}${needle}${dodge}, or Space/E to pass.`
       );
       this.redraw();
     });
@@ -3105,6 +4218,10 @@ export class GameScene extends Phaser.Scene {
       this.flashHint('That ability has been stifled forever.');
       return;
     }
+    if (this.reactor.abilityCastsLeft(ability.id) <= 0) {
+      this.flashHint(`${ability.name} is spent for this combat.`);
+      return;
+    }
     if (!this.canAffordAbility(this.reactor, ability)) {
       this.flashHint('Not enough color charges / mana.');
       return;
@@ -3126,6 +4243,247 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     this.resolveReaction({ needle: true });
+  }
+
+  /** Attempt a Dexterity dodge during the reaction window. */
+  private chooseDodgeReaction(): void {
+    if (!this.reactor || !this.reactionTop) return;
+    if (!this.canDodge(this.reactor)) {
+      this.flashHint('No dodge available (need Dex 6+ and a dodge left).');
+      return;
+    }
+    this.resolveReaction({ dodge: true });
+  }
+
+  /**
+   * Resolve a Dexterity dodge in the damage window, called the moment before an
+   * incoming strike would apply its effect. Rolls floor(Dex/2)d6 and reads it:
+   *  - no pair  → the dodge fails; the action lands normally.
+   *  - a pair   → the whole action is negated (no damage, no hex) and the dodger
+   *               slips aside up to (2 + Dex/10) range-units.
+   *  - triple   → as a pair, plus a free bonus action (offline only).
+   *  - quad     → as a triple, but the free action may be a basic attack riposte.
+   * Returns true when the strike is avoided (the caller then skips its effect).
+   */
+  private async performDodge(reactor: Mage, top: StackItem): Promise<boolean> {
+    reactor.dodgesRemaining = Math.max(0, reactor.dodgesRemaining - 1);
+    const dex = reactor.effectiveDex();
+    const n = Math.max(1, Math.floor(dex / 2));
+    const roll = this.gs.rng.roll(`${n}d6`);
+    this.pendingDice = [];
+    this.pendingDice.push({
+      spec: `${n}d6`,
+      total: roll.total,
+      rolls: roll.rolls,
+      label: `${reactor.name} dodge`,
+    });
+    await this.playPendingDice();
+    const tier = analyzeDodge(roll.rolls);
+    this.gs.log(
+      `${reactor.name} rolls a dodge [${roll.rolls.join(', ')}] → ${dodgeTierLabel(tier)}.`
+    );
+    if (tier === 'none') {
+      this.gs.log(`${reactor.name} fails to evade — the blow lands.`);
+      return false;
+    }
+
+    // Success: negate the whole action and let the dodger slip aside. The
+    // reposition distance scales only very slightly with Dexterity: 2R at Dex 0
+    // up to 4R at Dex 20.
+    this.gs.log(`${reactor.name} twists away from the ${top.label.toLowerCase()} — avoided!`);
+    const range = RANGE_UNIT * (2 + dex / 10);
+    let dest: Vec2 | null;
+    if (this.controllerIsAI(reactor)) {
+      // Retreat directly away from the attacker.
+      const away = { x: 2 * reactor.x - top.source.x, y: 2 * reactor.y - top.source.y };
+      dest = stepTowards(reactor.pos, away, range);
+    } else {
+      dest = await this.requestSubtargetPoint(reactor, {
+        maxRange: range,
+        prompt: `${reactor.name}: dodge — pick where to slip (Esc to hold ground).`,
+      });
+    }
+    if (dest) this.dodgeMove(reactor, dest);
+
+    // A strong roll grants a follow-up action. Gated to offline play so the
+    // online lockstep never diverges on an extra, unsynced decision.
+    if ((tier === 'triple' || tier === 'quad') && !this.online) {
+      await this.dodgeFollowUp(reactor, top, tier === 'quad');
+    }
+    return true;
+  }
+
+  /** Move the dodging mage to `dest`, clamped by the field, barriers and bodies. */
+  private dodgeMove(reactor: Mage, dest: Vec2): void {
+    const fieldDest = {
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y)),
+    };
+    const clamp = this.gs.clampToBarriers(reactor.pos, fieldDest);
+    const mut = this.gs.clampToMutivargZones(reactor, reactor.pos, clamp.dest);
+    const final = this.gs.clampToMages(reactor, reactor.pos, mut.dest);
+    reactor.x = final.x;
+    reactor.y = final.y;
+    this.gs.updateAttachedScarabs();
+    this.gs.dropTrailShadows(reactor);
+    this.gs.log(`${reactor.name} repositions.`);
+    this.redraw();
+  }
+
+  /**
+   * Offer the post-dodge follow-up: a free bonus action (word-spell or colour
+   * ability), or — on a quad — a basic-attack riposte instead. The cast is
+   * "free" (no action point) but still pays its mana / charges.
+   */
+  private async dodgeFollowUp(reactor: Mage, top: StackItem, allowAttack: boolean): Promise<void> {
+    const canRiposte = allowAttack && this.gs.canMelee(reactor, top.source);
+    const spells = this.affordableFollowupSpells(reactor);
+    const abilities = this.castableAbilities(reactor);
+    if (!canRiposte && spells.length === 0 && abilities.length === 0) {
+      this.gs.log(`${reactor.name} has no follow-up available.`);
+      return;
+    }
+
+    let choice: DodgeChoice | null;
+    if (this.controllerIsAI(reactor)) {
+      // Minimal AI: riposte if allowed, else fire the first affordable option.
+      if (canRiposte) choice = { kind: 'attack' };
+      else if (abilities.length) choice = { kind: 'ability', ability: abilities[0] };
+      else if (spells.length) choice = { kind: 'spell', spell: spells[0] };
+      else choice = null;
+    } else {
+      choice = await this.buildDodgeMenu(reactor, canRiposte, spells, abilities);
+    }
+    if (!choice) return;
+
+    if (choice.kind === 'attack') {
+      if (!this.gs.canMelee(reactor, top.source)) return;
+      this.gs.pushStack(this.gs.makeMeleeItem(reactor, top.source));
+      this.gs.log(`${reactor.name} ripostes!`);
+      this.redraw();
+      return;
+    }
+
+    const spell: Spell = choice.kind === 'ability' ? choice.ability : choice.spell;
+    const tgt = await this.resolveFollowupTarget(reactor, spell);
+    if (!tgt) return;
+    if (choice.kind === 'ability') this.payForColorAbility(reactor, choice.ability, true);
+    else this.payForSpell(reactor, choice.spell, true);
+    this.gs.pushStack(this.gs.makeSpellItem(reactor, spell, tgt.mage, tgt.point, top.id));
+    this.gs.log(`${reactor.name} follows up with ${spell.name}!`);
+    this.setCharging(reactor, true);
+    this.redraw();
+  }
+
+  /** All word-spells the mage could cast right now (charges, mana, valid target). */
+  private affordableFollowupSpells(caster: Mage): Spell[] {
+    const forgotten = caster.forgotten();
+    return allSpells().filter((s) => {
+      if (!s.words.every((w) => caster.loadout.includes(w))) return false;
+      if (!caster.hasCharges(s.words)) return false;
+      if (!caster.hasMana(wordSpellMana(s.words, caster.profile))) return false;
+      if (forgotten.length && s.words.some((w) => forgotten.includes(w))) return false;
+      if (s.targeting === 'enemy') {
+        return this.gs.isValidSpellTarget(s, caster, this.gs.opponentOf(caster));
+      }
+      return true;
+    });
+  }
+
+  /** Resolve where a follow-up spell is aimed, prompting the caster if needed. */
+  private async resolveFollowupTarget(
+    caster: Mage,
+    spell: Spell
+  ): Promise<{ mage: Mage | null; point: Vec2 | null } | null> {
+    const reach = spell.range > 0 ? spell.range : Math.hypot(FIELD.w, FIELD.h);
+    switch (spell.targeting) {
+      case 'self':
+      case 'ally':
+        return { mage: caster, point: null };
+      case 'none':
+        return { mage: null, point: null };
+      case 'enemy':
+      case 'any': {
+        const foe = await this.requestSubtargetEnemy(caster, {
+          range: reach,
+          prompt: `${caster.name}: choose a target for ${spell.name} (Esc to cancel).`,
+        });
+        return foe ? { mage: foe, point: null } : null;
+      }
+      default: {
+        const pt = await this.requestSubtargetPoint(caster, {
+          maxRange: reach,
+          prompt: `${caster.name}: aim ${spell.name} (Esc to cancel).`,
+        });
+        return pt ? { mage: null, point: pt } : null;
+      }
+    }
+  }
+
+  /** Clickable overlay listing the post-dodge follow-up options for a human. */
+  private buildDodgeMenu(
+    reactor: Mage,
+    canRiposte: boolean,
+    spells: Spell[],
+    abilities: ColorAbility[]
+  ): Promise<DodgeChoice | null> {
+    return new Promise((resolve) => {
+      const panel = this.add.container(0, 0).setDepth(97);
+      const dim = this.add
+        .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72)
+        .setOrigin(0, 0)
+        .setInteractive();
+      panel.add(dim);
+
+      const options: { label: string; color: string; choice: DodgeChoice | null }[] = [];
+      if (canRiposte) {
+        options.push({ label: '⚔  Riposte — basic attack', color: '#ff9a9a', choice: { kind: 'attack' } });
+      }
+      for (const ab of abilities) {
+        options.push({ label: `✦  ${ab.name}`, color: '#9ad0ff', choice: { kind: 'ability', ability: ab } });
+      }
+      for (const sp of spells) {
+        options.push({ label: sp.name, color: '#e8e8f0', choice: { kind: 'spell', spell: sp } });
+      }
+      options.push({ label: 'Skip', color: TEXT.dim, choice: null });
+
+      const cx = GAME_WIDTH / 2;
+      const rowH = 34;
+      const panelH = 72 + options.length * rowH;
+      const top0 = Math.max(50, GAME_HEIGHT / 2 - panelH / 2);
+      const rect = this.add
+        .rectangle(cx, top0 + panelH / 2, 480, panelH, 0x12121e, 0.98)
+        .setOrigin(0.5)
+        .setStrokeStyle(2, 0x7cc4ff);
+      panel.add(rect);
+      const title = this.add
+        .text(cx, top0 + 22, `Dodge follow-up — ${reactor.name}`, {
+          fontSize: '18px',
+          color: TEXT.warn,
+          fontStyle: 'bold',
+        })
+        .setOrigin(0.5);
+      panel.add(title);
+
+      const finish = (c: DodgeChoice | null): void => {
+        panel.destroy();
+        resolve(c);
+      };
+      options.forEach((opt, i) => {
+        const y = top0 + 54 + i * rowH;
+        const t = this.add
+          .text(cx, y, opt.label, {
+            fontSize: '16px',
+            color: opt.color,
+            backgroundColor: '#23233a',
+            padding: { x: 12, y: 5 },
+          })
+          .setOrigin(0.5)
+          .setInteractive({ useHandCursor: true });
+        t.on('pointerdown', () => finish(opt.choice));
+        panel.add(t);
+      });
+    });
   }
 
   /** Choose a shield block/bash during the reaction window. */
@@ -3169,7 +4527,7 @@ export class GameScene extends Phaser.Scene {
     this.reactionTop = top;
     this.aimingSource = reactor;
     this.mode = spell.targeting === 'point' ? 'aiming-point' : 'aiming-spell';
-    this.flashHint(`${reactor.name}: choose a target for ${spell.name}  (Esc to go back).`);
+    this.flashHint(`${reactor.name}: choose a target for ${spell.name}  (Esc to go back).`, true);
     this.redraw();
   }
 
@@ -3214,7 +4572,7 @@ export class GameScene extends Phaser.Scene {
       this.subtargetRange = opts.maxRange;
       this.subtargetMinRange = opts.minRange ?? 0;
       this.mode = 'subtarget-point';
-      this.flashHint(opts.prompt ?? `${source.name}: pick a point  (Esc to skip).`);
+      this.flashHint(opts.prompt ?? `${source.name}: pick a point  (Esc to skip).`, true);
       this.redraw();
     });
     if (this.online) this.sendSubPoint(value);
@@ -3244,7 +4602,7 @@ export class GameScene extends Phaser.Scene {
       this.subtargetRange = opts.range;
       this.subtargetMinRange = 0;
       this.mode = 'subtarget-enemy';
-      this.flashHint(opts.prompt ?? `${source.name}: pick an enemy  (Esc to skip).`);
+      this.flashHint(opts.prompt ?? `${source.name}: pick an enemy  (Esc to skip).`, true);
       this.redraw();
     });
     if (this.online) this.sendSubEnemy(value);
@@ -3282,6 +4640,8 @@ export class GameScene extends Phaser.Scene {
     this.gfxFx = this.add.graphics().setDepth(6);
     // Scarab health pips, redrawn each frame to track their smoothed motion.
     this.gfxScarab = this.add.graphics().setDepth(7);
+    // Targeting overlay drawn when hovering a stack token (line + reticle).
+    this.hoverGfx = this.add.graphics().setDepth(8);
   }
 
   private buildHud(): void {
@@ -3315,23 +4675,41 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.add.text(FIELD.x, HUD_Y + 186,
-      '[1-4] words  [Enter] cast  [Z/X] ability  [M] move  [A] attack  [R] weapon  [G] drop  [H] pick up  [I] inventory  [E] end  [Esc] cancel',
+      'New here? Click ☰ Actions (or press [Tab] / right-click) to see everything you can do — no need to memorise keys.',
       { fontSize: '13px', color: TEXT.dim });
 
     // Word boxes laid out as a 2x2 grid so they clear the history panel.
     for (let i = 0; i < 4; i++) {
       const col = i % 2;
       const row = Math.floor(i / 2);
-      this.wordTexts.push(
-        this.add.text(FIELD.x + 470 + col * 195, HUD_Y + row * 60, '', {
+      const box = this.add
+        .text(FIELD.x + 470 + col * 195, HUD_Y + row * 60, '', {
           fontSize: '15px',
           color: TEXT.body,
           backgroundColor: '#181826',
           padding: { x: 8, y: 6 },
           fixedWidth: 178,
         })
-      );
+        .setInteractive({ useHandCursor: true });
+      // Clicking a word box toggles that word's selection (same as [1]–[4]).
+      box.on('pointerdown', () => this.onWordKey(i));
+      this.wordTexts.push(box);
     }
+
+    // Always-visible entry point to the context action menu.
+    this.actionMenuButton = this.add
+      .text(FIELD.x + 470, HUD_Y + 128, '☰  Actions  ([Tab] / right-click)', {
+        fontSize: '15px',
+        color: '#0c0c18',
+        backgroundColor: '#ffd166',
+        fontStyle: 'bold',
+        padding: { x: 12, y: 7 },
+      })
+      .setDepth(46)
+      .setInteractive({ useHandCursor: true });
+    this.actionMenuButton.on('pointerover', () => this.actionMenuButton?.setBackgroundColor('#ffe08a'));
+    this.actionMenuButton.on('pointerout', () => this.actionMenuButton?.setBackgroundColor('#ffd166'));
+    this.actionMenuButton.on('pointerdown', () => this.toggleActionMenu());
 
     this.buildHistoryPanel();
 
@@ -3359,6 +4737,17 @@ export class GameScene extends Phaser.Scene {
       .setVisible(false);
 
     this.buildDevPanel();
+
+    if (this.training) {
+      this.add
+        .text(FIELD.x + FIELD.w - 178, FIELD.y + 130, '[P] Training tools', {
+          fontSize: '13px',
+          color: TEXT.warn,
+          backgroundColor: '#00000088',
+          padding: { x: 6, y: 3 },
+        })
+        .setDepth(60);
+    }
   }
 
   /**
@@ -3505,6 +4894,374 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // ─── Training sandbox overlay ────────────────────────────────────────────
+
+  private toggleTrainingOverlay(): void {
+    if (!this.training) return;
+    if (this.mode === 'training') {
+      this.closeTrainingOverlay();
+      return;
+    }
+    if (this.mode !== 'idle') return;
+    if (this.controllerIsAI(this.gs.current)) return;
+    this.buildTrainingOverlay();
+    this.trainPage = 'main';
+    this.mode = 'training';
+    this.trainPanel!.setVisible(true);
+    this.refreshTrainingOverlay();
+    this.redraw();
+  }
+
+  private closeTrainingOverlay(): void {
+    if (this.trainPanel) this.trainPanel.setVisible(false);
+    if (this.mode === 'training') this.mode = 'idle';
+    this.redraw();
+  }
+
+  private buildTrainingOverlay(): void {
+    if (this.trainPanel) return;
+    const panel = this.add.container(0, 0).setDepth(96).setVisible(false);
+    const dim = this.add
+      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.78)
+      .setOrigin(0, 0)
+      .setInteractive();
+    const rect = this.add
+      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 820, 620, 0x10101c, 0.98)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, 0x5a5a88);
+    this.trainTitle = this.add
+      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 288, '', {
+        fontSize: '22px',
+        color: TEXT.warn,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    panel.add([dim, rect, this.trainTitle]);
+    this.trainPanel = panel;
+  }
+
+  private clearTrainWidgets(): void {
+    for (const w of this.trainWidgets) w.destroy();
+    this.trainWidgets = [];
+  }
+
+  private trainButton(
+    x: number,
+    y: number,
+    label: string,
+    onClick: () => void,
+    color = '#e8e8f0',
+    bg = '#23233a',
+  ): Phaser.GameObjects.Text {
+    const t = this.add
+      .text(x, y, label, { fontSize: '15px', color, backgroundColor: bg, padding: { x: 8, y: 4 } })
+      .setInteractive({ useHandCursor: true });
+    t.on('pointerdown', () => onClick());
+    this.trainPanel!.add(t);
+    this.trainWidgets.push(t);
+    return t;
+  }
+
+  private trainLabel(x: number, y: number, text: string, color?: string): Phaser.GameObjects.Text {
+    const t = this.add.text(x, y, text, { fontSize: '15px', color: color ?? TEXT.body });
+    this.trainPanel!.add(t);
+    this.trainWidgets.push(t);
+    return t;
+  }
+
+  private refreshTrainingOverlay(): void {
+    if (!this.trainPanel) return;
+    this.clearTrainWidgets();
+    if (this.trainPage === 'items') {
+      this.refreshTrainingItems();
+      return;
+    }
+    const left = GAME_WIDTH / 2 - 380;
+    let y = GAME_HEIGHT / 2 - 250;
+    this.trainTitle!.setText('TRAINING TOOLS');
+
+    // Enemy configuration.
+    this.trainLabel(left, y, 'Enemy:');
+    const kinds: ['dummy' | 'passive' | 'ai', string][] = [
+      ['dummy', 'Dummy (unkillable)'],
+      ['passive', 'Passive 5-stat'],
+      ['ai', 'AI 5-stat'],
+    ];
+    let bx = left + 80;
+    for (const [k, label] of kinds) {
+      const on = this.trainEnemyKind === k;
+      const b = this.trainButton(
+        bx,
+        y - 4,
+        label,
+        () => this.setTrainingEnemy(k),
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#2f5d3a' : '#23233a',
+      );
+      bx += b.width + 10;
+    }
+    y += 46;
+
+    // Which mage the controls below edit.
+    this.trainLabel(left, y, 'Edit target:');
+    bx = left + 110;
+    for (const team of [1, 2] as number[]) {
+      const on = this.trainTarget === team;
+      const b = this.trainButton(
+        bx,
+        y - 4,
+        team === 1 ? 'Player' : 'Enemy',
+        () => {
+          this.trainTarget = team;
+          this.refreshTrainingOverlay();
+        },
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#3a3a66' : '#23233a',
+      );
+      bx += b.width + 10;
+    }
+    y += 46;
+
+    const t = this.mageByTeam(this.trainTarget);
+    const vital = (label: string, cur: number, max: number, field: 'hp' | 'mana' | 'sanity') => {
+      this.trainLabel(left, y, `${label}: ${cur} / ${max}`);
+      let vx = left + 220;
+      for (const [d, txt] of [
+        [-5, '-5'],
+        [5, '+5'],
+      ] as [number, string][]) {
+        const b = this.trainButton(vx, y - 4, txt, () => this.adjustVital(field, d));
+        vx += b.width + 8;
+      }
+      const full = this.trainButton(vx, y - 4, 'Full', () => this.adjustVital(field, 99999));
+      vx += full.width + 8;
+      y += 38;
+    };
+    vital('HP', t.hp, t.maxHp, 'hp');
+    vital('Mana', t.mana, t.maxMana, 'mana');
+    vital('Sanity', t.sanity, t.maxSanity, 'sanity');
+
+    const stack = (label: string, cur: number, field: 'thunder' | 'greed') => {
+      this.trainLabel(left, y, `${label}: ${cur}`);
+      let vx = left + 220;
+      for (const [d, txt] of [
+        [-1, '-1'],
+        [1, '+1'],
+        [5, '+5'],
+      ] as [number, string][]) {
+        const b = this.trainButton(vx, y - 4, txt, () => this.adjustStacks(field, d));
+        vx += b.width + 8;
+      }
+      y += 38;
+    };
+    stack('Thunder stacks', t.thunderStacks, 'thunder');
+    stack('Greed stacks', t.greedStacks, 'greed');
+    y += 14;
+
+    // Bottom action row.
+    let ax = left;
+    const items = this.trainButton(
+      ax,
+      y,
+      'Give / Remove Items',
+      () => {
+        this.trainPage = 'items';
+        this.refreshTrainingOverlay();
+      },
+      '#e8e8f0',
+      '#3a3a66',
+    );
+    ax += items.width + 12;
+    const reset = this.trainButton(ax, y, 'Soft Reset', () => this.softReset(), '#ffd27a', '#4a3a1a');
+    ax += reset.width + 12;
+    this.trainButton(ax, y, 'Close [P]', () => this.closeTrainingOverlay(), '#ff9a9a', '#4a1a1a');
+
+    this.trainLabel(
+      left,
+      GAME_HEIGHT / 2 + 250,
+      'Tip: F1 auto-success, F3 infinite actions — toggle for unrestricted casting.',
+      TEXT.dim,
+    );
+  }
+
+  private refreshTrainingItems(): void {
+    const left = GAME_WIDTH / 2 - 380;
+    const top = GAME_HEIGHT / 2 - 258;
+    this.trainTitle!.setText(
+      `ITEMS — name = give, ✕ = remove  (Target: ${this.trainTarget === 1 ? 'Player' : 'Enemy'})`,
+    );
+    const back = this.trainButton(
+      left,
+      top,
+      '← Back',
+      () => {
+        this.trainPage = 'main';
+        this.refreshTrainingOverlay();
+      },
+      '#e8e8f0',
+      '#3a3a66',
+    );
+    let hx = left + back.width + 16;
+    for (const team of [1, 2] as number[]) {
+      const on = this.trainTarget === team;
+      const b = this.trainButton(
+        hx,
+        top,
+        team === 1 ? 'Player' : 'Enemy',
+        () => {
+          this.trainTarget = team;
+          this.refreshTrainingOverlay();
+        },
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#3a3a66' : '#23233a',
+      );
+      hx += b.width + 8;
+    }
+
+    const target = this.mageByTeam(this.trainTarget);
+    const colW = 380;
+    const y0 = top + 42;
+    const step = 26;
+    const perCol = Math.ceil(ITEM_DEFS.length / 2);
+    ITEM_DEFS.forEach((def, i) => {
+      const col = Math.floor(i / perCol);
+      const row = i % perCol;
+      const x = left + col * colW;
+      const y = y0 + row * step;
+      this.trainButton(
+        x,
+        y,
+        '✕',
+        () => {
+          this.gs.removeItem(target, def.id);
+          this.refreshTrainingOverlay();
+          this.redraw();
+        },
+        '#ff8a8a',
+        '#3a1a1a',
+      );
+      const name = this.add
+        .text(x + 28, y, def.name, { fontSize: '14px', color: RARITY_COLOR[def.rarity] })
+        .setInteractive({ useHandCursor: true });
+      name.on('pointerdown', () => {
+        this.gs.grantItem(target, def.id);
+        this.refreshTrainingOverlay();
+        this.redraw();
+      });
+      this.trainPanel!.add(name);
+      this.trainWidgets.push(name);
+    });
+  }
+
+  private adjustVital(field: 'hp' | 'mana' | 'sanity', delta: number): void {
+    const t = this.mageByTeam(this.trainTarget);
+    const max = field === 'hp' ? t.maxHp : field === 'mana' ? t.maxMana : t.maxSanity;
+    const cur = field === 'hp' ? t.hp : field === 'mana' ? t.mana : t.sanity;
+    const floor = field === 'mana' ? 0 : t.unkillable ? 1 : 0;
+    const val = Math.max(floor, Math.min(max, cur + delta));
+    if (field === 'hp') t.hp = val;
+    else if (field === 'mana') t.mana = val;
+    else t.sanity = val;
+    this.refreshTrainingOverlay();
+    this.redraw();
+  }
+
+  private adjustStacks(field: 'thunder' | 'greed', delta: number): void {
+    const t = this.mageByTeam(this.trainTarget);
+    if (field === 'thunder') t.thunderStacks = Math.max(0, t.thunderStacks + delta);
+    else t.greedStacks = Math.max(0, t.greedStacks + delta);
+    this.refreshTrainingOverlay();
+    this.redraw();
+  }
+
+  /** Apply the passivity/immortality flags for a training enemy kind. */
+  private applyTrainingEnemyKind(m: Mage, kind: 'dummy' | 'passive' | 'ai'): void {
+    m.trainingPassive = kind !== 'ai';
+    m.unkillable = kind === 'dummy';
+    if (kind === 'dummy') {
+      m.maxHp = 99999;
+      m.hp = 99999;
+    }
+  }
+
+  /** Replace the enemy mage with a freshly configured training dummy/AI. */
+  private setTrainingEnemy(kind: 'dummy' | 'passive' | 'ai'): void {
+    const old = this.gs.mages[1];
+    const rec = this.mageAnims.get(old);
+    if (rec) {
+      rec.sprite.destroy();
+      this.mageAnims.delete(old);
+    }
+    this.ais.delete(old);
+    const m2 = new Mage({
+      name: 'Enemy',
+      isAI: true,
+      team: 2,
+      position: { ...this.enemySpawn },
+      loadout: old.loadout,
+    });
+    m2.assignFlatStats(5);
+    this.applyTrainingEnemyKind(m2, kind);
+    this.gs.mages[1] = m2;
+    this.ais.set(m2, new SimpleAI(this.gs, m2));
+    this.trainEnemyKind = kind;
+    if (this.gs.currentIndex === 1) this.gs.currentIndex = 0;
+    this.syncMageSprites();
+    if (this.mode === 'training') this.refreshTrainingOverlay();
+    this.redraw();
+  }
+
+  /** Restore both mages to full and clear every field object. */
+  private softReset(): void {
+    if (this.trainPanel) this.trainPanel.setVisible(false);
+    for (const m of this.gs.mages) {
+      const sp = this.spawns[this.seatOf(m)] ?? (m.team === 1 ? this.playerSpawn : this.enemySpawn);
+      m.x = sp.x;
+      m.y = sp.y;
+      m.hp = m.maxHp;
+      m.mana = m.maxMana;
+      m.sanity = m.maxSanity;
+      m.colorCharges = m.maxColorCharges;
+      m.luck = m.maxLuck;
+      m.statuses = [];
+      m.thunderStacks = 0;
+      m.greedStacks = 0;
+      m.momentumStacks = 0;
+      m.anchorStacks = 0;
+      m.rageBonus = 0;
+      m.movedThisTurn = false;
+      m.distMovedThisTurn = 0;
+      m.hasCastThisTurn = false;
+      m.eldritchDefend = false;
+      m.blockPending = false;
+      m.reloadTurns = 0;
+      m.bastionShieldForm = false;
+      m.shieldBashUsed = false;
+      m.firstBlackSpellUsed = false;
+      m.manaMilledOnce = false;
+      m.actions = { ...ACTIONS_PER_TURN };
+      m.reactionAvailable = m.canEverReact;
+      m.reactedThisCycle = false;
+      const bonus = m.profile.bluePrimaryTier ? 1 : 0;
+      for (const w of m.loadout) m.charges[w] = WORDS[w].charges + bonus;
+      const rec = this.mageAnims.get(m);
+      if (rec) {
+        rec.posLocked = false;
+        rec.lock = null;
+        rec.charging = false;
+      }
+    }
+    this.gs.clearFieldObjects();
+    this.gs.round = 1;
+    this.gs.currentIndex = 0;
+    this.busy = false;
+    this.mode = 'idle';
+    this.resetSelection();
+    this.syncMageSprites();
+    this.gs.log('Training: field reset — HP, mana, positions and effects restored.');
+    this.redraw();
+  }
+
   private buildDicePanel(): void {
     this.dicePanel = this.add
       .container(GAME_WIDTH / 2, FIELD.y + 96)
@@ -3516,6 +5273,9 @@ export class GameScene extends Phaser.Scene {
     const g = this.gfx;
     g.clear();
     this.stackTokens = [];
+    // The hover targeting overlay is rebuilt on the next pointer move; clear any
+    // stale line/reticle so it does not linger after the stack changes.
+    this.hoverGfx?.clear();
 
     // Shadow pools (under everything else on the field).
     this.drawShadows(g);
@@ -3528,6 +5288,9 @@ export class GameScene extends Phaser.Scene {
 
     // Corrosion totems.
     this.drawTotems(g);
+
+    // Remaining-duration counters on every field zone (visible to everyone).
+    this.drawZoneDurations();
 
     // Dropped equipment on the ground.
     this.drawDroppedItems(g);
@@ -3561,6 +5324,47 @@ export class GameScene extends Phaser.Scene {
       g.lineStyle(2, COLORS.totem, 0.5).strokeCircle(t.x, t.y, t.radius);
       g.fillStyle(COLORS.totem, 0.9).fillCircle(t.x, t.y, 9);
       g.lineStyle(2, tint, 0.9).strokeCircle(t.x, t.y, 9);
+    }
+  }
+
+  private zoneLabels = new Map<string, Phaser.GameObjects.Text>();
+  /**
+   * Draw the remaining lifetime of every field zone (shadows, totems, crushing
+   * fields and reality-break walls) as a small counter, visible to everyone so
+   * both sides can plan around when each zone expires.
+   */
+  private drawZoneDurations(): void {
+    const live = new Set<string>();
+    const show = (key: string, x: number, y: number, turns: number, owner: number): void => {
+      if (turns <= 0) return;
+      live.add(key);
+      let t = this.zoneLabels.get(key);
+      if (!t) {
+        t = this.add
+          .text(0, 0, '', {
+            fontSize: '12px',
+            fontStyle: 'bold',
+            backgroundColor: '#0b0b14cc',
+            padding: { x: 4, y: 1 },
+            align: 'center',
+          })
+          .setOrigin(0.5);
+        this.zoneLabels.set(key, t);
+      }
+      const hex = owner === 1 ? '#57a6ff' : '#ff6f6f';
+      t.setText(`⌛${turns}`).setColor(hex).setPosition(x, y).setVisible(true);
+    };
+    for (const s of this.gs.shadows) show(`sh${s.id}`, s.x, s.y - s.radius - 10, s.ttl, s.owner);
+    for (const t of this.gs.totems) show(`to${t.id}`, t.x, t.y - t.radius - 10, t.ttl, t.owner);
+    for (const z of this.gs.mutivargZones)
+      show(`mv${z.id}`, z.x, z.y - z.radius - 10, z.turnsLeft, z.owner);
+    for (const b of this.gs.barriers) show(`ba${b.id}`, b.x, b.y, b.ttl, b.owner);
+    // Recycle labels for zones that have since collapsed.
+    for (const [k, t] of this.zoneLabels) {
+      if (!live.has(k)) {
+        t.destroy();
+        this.zoneLabels.delete(k);
+      }
     }
   }
 
@@ -3948,7 +5752,13 @@ export class GameScene extends Phaser.Scene {
 
     let range = 0;
     if (this.mode === 'aiming-move') range = me.moveRange();
-    else if (this.mode === 'aiming-melee') {
+    else if (this.mode === 'aiming-leap') {
+      // The farthest a leap can carry: a max d6 roll of 6.
+      range = (1 + 0.25 * me.effectiveDex()) * RANGE_UNIT;
+    } else if (this.mode === 'aiming-cleave') {
+      const weapon = me.activeWeapon();
+      range = weapon ? weapon.rangePx : MELEE_RANGE;
+    } else if (this.mode === 'aiming-melee') {
       const weapon = me.activeWeapon();
       range = weapon ? weapon.rangePx : MELEE_RANGE;
       // Draw the dead-zone of a minimum-range weapon (e.g. the sniper bow).
@@ -4197,7 +6007,11 @@ export class GameScene extends Phaser.Scene {
       t = this.add.text(0, 0, '', { fontSize: '12px', color: TEXT.body, align: 'center' }).setOrigin(0.5);
       this.mageLabels.set(m, t);
     }
-    const statuses = m.statuses.map((s) => s.name).join(', ');
+    const statuses = m.statuses
+      .map((s) =>
+        Number.isFinite(s.duration) && s.duration > 0 ? `${s.name} ⌛${s.duration}` : s.name
+      )
+      .join(', ');
     t.setText(`${m.name}\n${m.hp}❤ ${m.sanity}🧠${statuses ? `\n${statuses}` : ''}`);
     t.setPosition(m.x, m.y + MAGE_RADIUS + 22);
   }
@@ -4268,8 +6082,11 @@ export class GameScene extends Phaser.Scene {
     }
 
     const a = me.actions;
+    const reactionLabel = me.profile.bluePrimaryTier
+      ? `${Math.max(0, MAX_WORD_SPELL_REACTIONS - me.wordSpellReactionsUsed)} spell`
+      : 'defensive';
     this.actionText.setText(
-      `Actions — Move ${dots(a.move, ACTIONS_PER_TURN.move)}  Main ${dots(a.main, ACTIONS_PER_TURN.main)}  Bonus ${dots(a.bonus, ACTIONS_PER_TURN.bonus)}   Reaction: ${me.hasReaction() ? 'ready' : '—'}`
+      `Actions — Move ${dots(a.move, ACTIONS_PER_TURN.move)}  Main ${dots(a.main, ACTIONS_PER_TURN.main)}  Bonus ${dots(a.bonus, ACTIONS_PER_TURN.bonus)}   Reaction: ${reactionLabel}`
     );
 
     this.drawResourceText(me);
@@ -4291,6 +6108,21 @@ export class GameScene extends Phaser.Scene {
       t.setColor(on ? TEXT.warn : (me.charges[w] ?? 0) > 0 ? TEXT.body : TEXT.dim);
     }
 
+    // The action-menu button: shown only when the local player can actually act.
+    const canOpenActions =
+      !this.gs.isOver &&
+      (this.mode === 'reaction'
+        ? !!this.reactor && !this.controllerIsAI(this.reactor)
+        : this.mode === 'idle' && !this.controllerIsAI(this.gs.current));
+    this.actionMenuButton?.setVisible(canOpenActions);
+    if (canOpenActions && this.actionMenuButton) {
+      this.actionMenuButton.setText(
+        this.mode === 'reaction'
+          ? '☰  Reaction options  ([Tab])'
+          : '☰  Actions  ([Tab] / right-click)'
+      );
+    }
+
     this.drawLog();
   }
 
@@ -4309,7 +6141,7 @@ export class GameScene extends Phaser.Scene {
       ? abilities
           .map((ab, i) => {
             const c = this.abilityChargeCost(me, ab);
-            return `[${i === 0 ? 'Z' : 'X'}] ${ab.name} (${c}c/${ab.manaCost}m)`;
+            return `[${i === 0 ? 'Z' : 'X'}] ${ab.name} (${c}c/${this.abilityManaCost(me, ab)}m)`;
           })
           .join('   ')
       : 'none';
@@ -4402,14 +6234,15 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateHover(): void {
+    this.hoverGfx.clear();
     for (const tok of this.stackTokens) {
       if (dist(this.pointer, tok) <= tok.r + 2) {
         const it = tok.item;
-        const tgt = it.target ? ` → ${it.target.name}` : it.targetPoint ? ' → location' : '';
         this.tooltip
-          .setText(`${it.label} (by ${it.source.name})${tgt}\n${it.description}`)
+          .setText(`${it.label} (by ${it.source.name})${this.stackTargetLabel(it)}\n${it.description}`)
           .setPosition(tok.x + 20, tok.y + 20)
           .setVisible(true);
+        this.drawStackTargeting(it);
         return;
       }
     }
@@ -4425,6 +6258,41 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.tooltip.setVisible(false);
+  }
+
+  /** A short " → …" suffix describing what a stacked action is aimed at. */
+  private stackTargetLabel(it: StackItem): string {
+    if (it.target) {
+      if (it.kind === 'move' || it.kind === 'melee') return ` → dash onto ${it.target.name}`;
+      return ` → targeting ${it.target.name}`;
+    }
+    if (it.targetPoint) {
+      return it.kind === 'move' ? ' → moving to marked spot' : ' → aimed at a location';
+    }
+    return '';
+  }
+
+  /** The point a stacked action is aimed at, if any (mage centre or raw point). */
+  private stackTargetPoint(it: StackItem): Vec2 | null {
+    if (it.target) return it.target.pos;
+    if (it.targetPoint) return it.targetPoint;
+    return null;
+  }
+
+  /** Draw a line + reticle from the actor to whatever the hovered action targets. */
+  private drawStackTargeting(it: StackItem): void {
+    const from = it.source.pos;
+    const to = this.stackTargetPoint(it);
+    const g = this.hoverGfx;
+    // Highlight the actor so it is clear who is performing the action.
+    g.lineStyle(2, 0xffe066, 0.9).strokeCircle(from.x, from.y, 16);
+    if (!to) return;
+    // A dashed-looking aim line from the actor to the target.
+    g.lineStyle(2, 0xffe066, 0.85).lineBetween(from.x, from.y, to.x, to.y);
+    // A reticle at the destination / target.
+    g.lineStyle(2, 0xff6b6b, 0.95).strokeCircle(to.x, to.y, 12);
+    g.lineBetween(to.x - 16, to.y, to.x + 16, to.y);
+    g.lineBetween(to.x, to.y - 16, to.x, to.y + 16);
   }
 
   /** A short flavourless description of any field area under the pointer. */
@@ -4450,12 +6318,32 @@ export class GameScene extends Phaser.Scene {
     return null;
   }
 
-  private flashHint(msg: string): void {
+  private flashHint(msg: string, sticky = false): void {
     this.hintText.setText(msg).setColor(TEXT.warn);
-    this.time.delayedCall(1400, () => this.hintText.setColor(TEXT.dim));
+    this.hintDim?.remove();
+    this.hintDim = undefined;
+    // Selection prompts stay lit until the choice is made; transient tips fade.
+    if (!sticky) {
+      this.hintDim = this.time.delayedCall(1400, () => this.hintText.setColor(TEXT.dim));
+    }
   }
 
   private endGame(): void {
+    // Training never truly ends: whoever fell is patched up on the next click.
+    if (this.training && !this.opponentLeft) {
+      this.mode = 'over';
+      this.busy = false;
+      const w = this.gs.winner;
+      this.bannerText
+        .setText(`${w ? `${w.name} fell` : 'Both fell'}\nClick to reset the field`)
+        .setVisible(true);
+      this.redraw();
+      this.input.once('pointerdown', () => {
+        this.bannerText.setVisible(false);
+        this.softReset();
+      });
+      return;
+    }
     this.mode = 'over';
     const w = this.gs.winner;
     this.bannerText
@@ -4777,6 +6665,8 @@ interface ReactionChoice {
   shield?: 'block' | 'bash';
   /** A Needle of Serenity reaction: stifle & permanently ban the action. */
   needle?: boolean;
+  /** A Dexterity dodge: roll to evade the attack (and maybe more). */
+  dodge?: boolean;
 }
 
 function dots(remaining: number, total: number): string {

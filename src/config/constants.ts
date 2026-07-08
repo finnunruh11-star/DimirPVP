@@ -40,6 +40,14 @@ export const START_COLOR_CHARGES = 0;
 // Extra damage the "marked" debuff (Bane) makes its bearer take from all sources.
 export const MARKED_DAMAGE = 1;
 
+// Reaction budgets (per combat). Having at least one blue word unlocks casting
+// word-spells and colour spells as reactions; defensive reactions (Dodge, Block,
+// Shield-bash, …) are always available regardless of words.
+//   - Word-spell reactions are limited across the whole combat.
+//   - Each individual colour ability may only be cast a handful of times.
+export const MAX_WORD_SPELL_REACTIONS = 2;
+export const MAX_ABILITY_CASTS_PER_COMBAT = 3;
+
 // Shadow zones (placed by the Shadow word). Spells gain reach through your own
 // shadows, and damage is boosted when the caster or target stands in a shadow.
 export const SHADOW_RADIUS = 95;
@@ -53,6 +61,10 @@ export const RANGE_UNIT = 45;
 export const PICKUP_RANGE = RANGE_UNIT * 2;
 // Cone spells (e.g. Shatter) sweep this total arc, centred on the aim direction.
 export const CONE_DEGREES = 90;
+// The Cleave main-action sweeps a wide 180° arc in front of the swinger.
+export const CLEAVE_DEGREES = 180;
+// Leap (bonus action) may be used this many times per combat.
+export const MAX_LEAPS_PER_COMBAT = 2;
 // Totems (Corrode+Curse) persist this many rounds before crumbling.
 export const TOTEM_TTL = 3;
 

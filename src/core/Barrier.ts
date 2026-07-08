@@ -26,7 +26,7 @@ export interface BarrierZone {
   /** Rectangle: thickness across `angle`, in pixels. Ignored for wedges. */
   thickness: number;
   /** Team that created the zone (cosmetic only — it blocks everyone). */
-  owner: 1 | 2;
+  owner: number;
   /** Rounds remaining before the zone collapses. */
   ttl: number;
 }
