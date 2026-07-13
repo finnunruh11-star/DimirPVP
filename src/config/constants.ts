@@ -14,7 +14,6 @@ export const ACTIONS_PER_TURN = { move: 1, main: 1, bonus: 2 };
 // Movement / melee tuning (all distances are in pixels).
 export const MOVE_RANGE = 175;
 export const MELEE_RANGE = 72;
-export const MELEE_DAMAGE = 6;
 
 // Equipment phase. Money is tracked internally in *silver*; 10 silver = 1 gold.
 // Each duellist starts with START_GOLD gold (= START_SILVER silver). Carry
@@ -30,9 +29,11 @@ export const START_HP = 12;
 export const START_SANITY = 20;
 
 // Mana powers word-spells and color abilities; color-charges power only color
-// abilities. Mana does NOT regenerate on its own — you start at full and refill
-// only via items or abilities like Rejuvenate. Color-charges regenerate (by
-// color) each turn, capped at COLOR_CHARGE_CAP. See Mage.regen / GameState.beginTurn.
+// abilities. Mana does NOT regenerate — it is a game of attrition, so you start
+// full and refill only via items or event effects (e.g. Rejuvenate). Color
+// charges DO regenerate each turn (by your primary colour) but reset to zero at
+// the start of every combat, so they never carry between fights. See Mage.regen
+// / Mage.resetCombatReactions / GameState.beginTurn.
 export const MANA_CAP = 24;
 export const COLOR_CHARGE_CAP = 12;
 export const START_MANA = MANA_CAP;
@@ -47,6 +48,9 @@ export const MARKED_DAMAGE = 1;
 //   - Each individual colour ability may only be cast a handful of times.
 export const MAX_WORD_SPELL_REACTIONS = 2;
 export const MAX_ABILITY_CASTS_PER_COMBAT = 3;
+// White identity lets a mage answer an attack with a weapon strike, but only a
+// couple of times per combat.
+export const MAX_WEAPON_REACTIONS = 2;
 
 // Shadow zones (placed by the Shadow word). Spells gain reach through your own
 // shadows, and damage is boosted when the caster or target stands in a shadow.

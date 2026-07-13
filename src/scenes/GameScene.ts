@@ -6,6 +6,7 @@ import {
   GAME_HEIGHT,
   GAME_WIDTH,
   MAX_SPELL_WORDS,
+  MAX_WEAPON_REACTIONS,
   MAX_WORD_SPELL_REACTIONS,
   MELEE_RANGE,
   RANGE_UNIT,
@@ -19,6 +20,12 @@ import scarabGifUrl from '../Sprites/Scarab.gif';
 import moveIconUrl from '../Sprites/Move.png';
 import attackIconUrl from '../Sprites/Attack.png';
 import spellIconUrl from '../Sprites/SpellCast.png';
+import dotSheetUrl from '../Sprites/Spell/DoT.png';
+import genericSheetUrl from '../Sprites/Spell/Generic.png';
+import poisonSheetUrl from '../Sprites/Spell/Poison Attack.png';
+import vanishSheetUrl from '../Sprites/Spell/Vanish.png';
+import shatterSheetUrl from '../Sprites/Spell/Shatter.png';
+import disruptSheetUrl from '../Sprites/Spell/Disrupt.png';
 import type { ScarabState } from '../core/Scarab';
 import { Dev, type DevToggle } from '../config/dev';
 import { WORDS, type WordId } from '../core/Words';
@@ -31,7 +38,9 @@ import {
   defaultAssignment,
   isValidAssignment,
   rollStatAssortment,
+  rollSwamprunStatDice,
   type DieResult,
+  type StatKey,
 } from '../core/Stats';
 import { getColorAbilitiesFor, COLOR_ABILITIES, type ColorAbility } from '../spells/colorAbilities';
 import {
@@ -42,14 +51,15 @@ import {
   carryCapacity,
   rollRarity,
   draftChoices,
+  rarityRank,
   DRAFT_ROUNDS,
   RARITY_COLOR,
   setActiveItemSets,
   ITEM_DEFS,
   type ItemId,
+  type Rarity,
 } from '../core/Items';
 import type { StackItem } from '../core/Stack';
-import type { ShadowZone } from '../core/Shadow';
 import { barrierContains } from '../core/Barrier';
 import type { Spell, SpellVisual } from '../spells/Spell';
 import { allSpells, getSpell, setActiveSpellSets } from '../spells/registry';
@@ -58,6 +68,7 @@ import type { SubTargetPointOpts, SubTargetEnemyOpts } from '../effects/effects'
 import { SimpleAI, type AIDecision } from '../ai/SimpleAI';
 import type { MatchConfig, SeatConfig } from './MenuScene';
 import type { Net, NetMessage } from '../net/Net';
+import { applyEnemyTraits, waveComposition, ENEMY_DEFS, rollLoot, type EnemyKind } from '../pve/swamprun';
 
 // Pixel-art mage animations. Frames live under src/Sprites/<Action>/; Vite's
 // glob import resolves each PNG to a hashed URL the Phaser loader can read.
@@ -261,7 +272,7 @@ function dodgeTierLabel(t: DodgeTier): string {
 type TurnCommand =
   | { t: 'move'; x: number; y: number }
   | { t: 'melee'; target: number }
-  | { t: 'spell'; spellId: string; ability: boolean; target: number | null; x?: number; y?: number; angle?: number }
+  | { t: 'spell'; spellId: string; ability: boolean; target: number | null; x?: number; y?: number; x2?: number; y2?: number; angle?: number }
   | { t: 'item-drop'; itemId: string }
   | { t: 'item-pickup'; dropId: number }
   | { t: 'item-use'; itemId: string }
@@ -298,6 +309,36 @@ type DraftCommand = { t: 'draft'; index: number };
 const MAGE_RADIUS = 22;
 const HUD_Y = FIELD.y + FIELD.h + 18;
 
+/** One purchasable slot in the swamprun shop (rerolled every visit). */
+interface SwampShopSlot {
+  kind: 'item' | 'stat';
+  /** For item slots: the offered item and its rolled rarity. */
+  id?: ItemId;
+  rarity?: Rarity;
+  /** Gold cost (after any discount). Stat slots price dynamically instead. */
+  price: number;
+  /** Rolled discount tier applied to an item slot (0 / 50% / 80%). */
+  discount: 0 | 0.5 | 0.8;
+  sold: boolean;
+}
+
+/** Base gold price per rarity in the swamprun shop (before discounts). */
+const SWAMP_PRICE: Record<Rarity, number> = {
+  consumeable: 1,
+  common: 2,
+  rare: 4,
+  epic: 6,
+  unreal: 10,
+  mythical: 14,
+  legendary: 18,
+  lareneg: 24,
+};
+
+/** Base cost of the stat-up slot; each purchase this shop raises it by 1g. */
+const SWAMP_STAT_BASE = 2;
+/** Cost of a party rest at the shop. */
+const SWAMP_REST_COST = 8;
+
 export class GameScene extends Phaser.Scene {
   private gs!: GameState;
   private ais = new Map<Mage, SimpleAI>();
@@ -331,9 +372,46 @@ export class GameScene extends Phaser.Scene {
   /** Dynamically rebuilt controls inside the training overlay. */
   private trainWidgets: Phaser.GameObjects.GameObject[] = [];
 
+  // Swamprun (offline PvE co-op survival). Enabled when mode is 'swamprun'.
+  private swamprun = false;
+  /** Highest wave reached so far (also the survival score). */
+  private swamprunWave = 0;
+  /** Shared party gold, earned by auto-selling each cleared wave's loot. */
+  private swamprunGold = 0;
+  /** Creatures spawned in the current wave, pending loot when it is cleared. */
+  private swamprunWaveEnemies: Mage[] = [];
+  /** Wisp copies (spawned by a living wisp) — these drop no loot. */
+  private swamprunWispCopies = new Set<Mage>();
+  /** Guards against re-entering the between-wave interlude. */
+  private swamprunInterludeActive = false;
+  /** On-field wave / foe-count readout. */
+  private swamprunHudText?: Phaser.GameObjects.Text;
+  // Between-wave shop overlay state (turn-based; one shopper acts at a time).
+  private swampShopPanel?: Phaser.GameObjects.Container;
+  private swampShopResolve: (() => void) | null = null;
+  private swampShopMage?: Mage;
+  private swampShopStatPicking = false;
+  private swampShopMsg = '';
+  /** The six shop slots, rerolled every shop visit. */
+  private swampSlots: SwampShopSlot[] = [];
+  /** Rest may be bought once per shop visit (shared by the party). */
+  private swampRestUsed = false;
+  /** How many stat-ups were bought this shop (each raises the next price by 1g). */
+  private swampStatBuys = 0;
+  /** Shoppers who have chosen to leave the current shop. */
+  private swampShopPassed = new Set<Mage>();
+  /** True while the shopper is viewing the sell / drop (manage bag) sub-panel. */
+  private swampShopManaging = false;
+  /** Slot index awaiting an over-weight "buy anyway" confirmation, if any. */
+  private swampShopConfirmSlot: number | null = null;
+  /** True while running the one-pick, no-consumable start-of-run draft. */
+  private swampStartDraftActive = false;
+
   // Human spell-building state (indices into the current mage's loadout).
   private selectedIdx: number[] = [];
   private pendingSpell: Spell | null = null;
+  /** First edge of a two-point cone (Reality Shatter), captured before the second click. */
+  private pendingFirstPoint: Vec2 | null = null;
   /** The color ability currently being aimed (paid for differently than spells). */
   private pendingAbility: ColorAbility | null = null;
   /** The throwable item currently being aimed for a throw. */
@@ -451,6 +529,10 @@ export class GameScene extends Phaser.Scene {
   // Reaction prompt.
   private reactor: Mage | null = null;
   private reactionResolve: ((value: ReactionChoice | null) => void) | null = null;
+  // When on, the local player's reaction windows auto-pass (never prompt).
+  // Can be toggled at any time (key [O] or the on-screen button).
+  private autoPassReactions = false;
+  private autoPassButton?: Phaser.GameObjects.Text;
 
   // Stack token hit areas for hover.
   private stackTokens: { x: number; y: number; r: number; item: StackItem }[] = [];
@@ -473,6 +555,13 @@ export class GameScene extends Phaser.Scene {
     this.load.image('stack-move', moveIconUrl);
     this.load.image('stack-melee', attackIconUrl);
     this.load.image('stack-spell', spellIconUrl);
+    // One-shot hit-effect sprite sheets, played on the afflicted target.
+    this.load.spritesheet('fx-dot', dotSheetUrl, { frameWidth: 96, frameHeight: 96 });
+    this.load.spritesheet('fx-generic', genericSheetUrl, { frameWidth: 96, frameHeight: 96 });
+    this.load.spritesheet('fx-poison', poisonSheetUrl, { frameWidth: 128, frameHeight: 128 });
+    this.load.spritesheet('fx-vanish', vanishSheetUrl, { frameWidth: 64, frameHeight: 64 });
+    this.load.spritesheet('fx-shatter', shatterSheetUrl, { frameWidth: 64, frameHeight: 64 });
+    this.load.spritesheet('fx-disrupt', disruptSheetUrl, { frameWidth: 128, frameHeight: 128 });
   }
 
   create(config: MatchConfig): void {
@@ -483,12 +572,15 @@ export class GameScene extends Phaser.Scene {
     // Keep spell availability in sync with the item-set toggle.
     setActiveSpellSets(config.itemSets ?? { original: true });
 
-    this.online = config.mode === 'online';
+    // "Online" means a live relay connection is present. This is decoupled from
+    // the game mode so co-op modes (swamprun) can also be networked.
+    this.online = !!config.net;
     this.net = config.net ?? null;
     this.localTeam = config.localTeam ?? 1;
     this.localSeat = config.localSeat ?? this.localTeam - 1;
     this.opponentLeft = false;
     this.training = config.mode === 'training';
+    this.swamprun = config.mode === 'swamprun';
 
     const onlineName = (team: number): string =>
       team === this.localTeam ? `Player ${team} (You)` : `Player ${team}`;
@@ -497,7 +589,9 @@ export class GameScene extends Phaser.Scene {
     // otherwise fall back to the classic two-mage layout derived from mode.
     const seats: SeatConfig[] = config.seats?.length
       ? config.seats
-      : [
+      : this.swamprun
+        ? [{ name: 'You', isAI: false, team: 1, loadout: config.loadouts[0] }]
+        : [
           {
             name: this.online ? onlineName(1) : 'Player 1',
             isAI: false,
@@ -535,16 +629,22 @@ export class GameScene extends Phaser.Scene {
     );
 
     this.gs = new GameState(mages, config.seed);
+    // Swamprun is co-op survival: the run ends only when the whole party (team 1)
+    // falls, never when a wave is merely cleared.
+    if (this.swamprun) this.gs.coopSurvivalTeam = 1;
     this.gs.onLog = () => this.drawLog();
     this.gs.vfxSink = {
       diceRoll: (spec, total, rolls, label) => this.pendingDice.push({ spec, total, rolls, label }),
       hit: (m) => this.playHit(m),
       dash: (mover, from) => this.animateDash(mover, from),
+      spellEffect: (m, kind) => this.pendingEffects.push({ mage: m, kind }),
+      wedge: (apex, angle, halfAngle, range) => this.vfxWedge(apex, angle, halfAngle, range),
     };
     this.gs.subTargeter = {
       requestPoint: (source, opts) => this.requestSubtargetPoint(source, opts),
       requestEnemy: (source, opts) => this.requestSubtargetEnemy(source, opts),
       reactionWindow: (source, label, at) => this.offerReactionWindow(source, label, { at }),
+      resolveImpacts: () => this.resolveImpacts(),
     };
     for (const m of this.gs.mages) if (m.isAI) this.ais.set(m, new SimpleAI(this.gs, m));
 
@@ -610,6 +710,16 @@ export class GameScene extends Phaser.Scene {
       this.startTurn();
       return;
     }
+    if (this.swamprun) {
+      await this.runAssignmentPhase();
+      if (this.opponentLeft) return;
+      await this.runSwamprunStartDraft();
+      if (this.opponentLeft) return;
+      this.setupSwamprun();
+      this.gs.startRound();
+      this.startTurn();
+      return;
+    }
     await this.runAssignmentPhase();
     if (this.opponentLeft) return;
     await this.runShopPhase();
@@ -629,6 +739,821 @@ export class GameScene extends Phaser.Scene {
     this.gs.log('Training sandbox — press [P] to open the training tools.');
   }
 
+  // ===========================================================================
+  //  SWAMPRUN  (endless PvE survival)
+  // ===========================================================================
+
+  /** Arm the party of survivors and unleash the first wave. */
+  private setupSwamprun(): void {
+    for (const m of this.gs.mages) {
+      if (m.team !== 1) continue;
+      m.resetDodges();
+      m.resetCombatReactions();
+    }
+    this.swamprunWave = 0;
+    this.swamprunGold = 0;
+    this.gs.log('Swamprun — the swamp stirs. Survive as long as you can.');
+    this.spawnWave(1);
+  }
+
+  /** Spawn the roster for the next wave and refresh the board. */
+  private spawnWave(n: number): void {
+    this.swamprunWave = n;
+    this.swamprunWaveEnemies = [];
+    this.swamprunWispCopies.clear();
+    const kinds = waveComposition(n, this.gs.rng);
+    this.gs.log(`— Wave ${n} — ${kinds.length} foe${kinds.length === 1 ? '' : 's'} emerge from the mire! —`);
+    for (const kind of kinds) this.spawnEnemy(kind);
+    // Boss wave: every fifth wave a Lich rises to command the undead.
+    if (n % 5 === 0) {
+      this.spawnEnemy('lich');
+      this.gs.log('— A LICH rises from the mire, and the dead answer its will! —');
+    }
+    // Every tenth wave the Reaper stalks in — a boss beyond even the Lich.
+    if (n % 10 === 0) {
+      this.spawnEnemy('reaper');
+      this.gs.log('— The REAPER glides from the mist. Flee, and it only follows. —');
+    }
+    this.updateWaveHud();
+    this.redraw();
+  }
+
+  /** Instantiate one creature, wire its AI and sprite, and add it to the fight. */
+  private spawnEnemy(kind: EnemyKind, at?: Vec2): Mage {
+    const pos = at ?? this.enemySpawnPoint();
+    const m = new Mage({ name: 'Enemy', isAI: true, team: 2, position: pos, loadout: [] });
+    applyEnemyTraits(m, kind, this.gs.rng);
+    m.resetDodges();
+    m.resetCombatReactions();
+    this.gs.addMage(m);
+    this.ais.set(m, new SimpleAI(this.gs, m));
+    this.swamprunWaveEnemies.push(m);
+    this.syncMageSprites();
+    this.styleEnemySprite(m, kind);
+    return m;
+  }
+
+  /** A scatter point along the far side of the arena, away from the player. */
+  private enemySpawnPoint(): Vec2 {
+    const rng = this.gs.rng;
+    const x = FIELD.x + FIELD.w * (0.58 + rng.float() * 0.38);
+    const y = FIELD.y + 40 + rng.float() * (FIELD.h - 80);
+    return { x, y };
+  }
+
+  /** Tint / rescale a spawned creature's sprite so kinds read apart. */
+  private styleEnemySprite(m: Mage, kind: EnemyKind): void {
+    const rec = this.mageAnims.get(m);
+    if (!rec) return;
+    const def = ENEMY_DEFS[kind];
+    rec.sprite.setTint(def.tint);
+    const srcH = rec.sprite.height || 1;
+    rec.sprite.setScale(((MAGE_RADIUS * 2.8) / srcH) * (def.scale ?? 1));
+  }
+
+  /** Spawn the next wave once the field is cleared (and the party still lives). */
+  private swamprunWaveCleared(): boolean {
+    if (!this.swamprun || this.swamprunInterludeActive) return false;
+    const partyAlive = this.gs.mages.some((m) => m.team === 1 && m.alive);
+    const foesLeft = this.gs.mages.some((m) => m.team === 2 && m.alive);
+    return partyAlive && !foesLeft;
+  }
+
+  /**
+   * Between-wave interlude: auto-sell the fallen wave's loot for gold, patch the
+   * survivors up, let them shop, then unleash the next wave. Clearing a wave
+   * never ends the run — it only opens the shop and escalates.
+   */
+  private async runWaveInterlude(): Promise<void> {
+    if (this.swamprunInterludeActive) return;
+    this.swamprunInterludeActive = true;
+    try {
+      this.awardWaveLoot();
+      // Attrition design: survivors carry their wounds into the next wave.
+      // Only per-combat action budgets (dodges, focus, leaps, reactions) reset.
+      for (const m of this.gs.mages) {
+        if (m.team !== 1 || !m.alive) continue;
+        m.resetDodges();
+        m.resetCombatReactions();
+        this.tickTorches(m);
+      }
+      // A shop opens only every third cleared wave; other waves flow straight on.
+      if (this.swamprunWave % 3 === 0) await this.runSwamprunShop();
+      this.spawnWave(this.swamprunWave + 1);
+    } finally {
+      this.swamprunInterludeActive = false;
+    }
+  }
+
+  /** Burn one combat off a held torch; snuff (destroy) it when its fuel runs out. */
+  private tickTorches(m: Mage): void {
+    const torchId = m.heldTorchId();
+    if (!torchId || m.torchCombatsLeft <= 0) return;
+    m.torchCombatsLeft -= 1;
+    if (m.torchCombatsLeft <= 0) {
+      const i = m.hands.indexOf(torchId);
+      if (i >= 0) m.hands.splice(i, 1);
+      this.gs.log(`${m.name}'s torch burns out.`);
+    }
+  }
+
+  /** Roll every fallen creature's drop table and bank the gold for the party. */
+  private awardWaveLoot(): void {
+    let gold = 0;
+    const tally: string[] = [];
+    for (const m of this.swamprunWaveEnemies) {
+      if (!m.enemyKind) continue;
+      const loot = rollLoot(m.enemyKind as EnemyKind, this.gs.rng, this.swamprunWispCopies.has(m));
+      gold += loot.gold;
+      tally.push(...loot.drops);
+    }
+    gold = Math.round(gold * 2) / 2; // keep clean halves
+    this.swamprunGold += gold;
+    this.swamprunWaveEnemies = [];
+    const drops = tally.length ? ` — salvage: ${tally.join(', ')}` : '';
+    this.gs.log(`Wave ${this.swamprunWave} cleared! Sold loot for ${gold}g${drops}. Party gold: ${this.swamprunGold}g.`);
+  }
+
+  /** Wisp gimmick: at the start of its turn it may split into another wisp. */
+  private maybeWispDuplicate(m: Mage): void {
+    if (!this.swamprun || m.enemyKind !== 'wisp' || !m.alive) return;
+    const chance = ENEMY_DEFS.wisp.duplicateChance ?? 0;
+    if (chance <= 0) return;
+    // Cap the swarm so a lucky streak can't lock the game up.
+    const wisps = this.gs.mages.filter((w) => w.enemyKind === 'wisp' && w.alive).length;
+    if (wisps >= 16) return;
+    if (!this.gs.rng.chance(chance)) return;
+    const near = {
+      x: m.x + (this.gs.rng.float() - 0.5) * 70,
+      y: m.y + (this.gs.rng.float() - 0.5) * 70,
+    };
+    const copy = this.spawnEnemy('wisp', near);
+    copy.justSpawned = true; // it may not act (nor split) until its next turn
+    this.swamprunWispCopies.add(copy); // copies drop no loot
+    this.gs.log(`${m.name} flickers and splits — another wisp coalesces.`);
+    this.redraw();
+  }
+
+  /** Update the on-field wave / foe-count readout. */
+  private updateWaveHud(): void {
+    if (!this.swamprun) return;
+    const alive = this.gs.mages.filter((m) => m.team === 2 && m.alive).length;
+    const text = `Wave ${this.swamprunWave}    Foes left: ${alive}    Gold: ${this.swamprunGold}g`;
+    if (!this.swamprunHudText) {
+      this.swamprunHudText = this.add
+        .text(FIELD.x + 12, FIELD.y + 10, text, {
+          fontSize: '20px',
+          fontStyle: 'bold',
+          color: '#ffdf80',
+          backgroundColor: '#0b0b14aa',
+          padding: { x: 6, y: 3 },
+        })
+        .setDepth(60);
+    } else {
+      this.swamprunHudText.setText(text);
+    }
+  }
+
+  // ===========================================================================
+  //  SWAMPRUN SHOP  (between-wave stat & item purchases)
+  // ===========================================================================
+
+  /** Each surviving human spends the shared party gold in turn. AI allies pass. */
+  private async runSwamprunShop(): Promise<void> {
+    const shoppers = this.gs.mages.filter(
+      (m) => m.team === 1 && m.alive && !this.controllerIsAI(m)
+    );
+    if (shoppers.length === 0) return;
+    const prevMode = this.mode;
+    this.mode = 'shop';
+    // Reroll every slot for this visit. Deterministic (gs.rng) so all peers agree.
+    this.generateSwampShop();
+    this.swampShopPassed = new Set<Mage>();
+    // Round-robin: each shopper takes one action per turn (buy / rest / stat /
+    // leave) until everyone has left. A solo shopper simply keeps acting until
+    // they choose to go. Online: the owning client drives; peers apply relayed
+    // actions in lockstep behind a waiting screen.
+    let idx = 0;
+    while (!this.opponentLeft && this.swampShopPassed.size < shoppers.length) {
+      const mage = shoppers[idx % shoppers.length];
+      idx += 1;
+      if (this.swampShopPassed.has(mage) || !mage.alive) {
+        this.swampShopPassed.add(mage);
+        continue;
+      }
+      if (this.online && !this.isLocalDecider(mage)) {
+        await this.awaitRemoteShopTurn(mage);
+      } else {
+        await this.promptSwampShopTurn(mage);
+      }
+    }
+    this.mode = prevMode;
+    this.hideSwampShop();
+  }
+
+  /** Reroll all six shop slots from the shared RNG (identical on every peer). */
+  private generateSwampShop(): void {
+    const rng = this.gs.rng;
+    const partyLuck = this.gs.mages
+      .filter((m) => m.team === 1 && m.alive)
+      .reduce((sum, m) => sum + m.maxLuck, 0);
+    const makeItemSlot = (rarity: Rarity): SwampShopSlot => {
+      const id = draftChoices(rarity, () => rng.float(), 1)[0];
+      const r = rng.float();
+      const discount: 0 | 0.5 | 0.8 = r < 0.05 ? 0.8 : r < 0.25 ? 0.5 : 0;
+      const price = Math.max(1, Math.round(SWAMP_PRICE[rarity] * (1 - discount)));
+      return { kind: 'item', id, rarity, price, discount, sold: !id };
+    };
+    const rollNonConsumable = (): Rarity => {
+      let rarity = rollRarity(() => rng.float(), partyLuck);
+      let guard = 0;
+      while (rarity === 'consumeable' && guard++ < 50) rarity = rollRarity(() => rng.float(), partyLuck);
+      return rarity === 'consumeable' ? 'common' : rarity;
+    };
+    const slots: SwampShopSlot[] = [];
+    slots.push(makeItemSlot('consumeable')); // slot 1: consumable
+    slots.push(makeItemSlot('consumeable')); // slot 2: extra consumable (more torches!)
+    for (let i = 0; i < 3; i++) slots.push(makeItemSlot(rollNonConsumable())); // slots 3-5
+    // Slot 6: guaranteed unreal-or-better.
+    const unrealRank = rarityRank('unreal');
+    let hi = rollRarity(() => rng.float(), partyLuck);
+    let guard = 0;
+    while (rarityRank(hi) < unrealRank && guard++ < 80) hi = rollRarity(() => rng.float(), partyLuck);
+    if (rarityRank(hi) < unrealRank) hi = 'unreal';
+    slots.push(makeItemSlot(hi));
+    // Slot 7: stat up (priced dynamically as it is bought).
+    slots.push({ kind: 'stat', price: SWAMP_STAT_BASE, discount: 0, sold: false });
+    this.swampSlots = slots;
+    this.swampRestUsed = false;
+    this.swampStatBuys = 0;
+    this.swampShopMsg = '';
+  }
+
+  /** One-pick, no-consumable draft handed to each survivor at the run's start. */
+  private async runSwamprunStartDraft(): Promise<void> {
+    this.buildShopOverlay();
+    this.swampStartDraftActive = true;
+    this.mode = 'shop';
+    try {
+      if (this.online && this.net) {
+        for (const m of this.gs.mages) if (m.isAI) this.applyCart(m, this.aiStartPick(m));
+        const humanCount = this.gs.mages.filter((m) => !m.isAI).length;
+        const mySeat = this.localSeat;
+        const myCart = await this.promptShop(this.mageBySeat(mySeat));
+        if (this.opponentLeft) return;
+        this.net.send({ k: 'buy', seat: mySeat, items: myCart });
+        this.showShopWaiting();
+        const carts = new Map<number, ItemId[]>();
+        carts.set(mySeat, myCart);
+        while (carts.size < humanCount && !this.opponentLeft && this.net) {
+          const msg = await this.net.recv();
+          if (msg.k === 'bye') break;
+          if (msg.k === 'buy' && typeof msg.seat === 'number') carts.set(msg.seat, asItemIds(msg.items));
+        }
+        if (this.opponentLeft) return;
+        for (const [seat, cart] of carts) this.applyCart(this.mageBySeat(seat), cart);
+      } else {
+        for (const m of this.gs.mages) {
+          if (m.isAI) this.applyCart(m, this.aiStartPick(m));
+          else this.applyCart(m, await this.promptShop(m));
+        }
+      }
+    } finally {
+      this.swampStartDraftActive = false;
+      this.hideShopOverlay();
+    }
+    this.logEquipSummary();
+  }
+
+  /** Deterministic AI starting pick: one non-consumable item. */
+  private aiStartPick(mage: Mage): ItemId[] {
+    const rng = this.gs.rng;
+    let rarity = rollRarity(() => rng.float(), mage.maxLuck);
+    let guard = 0;
+    while (rarity === 'consumeable' && guard++ < 50) rarity = rollRarity(() => rng.float(), mage.maxLuck);
+    if (rarity === 'consumeable') rarity = 'common';
+    const opts = draftChoices(rarity, () => rng.float(), 3);
+    return opts.length ? [opts[Math.floor(rng.float() * opts.length)]] : [];
+  }
+
+  /** Apply one relayed shop action from a remote shopper, then yield the turn. */
+  private async awaitRemoteShopTurn(mage: Mage): Promise<void> {
+    const seat = this.seatOf(mage);
+    this.showRemoteShopWaiting(mage);
+    for (;;) {
+      if (this.opponentLeft || this.gs.isOver) {
+        this.swampShopPassed.add(mage);
+        return;
+      }
+      const msg = await this.net!.recv();
+      if (msg.k === 'bye') {
+        this.swampShopPassed.add(mage);
+        return;
+      }
+      if (msg.k !== 'shop' || (Number(msg.seat) | 0) !== seat) continue;
+      if (msg.action === 'pass') {
+        this.swampShopPassed.add(mage);
+        return;
+      }
+      if (msg.action === 'slot') this.applySwampSlot(mage, Number(msg.slot) | 0);
+      else if (msg.action === 'rest') this.applySwampRest(mage);
+      else if (msg.action === 'stat' && typeof msg.key === 'string') this.applySwampStat(mage, msg.key as StatKey);
+      else if (msg.action === 'sell' && typeof msg.item === 'string') this.applySwampSell(mage, msg.item as ItemId);
+      else if (msg.action === 'discard' && typeof msg.item === 'string') this.applySwampDiscard(mage, msg.item as ItemId);
+      this.updateWaveHud();
+      return; // one action per turn
+    }
+  }
+
+  /** A read-only overlay shown while another player shops in online co-op. */
+  private showRemoteShopWaiting(mage: Mage): void {
+    this.swampShopPanel?.destroy();
+    const c = this.add.container(0, 0).setDepth(96);
+    this.swampShopPanel = c;
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    const dim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.8).setOrigin(0, 0);
+    const panel = this.add
+      .rectangle(cx, cy, 940, 580, 0x10101c, 0.98)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, 0x5a5a88);
+    c.add([dim, panel]);
+    c.add(
+      this.add
+        .text(cx, cy - 40, `${mage.name} is shopping…`, {
+          fontSize: '26px',
+          color: TEXT.warn,
+          fontStyle: 'bold',
+        })
+        .setOrigin(0.5)
+    );
+    c.add(
+      this.add
+        .text(cx, cy + 16, `Party gold: ${this.swamprunGold}g`, {
+          fontSize: '20px',
+          color: '#ffdf80',
+        })
+        .setOrigin(0.5)
+    );
+    c.add(
+      this.add
+        .text(cx, cy + 64, 'Waiting for them to finish their picks.', {
+          fontSize: '16px',
+          color: TEXT.dim,
+        })
+        .setOrigin(0.5)
+    );
+  }
+
+  /** Open the shop for one shopper; resolve after they take a single action. */
+  private promptSwampShopTurn(mage: Mage): Promise<void> {
+    this.swampShopMage = mage;
+    this.swampShopStatPicking = false;
+    this.swampShopManaging = false;
+    this.swampShopConfirmSlot = null;
+    this.redrawSwampShop();
+    return new Promise((resolve) => {
+      this.swampShopResolve = resolve;
+    });
+  }
+
+  private hideSwampShop(): void {
+    this.swampShopPanel?.destroy();
+    this.swampShopPanel = undefined;
+    this.swampShopResolve = null;
+    this.swampShopMage = undefined;
+  }
+
+  /** Rebuild the shop overlay from scratch to reflect the current state. */
+  private redrawSwampShop(): void {
+    this.swampShopPanel?.destroy();
+    const mage = this.swampShopMage;
+    if (!mage) return;
+    const c = this.add.container(0, 0).setDepth(96);
+    this.swampShopPanel = c;
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    const dim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.8).setOrigin(0, 0);
+    const panel = this.add
+      .rectangle(cx, cy, 1180, 620, 0x10101c, 0.98)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, 0x5a5a88);
+    c.add([dim, panel]);
+
+    const gold = this.swamprunGold;
+    c.add(
+      this.add
+        .text(cx, cy - 288, `${mage.name} — Shop  (Wave ${this.swamprunWave})`, {
+          fontSize: '24px',
+          color: TEXT.warn,
+          fontStyle: 'bold',
+        })
+        .setOrigin(0.5)
+    );
+    const cap = mage.hasBagOfHolding() ? Infinity : mage.carryCap();
+    const over = mage.carriedWeight() > cap;
+    const capTxt = cap === Infinity ? '∞' : `${cap}`;
+    c.add(
+      this.add
+        .text(
+          cx,
+          cy - 256,
+          `Party gold: ${gold}g     Carry: ${mage.carriedWeight()}/${capTxt} kg`,
+          { fontSize: '19px', color: over ? '#ff9a9a' : '#ffdf80' }
+        )
+        .setOrigin(0.5)
+    );
+    if (this.swampShopMsg) {
+      c.add(
+        this.add.text(cx, cy - 230, this.swampShopMsg, { fontSize: '15px', color: '#9fe6a0' }).setOrigin(0.5)
+      );
+    }
+
+    // Over-weight "buy anyway?" confirmation sub-state.
+    if (this.swampShopConfirmSlot != null) {
+      const slot = this.swampSlots[this.swampShopConfirmSlot];
+      const def = slot?.id ? getItem(slot.id) : null;
+      c.add(
+        this.add
+          .text(
+            cx,
+            cy - 40,
+            `${def?.name ?? 'That item'} weighs ${def?.weight ?? 0}kg — buying it exceeds your\ncarry weight. Buy it anyway? You must then sell or drop\nsomething before you can leave.`,
+            { fontSize: '17px', color: '#ffcf6b', align: 'center' }
+          )
+          .setOrigin(0.5)
+      );
+      this.swampShopButton(c, cx - 120, cy + 60, 'Buy anyway', '#ff9a9a', true, () =>
+        this.swampBuySlot(mage, this.swampShopConfirmSlot!)
+      );
+      this.swampShopButton(c, cx + 120, cy + 60, 'Cancel', '#8fdfc8', true, () => {
+        this.swampShopConfirmSlot = null;
+        this.redrawSwampShop();
+      });
+      return;
+    }
+
+    // Stat picker sub-state: pick which stat the stat-up boosts.
+    if (this.swampShopStatPicking) {
+      c.add(
+        this.add.text(cx, cy - 40, 'Choose a stat to raise (+1d3):', { fontSize: '18px', color: TEXT.body }).setOrigin(0.5)
+      );
+      STAT_DEFS.forEach((def, i) => {
+        this.swampShopButton(c, cx + (i - 2.5) * 156, cy + 10, def.name, '#a9d4ff', true, () =>
+          this.swampBuyStat(mage, def.key)
+        );
+      });
+      this.swampShopButton(c, cx, cy + 96, 'Cancel', '#ff9a9a', true, () => {
+        this.swampShopStatPicking = false;
+        this.redrawSwampShop();
+      });
+      return;
+    }
+
+    // Sell / drop (manage bag) sub-state.
+    if (this.swampShopManaging) {
+      this.drawSwampManagePanel(c, mage, cx, cy, over);
+      return;
+    }
+
+    // Seven slot cards in a 4-column grid.
+    const cols = [cx - 435, cx - 145, cx + 145, cx + 435];
+    const rows = [cy - 158, cy + 40];
+    this.swampSlots.forEach((slot, i) => {
+      this.drawSwampSlot(c, mage, slot, i, cols[i % 4], rows[Math.floor(i / 4)], gold);
+    });
+
+    // Manage / Rest / Leave controls.
+    this.swampShopButton(c, cx - 300, cy + 252, 'Sell / drop items', '#c9a9ff', true, () => {
+      this.swampShopManaging = true;
+      this.redrawSwampShop();
+    });
+    const restLabel = this.swampRestUsed ? 'Rest used' : `Rest (${SWAMP_REST_COST}g)`;
+    this.swampShopButton(
+      c,
+      cx,
+      cy + 252,
+      restLabel,
+      '#8fdfc8',
+      !this.swampRestUsed && gold >= SWAMP_REST_COST,
+      () => this.swampRest(mage)
+    );
+    this.swampShopButton(
+      c,
+      cx + 300,
+      cy + 252,
+      over ? 'Over weight!' : 'Leave shop',
+      '#ff9a9a',
+      !over,
+      () => this.swampPass(mage)
+    );
+    if (over) {
+      c.add(
+        this.add
+          .text(cx + 300, cy + 284, 'Sell or drop to fit', { fontSize: '12px', color: '#ff9a9a' })
+          .setOrigin(0.5)
+      );
+    }
+  }
+
+  /** The sell / drop sub-panel: list every carried item with sell + drop actions. */
+  private drawSwampManagePanel(
+    c: Phaser.GameObjects.Container,
+    mage: Mage,
+    cx: number,
+    cy: number,
+    over: boolean
+  ): void {
+    c.add(
+      this.add
+        .text(cx, cy - 196, 'Sell non-consumables for 25% of their price, or drop anything to free weight.', {
+          fontSize: '15px',
+          color: TEXT.dim,
+        })
+        .setOrigin(0.5)
+    );
+    type Row = { id: ItemId; where: string };
+    const rows: Row[] = [
+      ...mage.hands.map((id) => ({ id, where: 'held' })),
+      ...mage.bag.map((id) => ({ id, where: 'bag' })),
+      ...mage.accessories.map((id) => ({ id, where: 'worn' })),
+      ...(mage.head ? [{ id: mage.head, where: 'worn' }] : []),
+      ...(mage.torso ? [{ id: mage.torso, where: 'worn' }] : []),
+      ...(mage.boots ? [{ id: mage.boots, where: 'worn' }] : []),
+      ...mage.utility.map((id) => ({ id, where: 'utility' })),
+    ];
+    if (rows.length === 0) {
+      c.add(
+        this.add.text(cx, cy - 120, '(nothing to sell or drop)', { fontSize: '15px', color: TEXT.dim }).setOrigin(0.5)
+      );
+    }
+    const startY = cy - 150;
+    rows.slice(0, 12).forEach((row, i) => {
+      const def = getItem(row.id);
+      const y = startY + i * 30;
+      const left = cx - 420;
+      c.add(
+        this.add.text(left, y, `${def.name}  [${def.rarity}]  ${def.weight}kg  (${row.where})`, {
+          fontSize: '14px',
+          color: TEXT.body,
+          fixedWidth: 520,
+        })
+      );
+      const sellValue = this.swampSellValue(row.id);
+      if (sellValue > 0) {
+        this.swampShopButton(c, left + 620, y + 8, `Sell ${sellValue}g`, '#7cfc9a', true, () =>
+          this.swampSellItem(mage, row.id)
+        );
+      }
+      this.swampShopButton(c, left + 760, y + 8, 'Drop', '#ff9a9a', true, () =>
+        this.swampDiscardItem(mage, row.id)
+      );
+    });
+    this.swampShopButton(
+      c,
+      cx,
+      cy + 250,
+      over ? 'Still over weight' : 'Back to shop',
+      over ? '#ff9a9a' : '#8fdfc8',
+      !over,
+      () => {
+        this.swampShopManaging = false;
+        this.redrawSwampShop();
+      }
+    );
+  }
+
+  /** Draw one shop slot card. Clicking it buys (or, for the stat slot, opens the picker). */
+  private drawSwampSlot(
+    c: Phaser.GameObjects.Container,
+    mage: Mage,
+    slot: SwampShopSlot,
+    i: number,
+    x: number,
+    y: number,
+    gold: number
+  ): void {
+    const w = 268;
+    let title: string;
+    let body: string;
+    let color: string;
+    let price: number;
+    let canBuy: boolean;
+    if (slot.kind === 'stat') {
+      price = SWAMP_STAT_BASE + this.swampStatBuys;
+      title = 'Stat Up';
+      body = 'Raise one stat by +1d3 (permanent).';
+      color = '#ffd479';
+      canBuy = gold >= price;
+    } else if (slot.sold || !slot.id) {
+      title = 'Sold';
+      body = '—';
+      color = '#555';
+      price = slot.price;
+      canBuy = false;
+    } else {
+      const def = getItem(slot.id);
+      title = def.name;
+      const disc = slot.discount ? `  (-${Math.round(slot.discount * 100)}%)` : '';
+      body = `[${slot.rarity}]  ${def.weight}kg${disc}\n${def.blurb}`;
+      color = RARITY_COLOR[slot.rarity ?? 'common'];
+      price = slot.price;
+      canBuy = gold >= price;
+    }
+    const card = this.add
+      .text(x - w / 2, y, `${title}\n${price}g\n${body}`, {
+        fontSize: '13px',
+        color,
+        backgroundColor: canBuy ? '#181826' : '#141420',
+        padding: { x: 10, y: 8 },
+        wordWrap: { width: w - 24 },
+        fixedWidth: w,
+        align: 'left',
+      })
+      .setOrigin(0, 0);
+    if (canBuy) {
+      card.setInteractive({ useHandCursor: true });
+      card.on('pointerdown', () => {
+        if (slot.kind === 'stat') {
+          this.swampShopStatPicking = true;
+          this.redrawSwampShop();
+        } else {
+          this.swampBuySlot(mage, i);
+        }
+      });
+      card.on('pointerover', () => card.setStroke('#ffffff', 2));
+      card.on('pointerout', () => card.setStroke('#000000', 0));
+    }
+    c.add(card);
+  }
+
+  /** A small text button used across the swamprun shop overlay. */
+  private swampShopButton(
+    c: Phaser.GameObjects.Container,
+    x: number,
+    y: number,
+    txt: string,
+    color: string,
+    enabled: boolean,
+    onClick: () => void
+  ): void {
+    const t = this.add
+      .text(x, y, txt, {
+        fontSize: '16px',
+        fontStyle: 'bold',
+        color: enabled ? color : '#555',
+        backgroundColor: enabled ? '#1c1c30' : '#141420',
+        padding: { x: 12, y: 7 },
+      })
+      .setOrigin(0.5);
+    if (enabled) {
+      t.setInteractive({ useHandCursor: true });
+      t.on('pointerdown', onClick);
+      t.on('pointerover', () => t.setBackgroundColor('#2c2c50'));
+      t.on('pointerout', () => t.setBackgroundColor('#1c1c30'));
+    }
+    c.add(t);
+  }
+
+  // --- Shop actions (pure apply + local relay wrappers) ----------------------
+
+  /** Buy the item in slot `i`. Pure state + log; returns a UI message. */
+  private applySwampSlot(mage: Mage, i: number): string {
+    const slot = this.swampSlots[i];
+    if (!slot || slot.kind !== 'item' || slot.sold || !slot.id) return '';
+    if (this.swamprunGold < slot.price) return '';
+    this.swamprunGold -= slot.price;
+    slot.sold = true;
+    this.gs.grantItem(mage, slot.id);
+    const def = getItem(slot.id);
+    this.gs.log(
+      `${mage.name} buys ${def.name} (${slot.rarity}) for ${slot.price}g. Party gold: ${this.swamprunGold}g.`
+    );
+    return `Bought ${def.name} [${slot.rarity}] for ${slot.price}g!`;
+  }
+
+  /** Party rest: restore half of each survivor's vitals. Pure state + log. */
+  private applySwampRest(mage: Mage): string {
+    if (this.swampRestUsed || this.swamprunGold < SWAMP_REST_COST) return '';
+    this.swamprunGold -= SWAMP_REST_COST;
+    this.swampRestUsed = true;
+    for (const m of this.gs.mages) {
+      if (m.team === 1 && m.alive) m.swamprunRest(this.gs.rng);
+    }
+    this.gs.log(
+      `${mage.name} calls a rest for ${SWAMP_REST_COST}g — the party recovers. Party gold: ${this.swamprunGold}g.`
+    );
+    return 'Party rested — half HP, mana and word charges restored.';
+  }
+
+  /** Buy a +1d3 to a chosen stat. Each purchase this shop raises the next by 1g. */
+  private applySwampStat(mage: Mage, key: StatKey): string {
+    const price = SWAMP_STAT_BASE + this.swampStatBuys;
+    if (this.swamprunGold < price) return '';
+    this.swamprunGold -= price;
+    this.swampStatBuys += 1;
+    const amt = this.gs.rng.die(3); // 1d3, rolled after the stat is chosen
+    mage.gainStat(key, amt);
+    const name = STAT_DEFS.find((d) => d.key === key)?.name ?? key;
+    this.gs.log(`${mage.name} trains ${name} +${amt} for ${price}g. Party gold: ${this.swamprunGold}g.`);
+    return `${name} +${amt}!  (rolled 1d3)`;
+  }
+
+  /** Local: relay + buy an item slot, then yield the turn. */
+  private swampBuySlot(mage: Mage, i: number): void {
+    const slot = this.swampSlots[i];
+    if (!slot || slot.kind !== 'item' || slot.sold || !slot.id || this.swamprunGold < slot.price) return;
+    // Weight guard: warn once before buying something the shopper cannot carry.
+    if (this.swampShopConfirmSlot !== i && !mage.canCarry(getItem(slot.id).weight)) {
+      this.swampShopConfirmSlot = i;
+      this.redrawSwampShop();
+      return;
+    }
+    this.swampShopConfirmSlot = null;
+    if (this.online) this.net?.send({ k: 'shop', seat: this.seatOf(mage), action: 'slot', slot: i });
+    this.swampShopMsg = this.applySwampSlot(mage, i);
+    this.updateWaveHud();
+    this.resolveSwampTurn();
+  }
+
+  /** Sell value (gold) of a non-consumable item: 25% of its shop price, else 0. */
+  private swampSellValue(id: ItemId): number {
+    const def = getItem(id);
+    if (def.rarity === 'consumeable') return 0;
+    return Math.max(1, Math.floor(SWAMP_PRICE[def.rarity] * 0.25));
+  }
+
+  /** Pure: sell one carried item for gold; returns a UI message. */
+  private applySwampSell(mage: Mage, id: ItemId): string {
+    const value = this.swampSellValue(id);
+    if (value <= 0) return '';
+    if (!this.gs.removeItem(mage, id)) return '';
+    this.swamprunGold += value;
+    const def = getItem(id);
+    this.gs.log(`${mage.name} sells ${def.name} for ${value}g. Party gold: ${this.swamprunGold}g.`);
+    return `Sold ${def.name} for ${value}g.`;
+  }
+
+  /** Pure: drop (discard) one carried item, no refund; returns a UI message. */
+  private applySwampDiscard(mage: Mage, id: ItemId): string {
+    if (!this.gs.removeItem(mage, id)) return '';
+    const def = getItem(id);
+    this.gs.log(`${mage.name} discards ${def.name}.`);
+    return `Discarded ${def.name}.`;
+  }
+
+  /** Local: relay + sell an item, then yield the turn. */
+  private swampSellItem(mage: Mage, id: ItemId): void {
+    if (this.swampSellValue(id) <= 0) return;
+    if (this.online) this.net?.send({ k: 'shop', seat: this.seatOf(mage), action: 'sell', item: id });
+    this.swampShopMsg = this.applySwampSell(mage, id);
+    this.updateWaveHud();
+    this.resolveSwampTurn();
+  }
+
+  /** Local: relay + discard an item, then yield the turn. */
+  private swampDiscardItem(mage: Mage, id: ItemId): void {
+    if (this.online) this.net?.send({ k: 'shop', seat: this.seatOf(mage), action: 'discard', item: id });
+    this.swampShopMsg = this.applySwampDiscard(mage, id);
+    this.updateWaveHud();
+    this.resolveSwampTurn();
+  }
+
+  /** Local: relay + rest the party, then yield the turn. */
+  private swampRest(mage: Mage): void {
+    if (this.swampRestUsed || this.swamprunGold < SWAMP_REST_COST) return;
+    if (this.online) this.net?.send({ k: 'shop', seat: this.seatOf(mage), action: 'rest' });
+    this.swampShopMsg = this.applySwampRest(mage);
+    this.updateWaveHud();
+    this.resolveSwampTurn();
+  }
+
+  /** Local: relay + buy a stat-up for the chosen stat, then yield the turn. */
+  private swampBuyStat(mage: Mage, key: StatKey): void {
+    const price = SWAMP_STAT_BASE + this.swampStatBuys;
+    if (this.swamprunGold < price) return;
+    if (this.online) this.net?.send({ k: 'shop', seat: this.seatOf(mage), action: 'stat', key });
+    this.swampShopMsg = this.applySwampStat(mage, key);
+    this.swampShopStatPicking = false;
+    this.updateWaveHud();
+    this.resolveSwampTurn();
+  }
+
+  /** Local: relay + leave the shop, then yield the turn. */
+  private swampPass(mage: Mage): void {
+    if (this.online) this.net?.send({ k: 'shop', seat: this.seatOf(mage), action: 'pass' });
+    this.swampShopPassed.add(mage);
+    this.resolveSwampTurn();
+  }
+
+  /** Close the panel and resolve the active shopper's turn (loop re-opens it). */
+  private resolveSwampTurn(): void {
+    const resolve = this.swampShopResolve;
+    this.swampShopResolve = null;
+    this.swampShopPanel?.destroy();
+    this.swampShopPanel = undefined;
+    resolve?.();
+  }
   /** Drink a potion: spend it from the utility belt and apply its effect. */
   private useConsumable(mage: Mage, itemId: ItemId): void {
     const def = getItem(itemId);
@@ -655,7 +1580,9 @@ export class GameScene extends Phaser.Scene {
 
   /** Roll one shared assortment of dice and let each duellist allocate it. */
   private async runAssignmentPhase(): Promise<void> {
-    this.statDice = rollStatAssortment(this.gs.rng);
+    this.statDice = this.swamprun
+      ? rollSwamprunStatDice(this.gs.rng)
+      : rollStatAssortment(this.gs.rng);
     this.buildAssignOverlay();
     this.mode = 'assign';
     this.gs.log(`Stat dice: ${this.statDice.map((d) => `${d.spec}=${d.value}`).join(', ')}`);
@@ -1022,7 +1949,8 @@ export class GameScene extends Phaser.Scene {
   /** Begin the next draft round, or resolve the shop once all rounds are done. */
   private startDraftRound(): void {
     this.shopRound += 1;
-    if (this.shopRound > DRAFT_ROUNDS) {
+    const total = this.swampStartDraftActive ? 1 : DRAFT_ROUNDS;
+    if (this.shopRound > total) {
       const picks = [...this.shopPicks];
       const resolve = this.shopResolve;
       this.shopResolve = null;
@@ -1030,7 +1958,13 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     const luck = this.shopMage?.maxLuck ?? 0;
-    const rarity = rollRarity(Math.random, luck);
+    let rarity = rollRarity(Math.random, luck);
+    if (this.swampStartDraftActive) {
+      // The start-of-run pick never offers a consumable.
+      let guard = 0;
+      while (rarity === 'consumeable' && guard++ < 50) rarity = rollRarity(Math.random, luck);
+      if (rarity === 'consumeable') rarity = 'common';
+    }
     this.shopOptions = draftChoices(rarity, Math.random, 3);
     this.refreshShopOverlay();
   }
@@ -1141,7 +2075,11 @@ export class GameScene extends Phaser.Scene {
       this.shopInfo.setText(`A ${rarityName} appears — choose one of three to draft (carry ${cap}kg)`);
       this.shopInfo.setColor(RARITY_COLOR[rarity]);
     } else {
-      this.shopTitle.setText(`${this.shopMage.name} — Draft ${this.shopRound}/${DRAFT_ROUNDS}`);
+      this.shopTitle.setText(
+        this.swampStartDraftActive
+          ? `${this.shopMage.name} — Choose a starting item`
+          : `${this.shopMage.name} — Draft ${this.shopRound}/${DRAFT_ROUNDS}`
+      );
       this.shopTitle.setColor(TEXT.warn);
       this.shopInfo.setText(`A ${rarityName} appears — choose one of three (carry ${cap}kg)`);
       this.shopInfo.setColor(RARITY_COLOR[rarity]);
@@ -1212,15 +2150,37 @@ export class GameScene extends Phaser.Scene {
   // ===========================================================================
 
   private async startTurn(): Promise<void> {
+    // Swamprun: if the last wave has fallen, the between-wave interlude (loot +
+    // shop + next wave) runs before we check for a match end — clearing a wave
+    // never ends the run.
+    if (this.swamprunWaveCleared()) await this.runWaveInterlude();
     if (this.gs.isOver) return this.endGame();
     this.gs.beginTurn();
+    // A creature spawned mid-combat (a wisp split) sits out its first turn, so a
+    // fresh copy cannot immediately split again the moment it appears.
+    if (this.gs.current.justSpawned) {
+      this.gs.current.justSpawned = false;
+      return this.nextTurn();
+    }
+    // A wisp may split at the start of its own turn.
+    this.maybeWispDuplicate(this.gs.current);
+    // Ghast/Reaper start-of-turn steps: a Ghast's marked zone erupts, and a
+    // Reaper that channelled last turn now claps to delete every marked foe.
+    await this.resolveBossTurnStart(this.gs.current);
+    if (this.gs.isOver) return this.endGame();
+    if (this.swamprun && !this.gs.current.alive) return this.nextTurn();
     this.resetSelection();
     this.redraw();
     // Turn-start damage (DoT, auras, totems) applies no dice, so play any
     // recoils it queued right away as the HP changes become visible.
     this.flushHits();
 
+    // Swamprun: a creature's own turn-start DoT tick can empty the board — run
+    // the interlude rather than declaring the run over, and skip a creature that
+    // just died.
+    if (this.swamprunWaveCleared()) await this.runWaveInterlude();
     if (this.gs.isOver) return this.endGame();
+    if (this.swamprun && !this.gs.current.alive) return this.nextTurn();
 
     // A mind-bound mage is compelled to repeat its last action and forfeits
     // any choice this turn.
@@ -1347,6 +2307,9 @@ export class GameScene extends Phaser.Scene {
 
 
   private async nextTurn(): Promise<void> {
+    // Swamprun: refill the board the instant a wave is cleared so the run never
+    // stalls out on an empty arena.
+    if (this.swamprunWaveCleared()) await this.runWaveInterlude();
     // As the acting mage moves to end their turn, opponents get one last chance
     // to spend their reaction (counter-magic only) before the turn passes.
     await this.offerReactionWindow(this.gs.current, 'End of Turn', {
@@ -1377,10 +2340,50 @@ export class GameScene extends Phaser.Scene {
     while (guard++ < 16) {
       if (this.gs.isOver) return;
       const decision = ai.chooseAction();
-      if (decision.type === 'end') return;
+      if (decision.type === 'end') break;
       await this.delay(450);
       await this.performAIDecision(decision);
       this.redraw();
+    }
+    // A Lich that never moved this turn takes a bonus end-step (rolled effect).
+    await this.maybeLichEndStep();
+  }
+
+  /** If the current mage is a Lich that stayed put, roll its d6 end-step. */
+  private async maybeLichEndStep(): Promise<void> {
+    const lich = this.gs.current;
+    if (this.gs.isOver) return;
+    if (lich.enemyKind !== 'lich' || !lich.alive || lich.movedThisTurn) return;
+    const res = this.gs.lichEndStep(lich);
+    if (res.summonAt) {
+      const at: Vec2 = {
+        x: Math.min(FIELD.x + FIELD.w - 20, Math.max(FIELD.x + 20, res.summonAt.x)),
+        y: Math.min(FIELD.y + FIELD.h - 20, Math.max(FIELD.y + 20, res.summonAt.y)),
+      };
+      this.spawnEnemy('zombie', at);
+    }
+    this.redraw();
+    await this.delay(300);
+  }
+
+  /**
+   * Start-of-turn steps for the two special bosses. A Ghast's telegraphed shadow
+   * zone erupts for 2d3 on everyone caught; a Reaper that spent last turn
+   * channelling now claps, deleting every foe it has marked.
+   */
+  private async resolveBossTurnStart(m: Mage): Promise<void> {
+    if (this.gs.isOver || !m.alive) return;
+    if (m.ghastKind && m.ghastPendingZone) {
+      this.gs.resolveGhastZone(m);
+      this.flushHits();
+      this.redraw();
+      await this.delay(300);
+    }
+    if (m.reaperKind && m.reaperChanneling) {
+      this.gs.reaperResolveClap(m);
+      this.syncMageSprites();
+      this.redraw();
+      await this.delay(400);
     }
   }
 
@@ -1395,6 +2398,40 @@ export class GameScene extends Phaser.Scene {
         me.spend(me.attackIsBonusAction() ? 'bonus' : 'main');
         await this.runStack(this.gs.makeMeleeItem(me, d.target));
         break;
+      case 'scarab':
+        me.spend(me.attackIsBonusAction() ? 'bonus' : 'main');
+        this.gs.attackScarab(me, d.scarab);
+        await this.vfxBurst({ x: d.scarab.x, y: d.scarab.y }, 0xffffff, 24, 1.2);
+        this.redraw();
+        break;
+      case 'power': {
+        // A bespoke Lich power: costs a main action, but no mana / charges / DC —
+        // it always resolves. Resolved straight through the stack.
+        me.spend('main');
+        await this.runStack(this.gs.makeSpellItem(me, d.spell, d.target, null));
+        break;
+      }
+      case 'ghast-mark': {
+        me.spend('main');
+        this.gs.markGhastZone(me, d.point, 3 * RANGE_UNIT);
+        break;
+      }
+      case 'ghast-shove': {
+        me.spend('main');
+        this.gs.ghastShove(me, d.target);
+        this.flushHits();
+        break;
+      }
+      case 'reaper-mark': {
+        me.spend('main');
+        this.gs.reaperMark(me, d.target);
+        break;
+      }
+      case 'reaper-channel': {
+        me.spend('main');
+        this.gs.reaperBeginChannel(me);
+        break;
+      }
       case 'spell': {
         // A scrambled mage (Mind Curse) casts a random spell instead.
         if (this.gs.controlOf(me)?.mode === 'random') {
@@ -1494,10 +2531,11 @@ export class GameScene extends Phaser.Scene {
             ? this.mageBySeat(cmd.target)
             : null;
         const point = cmd.x != null && cmd.y != null ? { x: cmd.x, y: cmd.y } : null;
+        const point2 = cmd.x2 != null && cmd.y2 != null ? { x: cmd.x2, y: cmd.y2 } : null;
         if (cmd.angle != null) me.wallAngle = cmd.angle;
         if (cmd.ability && this.isColorAbility(spell)) this.payForColorAbility(me, spell);
         else this.payForSpell(me, spell);
-        await this.runStack(this.gs.makeSpellItem(me, spell, target, point));
+        await this.runStack(this.gs.makeSpellItem(me, spell, target, point, undefined, point2));
         // Mutivarg's Rod: spells cast through it burn 20% of the target's mana.
         if (
           me.hands.includes('mutivargRod' as ItemId) &&
@@ -1987,6 +3025,13 @@ export class GameScene extends Phaser.Scene {
     await this.resolveStackLoop();
 
     this.busy = false;
+    // A Reaper felled by this action releases everyone it had deleted, before
+    // the board is judged (so a surviving ally's kill un-does the clap).
+    if (this.gs.restoreReaperDeletions().length > 0) this.syncMageSprites();
+    // Swamprun: if the acting player's blow cleared the wave, run the between-wave
+    // interlude (loot + shop + next wave) before the game-over check — otherwise
+    // the run would freeze on an empty board.
+    if (this.swamprunWaveCleared()) await this.runWaveInterlude();
     if (this.gs.isOver) {
       this.mode = 'over';
     } else if (this.online && !this.isLocalTurn()) {
@@ -2114,6 +3159,16 @@ export class GameScene extends Phaser.Scene {
           this.gs.shieldBash(reactor, top.source);
           this.redraw();
           passed.add(key);
+        } else if (choice && choice.weapon) {
+          // White identity: answer the attack with a weapon strike of your own.
+          reactor.reactedThisCycle = true;
+          reactor.reactionUsedRecently = true;
+          reactor.weaponReactionsUsed += 1;
+          this.gs.pushStack(this.gs.makeMeleeItem(reactor, top.source));
+          this.gs.log(`${reactor.name} answers with a weapon strike!`);
+          this.setCharging(reactor, true);
+          stackChanged = true;
+          break;
         } else {
           passed.add(key);
         }
@@ -2185,6 +3240,13 @@ export class GameScene extends Phaser.Scene {
     //    A spell may await interactive sub-targeting here, so resolve is async.
     this.pendingDice = [];
     await item.resolve(this.gs);
+    // A hostile single-target spell that dealt no instant damage (no hit overlay
+    // was queued for its foe) paints the "disrupt" sheet on the target instead,
+    // so pure control spells (Mind, Bind, Twist, …) still read as landing.
+    if (item.kind === 'spell' && item.spell?.targeting === 'enemy' && item.target) {
+      const struck = this.pendingEffects.some((e) => e.mage === item.target);
+      if (!struck) this.pendingEffects.push({ mage: item.target, kind: 'disrupt' });
+    }
     // 3) Show the dice that were rolled (roll → settle → linger), then the
     //    HP/sanity changes become visible on the next redraw.
     await this.playPendingDice();
@@ -2198,8 +3260,11 @@ export class GameScene extends Phaser.Scene {
   /** Roll 1d20 against a spell's DC, queue the die for display, and log it. */
   private rollSpellSuccess(spell: Spell, source: Mage): boolean {
     // Blue primary tier and assigned Intellect both lower a spell's difficulty.
-    // A flat +3 raises the baseline difficulty of every spell.
-    const dc = (spell.dc ?? 0) + 3 - (source.profile.bluePrimaryTier ? 2 : 0) - source.dcReduction();
+    // A flat +3 raises the baseline difficulty of every spell, and the easier
+    // spells (base DC 14 or lower) take a further +2 so INT can't trivialise them.
+    const baseDc = spell.dc ?? 0;
+    const easyBump = baseDc <= 14 ? 2 : 0;
+    const dc = baseDc + easyBump + 3 - (source.profile.bluePrimaryTier ? 2 : 0) - source.dcReduction();
     // Focus grants advantage on this one cast: roll the DC twice, keep the best.
     const focused = source.focusNextSpell;
     const r = this.gs.rng.roll('1d20');
@@ -2320,9 +3385,13 @@ export class GameScene extends Phaser.Scene {
     // inside castReaction with the real reason rather than a misleading one.
     if (reactor.hasReaction()) return true;
     if (this.castableAbilities(reactor).length > 0) return true;
-    // Physical reactions (Block / shield-Bash) need no blue word — they are
-    // available when the mage has the gear for them and their reaction is unspent.
-    return physical && (this.canBlock(reactor) || this.canBash(reactor, top));
+    // Physical reactions (Block / shield-Bash / weapon strike) need no blue word.
+    return (
+      physical &&
+      (this.canBlock(reactor) ||
+        this.canBash(reactor, top) ||
+        this.canWeaponReact(reactor, top))
+    );
   }
 
   /** True if `top` is an attack (melee or spell) aimed squarely at `reactor`. */
@@ -2408,6 +3477,19 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
+  /**
+   * True if the white-identity reactor can answer `top` with a weapon strike:
+   * it has weapon-reactions left this combat and can reach the attacker.
+   */
+  private canWeaponReact(reactor: Mage, top: StackItem): boolean {
+    return (
+      reactor.alive &&
+      reactor.canWeaponReact() &&
+      top.source.alive &&
+      this.gs.canMelee(reactor, top.source)
+    );
+  }
+
   private async getReaction(
     reactor: Mage,
     top: StackItem
@@ -2434,7 +3516,9 @@ export class GameScene extends Phaser.Scene {
       if (msg.k === 'bye') return null;
       return this.decodeReaction(msg);
     }
-    const choice = await this.promptReaction(reactor, top);
+    // Auto-pass toggle: skip the prompt entirely and pass priority. Still
+    // relayed online so peers stay in lockstep.
+    const choice = this.autoPassReactions ? null : await this.promptReaction(reactor, top);
     if (this.online) this.net?.send(this.encodeReaction(choice));
     return choice;
   }
@@ -2485,9 +3569,13 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-K', () => {
       if (this.mode === 'reaction') this.chooseNeedleReaction();
     });
+    kb.on('keydown-W', () => {
+      if (this.mode === 'reaction') this.chooseWeaponReaction();
+    });
     kb.on('keydown-D', () => {
       if (this.mode === 'reaction') this.chooseDodgeReaction();
     });
+    kb.on('keydown-O', () => this.toggleAutoPass());
     kb.on('keydown-ESC', () => {
       if (this.mode === 'action-menu') {
         this.hideActionMenu();
@@ -2662,6 +3750,7 @@ export class GameScene extends Phaser.Scene {
     }
     if (spell.targeting === 'point') {
       this.pendingSpell = spell;
+      this.pendingFirstPoint = null;
       if (spell.rotatableWall) {
         this.wallAimAngle = 0;
         this.mode = 'aiming-wall';
@@ -3263,6 +4352,15 @@ export class GameScene extends Phaser.Scene {
       run: () => this.chooseShieldReaction('bash'),
     });
     entries.push({
+      id: 'weapon',
+      label: 'Weapon strike',
+      hotkey: 'W',
+      desc: `Strike the attacker with your weapon (white identity · ${Math.max(0, MAX_WEAPON_REACTIONS - reactor.weaponReactionsUsed)} left).`,
+      enabled: physical && this.canWeaponReact(reactor, top),
+      reason: 'No weapon reactions left, or the attacker is out of reach.',
+      run: () => this.chooseWeaponReaction(),
+    });
+    entries.push({
       id: 'dodge',
       label: 'Dodge',
       hotkey: 'D',
@@ -3411,6 +4509,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.pendingSpell = null;
     this.pendingAbility = null;
+    this.pendingFirstPoint = null;
     this.aimingSource = null;
     this.throwPendingItem = null;
     this.mode = 'idle';
@@ -3492,6 +4591,18 @@ export class GameScene extends Phaser.Scene {
     if (!me.hands.includes(itemId)) return;
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Dropping an item needs a bonus action.');
+    this.closeInventory();
+    this.resetSelection();
+    this.submitTurn({ t: 'item-drop', itemId });
+  }
+
+  /** Take off and drop a worn accessory (bonus action), chosen from the inventory. */
+  private dropAccessory(itemId: ItemId): void {
+    if (!this.humanActiveOrInventory) return;
+    const me = this.gs.current;
+    if (!me.accessories.includes(itemId)) return;
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Taking off an item needs a bonus action.');
     this.closeInventory();
     this.resetSelection();
     this.submitTurn({ t: 'item-drop', itemId });
@@ -3627,9 +4738,10 @@ export class GameScene extends Phaser.Scene {
     children.push(
       this.add.text(leftX, topY - 30, 'Items', { fontSize: '16px', color: TEXT.body, fontStyle: 'bold' })
     );
-    const items: { id: ItemId; where: 'hand' | 'bag' | 'utility' }[] = [
+    const items: { id: ItemId; where: 'hand' | 'bag' | 'utility' | 'accessory' }[] = [
       ...me.hands.map((id) => ({ id, where: 'hand' as const })),
       ...me.bag.map((id) => ({ id, where: 'bag' as const })),
+      ...me.accessories.map((id) => ({ id, where: 'accessory' as const })),
       ...me.utility.map((id) => ({ id, where: 'utility' as const })),
     ];
     if (items.length === 0) {
@@ -3640,7 +4752,7 @@ export class GameScene extends Phaser.Scene {
     items.forEach((it, i) => {
       const def = getItem(it.id);
       const y = topY + i * 40;
-      const tag = it.where === 'hand' ? '  (held)' : it.where === 'bag' ? '  (in bag)' : '';
+      const tag = it.where === 'hand' ? '  (held)' : it.where === 'bag' ? '  (in bag)' : it.where === 'accessory' ? '  (worn)' : '';
       const label = this.add.text(leftX, y, `${def.name}${tag}`, {
         fontSize: '13px',
         color: it.where === 'bag' ? TEXT.dim : TEXT.body,
@@ -3708,6 +4820,18 @@ export class GameScene extends Phaser.Scene {
           })
           .setInteractive({ useHandCursor: true });
         drop.on('pointerdown', () => this.dropItemById(it.id));
+        children.push(drop);
+      }
+      if (it.where === 'accessory') {
+        const drop = this.add
+          .text(bx, y, '[ Drop ]', {
+            fontSize: '13px',
+            color: TEXT.warn,
+            backgroundColor: '#181826',
+            padding: { x: 6, y: 3 },
+          })
+          .setInteractive({ useHandCursor: true });
+        drop.on('pointerdown', () => this.dropAccessory(it.id));
         children.push(drop);
       }
     });
@@ -3857,7 +4981,16 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (this.mode === 'aiming-melee') {
-      const target = this.clickedMage(pt, me);
+      let target = this.clickedMage(pt, me);
+      // The click may miss the small target circle even when a foe is plainly in
+      // reach (common when you begin a turn already adjacent). Fall back to the
+      // nearest enemy actually within melee range of where you clicked.
+      if (!target || !this.gs.canMelee(me, target)) {
+        target =
+          this.gs.mages
+            .filter((m) => this.gs.canMelee(me, m))
+            .sort((a, b) => dist(pt, a.pos) - dist(pt, b.pos))[0] ?? null;
+      }
       if (target && this.gs.canMelee(me, target)) {
         this.mode = 'busy';
         this.submitTurn({ t: 'melee', target: this.seatOf(target) });
@@ -3941,11 +5074,34 @@ export class GameScene extends Phaser.Scene {
         this.flashHint('Too close — aim farther away.');
         return;
       }
+      // Two-point cone (Reality Shatter): the first click captures one edge; the
+      // spell only commits (and rolls) once the second edge is clicked.
+      if (spell.twoPointAim && !this.pendingFirstPoint) {
+        this.pendingFirstPoint = capped;
+        this.flashHint(`${spell.name}: click the cone's other edge.`, true);
+        this.redraw();
+        return;
+      }
       const ability = this.pendingAbility != null;
+      const first = this.pendingFirstPoint;
       this.mode = 'busy';
       this.pendingSpell = null;
       this.pendingAbility = null;
-      this.submitTurn({ t: 'spell', spellId: spell.id, ability, target: null, x: capped.x, y: capped.y });
+      this.pendingFirstPoint = null;
+      if (first) {
+        this.submitTurn({
+          t: 'spell',
+          spellId: spell.id,
+          ability,
+          target: null,
+          x: first.x,
+          y: first.y,
+          x2: capped.x,
+          y2: capped.y,
+        });
+      } else {
+        this.submitTurn({ t: 'spell', spellId: spell.id, ability, target: null, x: capped.x, y: capped.y });
+      }
       return;
     }
     if (this.mode === 'aiming-wall') {
@@ -4002,7 +5158,10 @@ export class GameScene extends Phaser.Scene {
     // one-spell-per-turn allowance — but still pays charges, mana and blood.
     if (!free) {
       mage.hasCastThisTurn = true;
-      mage.spend(spell.actionType === 'main' ? 'main' : 'bonus');
+      // Focus pre-pays the action: the empowered spell doesn't spend its slot.
+      if (!mage.focusNextSpell) {
+        mage.spend(spell.actionType === 'main' ? 'main' : 'bonus');
+      }
     }
     // Blood Charm: every spell is paid for in blood as well as mana.
     const bloodPct = mage.spellHealthCostPct();
@@ -4031,11 +5190,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Effective mana cost for a colour ability. A mage carrying no black words
-   * pays no mana for colour spells at all (a fully blue caster casts for free).
+   * Effective mana cost for a colour ability. Blue-secondary casters pay no mana
+   * for their colour spells at all; everyone else pays the ability's listed cost.
    */
   private abilityManaCost(me: Mage, ability: ColorAbility): number {
-    return me.profile.blackPrimaryTier ? ability.manaCost : 0;
+    if (me.profile.blueSecondaryTier) return 0;
+    return ability.manaCost;
   }
 
   /** Whether `me` can pay for `ability` (color-charges, optional life, mana). */
@@ -4057,12 +5217,16 @@ export class GameScene extends Phaser.Scene {
     let fromCharges = Math.min(charge, me.colorCharges);
     let fromLife = charge - fromCharges;
     if (fromLife > 0 && me.profile.blackSecondaryTier) {
+      // Black-secondary casters may spend up to 2 charges they don't have by
+      // paying HP instead: each skipped charge costs 5% of max HP (rounded up,
+      // min 1) — and this CAN drop them to 0 and kill them, with no warning.
       fromLife = Math.min(fromLife, 2);
       fromCharges = charge - fromLife;
-      const per = Math.max(1, Math.floor(me.maxHp * 0.05));
+      const per = Math.max(1, Math.ceil(me.maxHp * 0.05));
       const lifeCost = fromLife * per;
-      me.hp = Math.max(1, me.hp - lifeCost);
+      me.hp = Math.max(0, me.hp - lifeCost);
       this.gs.log(`${me.name} pays ${lifeCost} life for ${fromLife} color charge${fromLife > 1 ? 's' : ''}.`);
+      if (me.hp <= 0) this.gs.log(`${me.name} is consumed by the black magic!`);
     }
     me.spendColorCharges(fromCharges);
     const manaCost = this.abilityManaCost(me, ability);
@@ -4233,6 +5397,31 @@ export class GameScene extends Phaser.Scene {
   private onReactionPass(): void {
     if (this.mode !== 'reaction') return;
     this.resolveReaction(null);
+  }
+
+  /**
+   * Flip the auto-pass toggle. Can be used at any time — including while a
+   * reaction window is open, in which case the current prompt passes at once.
+   */
+  private toggleAutoPass(): void {
+    this.autoPassReactions = !this.autoPassReactions;
+    this.refreshAutoPassButton();
+    this.flashHint(
+      this.autoPassReactions
+        ? 'Auto-pass ON — reactions will pass automatically. [O] to turn off.'
+        : 'Auto-pass OFF — you will be prompted for reactions. [O] to turn on.'
+    );
+    // If a reaction prompt is currently open, resolve it as a pass immediately.
+    if (this.autoPassReactions && this.mode === 'reaction') this.onReactionPass();
+  }
+
+  /** Sync the on-screen auto-pass button label/colour with the toggle state. */
+  private refreshAutoPassButton(): void {
+    if (!this.autoPassButton) return;
+    const on = this.autoPassReactions;
+    this.autoPassButton.setText(`Auto-pass: ${on ? 'ON' : 'OFF'}  [O]`);
+    this.autoPassButton.setBackgroundColor(on ? '#4caf50' : '#2a2a3c');
+    this.autoPassButton.setColor(on ? '#0c0c18' : TEXT.dim);
   }
 
   /** Spend a Needle of Serenity during the reaction window. */
@@ -4500,6 +5689,15 @@ export class GameScene extends Phaser.Scene {
     this.resolveReaction({ shield: kind });
   }
 
+  private chooseWeaponReaction(): void {
+    if (!this.reactor || !this.reactionTop) return;
+    if (!this.canWeaponReact(this.reactor, this.reactionTop)) {
+      this.flashHint('No weapon reaction available (out of reach or none left).');
+      return;
+    }
+    this.resolveReaction({ weapon: true });
+  }
+
   private resolveReaction(choice: ReactionChoice | null): void {
     this.reactor = null;
     this.resetSelection();
@@ -4710,6 +5908,20 @@ export class GameScene extends Phaser.Scene {
     this.actionMenuButton.on('pointerover', () => this.actionMenuButton?.setBackgroundColor('#ffe08a'));
     this.actionMenuButton.on('pointerout', () => this.actionMenuButton?.setBackgroundColor('#ffd166'));
     this.actionMenuButton.on('pointerdown', () => this.toggleActionMenu());
+
+    // Always-available toggle: auto-pass reaction windows.
+    this.autoPassButton = this.add
+      .text(FIELD.x + 470, HUD_Y + 162, '', {
+        fontSize: '14px',
+        color: TEXT.dim,
+        backgroundColor: '#2a2a3c',
+        fontStyle: 'bold',
+        padding: { x: 12, y: 6 },
+      })
+      .setDepth(46)
+      .setInteractive({ useHandCursor: true });
+    this.autoPassButton.on('pointerdown', () => this.toggleAutoPass());
+    this.refreshAutoPassButton();
 
     this.buildHistoryPanel();
 
@@ -5221,7 +6433,6 @@ export class GameScene extends Phaser.Scene {
       m.hp = m.maxHp;
       m.mana = m.maxMana;
       m.sanity = m.maxSanity;
-      m.colorCharges = m.maxColorCharges;
       m.luck = m.maxLuck;
       m.statuses = [];
       m.thunderStacks = 0;
@@ -5242,6 +6453,8 @@ export class GameScene extends Phaser.Scene {
       m.actions = { ...ACTIONS_PER_TURN };
       m.reactionAvailable = m.canEverReact;
       m.reactedThisCycle = false;
+      m.resetCombatReactions();
+      m.resetDodges();
       const bonus = m.profile.bluePrimaryTier ? 1 : 0;
       for (const w of m.loadout) m.charges[w] = WORDS[w].charges + bonus;
       const rec = this.mageAnims.get(m);
@@ -5260,6 +6473,8 @@ export class GameScene extends Phaser.Scene {
     this.syncMageSprites();
     this.gs.log('Training: field reset — HP, mana, positions and effects restored.');
     this.redraw();
+    this.gs.startRound();
+    void this.startTurn();
   }
 
   private buildDicePanel(): void {
@@ -5295,17 +6510,39 @@ export class GameScene extends Phaser.Scene {
     // Dropped equipment on the ground.
     this.drawDroppedItems(g);
 
+    // Torch / lantern light auras.
+    this.drawLightAuras(g);
+
     // Aiming ranges.
     this.drawAimingRange(g);
 
-    // Mages.
-    for (const m of this.gs.mages) this.drawMage(g, m);
+    // Mages. Dead bodies vanish outright — hide their bars and name label so no
+    // corpse clutter lingers on the field after a foe falls.
+    for (const m of this.gs.mages) {
+      if (m.alive) this.drawMage(g, m);
+      else this.mageLabels.get(m)?.setVisible(false);
+    }
 
     // Stack tokens.
     this.drawStack(g);
 
+    // Swamprun wave / foe-count readout.
+    if (this.swamprun) this.updateWaveHud();
+
     // HUD text.
     this.drawHud();
+  }
+
+  /** Warm glow around any mage projecting a torch / lantern light aura. */
+  private drawLightAuras(g: Phaser.GameObjects.Graphics): void {
+    for (const m of this.gs.mages) {
+      if (!m.alive) continue;
+      const r = m.lightRadius();
+      if (r <= 0) continue;
+      g.fillStyle(0xffd27a, 0.12).fillCircle(m.pos.x, m.pos.y, r);
+      g.fillStyle(0xffe6a8, 0.1).fillCircle(m.pos.x, m.pos.y, r * 0.6);
+      g.lineStyle(1, 0xffd27a, 0.35).strokeCircle(m.pos.x, m.pos.y, r);
+    }
   }
 
   private drawShadows(g: Phaser.GameObjects.Graphics): void {
@@ -5727,6 +6964,44 @@ export class GameScene extends Phaser.Scene {
     g.strokePath();
   }
 
+  /**
+   * Preview a two-point cone (Reality Shatter): a wedge from `apex` spanning the
+   * directions to `edgeA` and `edgeB`, reaching out to `length` px.
+   */
+  private drawTwoPointWedge(
+    g: Phaser.GameObjects.Graphics,
+    apex: Vec2,
+    edgeA: Vec2,
+    edgeB: Vec2,
+    length: number
+  ): void {
+    const angA = Math.atan2(edgeA.y - apex.y, edgeA.x - apex.x);
+    const angB = Math.atan2(edgeB.y - apex.y, edgeB.x - apex.x);
+    let diff = angB - angA;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+    const base = angA + diff / 2;
+    const half = Math.min(Math.abs(diff) / 2, (85 * Math.PI) / 180);
+    const steps = 16;
+    const pts: Vec2[] = [{ x: apex.x, y: apex.y }];
+    for (let i = 0; i <= steps; i++) {
+      const a = base - half + (2 * half * i) / steps;
+      pts.push({ x: apex.x + Math.cos(a) * length, y: apex.y + Math.sin(a) * length });
+    }
+    g.fillStyle(0xff5599, 0.12);
+    g.beginPath();
+    g.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+    g.closePath();
+    g.fillPath();
+    g.lineStyle(2, 0xff5599, 0.7);
+    g.beginPath();
+    g.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+    g.closePath();
+    g.strokePath();
+  }
+
   private drawAimingRange(g: Phaser.GameObjects.Graphics): void {
     // Interactive sub-targeting: draw the reach from its origin and an aim line.
     if (this.mode === 'subtarget-point' || this.mode === 'subtarget-enemy') {
@@ -5794,7 +7069,12 @@ export class GameScene extends Phaser.Scene {
     // Area-of-effect footprint while aiming a point spell (cone / circle).
     if (aiming && this.mode === 'aiming-point') {
       const spell = this.reactionAiming ? this.reactionPendingSpell : this.pendingSpell;
-      if (spell?.aoe) {
+      if (spell?.twoPointAim && this.pendingFirstPoint) {
+        // Two-point cone: once the first edge is set, preview the wedge spanning
+        // that edge and the pointer, reaching out to the field's edge.
+        const diag = Math.hypot(FIELD.w, FIELD.h);
+        this.drawTwoPointWedge(g, me.pos, this.pendingFirstPoint, this.pointer, diag);
+      } else if (spell?.aoe) {
         const reach = Number.isFinite(spell.range) ? spell.range : 99999;
         const toward = stepTowards(me.pos, this.pointer, reach);
         this.drawAoePreview(g, me.pos, toward, spell.aoe);
@@ -5837,6 +7117,24 @@ export class GameScene extends Phaser.Scene {
         repeat: set.repeat,
       });
     }
+    // One-shot hit-effect overlays (target-anchored spell impacts).
+    const fx: { key: string; end: number; frameRate: number }[] = [
+      { key: 'fx-dot', end: 24, frameRate: 16 },
+      { key: 'fx-generic', end: 9, frameRate: 18 },
+      { key: 'fx-poison', end: 16, frameRate: 20 },
+      { key: 'fx-vanish', end: 20, frameRate: 24 },
+      { key: 'fx-shatter', end: 6, frameRate: 18 },
+      { key: 'fx-disrupt', end: 30, frameRate: 30 },
+    ];
+    for (const f of fx) {
+      if (this.anims.exists(f.key)) continue;
+      this.anims.create({
+        key: f.key,
+        frames: this.anims.generateFrameNumbers(f.key, { start: 0, end: f.end }),
+        frameRate: f.frameRate,
+        repeat: 0,
+      });
+    }
   }
 
   private mageAnims = new Map<Mage, MageAnim>();
@@ -5849,6 +7147,9 @@ export class GameScene extends Phaser.Scene {
 
   /** Mages awaiting a hit recoil; flushed after their damage dice resolve. */
   private pendingHits: Mage[] = [];
+
+  /** Queued one-shot hit-effect overlays; flushed alongside hit recoils. */
+  private pendingEffects: { mage: Mage; kind: 'generic' | 'poison' | 'dot' | 'vanish' | 'disrupt' }[] = [];
 
   /** Create/position each mage's sprite and pick its resting animation. */
   private syncMageSprites(): void {
@@ -5900,6 +7201,35 @@ export class GameScene extends Phaser.Scene {
     const queued = this.pendingHits;
     this.pendingHits = [];
     for (const m of queued) this.triggerHit(m);
+    this.flushEffects();
+  }
+
+  /** Spawn every queued hit-effect overlay and clear the queue. */
+  private flushEffects(): void {
+    const queued = this.pendingEffects;
+    this.pendingEffects = [];
+    for (const e of queued) this.triggerEffect(e.mage, e.kind);
+  }
+
+  /**
+   * Mid-cast flush: reveal the dice rolled so far, then play the queued hit
+   * animations. Lets a multi-step spell show a strike land before its next roll.
+   */
+  private async resolveImpacts(): Promise<void> {
+    await this.playPendingDice();
+    this.flushHits();
+  }
+
+  /** Play a one-shot hit-effect overlay centred on a mage's body. */
+  private triggerEffect(m: Mage, kind: 'generic' | 'poison' | 'dot' | 'vanish' | 'disrupt'): void {
+    if (!m.alive && kind !== 'vanish') return;
+    const key = `fx-${kind}`;
+    if (!this.anims.exists(key)) return;
+    const spr = this.add.sprite(m.x, m.y, key).setDepth(9);
+    const srcH = spr.height || 1;
+    spr.setScale((MAGE_RADIUS * 3) / srcH);
+    spr.play(key);
+    spr.once('animationcomplete', () => spr.destroy());
   }
 
   /** Brief recoil when a mage takes damage; never interrupts movement/attack. */
@@ -6329,6 +7659,17 @@ export class GameScene extends Phaser.Scene {
   }
 
   private endGame(): void {
+    // Swamprun: the run ends only when the survivor falls. Report the score.
+    if (this.swamprun) {
+      this.mode = 'over';
+      this.busy = false;
+      this.bannerText
+        .setText(`The swamp claims you.\nWaves survived: ${this.swamprunWave}\nClick to return to menu`)
+        .setVisible(true);
+      this.redraw();
+      this.input.once('pointerdown', () => this.scene.start('Menu'));
+      return;
+    }
     // Training never truly ends: whoever fell is patched up on the next click.
     if (this.training && !this.opponentLeft) {
       this.mode = 'over';
@@ -6371,21 +7712,50 @@ export class GameScene extends Phaser.Scene {
       return this.vfxBurst(item.target?.pos ?? from, 0xffffff, 34, 1.6);
     }
 
+    // Ground-targeted elemental spells paint their sprite sheet where they land
+    // (the aimed point / area), not on a foe — so the impact reads as hitting
+    // the ground. Enemy-targeted variants keep their on-target hit overlay.
+    if (item.kind === 'spell' && item.spell && item.spell.targeting === 'point') {
+      const spell = item.spell;
+      const point = to ?? from;
+      // Reality Shatter paints its own stretched wedge from inside its cast
+      // (after the player sets the second edge point) — no default cast burst.
+      if (spell.words.includes('reality') && spell.words.includes('shatter')) {
+        return Promise.resolve();
+      }
+      if (!spell.words.includes('reality') && !spell.noCastSprite) {
+        const cone = spell.aoe?.kind === 'cone';
+        if (spell.words.includes('shatter')) {
+          return cone
+            ? this.vfxSpriteAt('fx-shatter', point, {
+                from,
+                apexAtFrom: true,
+                lengthPx: Math.min(spell.aoe?.radius ?? 200, 360),
+              })
+            : this.vfxSpriteAt('fx-shatter', point, {
+                from,
+                aim: true,
+                lengthPx: (spell.aoe?.radius ?? 60) * 2.2,
+              });
+        }
+        if (spell.words.includes('corrode')) {
+          return this.vfxSpriteAt('fx-poison', point, {
+            lengthPx: (spell.aoe?.radius ?? 40) * 2.4,
+          });
+        }
+      }
+    }
+
     const v = item.spell?.visual ?? this.defaultVisual(item);
-    // If the target is only reachable through one of the caster's shadows,
-    // route the spell from caster → shadow → target ("bounce through").
-    const via = to ? this.bounceShadow(item.source, to, item.spell?.range ?? Infinity) : null;
     switch (v.preset) {
       case 'projectile':
-        if (!to) return this.vfxNova(from, v);
-        return via
-          ? this.vfxProjectile(from, via, v).then(() => this.vfxProjectile(via, to, v))
-          : this.vfxProjectile(from, to, v);
+        // Projectiles no longer travel — the impact is shown by the hit overlay
+        // that lands on the struck target (or the caster's dash animation).
+        return Promise.resolve();
       case 'beam':
-        if (!to) return Promise.resolve();
-        return via
-          ? this.vfxBeam(from, via, v).then(() => this.vfxBeam(via, to, v))
-          : this.vfxBeam(from, to, v);
+        // Beams no longer draw a travelling line — the impact reads from the
+        // hit overlay / status change on the target.
+        return Promise.resolve();
       case 'burst':
         return this.vfxBurst(to ?? from, v.color, v.size ?? 45, v.speed ?? 1);
       case 'nova':
@@ -6399,20 +7769,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** The caster's shadow that best relays a shot to `target` beyond direct range. */
-  private bounceShadow(source: Mage, target: Vec2, range: number): Vec2 | null {
-    if (dist(source.pos, target) <= range) return null;
-    let best: ShadowZone | null = null;
-    let bestD = Infinity;
-    for (const s of this.gs.shadowsOf(source.team)) {
-      const d = dist({ x: s.x, y: s.y }, target);
-      if (d <= range && d < bestD) {
-        best = s;
-        bestD = d;
-      }
-    }
-    return best ? { x: best.x, y: best.y } : null;
-  }
-
   private defaultVisual(item: StackItem): SpellVisual {
     const color = item.source.team === 1 ? COLORS.team1 : COLORS.team2;
     const targeting = item.spell?.targeting;
@@ -6425,28 +7781,6 @@ export class GameScene extends Phaser.Scene {
       return { preset: 'nova', color, size: 55, speed: 1 };
     }
     return { preset: 'projectile', color, size: 10, speed: 1 };
-  }
-
-  private vfxProjectile(from: Vec2, to: Vec2, v: SpellVisual): Promise<void> {
-    return new Promise((resolve) => {
-      const size = v.size ?? 10;
-      const speed = v.speed ?? 1;
-      const orb = this.add.circle(from.x, from.y, size, v.color, 1).setDepth(30);
-      orb.setStrokeStyle(2, 0xffffff, 0.85);
-      const d = dist(from, to);
-      const duration = Math.min(900, Math.max(140, d / (0.85 * speed)));
-      this.tweens.add({
-        targets: orb,
-        x: to.x,
-        y: to.y,
-        duration,
-        ease: 'Sine.InOut',
-        onComplete: () => {
-          orb.destroy();
-          this.vfxBurst(to, v.color, size * 2.4, speed).then(resolve);
-        },
-      });
-    });
   }
 
   /** A conjured attack that simply erupts on the target — no projectile travel. */
@@ -6521,28 +7855,6 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  private vfxBeam(from: Vec2, to: Vec2, v: SpellVisual): Promise<void> {
-    return new Promise((resolve) => {
-      const width = v.size ?? 6;
-      const g = this.add.graphics().setDepth(30);
-      this.tweens.addCounter({
-        from: 1,
-        to: 0,
-        duration: 320 / (v.speed ?? 1),
-        onUpdate: (tw) => {
-          const a = tw.getValue() ?? 0;
-          g.clear();
-          g.lineStyle(width + 4, v.color, a * 0.3).lineBetween(from.x, from.y, to.x, to.y);
-          g.lineStyle(width, v.color, a).lineBetween(from.x, from.y, to.x, to.y);
-        },
-        onComplete: () => {
-          g.destroy();
-          resolve();
-        },
-      });
-    });
-  }
-
   private vfxBurst(at: Vec2, color: number, reach: number, speed: number): Promise<void> {
     return new Promise((resolve) => {
       const ring = this.add.circle(at.x, at.y, Math.max(8, reach), color, 0.2).setDepth(31);
@@ -6565,6 +7877,69 @@ export class GameScene extends Phaser.Scene {
 
   private vfxNova(at: Vec2, v: SpellVisual): Promise<void> {
     return this.vfxBurst(at, v.color, v.size ?? 55, v.speed ?? 1);
+  }
+
+  /**
+   * Play a one-shot fx sprite sheet at a location, for ground-targeted spells.
+   *  - `apexAtFrom`: anchor the sprite's apex at the caster and extend it toward
+   *    `at` (used for cones — the sheet faces left, so its apex is the right edge).
+   *  - `aim`: rotate a point-centred sheet to face the cast direction.
+   *  - `lengthPx`: the on-field size (cone length / blast diameter) in pixels.
+   */
+  private vfxSpriteAt(
+    key: string,
+    at: Vec2,
+    opts: { from?: Vec2; apexAtFrom?: boolean; aim?: boolean; lengthPx: number }
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      if (!this.anims.exists(key)) {
+        resolve();
+        return;
+      }
+      const spr = this.add.sprite(at.x, at.y, key).setDepth(9);
+      const frameW = spr.width || 1;
+      const frameH = spr.height || 1;
+      if (opts.apexAtFrom && opts.from) {
+        // Cone: apex at the caster, body fanning out toward the aimed point.
+        spr.setOrigin(1, 0.5);
+        spr.setPosition(opts.from.x, opts.from.y);
+        spr.setScale(opts.lengthPx / frameW);
+        const ang = Math.atan2(at.y - opts.from.y, at.x - opts.from.x);
+        spr.setRotation(ang - Math.PI); // the sheet's cone faces left by default
+      } else {
+        spr.setOrigin(0.5, 0.5);
+        spr.setScale(opts.lengthPx / frameH);
+        if (opts.aim && opts.from) {
+          const ang = Math.atan2(at.y - opts.from.y, at.x - opts.from.x);
+          spr.setRotation(ang - Math.PI);
+        }
+      }
+      spr.play(key);
+      spr.once('animationcomplete', () => {
+        spr.destroy();
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Paint the shatter cone stretched to fill a reality wedge barrier: the sheet's
+   * apex is pinned to `apex` and its body is scaled non-uniformly so its length
+   * matches `range` and its far-edge width matches the wedge's arc (`halfAngle`).
+   * The sheet's cone faces left by default, so we rotate it to open toward `angle`.
+   */
+  private vfxWedge(apex: Vec2, angle: number, halfAngle: number, range: number): void {
+    const key = 'fx-shatter';
+    if (!this.anims.exists(key)) return;
+    const spr = this.add.sprite(apex.x, apex.y, key).setDepth(9);
+    const frameW = spr.width || 1;
+    const frameH = spr.height || 1;
+    spr.setOrigin(1, 0.5); // apex sits at the sheet's right edge
+    spr.setRotation(angle - Math.PI); // the sheet's cone faces left by default
+    const farWidth = 2 * range * Math.tan(halfAngle);
+    spr.setScale(range / frameW, Math.max(farWidth, 1) / frameH);
+    spr.play(key);
+    spr.once('animationcomplete', () => spr.destroy());
   }
 
   // ===========================================================================
@@ -6663,6 +8038,8 @@ interface ReactionChoice {
   point?: Vec2;
   /** A shield reaction (block or bash) instead of a spell. */
   shield?: 'block' | 'bash';
+  /** A white-identity weapon strike back at the attacker. */
+  weapon?: boolean;
   /** A Needle of Serenity reaction: stifle & permanently ban the action. */
   needle?: boolean;
   /** A Dexterity dodge: roll to evade the attack (and maybe more). */

@@ -2,9 +2,11 @@ import {
   ACTIONS_PER_TURN,
   COLOR_CHARGE_CAP,
   FIELD,
+  MAGE_BODY_RADIUS,
   MANA_CAP,
   MAX_ABILITY_CASTS_PER_COMBAT,
   MAX_LEAPS_PER_COMBAT,
+  MAX_WEAPON_REACTIONS,
   MAX_WORD_SPELL_REACTIONS,
   MOVE_RANGE,
   RANGE_UNIT,
@@ -16,9 +18,10 @@ import {
 import { Dev } from '../config/dev';
 import type { WordId } from './Words';
 import { WORDS } from './Words';
+import type { Dice } from './Dice';
 import type { ColorProfile } from './Colors';
 import { computeColorProfile } from './Colors';
-import type { DieResult } from './Stats';
+import type { DieResult, StatKey } from './Stats';
 import { STAT_ORDER } from './Stats';
 import type { DamageType, DamageClass } from './Damage';
 import type { ItemId, WeaponMod, ShieldMod } from './Items';
@@ -108,11 +111,15 @@ export class Mage {
   utility: ItemId[] = [];
   /** Arrows carried as ammunition for bows. */
   arrows = 0;
+  /** Combats remaining on a currently-lit (held) torch; 0 when none is lit. */
+  torchCombatsLeft = 0;
   /** Silver remaining after shopping (kept for display/debug). 10s = 1g. */
   silver = 0;
 
   /** Whether this mage moved during the current turn (momentum / anchor boots). */
   movedThisTurn = false;
+  /** Whether this mage dealt damage to a foe during the current turn (Order Curse Drain). */
+  dealtDamageThisTurn = false;
   /** Total distance (px) moved so far this turn (Momentum Boots threshold). */
   distMovedThisTurn = 0;
   /** Consecutive turns spent moving (Momentum Boots). */
@@ -152,6 +159,61 @@ export class Mage {
   /** Training sandbox: this mage never takes a turn action and declines reactions. */
   trainingPassive = false;
 
+  // ---- Swamprun (PvE) intrinsic creature traits -----------------------------
+  // These live on the mage itself (not on gear), so spawned monsters can carry
+  // resistances, immunities and behaviours without an inventory.
+
+  /** Swamprun creature identity (undefined for player mages). */
+  enemyKind?: string;
+  /** Damage types this creature is intrinsically immune to (×0). */
+  intrinsicImmuneTypes: DamageType[] = [];
+  /** Damage types this creature intrinsically resists (×0.5 each). */
+  intrinsicResistTypes: DamageType[] = [];
+  /** Damage types this creature is intrinsically weak to (×2 each). */
+  intrinsicWeakTypes: DamageType[] = [];
+  /** Mindless: sanity-class (mental) damage is voided entirely. */
+  sanityImmune = false;
+  /** Incorporeal: physical-class damage is voided entirely, except 'light'. */
+  physicalImmune = false;
+  /** Fixed movement range in abstract range-units (overrides Dex-based move). */
+  intrinsicMoveUnits?: number;
+  /** Larger collision body (px) so bulky creatures block passage. */
+  intrinsicBodyRadius?: number;
+  /** Intrinsic (weaponless) melee strike for creatures. */
+  intrinsicMelee?: { spec: string; type: DamageType; damageClass: DamageClass };
+  /** Reach (px) of the intrinsic melee, so bulky bodies can still connect. */
+  intrinsicMeleeReach?: number;
+  /** Spawned mid-combat (e.g. a wisp split): skip its first upcoming turn. */
+  justSpawned = false;
+  /** Immune to every debuff / DoT / stun / control effect (Lich). */
+  debuffImmune = false;
+  /** Boss creature marker (unique, tougher, special death rules). */
+  isBoss = false;
+  /** Lich: a one-time revive at 50% max HP is still available. */
+  reviveAtHalfAvailable = false;
+  /**
+   * Lich "Link": while set to a living lich, any HP damage this mage suffers is
+   * mirrored back as healing to that lich. Ticks down each of this mage's turns.
+   */
+  drainLinkTo?: Mage;
+  drainLinkTurns = 0;
+
+  /** Ghast: a delayed shadow zone that erupts (2d3) at the start of its next turn. */
+  ghastKind = false;
+  ghastPendingZone?: { x: number; y: number; radius: number };
+  /** Reaper: enables the leash / unpreventable mark / channel-clap / damage cap. */
+  reaperKind = false;
+  /** Reaper: cap on damage from any single entity per round (0 = uncapped). */
+  damageCapPerSource = 0;
+  /** Damage taken from each source so far this round cycle (Reaper cap). */
+  damageBySourceThisCycle = new Map<Mage, number>();
+  /** Set to the Reaper that marked this mage: it can no longer flee that Reaper. */
+  reaperMarkedBy?: Mage;
+  /** Reaper: whether it is mid-channel (its next turn resolves the clap). */
+  reaperChanneling = false;
+  /** Removed from the field by a Reaper's clap; restored if that Reaper dies. */
+  reaperDeletedBy?: Mage;
+
   /** Item ids permanently disabled for this mage by a Needle of Serenity. */
   bannedItemIds = new Set<ItemId>();
   /** Colour-ability ids permanently disabled for this mage by a Needle of Serenity. */
@@ -178,6 +240,13 @@ export class Mage {
    * {@link MAX_WORD_SPELL_REACTIONS} per combat.
    */
   wordSpellReactionsUsed = 0;
+
+  /**
+   * Weapon-attack reactions spent this combat. The white boon lets a mage answer
+   * an incoming attack with a weapon strike, capped at
+   * {@link MAX_WEAPON_REACTIONS} per combat.
+   */
+  weaponReactionsUsed = 0;
 
   /**
    * Colour-ability casts spent this combat, keyed by ability id. Each distinct
@@ -262,6 +331,7 @@ export class Mage {
   }
 
   get alive(): boolean {
+    if (this.reaperDeletedBy) return false;
     if (this.unkillable) return true;
     return this.hp > 0 && this.sanity > 0;
   }
@@ -272,11 +342,16 @@ export class Mage {
   }
 
   /**
-   * Whether this mage can ever react: it has a reaction-granting word, or its
-   * blue primary tier lets it respond with any spell / color ability.
+   * Whether this mage can ever react: it has a reaction-granting word, its blue
+   * boon lets it respond with any spell / colour ability, or its white boon lets
+   * it answer with a weapon strike.
    */
   get canEverReact(): boolean {
-    return this.grantsReaction || this.profile.bluePrimaryTier;
+    return (
+      this.grantsReaction ||
+      this.profile.bluePrimaryTier ||
+      this.profile.whitePrimaryTier
+    );
   }
 
   hasReaction(): boolean {
@@ -294,19 +369,37 @@ export class Mage {
     );
   }
 
+  /**
+   * True if this mage may still answer an attack with a weapon strike this
+   * combat: the white boon grants weapon reactions, capped per combat.
+   */
+  canWeaponReact(): boolean {
+    return (
+      this.profile.whitePrimaryTier &&
+      this.weaponReactionsUsed < MAX_WEAPON_REACTIONS
+    );
+  }
+
   /** How many more times the colour ability `abilityId` may be cast this combat. */
   abilityCastsLeft(abilityId: string): number {
     return MAX_ABILITY_CASTS_PER_COMBAT - (this.abilityCastsUsed[abilityId] ?? 0);
   }
 
-  /** Reset the per-combat reaction / colour-ability pools. Call when a duel begins. */
+  /**
+   * Reset the per-combat pools. Call when a fight begins. Colour-charges are a
+   * per-combat resource: they reset to their starting value here (and then
+   * regenerate each turn — see {@link regen}), so they never carry between
+   * fights. Mana is NOT reset here (it is attrition across the whole run).
+   */
   resetCombatReactions(): void {
     this.wordSpellReactionsUsed = 0;
+    this.weaponReactionsUsed = 0;
     this.abilityCastsUsed = {};
     this.leapsUsed = 0;
     this.focusUsed = false;
     this.cleaveUsed = false;
     this.focusNextSpell = false;
+    this.colorCharges = START_COLOR_CHARGES;
   }
 
   /** How many Leaps this mage has left this combat. */
@@ -353,19 +446,22 @@ export class Mage {
   }
 
   /**
-   * Regenerate color-charges at the start of this mage's turn. The amount is
-   * decided by the primary color:
-   *   - Black: +1, plus +1 per allied summon (scarab) lost since last turn.
-   *   - Blue:  +1, plus +2 if no reaction was spent since last turn.
-   *   - Colorless: +1.
-   * Mana does NOT regenerate here — it refills only via items or abilities.
+   * Regenerate colour-charges at the start of this mage's turn, decided by the
+   * PRIMARY colour (mana never regenerates — that stays attrition):
+   *   - Black:  +1, plus +1 per allied summon (scarab) lost since last turn.
+   *   - Blue:   +1, plus +2 if you have not cast Wall yet this combat.
+   *   - White:  +1 (plus +1 whenever anyone heals — handled in effects.heal).
+   *   - Colourless: +1.
+   * Charges are a per-combat resource (reset in {@link resetCombatReactions}),
+   * so this generation only ever builds within a single fight.
    */
   regen(opts: { summonDeaths: number }): void {
     let amount = 1;
     if (this.profile.primary === 'black') {
       amount = 1 + Math.max(0, opts.summonDeaths);
     } else if (this.profile.primary === 'blue') {
-      amount = 1 + (this.reactionUsedRecently ? 0 : 2);
+      const wallUncast = (this.abilityCastsUsed['ability:wall'] ?? 0) === 0;
+      amount = 1 + (wallUncast ? 2 : 0);
     }
     this.gainColorCharges(amount);
     this.reactionUsedRecently = false;
@@ -387,6 +483,27 @@ export class Mage {
   grantEldritchCharges(n: number): void {
     for (const w of this.loadout) {
       this.charges[w] = (this.charges[w] ?? 0) + n;
+    }
+  }
+
+  /**
+   * Swamprun rest: restore half of max mana, max HP and each word's max charges.
+   * When a half is fractional the direction is a 50/50 coin flip on the seeded
+   * RNG (so all peers agree). Vitals never exceed their maxima.
+   */
+  swamprunRest(rng: Dice): void {
+    const half = (v: number): number => {
+      const h = v / 2;
+      if (Number.isInteger(h)) return h;
+      return rng.chance(0.5) ? Math.ceil(h) : Math.floor(h);
+    };
+    this.gainMana(half(this.maxMana));
+    this.hp = Math.min(this.maxHp, this.hp + half(this.maxHp));
+    const bonusCharge = this.profile.bluePrimaryTier ? 1 : 0;
+    for (const w of this.loadout) {
+      const max = WORDS[w].charges + bonusCharge;
+      const cur = this.charges[w] ?? 0;
+      this.charges[w] = Math.min(max, cur + half(max));
     }
   }
 
@@ -443,7 +560,11 @@ export class Mage {
   moveRange(): number {
     // Dev cheat: reach anywhere on the field.
     if (Dev.infiniteMove) return Math.hypot(FIELD.w, FIELD.h);
-    const base = MOVE_RANGE * (1 + this.effectiveDex() / 100);
+    // Swamprun creatures move a fixed number of range-units, independent of Dex.
+    const base =
+      this.intrinsicMoveUnits != null
+        ? this.intrinsicMoveUnits * RANGE_UNIT
+        : MOVE_RANGE * (1 + this.effectiveDex() / 100);
     let px = Math.round(base * this.equipMoveMult() * this.thunderMoveMult());
     if (this.hasMomentumBoots()) px += this.momentumStacks * RANGE_UNIT;
     const slowed = px + this.modifier('moveRange');
@@ -479,6 +600,33 @@ export class Mage {
     this.statsAssigned = true;
   }
 
+  /** Swamprun shop: permanently raise one stat, refilling the affected vital. */
+  gainStat(key: StatKey, amount: number): void {
+    switch (key) {
+      case 'strength':
+        this.statStrength += amount;
+        break;
+      case 'dex':
+        this.statDex += amount;
+        break;
+      case 'int':
+        this.statInt += amount;
+        break;
+      case 'mana':
+        this.maxMana += amount;
+        this.mana = this.maxMana;
+        break;
+      case 'hp':
+        this.maxHp += amount;
+        this.hp = this.maxHp;
+        break;
+      case 'luck':
+        this.maxLuck += amount;
+        this.luck = this.maxLuck;
+        break;
+    }
+  }
+
   /** Training sandbox: give every stat the same flat value and refill vitals. */
   assignFlatStats(value: number): void {
     this.statStrength = value;
@@ -505,14 +653,16 @@ export class Mage {
     return this.statDex + this.itemSum((d) => d.statMods?.dex ?? 0);
   }
 
-  /** Effective Intellect including a worn Caster Robe / rings. */
+  /** Effective Intellect including a worn Caster Robe / rings and the blue boon. */
   effectiveInt(): number {
-    return this.statInt + this.itemSum((d) => d.statMods?.int ?? 0);
+    // Blue boon (any blue in your identity) grants +2 Intellect.
+    const blueBoon = this.profile.bluePrimaryTier ? 2 : 0;
+    return this.statInt + blueBoon + this.itemSum((d) => d.statMods?.int ?? 0);
   }
 
   /** How much a spell's DC is reduced by this mage's intellect. */
   dcReduction(): number {
-    return Math.floor(this.effectiveInt() / 3);
+    return this.effectiveInt();
   }
 
   /** Spend up to `amount` luck (never below zero); returns the amount spent. */
@@ -835,16 +985,76 @@ export class Mage {
     if (i < 0 || this.hands.length >= SLOT_CAPS.hand) return false;
     this.bag.splice(i, 1);
     this.hands.push(id);
+    // Lighting a torch starts its burn timer (measured in combats).
+    const combats = getItem(id).torchCombats;
+    if (combats != null && this.torchCombatsLeft <= 0) this.torchCombatsLeft = combats;
     return true;
   }
 
-  /** Stow a held hand item back into the bag. Returns success. */
+  /**
+   * Stow a held hand item back into the bag. Returns success. A lit torch is
+   * used up when stowed (it is snuffed and discarded, not returned to the bag).
+   */
   unequipHand(id: ItemId): boolean {
     const i = this.hands.indexOf(id);
     if (i < 0) return false;
     this.hands.splice(i, 1);
+    if (getItem(id).torchCombats != null) {
+      // Snuffing a torch consumes it — it does not go back into the bag.
+      if (!this.hands.some((h) => getItem(h).torchCombats != null)) this.torchCombatsLeft = 0;
+      return true;
+    }
     this.bag.push(id);
     return true;
+  }
+
+  /** Is this creature intrinsically weak to radiant light? */
+  isLightWeak(): boolean {
+    return this.intrinsicWeakTypes.includes('light');
+  }
+
+  /** Is this creature an ethereal (wisp / specter / ghast / reaper / lich)? */
+  isEthereal(): boolean {
+    return (
+      this.enemyKind === 'wisp' ||
+      this.enemyKind === 'specter' ||
+      this.enemyKind === 'ghast' ||
+      this.enemyKind === 'reaper' ||
+      this.enemyKind === 'lich'
+    );
+  }
+
+  /** The id of a held light source (torch / lantern), if any. */
+  heldLightSourceId(): ItemId | null {
+    for (const id of this.hands) {
+      if (getItem(id).lightSource) return id;
+    }
+    return null;
+  }
+
+  /** The id of a held, consumable torch (one that can be snuffed), if any. */
+  heldTorchId(): ItemId | null {
+    for (const id of this.hands) {
+      if (getItem(id).lightSource && getItem(id).torchCombats != null) return id;
+    }
+    return null;
+  }
+
+  /**
+   * Radius (px) of the light aura this mage projects, or 0 if none. Held torches
+   * and lanterns shine; a lantern also shines while merely stowed in the bag.
+   */
+  lightRadius(): number {
+    let best = 0;
+    for (const id of this.hands) {
+      const d = getItem(id);
+      if (d.lightSource && d.lightRadiusPx) best = Math.max(best, d.lightRadiusPx);
+    }
+    for (const id of this.bag) {
+      const d = getItem(id);
+      if (d.lightSource && d.lightInBag && d.lightRadiusPx) best = Math.max(best, d.lightRadiusPx);
+    }
+    return best;
   }
 
   /** The weapon that powers the basic attack — the first weapon held, if any. */
@@ -965,6 +1175,10 @@ export class Mage {
   resistMultiplier(type: DamageType): number {
     let immune = false;
     let mult = 1;
+    // Intrinsic creature traits (Swamprun monsters) stack with any gear.
+    if (this.intrinsicImmuneTypes.includes(type)) immune = true;
+    for (const t of this.intrinsicResistTypes) if (t === type) mult *= 0.5;
+    for (const t of this.intrinsicWeakTypes) if (t === type) mult *= 2;
     for (const id of this.equippedItems()) {
       const r = getItem(id).resist;
       if (!r) continue;
@@ -973,6 +1187,11 @@ export class Mage {
       if (r.weak?.includes(type)) mult *= 2;
     }
     return immune ? 0 : mult;
+  }
+
+  /** Collision radius of this body (bulky creatures block passage). */
+  bodyRadius(): number {
+    return this.intrinsicBodyRadius ?? MAGE_BODY_RADIUS;
   }
 
   /** Spend one action of the given kind, unless dev toggles make it free. */
@@ -999,6 +1218,8 @@ export class Mage {
     }
     this.movedThisTurn = false;
     this.distMovedThisTurn = 0;
+    // Cleared last so start-of-turn DoTs still see whether damage was dealt last turn.
+    this.dealtDamageThisTurn = false;
     this.actions = { ...ACTIONS_PER_TURN };
     this.hasCastThisTurn = false;
     // A Focus buff expires if its empowered word spell was never cast.

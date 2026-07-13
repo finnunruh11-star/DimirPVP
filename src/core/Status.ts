@@ -14,7 +14,8 @@ export type StatusKind =
   | 'control'
   | 'shadowVeil'
   | 'shadowTrail'
-  | 'forget';
+  | 'forget'
+  | 'orderJudgment';
 export type StunType = 'main' | 'movement' | 'full';
 export type InvisMode = 'full' | 'partial';
 /** Kinds of mental compulsion the Mind word can inflict. */
@@ -54,6 +55,31 @@ export interface DotStatus extends BaseStatus {
   stunChance?: number;
   /** The kind of stun applied when `stunChance` triggers (default 'full'). */
   stunType?: StunType;
+  /**
+   * Stacking DoT: current number of stacks. When set, each tick rolls
+   * `perStackSpec` once per stack and sums the results.
+   */
+  stacks?: number;
+  /** Maximum stacks this DoT can reach. */
+  maxStacks?: number;
+  /** Dice rolled once per stack each tick (e.g. "1d2"); total = sum over stacks. */
+  perStackSpec?: string;
+  /** True once a stack was (re)applied since the last tick; drives decay. */
+  freshStack?: boolean;
+  /** Lose one stack on any tick where no fresh stack was applied. */
+  decayPerTick?: boolean;
+  /** On each tick, spread this DoT to enemies within this radius (px). */
+  infectRadius?: number;
+  /** Team of the DoT's owner, used to target only its enemies when spreading. */
+  sourceTeam?: number;
+  /** Index (in GameState.mages) of the mage healed for this DoT's damage each tick. */
+  lifestealToIndex?: number;
+  /** Extra dice rolled on a tick when the bearer dealt no damage on its last turn. */
+  bonusNoDamageSpec?: string;
+  /** Owner's team: when the bearer damages this team in a cycle, the DoT extends +2. */
+  extendOwnerTeam?: number;
+  /** turnSeq of the last cycle-extension (dedups multi-hit extensions). */
+  extendSeq?: number;
 }
 
 export interface DebuffStatus extends BaseStatus {
@@ -114,6 +140,33 @@ export interface ForgetStatus extends BaseStatus {
   forgotten: string[];
 }
 
+/**
+ * Order Curse Slash: the bearer has been ordered to engage a specific entity
+ * (`targetIndex`). At the start of each of the bearer's turns GameState judges
+ * the turn just taken — it gains a stack for each of "did not move toward" and
+ * "did not attack" the entity. After `evalsLeft` reaches zero the judgement
+ * detonates, dealing `perStackSpec` slashing per accrued stack.
+ */
+export interface OrderJudgmentStatus extends BaseStatus {
+  kind: 'orderJudgment';
+  /** Index (in GameState.mages) of the entity the bearer must engage. */
+  targetIndex: number;
+  /** Index (in GameState.mages) of the mage that authored the order. */
+  ownerIndex: number;
+  /** Bearer-turns of judgement remaining before detonation. */
+  evalsLeft: number;
+  /** Disobedience stacks accrued so far. */
+  stacks: number;
+  /** Distance to the entity captured at the previous evaluation. */
+  lastDist: number;
+  /** True once the bearer has damaged the entity since the last evaluation. */
+  attackedTarget: boolean;
+  /** False until the first turn-start snapshot has been taken. */
+  observing: boolean;
+  /** Dice rolled once per stack when the judgement detonates. */
+  perStackSpec: string;
+}
+
 export type Status =
   | InvisibilityStatus
   | StunStatus
@@ -124,7 +177,8 @@ export type Status =
   | ControlStatus
   | ShadowVeilStatus
   | ShadowTrailStatus
-  | ForgetStatus;
+  | ForgetStatus
+  | OrderJudgmentStatus;
 
 /**
  * Add a status, or refresh/extend an existing one that shares the same key.

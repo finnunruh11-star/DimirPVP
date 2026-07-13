@@ -80,6 +80,19 @@ export interface Spell {
   visual?: SpellVisual;
 
   /**
+   * Suppress the automatic ground cast-sprite (the poison/shatter sheet painted
+   * where a point spell lands). Set on spells whose cast leaves a persistent
+   * object (e.g. a totem) rather than an instant elemental splash.
+   */
+  noCastSprite?: boolean;
+
+  /**
+   * A point spell that is aimed with TWO clicks (both chosen before the DC roll):
+   * the two points define a cone's edges. Used by Reality Shatter.
+   */
+  twoPointAim?: boolean;
+
+  /**
    * Which toggleable catalogue this spell belongs to. The start screen lets
    * players enable/disable whole sets before a duel; only spells whose set is
    * active are offered in the combo grid. Untagged spells default to 'original'.

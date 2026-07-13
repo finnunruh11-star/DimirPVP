@@ -29,6 +29,8 @@ export interface StackItem {
   spell?: Spell;
   target?: Mage;
   targetPoint?: Vec2;
+  /** A second aimed point, chosen up-front for two-point spells (Reality Shatter). */
+  targetPoint2?: Vec2;
 
   /** For `action` items: what a Needle of Serenity would ban if it stifles this. */
   needleBan?: NeedleBan;

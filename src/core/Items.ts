@@ -62,6 +62,8 @@ export type ItemId =
   | 'arrow'
   | 'manaPotion'
   | 'healthPotion'
+  | 'torch'
+  | 'lantern'
   // ---- Finn's Additions ----
   | 'bloodCharm'
   | 'bloodRing'
@@ -338,6 +340,14 @@ export interface ItemDef {
   needleOfSerenity?: boolean;
   /** Untouchable to all hostile effects during turn cycles 3 and 4 (Second Ring of Lareneg). */
   laranegRing?: boolean;
+  /** A torch/lantern: emits a light aura and swings as an unarmed light source. */
+  lightSource?: boolean;
+  /** Radius (px) of the light aura this source projects. */
+  lightRadiusPx?: number;
+  /** Lantern: the aura also shines while the item is merely stowed in the bag. */
+  lightInBag?: boolean;
+  /** Torch: number of combats a lit torch burns for before it is used up. */
+  torchCombats?: number;
 }
 
 const U = RANGE_UNIT;
@@ -726,6 +736,32 @@ export const ITEM_DEFS: ItemDef[] = [
     weight: 1,
     blurb: 'Bonus action: heal 2d3 HP, then consumed.',
     potion: 'health',
+  },
+  {
+    id: 'torch',
+    name: 'Torch',
+    slot: 'hand',
+    rarity: 'consumeable',
+    cost: g(2),
+    weight: 1,
+    blurb:
+      'A held light source that burns for 3 combats once lit (equipped) — stowing it snuffs it for good. While held it lights a 3cm aura: light-weak foes that start their turn in it take 1d3. Swings as an unarmed strike; a swing through a light-weak foe deals +5 true damage, and each swing at a non-ethereal foe has a 10% chance to snuff the torch.',
+    lightSource: true,
+    lightRadiusPx: 3 * U,
+    torchCombats: 3,
+  },
+  {
+    id: 'lantern',
+    name: 'Everburning Lantern',
+    slot: 'hand',
+    rarity: 'mythical',
+    cost: g(0),
+    weight: 2,
+    blurb:
+      'An eternal light that never burns out. It lights a 3cm aura even while stowed in your bag: light-weak foes that start their turn in it take 1d3. Held, it swings as an unarmed strike; a swing through a light-weak foe deals +5 true damage.',
+    lightSource: true,
+    lightRadiusPx: 3 * U,
+    lightInBag: true,
   },
 
   // ===========================================================================

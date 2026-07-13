@@ -7,7 +7,7 @@
 //  through the existing stack / targeting / visual machinery, but are kept out
 //  of the word-combo registry (their `words` list is empty).
 //
-//  Black-secondary tier makes every color ability you cast 50% more potent, at
+//  Black-secondary tier makes every color ability you cast 25% more potent, at
 //  the cost of 5% of your max HP (min 1) — applied here in each cast.
 // =============================================================================
 
@@ -29,9 +29,9 @@ export interface ColorAbility extends Spell {
 /** "marked" never expires — a huge duration that outlasts any duel. */
 const MARKED_DURATION = 9999;
 
-/** Black-secondary tier amplifies color abilities by half. */
+/** Black-secondary tier amplifies color abilities by a quarter. */
 function potencyOf(ctx: EffectContext): number {
-  return ctx.caster.profile.blackSecondaryTier ? 1.5 : 1;
+  return ctx.caster.profile.blackSecondaryTier ? 1.25 : 1;
 }
 
 /** Black-secondary tier: pay 5% of max HP (min 1) to fuel the empowered magic. */
@@ -69,7 +69,12 @@ const bane: ColorAbility = {
         mods: { damageTaken: MARKED_DAMAGE },
       });
     }
-    dealDamage(ctx, ctx.caster, dmg(amount, 'shadow', 'physical'), { canMiss: false, aoe: true });
+    // White-secondary casters replace the caster-side backlash with the healing
+    // pulse applied centrally after resolution (see GameState.resolve); other
+    // casters take the shadow recoil as normal.
+    if (!ctx.caster.profile.whiteSecondaryTier) {
+      dealDamage(ctx, ctx.caster, dmg(amount, 'shadow', 'physical'), { canMiss: false, aoe: true });
+    }
     payBlackSecondaryLife(ctx);
   },
 };
@@ -106,8 +111,8 @@ const rejuvenate: ColorAbility = {
   words: [],
   actionType: 'bonus',
   range: R(15),
-  // Targets any player; with no allies yet, this resolves on the caster.
-  targeting: 'self',
+  // Target any mage in range (ally, self, or another); defaults to the caster.
+  targeting: 'any',
   chargeCost: 3,
   manaCost: 2,
   description: 'Restore 3 + (mana spent on this) mana to the target.',
@@ -149,7 +154,83 @@ const wall: ColorAbility = {
   },
 };
 
-export const COLOR_ABILITIES: ColorAbility[] = [bane, necrosis, rejuvenate, wall];
+// ---------------------------------------------------------------------------
+//  WHITE COLOR ABILITIES  (unlocked by a white primary — e.g. Order + none-words)
+// ---------------------------------------------------------------------------
+
+const whiteBane: ColorAbility = {
+  id: 'ability:white-bane',
+  name: 'Bane',
+  color: 'white',
+  words: [],
+  actionType: 'bonus',
+  range: R(20),
+  targeting: 'enemy',
+  chargeCost: 4,
+  manaCost: 5,
+  description:
+    'Mark a target within range 20 with bane (+1 damage taken from every source; does not stack). ' +
+    'You and the target take 1d3 darkness — or 3d3 if the target was already baned.',
+  visual: { preset: 'beam', color: 0xf3ecd2, size: 6 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const already = ctx.target.statuses.some((s) => s.key === 'debuff:marked');
+    const amount = rollDice(ctx, already ? '3d3' : '1d3', 'Bane');
+    dealDamage(ctx, ctx.target, dmg(amount, 'shadow', 'physical'), { canMiss: false });
+    dealDamage(ctx, ctx.caster, dmg(amount, 'shadow', 'physical'), { canMiss: false, aoe: true });
+    // Non-stacking mark (shares the "Marked" key, so re-baning never stacks).
+    applyDebuff(ctx, ctx.target, {
+      name: 'Marked',
+      key: 'debuff:marked',
+      duration: MARKED_DURATION,
+      mods: { damageTaken: MARKED_DAMAGE },
+    });
+  },
+};
+
+const deathRealm: ColorAbility = {
+  id: 'ability:death-realm',
+  name: 'Death Realm',
+  color: 'white',
+  words: [],
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'none',
+  chargeCost: 8,
+  manaCost: 5,
+  description:
+    'Open the Hunger of Hadar over the battlefield for 2 turns: every living creature takes 1d3 ' +
+    'cold and 1d3 darkness at the start of each turn. (Its heal-inversion and slow are simplified.)',
+  visual: { preset: 'nova', color: 0x5a4a8a, size: 52 },
+  cast(ctx) {
+    // The full realm (heals become true damage, all speeds halved, on-death
+    // true-damage picks) is not modelled; the recurring aura is captured as two
+    // global escalations that tick 1d3 each over the next 2 rounds.
+    ctx.game.addGlobalEscalation({
+      name: 'Hunger of Hadar (cold)',
+      stages: ['1d3', '1d3'],
+      type: 'shatter',
+      damageClass: 'physical',
+      potency: 1,
+    });
+    ctx.game.addGlobalEscalation({
+      name: 'Hunger of Hadar (dark)',
+      stages: ['1d3', '1d3'],
+      type: 'shadow',
+      damageClass: 'physical',
+      potency: 1,
+    });
+  },
+};
+
+export const COLOR_ABILITIES: ColorAbility[] = [
+  bane,
+  necrosis,
+  rejuvenate,
+  wall,
+  whiteBane,
+  deathRealm,
+];
 
 /** The two color abilities granted by a given primary color. */
 export function getColorAbilitiesFor(color: ColorName | null): ColorAbility[] {

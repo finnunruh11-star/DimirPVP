@@ -3,7 +3,7 @@ import { COLORS, GAME_HEIGHT, GAME_WIDTH, LOADOUT_SIZE, TEXT } from '../config/c
 import { WORDS, WORD_ORDER, type WordId } from '../core/Words';
 import { Net, type NetRole, type NetMessage } from '../net/Net';
 
-export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training';
+export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun';
 
 /** Which toggleable item catalogues the draft draws from. */
 export interface ItemSetSelection {
@@ -74,6 +74,7 @@ export class MenuScene extends Phaser.Scene {
   private typed = '';
   private nadActive = false;
   private katActive = false;
+  private genActive = false;
   /** Enabled item sets for the draft (host decides in online play). */
   private itemSets: ItemSetSelection = { original: true, finns: false, dlc: false };
 
@@ -84,6 +85,7 @@ export class MenuScene extends Phaser.Scene {
   private modeHsBtn!: Phaser.GameObjects.Text;
   private modeOnlineBtn!: Phaser.GameObjects.Text;
   private modeTrainingBtn!: Phaser.GameObjects.Text;
+  private modeSwamprunBtn!: Phaser.GameObjects.Text;
   private setOriginalBtn!: Phaser.GameObjects.Text;
   private setFinnsBtn!: Phaser.GameObjects.Text;
   private setDlcBtn!: Phaser.GameObjects.Text;
@@ -148,10 +150,11 @@ export class MenuScene extends Phaser.Scene {
     });
 
     // Mode buttons.
-    this.modeAiBtn = this.makeButton(GAME_WIDTH / 2 - 330, 560, 'Vs AI', () => this.setMode('ai'));
-    this.modeHsBtn = this.makeButton(GAME_WIDTH / 2 - 110, 560, 'Hotseat (2P)', () => this.setMode('hotseat'));
-    this.modeOnlineBtn = this.makeButton(GAME_WIDTH / 2 + 110, 560, 'Online', () => this.setMode('online'));
-    this.modeTrainingBtn = this.makeButton(GAME_WIDTH / 2 + 330, 560, 'Training', () => this.setMode('training'));
+    this.modeAiBtn = this.makeButton(GAME_WIDTH / 2 - 440, 560, 'Vs AI', () => this.setMode('ai'));
+    this.modeHsBtn = this.makeButton(GAME_WIDTH / 2 - 220, 560, 'Hotseat (2P)', () => this.setMode('hotseat'));
+    this.modeOnlineBtn = this.makeButton(GAME_WIDTH / 2, 560, 'Online', () => this.setMode('online'));
+    this.modeTrainingBtn = this.makeButton(GAME_WIDTH / 2 + 220, 560, 'Training', () => this.setMode('training'));
+    this.modeSwamprunBtn = this.makeButton(GAME_WIDTH / 2 + 440, 560, 'Swamprun', () => this.setMode('swamprun'));
 
     // Item-set toggles (host decides in online play).
     this.setOriginalBtn = this.makeButton(GAME_WIDTH / 2 - 300, 500, '', () => this.toggleSet('original'));
@@ -194,6 +197,7 @@ export class MenuScene extends Phaser.Scene {
       this.typed = (this.typed + key).slice(-3);
       if (this.typed === 'NAD') this.applyNadLoadout();
       else if (this.typed === 'KAT') this.applyKatLoadout();
+      else if (this.typed === 'GEN') this.applyGenLoadout();
     }
   }
 
@@ -208,6 +212,15 @@ export class MenuScene extends Phaser.Scene {
     this.selected = ['corrode', 'curse', 'shadow', 'drain'];
     this.katActive = true;
     this.nadActive = false;
+    this.genActive = false;
+    this.refresh();
+  }
+
+  private applyGenLoadout(): void {
+    this.selected = ['order', 'curse', 'drain', 'slash'];
+    this.genActive = true;
+    this.nadActive = false;
+    this.katActive = false;
     this.refresh();
   }
 
@@ -236,7 +249,9 @@ export class MenuScene extends Phaser.Scene {
     this.mode = mode;
     // Sensible default AI fill per mode: "vs AI" fills every seat but yours.
     if (mode === 'ai') this.aiCount = this.seatCount - 1;
-    else this.aiCount = 0; // hotseat / online / training start all-human
+    else this.aiCount = 0; // hotseat / online / training / swamprun start all-human
+    // Swamprun allows a solo run; every other mode needs at least two seats.
+    if (mode !== 'swamprun' && this.seatCount < 2) this.seatCount = 2;
     this.clampAiCount();
     this.resetDraft();
     this.refresh();
@@ -251,10 +266,11 @@ export class MenuScene extends Phaser.Scene {
     this.refresh();
   }
 
-  /** Cycle the local combatant count 2 → 3 → 4 → 2. */
+  /** Cycle the local combatant count. Swamprun allows 1; others start at 2. */
   private cyclePlayers(): void {
     if (this.connecting) return;
-    this.seatCount = this.seatCount >= 4 ? 2 : this.seatCount + 1;
+    const min = this.mode === 'swamprun' ? 1 : 2;
+    this.seatCount = this.seatCount >= 4 ? min : this.seatCount + 1;
     // Keep "vs AI" meaning 1 human vs the rest as the table resizes.
     if (this.mode === 'ai') this.aiCount = this.seatCount - 1;
     this.clampAiCount();
@@ -318,6 +334,7 @@ export class MenuScene extends Phaser.Scene {
 
   /** Team number for a seat under the current layout. */
   private teamOf(seat: number): number {
+    if (this.mode === 'swamprun') return 1; // co-op: the whole party is team 1
     if (this.teamMode === 'ffa') return seat + 1;
     const half = Math.ceil(this.seatCount / 2);
     return this.seatTeams[seat] ?? (seat < half ? 1 : 2);
@@ -345,11 +362,13 @@ export class MenuScene extends Phaser.Scene {
     this.selected = [];
     this.nadActive = false;
     this.katActive = false;
+    this.genActive = false;
   }
 
   private toggleWord(word: WordId): void {
     this.nadActive = false;
     this.katActive = false;
+    this.genActive = false;
     const idx = this.selected.indexOf(word);
     if (idx >= 0) {
       this.selected.splice(idx, 1);
@@ -369,6 +388,8 @@ export class MenuScene extends Phaser.Scene {
       this.hintText.setText('✨ NAD unlocked: Mind · Shatter · Twist · Reality');
     } else if (this.katActive) {
       this.hintText.setText('✨ KAT unlocked: Corrode · Curse · Shadow · Drain');
+    } else if (this.genActive) {
+      this.hintText.setText('✨ GEN unlocked: Order · Curse · Drain · Slash');
     } else if (this.mode === 'online') {
       const humans = this.humanCount();
       const fill = this.aiCount > 0 ? ` + ${this.aiCount} AI` : '';
@@ -377,6 +398,8 @@ export class MenuScene extends Phaser.Scene {
       );
     } else if (this.mode === 'training') {
       this.hintText.setText('Training: solo sandbox — spawn dummies, grant items, tweak HP/mana/stacks, reset the field.');
+    } else if (this.mode === 'swamprun') {
+      this.hintText.setText('Swamprun: co-op survival — endless waves of swamp horrors. Start Swamprun to play solo/with AI, or Host/Join for online co-op (set Players to 2+ humans).');
     } else if (this.seatCount > 2) {
       this.hintText.setText(`${this.formatLabel()} — each player drafts their own words in turn.`);
     } else {
@@ -393,15 +416,18 @@ export class MenuScene extends Phaser.Scene {
     const hsOn = this.mode === 'hotseat';
     const onlineOn = this.mode === 'online';
     const trainingOn = this.mode === 'training';
+    const swamprunOn = this.mode === 'swamprun';
     this.modeAiBtn.setStyle({ backgroundColor: aiOn ? '#3a3a66' : '#23233a' });
     this.modeHsBtn.setStyle({ backgroundColor: hsOn ? '#3a3a66' : '#23233a' });
     this.modeOnlineBtn.setStyle({ backgroundColor: onlineOn ? '#3a3a66' : '#23233a' });
     this.modeTrainingBtn.setStyle({ backgroundColor: trainingOn ? '#3a3a66' : '#23233a' });
+    this.modeSwamprunBtn.setStyle({ backgroundColor: swamprunOn ? '#3a3a66' : '#23233a' });
     // Mode is only chosen on the first draft screen.
     this.modeAiBtn.setVisible(firstScreen);
     this.modeHsBtn.setVisible(firstScreen);
     this.modeOnlineBtn.setVisible(firstScreen);
     this.modeTrainingBtn.setVisible(firstScreen);
+    this.modeSwamprunBtn.setVisible(firstScreen);
 
     // Item-set toggles (first screen only; the guest inherits the host's choice).
     const setBtns: [Phaser.GameObjects.Text, keyof ItemSetSelection, string][] = [
@@ -418,17 +444,19 @@ export class MenuScene extends Phaser.Scene {
     }
 
     // Player-count / format controls: local teamfights & online room setup.
+    // Swamprun is co-op survival, so it shows Players + AI but no team format.
     const showSetup = firstScreen && this.mode !== 'training';
     this.playersBtn.setText(`Players: ${this.seatCount}`);
     this.playersBtn.setVisible(showSetup);
     this.formatBtn.setText(`Format: ${this.formatLabel()}`);
-    this.formatBtn.setVisible(showSetup);
+    this.formatBtn.setVisible(showSetup && this.mode !== 'swamprun');
     this.aiFillBtn.setText(`AI: ${this.aiCount}`);
     this.aiFillBtn.setVisible(showSetup);
 
     // Per-seat team pickers: only for teams mode with 3+ combatants, where the
     // split is actually a choice (e.g. player + AI vs player + AI).
-    const showSeatTeams = showSetup && this.teamMode === 'teams' && this.seatCount >= 3;
+    const showSeatTeams =
+      showSetup && this.mode !== 'swamprun' && this.teamMode === 'teams' && this.seatCount >= 3;
     const spacing = 210;
     for (let s = 0; s < this.seatBtns.length; s++) {
       const btn = this.seatBtns[s];
@@ -446,14 +474,16 @@ export class MenuScene extends Phaser.Scene {
 
     const ready = this.selected.length === LOADOUT_SIZE;
     const moreSeats = this.draftIndex < humans.length - 1;
-    // Online shows Host/Join buttons; the other modes show a single Confirm.
+    // Online shows Host/Join buttons; swamprun offers BOTH a local start and
+    // online co-op, so its lobby buttons appear alongside Start Swamprun.
     this.startBtn.setVisible(!onlineOn);
     this.startBtn.setAlpha(ready ? 1 : 0.4);
     this.startBtn.setText(
-      moreSeats ? 'Next' : this.mode === 'training' ? 'Start Training' : 'Start Duel'
+      moreSeats ? 'Next' : this.mode === 'training' ? 'Start Training' : this.mode === 'swamprun' ? 'Start Swamprun' : 'Start Duel'
     );
-    this.hostBtn.setVisible(onlineOn && firstScreen);
-    this.joinBtn.setVisible(onlineOn && firstScreen);
+    const showLobby = (onlineOn || swamprunOn) && firstScreen;
+    this.hostBtn.setVisible(showLobby);
+    this.joinBtn.setVisible(showLobby);
     const lobbyEnabled = ready && !this.connecting;
     this.hostBtn.setAlpha(lobbyEnabled ? 1 : 0.4);
     this.joinBtn.setAlpha(lobbyEnabled ? 1 : 0.4);
@@ -468,7 +498,7 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
 
-    // Hotseat / vs-AI: draft each human seat in sequence, then launch.
+    // Hotseat / vs-AI / swamprun: draft each human seat in sequence, then launch.
     const humans = this.humanSeats();
     const seat = humans[this.draftIndex];
     this.draftLoadouts[seat] = [...this.selected];
@@ -477,6 +507,7 @@ export class MenuScene extends Phaser.Scene {
       this.selected = [];
       this.nadActive = false;
       this.katActive = false;
+      this.genActive = false;
       this.refresh();
       return;
     }
@@ -529,7 +560,11 @@ export class MenuScene extends Phaser.Scene {
       return;
     }
     if (role === 'host' && this.humanCount() < 2) {
-      this.statusText.setText('Online needs at least 2 human seats — lower the AI count.');
+      this.statusText.setText(
+        this.mode === 'swamprun'
+          ? 'Online co-op needs at least 2 human seats — raise Players.'
+          : 'Online needs at least 2 human seats — lower the AI count.'
+      );
       return;
     }
 
@@ -592,9 +627,9 @@ export class MenuScene extends Phaser.Scene {
           });
         }
         const seed = (Math.floor(Math.random() * 0x7fffffff) + 1) | 0;
-        net.send({ k: 'start', seed, seats, itemSets: this.itemSets });
+        net.send({ k: 'start', mode: this.mode, seed, seats, itemSets: this.itemSets });
         config = {
-          mode: 'online',
+          mode: this.mode,
           loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],
           seats,
           net,
@@ -613,8 +648,10 @@ export class MenuScene extends Phaser.Scene {
         const seats = this.sanitizeSeats(startMsg.seats, totalSeats);
         const seed = Number(startMsg.seed) | 0;
         const itemSets = this.sanitizeItemSets(startMsg.itemSets);
+        // The host tells us which mode we're joining (PvP duel or co-op swamprun).
+        const startMode: MatchMode = startMsg.mode === 'swamprun' ? 'swamprun' : 'online';
         config = {
-          mode: 'online',
+          mode: startMode,
           loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],
           seats,
           net,

@@ -3,7 +3,7 @@ import { Mage } from './Mage';
 import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
 import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
-import { dealDamage, heal } from '../effects/effects';
+import { dealDamage, heal, applyDot, rollDice } from '../effects/effects';
 import { dmg } from './Damage';
 import type { DamageType, DamageClass } from './Damage';
 import type { ItemId, ItemDef } from './Items';
@@ -13,8 +13,6 @@ import {
   CONE_DEGREES,
   CLEAVE_DEGREES,
   FIELD,
-  MAGE_BODY_RADIUS,
-  MELEE_DAMAGE,
   MELEE_RANGE,
   MOVE_RANGE,
   PICKUP_RANGE,
@@ -29,10 +27,10 @@ import { WORDS } from './Words';
 import type { ShadowZone } from './Shadow';
 import type { Totem } from './Totem';
 import type { Scarab } from './Scarab';
-import { scarabAlive } from './Scarab';
+import { scarabAlive, scarabFlying } from './Scarab';
 import type { BarrierZone } from './Barrier';
 import { barrierContains } from './Barrier';
-import { addOrExtendStatus, type ControlStatus, type DotStatus, type ShadowTrailStatus } from './Status';
+import { addOrExtendStatus, type ControlStatus, type DotStatus, type OrderJudgmentStatus, type ShadowTrailStatus } from './Status';
 
 /**
  * A board-wide escalating damage effect (Necrosis): on each round rollover every
@@ -166,6 +164,19 @@ export class GameState {
     this.currentIndex = this.initiativeOrder[0] ?? 0;
   }
 
+  /**
+   * Add a combatant mid-match (Swamprun wave spawns). The newcomer is appended
+   * to the tail of the initiative order, so it acts later this round (or next
+   * round if the order has already wrapped past it).
+   */
+  addMage(m: Mage): void {
+    this.mages.push(m);
+    const idx = this.mages.length - 1;
+    this.initiativeOrder.push(idx);
+    const roll = this.rng.roll('1d20').total;
+    this.initiativeRolls[idx] = roll + m.effectiveDex();
+  }
+
   // ---- Accessors ------------------------------------------------------------
 
   get current(): Mage {
@@ -219,6 +230,189 @@ export class GameState {
     return [...teams];
   }
 
+  /** Whether a living Lich is on the field (its thralls then play optimally). */
+  hasAliveLich(): boolean {
+    return this.mages.some((m) => m.alive && m.enemyKind === 'lich');
+  }
+
+  /** The living Lich commanding a given mage's team, if any. */
+  commandingLich(m: Mage): Mage | undefined {
+    return this.mages.find((o) => o.alive && o.team === m.team && o.enemyKind === 'lich');
+  }
+
+  /**
+   * The Lich's end-step, taken only on turns where it did not move. Rolls a d6:
+   *   1 — afflict the target player with a weak damage-over-time.
+   *   2 — Link the target player: damage they take heals the Lich.
+   *   3 — request a zombie be summoned within 5cm of the Lich.
+   *   4-6 — nothing happens.
+   * Applies the DoT / Link internally (deterministic sim) and returns a summon
+   * point for case 3 so the scene can spawn the creature. Returns the rolled
+   * value plus an optional `summonAt` point.
+   */
+  lichEndStep(lich: Mage): { roll: number; summonAt?: Vec2 } {
+    const roll = this.rng.die(6);
+    const target = this.opponentOf(lich);
+    if (roll === 1) {
+      if (target && target.alive) {
+        const ctx = this.effectContext(lich, target, null);
+        applyDot(ctx, target, {
+          name: 'Grave Rot',
+          duration: 3,
+          damage: dmg(2, 'shadow', 'physical'),
+          damageSpec: '1d3',
+        });
+      }
+      return { roll };
+    }
+    if (roll === 2) {
+      if (target && target.alive) {
+        target.drainLinkTo = lich;
+        target.drainLinkTurns = 3;
+        this.log(`${lich.name} binds a life-link to ${target.name} — their pain becomes its salve.`);
+      }
+      return { roll };
+    }
+    if (roll === 3) {
+      // Pick a point within 5cm of the Lich for the summoned zombie.
+      const R = 5 * RANGE_UNIT;
+      const ang = this.rng.float() * Math.PI * 2;
+      const rad = R * Math.sqrt(this.rng.float());
+      const summonAt: Vec2 = {
+        x: lich.pos.x + Math.cos(ang) * rad,
+        y: lich.pos.y + Math.sin(ang) * rad,
+      };
+      this.log(`${lich.name} tears a zombie from the mire.`);
+      return { roll, summonAt };
+    }
+    return { roll };
+  }
+
+  // ---- GHAST -----------------------------------------------------------------
+
+  /** Mark a delayed shadow zone that erupts at the start of the Ghast's next turn. */
+  markGhastZone(ghast: Mage, at: Vec2, radius: number): void {
+    ghast.ghastPendingZone = { x: at.x, y: at.y, radius };
+    this.log(`${ghast.name} marks the ground — creeping shadow will erupt on its next turn.`);
+  }
+
+  /** Resolve a Ghast's pending zone: 2d3 shadow to every foe caught within it. */
+  resolveGhastZone(ghast: Mage): void {
+    const zone = ghast.ghastPendingZone;
+    if (!zone) return;
+    ghast.ghastPendingZone = undefined;
+    const foes = this.livingEnemiesOf(ghast).filter(
+      (f) => dist(f.pos, { x: zone.x, y: zone.y }) <= zone.radius
+    );
+    if (foes.length === 0) {
+      this.log(`${ghast.name}'s shadow-mark erupts over empty ground.`);
+      return;
+    }
+    for (const f of foes) {
+      const ctx = this.effectContext(ghast, f, null);
+      dealDamage(ctx, f, dmg(rollDice(ctx, '2d3', 'Ghast Mark'), 'shadow', 'physical'), {
+        aoe: true,
+        canMiss: false,
+      });
+    }
+  }
+
+  /** Ghast shove: 1d3 shadow damage and knock the target 1d6 range-units away. */
+  ghastShove(ghast: Mage, target: Mage): void {
+    const ctx = this.effectContext(ghast, target, null);
+    dealDamage(ctx, target, dmg(rollDice(ctx, '1d3', 'Ghast Shove'), 'shadow', 'physical'), {
+      canMiss: false,
+    });
+    if (!target.alive) return;
+    const units = rollDice(ctx, '1d6', 'Ghast Shove');
+    this.log(`${ghast.name} hurls ${target.name} back with a wave of force!`);
+    this.knockbackMage(ghast, target, units);
+  }
+
+  // ---- REAPER ----------------------------------------------------------------
+
+  /**
+   * How far (px) `m` is currently allowed to increase its distance from any
+   * living enemy Reaper. Marked prey may not flee at all; unmarked prey may only
+   * open the gap by 6cm per turn. Moving *toward* the Reaper is always allowed.
+   * Returns the destination clamped onto the tightest such ring.
+   */
+  private clampToReaperLeash(m: Mage, from: Vec2, dest: Vec2): Vec2 {
+    const reapers = this.mages.filter((r) => r.reaperKind && r.alive && r.team !== m.team);
+    if (reapers.length === 0) return dest;
+    let d = dest;
+    for (const r of reapers) {
+      const cur = dist(from, r.pos);
+      const next = dist(d, r.pos);
+      if (next <= cur) continue; // moving toward (or staying) — always allowed
+      const marked = m.reaperMarkedBy === r;
+      const maxAway = marked ? cur : cur + 6 * RANGE_UNIT;
+      if (next > maxAway) {
+        const dx = d.x - r.pos.x;
+        const dy = d.y - r.pos.y;
+        const len = Math.hypot(dx, dy) || 1;
+        d = { x: r.pos.x + (dx / len) * maxAway, y: r.pos.y + (dy / len) * maxAway };
+      }
+    }
+    return d;
+  }
+
+  /** Reaper's touch: mark a foe (no damage, unpreventable). It can no longer flee. */
+  reaperMark(reaper: Mage, target: Mage): void {
+    if (!target.alive || target.reaperMarkedBy === reaper) return;
+    target.reaperMarkedBy = reaper;
+    this.log(`${reaper.name} brushes ${target.name} — they are Marked and can no longer flee it.`);
+  }
+
+  /** Begin (or continue) the Reaper's channel; the clap resolves on its next turn. */
+  reaperBeginChannel(reaper: Mage): void {
+    reaper.reaperChanneling = true;
+    this.log(`${reaper.name} raises its hands and begins to channel a final clap...`);
+  }
+
+  /**
+   * Resolve a channeling Reaper's clap at the start of its turn: every foe it
+   * marked is removed from the field (no damage). Killing the Reaper restores
+   * them, so a lone victim is doomed but a surviving ally can bring them back.
+   */
+  reaperResolveClap(reaper: Mage): void {
+    if (!reaper.reaperChanneling) return;
+    reaper.reaperChanneling = false;
+    const marked = this.mages.filter((m) => m.reaperMarkedBy === reaper && !m.reaperDeletedBy);
+    if (marked.length === 0) {
+      this.log(`${reaper.name} claps — but no mark remains to answer it.`);
+      return;
+    }
+    for (const m of marked) m.reaperDeletedBy = reaper;
+    this.log(
+      `${reaper.name} CLAPS — ${marked.map((m) => m.name).join(', ')} ${
+        marked.length === 1 ? 'is' : 'are'
+      } wiped from existence!`
+    );
+  }
+
+  /**
+   * Restore every mage a now-dead Reaper had deleted (and clear stale marks).
+   * Call after damage resolves; returns the mages brought back.
+   */
+  restoreReaperDeletions(): Mage[] {
+    const restored: Mage[] = [];
+    for (const m of this.mages) {
+      const by = m.reaperDeletedBy;
+      if (by && !by.alive) {
+        m.reaperDeletedBy = undefined;
+        m.reaperMarkedBy = undefined;
+        restored.push(m);
+      }
+      // A dead Reaper also releases any mark it still held on the living.
+      if (m.reaperMarkedBy && !m.reaperMarkedBy.alive) m.reaperMarkedBy = undefined;
+    }
+    for (const m of restored) {
+      this.log(`${m.name} is torn back into the world as the Reaper falls!`);
+    }
+    return restored;
+  }
+
   log(msg: string): void {
     this.logLines.push(msg);
     if (this.logLines.length > 200) this.logLines.shift();
@@ -238,7 +432,18 @@ export class GameState {
     return this.mages.find((m) => m.alive && m.team === team) ?? null;
   }
 
+  /**
+   * In co-op survival (swamprun) the run ends only when this team is wiped out —
+   * never when the opposing wave is merely cleared. Null for ordinary duels.
+   */
+  coopSurvivalTeam: number | null = null;
+
   get isOver(): boolean {
+    // Co-op survival: the run is lost only once every party member has fallen.
+    // Clearing a wave (no foes left) is NOT a game over — the next wave spawns.
+    if (this.coopSurvivalTeam != null) {
+      return !this.mages.some((m) => m.alive && m.team === this.coopSurvivalTeam);
+    }
     return this.teamsAlive().length <= 1;
   }
 
@@ -249,6 +454,8 @@ export class GameState {
     for (const m of this.mages) {
       m.reactionAvailable = m.canEverReact;
       m.reactedThisCycle = false;
+      // Per-round-cycle reset of the Reaper's per-source damage accounting.
+      if (m.damageBySourceThisCycle.size > 0) m.damageBySourceThisCycle.clear();
     }
   }
 
@@ -260,15 +467,33 @@ export class GameState {
     // Ground hazards and shadow-curse auras strike before the mage's own turn.
     this.applyTotemAuras(m);
     this.applyAuraDots(m);
+    this.applyLightAuras(m);
     this.applyDotDamage(m);
     this.applyMutivargZones(m);
     this.applyThunderBlessing(m);
     this.tickScarabs(m);
+    this.tickOrderJudgments(m);
     const ticks = m.tickStatuses();
     for (const line of ticks) this.log(line);
     this.applyControlOnTurnStart(m);
+    this.tickDrainLink(m);
     this.regenResources(m);
     m.beginTurn();
+  }
+
+  /** Age a Lich life-link on `m`; drop it when it expires or its Lich dies. */
+  private tickDrainLink(m: Mage): void {
+    if (!m.drainLinkTo) return;
+    if (!m.drainLinkTo.alive || m.drainLinkTurns <= 0) {
+      m.drainLinkTo = undefined;
+      m.drainLinkTurns = 0;
+      return;
+    }
+    m.drainLinkTurns -= 1;
+    if (m.drainLinkTurns <= 0) {
+      this.log(`The life-link on ${m.name} frays and breaks.`);
+      m.drainLinkTo = undefined;
+    }
   }
 
   endTurn(): void {
@@ -416,7 +641,7 @@ export class GameState {
   addTotem(
     at: Vec2,
     owner: number,
-    opts: { radius: number; damageSpec: string; slow: number; ttl?: number; lifesteal?: boolean }
+    opts: { radius: number; damageSpec: string; slow: number; ttl?: number; lifesteal?: boolean; ownerIndex?: number }
   ): Totem {
     const totem: Totem = {
       id: this.nextId++,
@@ -424,6 +649,7 @@ export class GameState {
       y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y)),
       radius: opts.radius,
       owner,
+      ownerIndex: opts.ownerIndex,
       ttl: opts.ttl ?? TOTEM_TTL,
       damageSpec: opts.damageSpec,
       slow: opts.slow,
@@ -447,10 +673,17 @@ export class GameState {
     for (const t of this.totems) {
       if (t.owner === m.team) continue;
       if (dist(m.pos, { x: t.x, y: t.y }) > t.radius) continue;
-      const owner = this.mages.find((g) => g.team === t.owner) ?? m;
+      // Heal the actual caster (ownerIndex) for lifesteal; fall back to any
+      // living team-mate only if the caster is gone.
+      const caster = t.ownerIndex != null ? this.mages[t.ownerIndex] : undefined;
+      const owner = (caster && caster.alive ? caster : this.mages.find((g) => g.team === t.owner)) ?? m;
       const ctx = this.effectContext(owner, m, null);
       const amount = this.rng.roll(t.damageSpec).total;
-      const dealt = dealDamage(ctx, m, dmg(amount, 'corrosive', 'physical'), { canMiss: false });
+      const dealt = dealDamage(ctx, m, dmg(amount, 'corrosive', 'physical'), {
+        canMiss: false,
+        noImpactFx: true,
+      });
+      if (dealt > 0) this.vfxSink?.spellEffect?.(m, 'dot');
       if (t.lifesteal && dealt > 0 && owner !== m && owner.alive) heal(ctx, owner, dealt);
       if (t.slow > 0) {
         addOrExtendStatus(
@@ -471,7 +704,7 @@ export class GameState {
   // ---- Scarabs --------------------------------------------------------------
 
   /** Spawn `count` scarabs scattered around `center`, owned by team `owner`. */
-  addScarabs(center: Vec2, owner: number, count: number): void {
+  addScarabs(center: Vec2, owner: number, count: number, ownerIndex?: number): void {
     for (let i = 0; i < count; i++) {
       const ang = (this.rng.die(360) - 1) * (Math.PI / 180);
       const r = SCARAB.spawnRadius * (0.35 + 0.65 * ((this.rng.die(100) - 1) / 99));
@@ -482,6 +715,7 @@ export class GameState {
         x,
         y,
         owner,
+        ownerIndex,
         hp: SCARAB.hp,
         maxHp: SCARAB.hp,
         sanity: SCARAB.sanity,
@@ -508,7 +742,12 @@ export class GameState {
 
   /** Advance every scarab owned by `owner` by one step of its behaviour. */
   private tickScarabs(owner: Mage): void {
-    const mine = this.scarabs.filter((s) => s.owner === owner.team && scarabAlive(s));
+    const idx = this.mages.indexOf(owner);
+    // Each scarab acts once per round — on its own summoner's turn — so it always
+    // orbits the mage that summoned it rather than merely its team's first mage.
+    const mine = this.scarabs.filter(
+      (s) => scarabAlive(s) && (s.ownerIndex != null ? s.ownerIndex === idx : s.owner === owner.team)
+    );
     if (mine.length === 0) return;
     const anchor = owner.pos;
     const enemies = this.mages.filter((g) => g.team !== owner.team && g.alive);
@@ -522,10 +761,18 @@ export class GameState {
     }
 
     for (const s of mine) {
+      // ON THE SUMMONER (resting): this turn it flies straight back out — from a
+      // standstill on the caster it seeks the nearest foe, reaching (and
+      // attaching to) it in one go when close enough.
+      if (s.state === 'resting') {
+        s.state = 'seeking';
+        s.target = null;
+      }
+
       if (s.state === 'attached') {
         const tgt = s.target;
         if (tgt && tgt.alive) {
-          // Stay latched onto the victim wherever they have moved to.
+          // Latched on the victim — bite before flying home.
           s.x = tgt.x;
           s.y = tgt.y;
           const ctx = this.effectContext(owner, tgt, null);
@@ -534,24 +781,30 @@ export class GameState {
           this.log(`A scarab bites ${tgt.name} for ${amount}.`);
         }
         if (s.target) load.set(s.target, (load.get(s.target) ?? 1) - 1);
-        s.state = 'returning';
+        // Bite, then fly back this same turn — reaching (and perching on) the
+        // summoner in one go when close enough.
         s.target = null;
         this.creepScarab(s, anchor, SCARAB.moveStep, anchor);
-        continue;
-      }
-
-      if (s.state === 'returning') {
-        this.creepScarab(s, anchor, SCARAB.moveStep, anchor);
         if (dist({ x: s.x, y: s.y }, anchor) <= SCARAB.attachDist) {
-          const ctx = this.effectContext(owner, owner, null);
-          const healAmt = this.rng.roll(SCARAB.healSpec).total;
-          heal(ctx, owner, healAmt);
-          s.state = 'seeking';
+          this.healScarabOwner(s, owner);
+          s.state = 'resting';
+        } else {
+          s.state = 'returning';
         }
         continue;
       }
 
-      // seeking
+      if (s.state === 'returning') {
+        // Still crossing open ground on the way home.
+        this.creepScarab(s, anchor, SCARAB.moveStep, anchor);
+        if (dist({ x: s.x, y: s.y }, anchor) <= SCARAB.attachDist) {
+          this.healScarabOwner(s, owner);
+          s.state = 'resting';
+        }
+        continue;
+      }
+
+      // seeking — fly out toward the nearest enemy with room.
       let tgt = s.target && s.target.alive ? s.target : null;
       if (!tgt) {
         const options = enemies
@@ -564,8 +817,9 @@ export class GameState {
         }
       }
       if (!tgt) {
-        // No room on any enemy — drift home and wait.
+        // No enemy to hunt — settle back onto the summoner and wait.
         this.creepScarab(s, anchor, SCARAB.moveStep, anchor);
+        s.state = 'resting';
         continue;
       }
       this.creepScarab(s, tgt.pos, SCARAB.moveStep, anchor);
@@ -573,6 +827,14 @@ export class GameState {
         s.state = 'attached';
       }
     }
+  }
+
+  /** Heal the mage that summoned a returning scarab (falling back to `owner`). */
+  private healScarabOwner(s: Scarab, owner: Mage): void {
+    const healed = (s.ownerIndex != null ? this.mages[s.ownerIndex] : undefined) ?? owner;
+    const ctx = this.effectContext(healed, healed, null);
+    const healAmt = this.rng.roll(SCARAB.healSpec).total;
+    heal(ctx, healed, healAmt);
   }
 
   /** Damage enemy scarabs caught in an area effect; remove any destroyed. */
@@ -586,6 +848,9 @@ export class GameState {
     if (amount <= 0 || this.scarabs.length === 0) return;
     for (const s of this.scarabs) {
       if (s.owner === attackerTeam) continue;
+      // A scarab latched on a foe (or perched on its summoner) rides along and
+      // cannot be caught — only ones out in the open take the blast.
+      if (!scarabFlying(s)) continue;
       if (dist({ x: s.x, y: s.y }, at) > radius + SCARAB.radius) continue;
       if (sanity) s.sanity = Math.max(0, s.sanity - amount);
       else s.hp = Math.max(0, s.hp - amount);
@@ -595,6 +860,39 @@ export class GameState {
     const removed = before - this.scarabs.length;
     if (removed > 0) {
       this.log(`${removed} scarab${removed > 1 ? 's are' : ' is'} crushed.`);
+    }
+  }
+
+  /**
+   * Living enemy scarabs (summoned by another team) within `range` of `m`,
+   * nearest first — the targets an enemy may swat in melee. Only scarabs in the
+   * open (flying) count; latched or perched scarabs cannot be hit.
+   */
+  enemyScarabsInRange(m: Mage, range: number): Scarab[] {
+    return this.scarabs
+      .filter(
+        (s) =>
+          s.owner !== m.team &&
+          scarabAlive(s) &&
+          scarabFlying(s) &&
+          dist(m.pos, { x: s.x, y: s.y }) <= range
+      )
+      .sort((a, b) => dist(m.pos, { x: a.x, y: a.y }) - dist(m.pos, { x: b.x, y: b.y }));
+  }
+
+  /** A melee attacker swats a harassing scarab, hurting (and maybe killing) it. */
+  attackScarab(source: Mage, scarab: Scarab): void {
+    if (!scarabAlive(scarab)) return;
+    const weapon = source.activeWeapon();
+    const roll = this.rng.roll('1d6').total;
+    const amount = weapon
+      ? Math.max(1, Math.round((roll + source.effectiveStr() * 0.5) * (weapon.multiplier ?? 1)))
+      : Math.max(1, Math.round(roll * 0.5 + source.effectiveStr() * 0.5));
+    scarab.hp = Math.max(0, scarab.hp - amount);
+    this.log(`${source.name} crushes a scarab for ${amount}.`);
+    if (!scarabAlive(scarab)) {
+      this.scarabs = this.scarabs.filter(scarabAlive);
+      this.log('A scarab is destroyed.');
     }
   }
 
@@ -618,8 +916,34 @@ export class GameState {
         if (dist(victim.pos, m.pos) > s.radius) continue;
         const ctx = this.effectContext(m, victim, null);
         const amount = this.rng.roll(s.damageSpec).total;
-        dealDamage(ctx, victim, dmg(amount, s.type, s.damageClass), { canMiss: false });
+        const dealt = dealDamage(ctx, victim, dmg(amount, s.type, s.damageClass), {
+          canMiss: false,
+          noImpactFx: true,
+        });
+        if (dealt > 0) this.vfxSink?.spellEffect?.(victim, 'dot');
       }
+    }
+  }
+
+  /**
+   * Light auras: at the start of a light-weak creature's turn, if it stands in
+   * any enemy's held torch / lantern glow, it is seared for 1d3 light damage.
+   */
+  private applyLightAuras(m: Mage): void {
+    if (!m.alive || !m.isLightWeak()) return;
+    const lit = this.mages.some(
+      (e) => e.alive && e.team !== m.team && e.lightRadius() > 0 && dist(e.pos, m.pos) <= e.lightRadius()
+    );
+    if (!lit) return;
+    const ctx = this.effectContext(m, m, null);
+    const amount = this.rng.roll('1d3').total;
+    const dealt = dealDamage(ctx, m, dmg(amount, 'light', 'physical'), {
+      canMiss: false,
+      noImpactFx: true,
+    });
+    if (dealt > 0) {
+      this.log(`${m.name} sears in the light for ${dealt}.`);
+      this.vfxSink?.spellEffect?.(m, 'dot');
     }
   }
 
@@ -642,11 +966,29 @@ export class GameState {
       }
       const amount = s.damageSpec
         ? Math.max(0, this.rng.roll(s.damageSpec).total)
-        : Math.max(0, s.damage.amount);
-      if (s.damage.damageClass === 'sanity') m.sanity = Math.max(0, m.sanity - amount);
-      else m.hp = Math.max(0, m.hp - amount);
-      if (amount > 0) this.vfxSink?.hit?.(m);
-      this.log(`${m.name} suffers ${amount} ${s.damage.type} from ${s.name}.`);
+        : s.stacks && s.perStackSpec
+          ? this.rollStackedDot(s)
+          : Math.max(0, s.damage.amount);
+      // Order Curse Drain: an extra bite when the bearer dealt no damage last turn.
+      const bonus =
+        s.bonusNoDamageSpec && !m.dealtDamageThisTurn
+          ? Math.max(0, this.rng.roll(s.bonusNoDamageSpec).total)
+          : 0;
+      const total = amount + bonus;
+      if (s.damage.damageClass === 'sanity') m.sanity = Math.max(0, m.sanity - total);
+      else m.hp = Math.max(0, m.hp - total);
+      // Order Curse Drain: the curse's author drinks the damage as healing.
+      if (s.lifestealToIndex !== undefined && total > 0) {
+        const owner = this.mages[s.lifestealToIndex];
+        if (owner && owner.alive && owner !== m) {
+          heal(this.effectContext(owner, m, null), owner, total);
+        }
+      }
+      if (total > 0) {
+        this.vfxSink?.hit?.(m);
+        this.vfxSink?.spellEffect?.(m, 'dot');
+      }
+      this.log(`${m.name} suffers ${total} ${s.damage.type} from ${s.name}.`);
       if (s.stunChance && this.rng.chance(s.stunChance)) {
         const type = s.stunType ?? 'full';
         const labels: Record<typeof type, string> = {
@@ -661,6 +1003,109 @@ export class GameState {
         );
         this.log(`${s.name} seizes ${m.name}!`);
       }
+      // Stacking upkeep: spread infection, then wane if no fresh stack landed.
+      if (s.stacks !== undefined) {
+        if (s.infectRadius && s.infectRadius > 0) this.spreadInfection(m, s);
+        if (s.decayPerTick && !s.freshStack) {
+          s.stacks -= 1;
+          if (s.stacks <= 0) {
+            s.duration = 0;
+            this.log(`${s.name} burns out on ${m.name}.`);
+          }
+        }
+        s.freshStack = false;
+      }
+    }
+  }
+
+  /**
+   * Order Curse Slash: judge each bearer's obedience at the start of its turn.
+   * The first tick only snapshots position; every later tick scores the turn
+   * just taken (+1 for not moving toward the entity, +1 for not attacking it)
+   * and, once the observation window closes, detonates the accrued stacks.
+   */
+  private tickOrderJudgments(m: Mage): void {
+    if (!m.alive) return;
+    const judgments = m.statuses.filter(
+      (s) => s.kind === 'orderJudgment'
+    ) as OrderJudgmentStatus[];
+    for (const s of judgments) {
+      const entity = this.mages[s.targetIndex];
+      if (!entity || !entity.alive) {
+        s.duration = 0;
+        this.log(`Order's judgement on ${m.name} dissolves — its quarry is gone.`);
+        continue;
+      }
+      const curDist = dist(m.pos, entity.pos);
+      if (!s.observing) {
+        // First turn under the order: capture the baseline, judge nothing yet.
+        s.observing = true;
+        s.lastDist = curDist;
+        s.attackedTarget = false;
+        continue;
+      }
+      const movedToward = curDist < s.lastDist - 0.5;
+      const gained = (movedToward ? 0 : 1) + (s.attackedTarget ? 0 : 1);
+      s.stacks += gained;
+      if (gained > 0) this.log(`${m.name} defies the order (+${gained} → ${s.stacks} stacks).`);
+      else this.log(`${m.name} obeys the order (${s.stacks} stacks).`);
+      s.evalsLeft -= 1;
+      s.lastDist = curDist;
+      s.attackedTarget = false;
+      if (s.evalsLeft <= 0) {
+        let total = 0;
+        for (let i = 0; i < s.stacks; i++) total += this.rng.roll(s.perStackSpec).total;
+        if (total > 0) {
+          const owner = this.mages[s.ownerIndex] ?? m;
+          const ctx = this.effectContext(owner, m, null);
+          this.log(`Order's judgement falls on ${m.name} (${s.stacks} stacks).`);
+          dealDamage(ctx, m, dmg(total, 'slashing', 'physical'), { canMiss: false });
+        } else {
+          this.log(`${m.name} answered the order — the judgement passes harmlessly.`);
+        }
+        s.duration = 0;
+      }
+    }
+  }
+
+  /** Roll a stacking DoT's damage: `perStackSpec` once per stack, summed. */
+  private rollStackedDot(s: DotStatus): number {
+    if (!s.perStackSpec || !s.stacks) return 0;
+    let total = 0;
+    for (let i = 0; i < s.stacks; i++) {
+      total += Math.max(0, this.rng.roll(s.perStackSpec).total);
+    }
+    return total;
+  }
+
+  /**
+   * Spread an infectious DoT from `bearer` to the owner's other enemies within
+   * range that do not already carry it. Each new host starts at one stack.
+   */
+  private spreadInfection(bearer: Mage, s: DotStatus): void {
+    const radius = s.infectRadius ?? 0;
+    if (radius <= 0) return;
+    for (const other of this.mages) {
+      if (other === bearer || !other.alive) continue;
+      if (s.sourceTeam !== undefined && other.team === s.sourceTeam) continue;
+      if (dist(other.pos, bearer.pos) > radius) continue;
+      const has = other.statuses.some((st) => st.key === s.key && st.kind === 'dot');
+      if (has) continue;
+      other.statuses.push({
+        key: s.key,
+        name: s.name,
+        kind: 'dot',
+        duration: s.duration,
+        damage: s.damage,
+        perStackSpec: s.perStackSpec,
+        stacks: 1,
+        maxStacks: s.maxStacks,
+        freshStack: true,
+        decayPerTick: s.decayPerTick,
+        infectRadius: s.infectRadius,
+        sourceTeam: s.sourceTeam,
+      });
+      this.log(`${s.name} spreads to ${other.name}!`);
     }
   }
 
@@ -754,7 +1199,11 @@ export class GameState {
 
   /** Alive mages within `radius` of `center` (optionally excluding one). */
   magesInRadius(center: Vec2, radius: number, exclude?: Mage): Mage[] {
-    return this.mages.filter((m) => m.alive && m !== exclude && dist(m.pos, center) <= radius);
+    // Count a body whose hull overlaps the circle, not just its centre — so a
+    // tight blast still catches every creature packed into the area.
+    return this.mages.filter(
+      (m) => m.alive && m !== exclude && dist(m.pos, center) <= radius + m.bodyRadius()
+    );
   }
 
   /** Alive mages inside a cone from `origin` aimed at `toward`. */
@@ -770,11 +1219,15 @@ export class GameState {
     return this.mages.filter((m) => {
       if (!m.alive || m === exclude) return false;
       const d = dist(m.pos, origin);
-      if (d === 0 || d > range) return false;
+      // Include a body whose hull reaches into the cone's length.
+      if (d === 0 || d > range + m.bodyRadius()) return false;
       const ang = Math.atan2(m.y - origin.y, m.x - origin.x);
       let diff = Math.abs(ang - base);
       if (diff > Math.PI) diff = 2 * Math.PI - diff;
-      return diff <= half;
+      // Nudge the arc out just enough to catch a body clipping the cone edge,
+      // but never more than half its own width — so a narrow cone stays narrow.
+      const angPad = d > 0 ? Math.min(Math.atan2(m.bodyRadius(), d), half * 0.5, 0.15) : 0;
+      return diff <= half + angPad;
     });
   }
 
@@ -835,9 +1288,9 @@ export class GameState {
     if (bashMult == null || !basher.alive || !attacker.alive) return false;
     if (dist(attacker.pos, basher.pos) > MELEE_RANGE) return false;
     basher.shieldBashUsed = true;
-    const bashBase =
-      MELEE_DAMAGE + basher.effectiveStr() + (basher.profile.blackPrimaryTier ? 1 : 0);
-    const bashDmg = Math.max(0, Math.round(bashBase * bashMult));
+    const bashRoll = this.rng.roll('1d6').total + basher.effectiveStr() * 0.5;
+    const bashFlat = basher.profile.blackPrimaryTier ? 1 : 0;
+    const bashDmg = Math.max(1, Math.round(bashRoll * bashMult) + bashFlat);
     this.log(`${basher.name} smashes back with the shield!`);
     const back = this.effectContext(basher, attacker, null);
     dealDamage(back, attacker, dmg(bashDmg, 'shatter', 'physical'), { canMiss: false });
@@ -1063,16 +1516,44 @@ export class GameState {
 
   // ---- Targeting helpers ----------------------------------------------------
 
+  /**
+   * White-secondary identity: whenever the caster finishes one of their colour
+   * spells, they and their nearest ally (within range 5) recover just under 1%
+   * of max HP per charge the spell cost (min 1 total), up to three charges'
+   * worth. Applies to EVERY colour ability regardless of its colour.
+   */
+  private applyWhiteSecondaryHeal(caster: Mage, spell: Spell): void {
+    if (!caster.profile.whiteSecondaryTier) return;
+    const chargeCost = (spell as { chargeCost?: number }).chargeCost;
+    if (chargeCost === undefined) return; // not a colour ability
+    const per = Math.floor(caster.maxHp * 0.005); // just under 1% per charge
+    const amount = Math.max(1, per * Math.min(3, chargeCost));
+    heal(this.effectContext(caster, caster, null), caster, amount);
+    const allies = this.mages
+      .filter((m) => m.alive && m !== caster && m.team === caster.team)
+      .filter((m) => Math.hypot(m.x - caster.x, m.y - caster.y) <= 5 * RANGE_UNIT);
+    if (allies.length > 0) {
+      allies.sort(
+        (a, b) =>
+          Math.hypot(a.x - caster.x, a.y - caster.y) -
+          Math.hypot(b.x - caster.x, b.y - caster.y)
+      );
+      heal(this.effectContext(caster, allies[0], null), allies[0], amount);
+    }
+  }
+
   private effectContext(
     source: Mage,
     target: Mage | null,
-    targetPoint: Vec2 | null
+    targetPoint: Vec2 | null,
+    targetPoint2: Vec2 | null = null
   ): EffectContext {
     return {
       game: this,
       caster: source,
       target,
       targetPoint,
+      targetPoint2,
       rng: this.rng,
       log: (m) => this.log(m),
       vfx: this.vfxSink ?? null,
@@ -1084,6 +1565,9 @@ export class GameState {
         : undefined,
       reactionWindow: this.subTargeter
         ? (label, at) => this.subTargeter!.reactionWindow(source, label, at)
+        : undefined,
+      resolveImpacts: this.subTargeter
+        ? () => this.subTargeter!.resolveImpacts()
         : undefined,
     };
   }
@@ -1133,7 +1617,7 @@ export class GameState {
     if (weapon?.usesArrows && source.arrows <= 0) return false;
     // A crossbow that has just fired cannot shoot again until it reloads.
     if (weapon?.toHit && source.reloadTurns > 0) return false;
-    const reach = weapon ? weapon.rangePx : MELEE_RANGE;
+    const reach = weapon ? weapon.rangePx : source.intrinsicMeleeReach ?? MELEE_RANGE;
     const min = weapon?.minRangePx ?? 0;
     const d = dist(source.pos, target.pos);
     return d <= reach && d >= min;
@@ -1144,13 +1628,33 @@ export class GameState {
   /** Drop a held item onto the ground at the mage's feet. */
   dropItem(source: Mage, itemId: ItemId): boolean {
     const i = source.hands.indexOf(itemId);
-    if (i < 0) return false;
+    if (i < 0) {
+      // Worn accessories can also be dropped (removed and reverted, then loose).
+      const ai = source.accessories.indexOf(itemId);
+      if (ai >= 0) {
+        source.accessories.splice(ai, 1);
+        this.reverseGrantedVitals(source, getItem(itemId));
+        this.droppedItems.push({
+          id: this.nextId++,
+          itemId,
+          x: source.pos.x,
+          y: source.pos.y,
+          owner: source.team,
+        });
+        this.log(`${source.name} takes off and drops ${getItem(itemId).name}.`);
+        return true;
+      }
+      return false;
+    }
     // The Greatshield is bound while in sword form — it cannot be dropped.
     if (itemId === 'bastionSword' && !source.bastionShieldForm) {
       this.log(`${source.name}'s greatshield is bound in sword form — it cannot be dropped.`);
       return false;
     }
     source.hands.splice(i, 1);
+    // Snuffing a torch by dropping it uses it up (the burn timer clears).
+    if (getItem(itemId).torchCombats != null && !source.hands.some((h) => getItem(h).torchCombats != null))
+      source.torchCombatsLeft = 0;
     this.droppedItems.push({
       id: this.nextId++,
       itemId,
@@ -1272,8 +1776,10 @@ export class GameState {
    * or stand on top of them.
    */
   clampToMages(source: Mage, from: Vec2, to: Vec2): Vec2 {
-    const minDist = MAGE_BODY_RADIUS * 2;
-    const others = this.mages.filter((m) => m !== source && m.alive);
+    // Only opposing bodies block passage. Allies (a swarm of Swamprun foes, or
+    // co-op partners) pass through one another so they never jam up and get
+    // stuck; the player is still walled off by enemy bodies and vice versa.
+    const others = this.mages.filter((m) => m !== source && m.alive && m.team !== source.team);
     if (others.length === 0) return to;
     const total = dist(from, to);
     if (total < 1) return to;
@@ -1281,7 +1787,9 @@ export class GameState {
     let last: Vec2 = { ...from };
     for (let i = 1; i <= steps; i++) {
       const p = stepTowards(from, to, (total * i) / steps);
-      if (others.some((m) => dist(p, m.pos) < minDist)) return last;
+      // Each body blocks by the sum of the two radii, so bulky Swamprun
+      // creatures (e.g. the Defender) occupy a wider no-pass zone.
+      if (others.some((m) => dist(p, m.pos) < source.bodyRadius() + m.bodyRadius())) return last;
       last = p;
     }
     return to;
@@ -1325,14 +1833,16 @@ export class GameState {
         const ctx = this.effectContext(m, m, null);
         // 67% blunt shatter, otherwise a resist-ignoring magical crush.
         if (this.rng.chance(0.67)) {
-          dealDamage(ctx, m, dmg(total, 'shatter', 'physical'), { canMiss: false, aoe: true });
+          dealDamage(ctx, m, dmg(total, 'shatter', 'physical'), { canMiss: false, aoe: true, noImpactFx: true });
         } else {
           dealDamage(ctx, m, dmg(total, 'corrosive', 'physical'), {
             canMiss: false,
             aoe: true,
             ignoreResist: true,
+            noImpactFx: true,
           });
         }
+        this.vfxSink?.spellEffect?.(m, 'dot');
       }
       // Slow past 100% — the field pins them in place this turn.
       addOrExtendStatus(
@@ -1541,12 +2051,11 @@ export class GameState {
   resolveCleave(source: Mage, aim: Vec2): void {
     const w = source.activeWeapon();
     const reach = w ? w.rangePx : MELEE_RANGE;
-    const base =
-      MELEE_DAMAGE +
-      source.effectiveStr() +
+    const rollBase = this.rng.roll('1d6').total + source.effectiveStr() * 0.5;
+    const flat =
       (source.profile.blackPrimaryTier ? 1 : 0) +
       source.meleeDamageBonus();
-    const perHit = Math.round(base * (w?.multiplier ?? 1)) * 2;
+    const perHit = (Math.round(rollBase * (w?.multiplier ?? 1)) + flat) * 2;
     const type: DamageType = w?.damageType ?? 'shatter';
     const targets = this.magesInCone(source.pos, aim, reach, CLEAVE_DEGREES, source).filter(
       (m) => m.team !== source.team
@@ -1576,8 +2085,10 @@ export class GameState {
     const clamp = this.clampToBarriers(source.pos, fieldDest);
     // A Mutivarg crushing field is a wall — you cannot dash through it.
     const mut = this.clampToMutivargZones(source, source.pos, clamp.dest);
+    // A Reaper leashes its prey: you cannot flee further than allowed.
+    const leash = this.clampToReaperLeash(source, source.pos, mut.dest);
     // Stop short of running into the other mage's body.
-    const dest = this.clampToMages(source, source.pos, mut.dest);
+    const dest = this.clampToMages(source, source.pos, leash);
     return {
       id: this.nextId++,
       kind: 'move',
@@ -1650,6 +2161,17 @@ export class GameState {
       description: `${source.name} attacks ${target.name}.`,
       isStillValid: (game) => game.canMelee(source, target),
       resolve: async (game) => {
+        // Swamprun creatures strike with an intrinsic (weaponless) attack that
+        // carries its own damage type / class (e.g. the Specter's mental jab).
+        const im = source.intrinsicMelee;
+        if (im) {
+          const ictx = game.effectContext(source, target, null);
+          const amount = game.rng.roll(im.spec).total;
+          if (amount > 0) {
+            dealDamage(ictx, target, dmg(amount, im.type, im.damageClass), {});
+          }
+          return;
+        }
         // Arm a single Greed gain for this attack (Gambler's Blade dedup).
         source.greedArmed = true;
         const ctx = game.effectContext(source, target, null);
@@ -1719,14 +2241,20 @@ export class GameState {
             source.arrows = Math.max(0, source.arrows - 1);
             game.log(`${source.name} looses an arrow (${source.arrows} left).`);
           }
+        } else if (!w) {
+          // Unarmed strike: a light generic-physical blow — half a d6 plus half
+          // your Strength (never quite a real weapon), still boosted by gloves.
+          const roll = game.rng.roll('1d6').total;
+          amount = Math.max(1, Math.round(roll * 0.5 + source.effectiveStr() * 0.5) + source.meleeDamageBonus());
+          type = 'generic';
         } else {
-          // Strength swing: (base melee + Strength + gloves) scaled by the weapon.
-          const base =
-            MELEE_DAMAGE +
-            source.effectiveStr() +
+          // Strength swing: (1d6 + 0.5×str) × weaponMult, then flat bonuses
+          // (colour identity, gloves) added after the multiply.
+          const roll = game.rng.roll('1d6').total;
+          const flat =
             (source.profile.blackPrimaryTier ? 1 : 0) +
             source.meleeDamageBonus();
-          amount = Math.round(base * (w?.multiplier ?? 1));
+          amount = Math.max(1, Math.round((roll + source.effectiveStr() * 0.5) * (w?.multiplier ?? 1)) + flat);
           type = w?.damageType ?? 'shatter';
           if (w?.critChance && game.rng.chance(w.critChance)) {
             amount *= 2;
@@ -1744,8 +2272,25 @@ export class GameState {
             ? dealDamage(ctx, target, dmg(amount, type, 'physical'), {
                 ignoreResist: !!w?.ignoreResist,
                 ignoreArmor: !!w?.ignoreArmor,
+                noImpactFx: true,
               })
             : 0;
+        // Torch / lantern swing (an unarmed strike while holding a light source):
+        // a swing through a light-weak foe sears it for 5 true damage, and a
+        // torch (not the everburning lantern) may be snuffed against a solid foe.
+        if (!w && source.heldLightSourceId()) {
+          if (target.alive && target.isLightWeak()) {
+            dealDamage(ctx, target, dmg(5, 'light', 'physical'), { canMiss: false, trueDamage: true });
+            game.log(`${source.name}'s light source burns ${target.name} for 5 true damage.`);
+          }
+          const torchId = source.heldTorchId();
+          if (torchId && !target.isEthereal() && game.rng.chance(0.1)) {
+            const ti = source.hands.indexOf(torchId);
+            if (ti >= 0) source.hands.splice(ti, 1);
+            if (!source.hands.some((h) => getItem(h).torchCombats != null)) source.torchCombatsLeft = 0;
+            game.log(`${source.name}'s torch is snuffed out against ${target.name}.`);
+          }
+        }
         // Battle Robe: melee damage you deal feeds your mana pool (not bows).
         const isRanged = !!(w?.usesArrows || w?.toHit || w?.rangeAccuracy || w?.oneShotSpec);
         if (dealt > 0 && !isRanged && source.hasMeleeManaLeech()) {
@@ -1790,7 +2335,8 @@ export class GameState {
     spell: Spell,
     target: Mage | null,
     targetPoint: Vec2 | null,
-    respondingTo?: number
+    respondingTo?: number,
+    targetPoint2?: Vec2 | null
   ): StackItem {
     const targetName = target ? ` → ${target.name}` : '';
     return {
@@ -1800,6 +2346,7 @@ export class GameState {
       spell,
       target: target ?? undefined,
       targetPoint: targetPoint ?? undefined,
+      targetPoint2: targetPoint2 ?? undefined,
       respondingTo,
       counters: spell.counters,
       label: spell.name,
@@ -1812,7 +2359,7 @@ export class GameState {
         return true;
       },
       resolve: (game) => {
-        const ctx = game.effectContext(source, target, targetPoint);
+        const ctx = game.effectContext(source, target, targetPoint, targetPoint2 ?? null);
         // Mark the caster so spell damage can grant Blood Charm lifesteal and
         // arm a single Greed gain for this cast (Gambler's Blade dedup).
         source.spellcastActive = true;
@@ -1821,6 +2368,9 @@ export class GameState {
           source.spellcastActive = false;
         };
         const result = spell.cast(ctx);
+        // White-secondary casters mend themselves and their nearest ally each
+        // time they finish casting one of their colour spells.
+        this.applyWhiteSecondaryHeal(source, spell);
         if (result && typeof (result as Promise<void>).then === 'function') {
           return (result as Promise<void>).then(
             () => done(),

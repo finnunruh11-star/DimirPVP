@@ -14,8 +14,8 @@
 import type { WordId } from './Words';
 import { comboKey } from './Words';
 
-export type WordColor = 'black' | 'blue' | 'none';
-export type ColorName = 'black' | 'blue';
+export type WordColor = 'black' | 'blue' | 'white' | 'none';
+export type ColorName = 'black' | 'blue' | 'white';
 
 /** Which color each word belongs to. */
 export const WORD_COLOR: Record<WordId, WordColor> = {
@@ -30,65 +30,55 @@ export const WORD_COLOR: Record<WordId, WordColor> = {
   pierce: 'none',
   shatter: 'none',
   twist: 'none',
+  order: 'white',
+  slash: 'none',
 };
 
 /**
- * Per-spell base mana cost, keyed by the spell's combo key (sorted words joined
- * with '+', e.g. `comboKey(['shatter','mind'])` → "mind+shatter"). Lesser spells
- * cost ~3-5; two-word spells ~6-11; the strongest three-word spells up to 15.
- * Black-flavoured combos tend to cost more (but hit harder). Spells without an
- * entry fall back to a length-based default (see DEFAULT_SPELL_MANA).
+ * Optional per-spell base mana override, keyed by the spell's combo key (sorted
+ * words joined with '+', e.g. `comboKey(['shatter','mind'])` → "mind+shatter").
+ * By default spells cost purely by word count (see `defaultSpellMana`): one-word
+ * spells are free, two-word spells cost ~2, and three-word spells cost ~9. Add
+ * an entry here only to nudge a specific combo off that baseline.
  */
-export const SPELL_MANA: Record<string, number> = {
-  // Single-word
-  pierce: 3,
-  veil: 3,
-  shatter: 4,
-  mind: 4,
-  bind: 4,
-  twist: 4,
-  shadow: 5,
-  corrode: 5,
-  curse: 5,
-  drain: 5,
-  // Two-word
-  'mind+veil': 6,
-  'bind+pierce': 6,
-  'pierce+veil': 6,
-  'bind+shatter': 6,
-  'shatter+veil': 6,
-  'bind+mind': 7,
-  'mind+pierce': 7,
-  'shadow+veil': 7,
-  'pierce+shatter': 7,
-  'mind+shatter': 8,
-  'bind+shadow': 8,
-  'pierce+shadow': 8,
-  'curse+pierce': 8,
-  'shadow+shatter': 8,
-  'mind+shadow': 8,
-  'corrode+mind': 9,
-  'curse+mind': 9,
-  'corrode+shatter': 9,
-  'curse+shatter': 9,
-  'curse+shadow': 10,
-  'mind+reality': 10,
-  'reality+shatter': 10,
-  'corrode+curse': 11,
-  'corrode+shadow': 11,
-  'curse+drain': 11,
-  'drain+shadow': 11,
-  // Three-word
-  'mind+pierce+veil': 9,
-  'mind+reality+shatter': 14,
-  'corrode+curse+drain': 15,
+export const SPELL_MANA: Record<string, number> = {};
+
+/**
+ * How "potent" each word feels, used to price two-word spells (4-6 mana).
+ * Strong words (curse, drain, order, ...) push a combo toward 6; weak words
+ * (veil, mind, shatter, ...) keep it near 4. 2 = strong, 1 = medium, 0 = weak.
+ */
+const WORD_POTENCY: Record<WordId, number> = {
+  // Strong: heavy hitters / reality-benders.
+  curse: 2,
+  drain: 2,
+  order: 2,
+  shadow: 2,
+  reality: 2,
+  // Medium: solid utility / damage.
+  corrode: 1,
+  bind: 1,
+  twist: 1,
+  pierce: 1,
+  slash: 1,
+  // Weak: cheap, low-impact words.
+  veil: 0,
+  mind: 0,
+  shatter: 0,
 };
 
-/** Fallback mana cost when a combo has no explicit SPELL_MANA entry. */
+/**
+ * Base mana cost by word count: 1-word free, 3-word ~9. Two-word spells cost
+ * 4-6 mana scaled by the combined potency of their two words (strong words like
+ * curse/drain/order cost more than weak ones like veil/mind/shatter).
+ */
 function defaultSpellMana(words: WordId[]): number {
-  if (words.length <= 1) return 4;
-  if (words.length === 2) return 8;
-  return 12;
+  if (words.length <= 1) return 0;
+  if (words.length === 2) {
+    const potency = (WORD_POTENCY[words[0]] ?? 1) + (WORD_POTENCY[words[1]] ?? 1);
+    return 4 + Math.min(2, Math.round(potency / 2));
+  }
+  return 9;
 }
 
 export interface ColorProfile {
@@ -96,42 +86,52 @@ export interface ColorProfile {
   primary: ColorName | null;
   /** The other color, if you have at least one word of it. */
   secondary: ColorName | null;
-  /** Blue primary-tier effects active (you have blue at all). */
+  /**
+   * The BOON booleans below are true whenever you have that colour *at all*
+   * (as primary OR secondary) — they gate the always-on passives ("boons").
+   * Which colour SPELLS you get, and how you generate colour-charges, keys off
+   * `primary` directly (see Mage.regen / getColorAbilitiesFor).
+   */
+  /** Blue boon active (you have blue at all): +2 int, +1 word charges, spell reactions. */
   bluePrimaryTier: boolean;
-  /** Blue secondary-tier effects active (blue is your secondary color). */
+  /** Blue is your secondary colour: colour spells cost no mana and 1 less charge. */
   blueSecondaryTier: boolean;
-  /** Black primary-tier effects active (you have black at all). */
+  /** Black boon active (you have black at all): +1 weapon damage, +2 word mana. */
   blackPrimaryTier: boolean;
-  /** Black secondary-tier effects active (black is your secondary color). */
+  /** Black is your secondary colour: colour spells +25%, cost HP, can cast early. */
   blackSecondaryTier: boolean;
+  /** White boon active (you have white at all): -2 word mana, weapon reactions. */
+  whitePrimaryTier: boolean;
+  /** White is your secondary colour: colour spells heal caster + nearest ally. */
+  whiteSecondaryTier: boolean;
 }
 
 /** Work out a mage's color identity from its loadout. */
 export function computeColorProfile(loadout: WordId[]): ColorProfile {
-  let black = 0;
-  let blue = 0;
+  const counts: Record<ColorName, number> = { black: 0, blue: 0, white: 0 };
   for (const w of loadout) {
     const c = WORD_COLOR[w];
-    if (c === 'black') black += 1;
-    else if (c === 'blue') blue += 1;
+    if (c === 'black' || c === 'blue' || c === 'white') counts[c] += 1;
   }
 
-  let primary: ColorName | null = null;
-  let secondary: ColorName | null = null;
-  if (black === 0 && blue === 0) {
-    primary = null;
-  } else if (black > blue) {
-    primary = 'black';
-    secondary = blue > 0 ? 'blue' : null;
-  } else if (blue > black) {
-    primary = 'blue';
-    secondary = black > 0 ? 'black' : null;
-  } else {
-    // Equal counts (both > 0): the first colored word in the loadout decides.
-    const first = loadout.find((w) => WORD_COLOR[w] !== 'none');
-    primary = (first ? WORD_COLOR[first] : 'blue') as ColorName;
-    secondary = primary === 'black' ? 'blue' : 'black';
-  }
+  // First appearance of each color, used to break count ties deterministically.
+  const firstSeen: Record<ColorName, number> = { black: 999, blue: 999, white: 999 };
+  loadout.forEach((w, i) => {
+    const c = WORD_COLOR[w];
+    if ((c === 'black' || c === 'blue' || c === 'white') && firstSeen[c] === 999) {
+      firstSeen[c] = i;
+    }
+  });
+
+  // Rank colors present by count (desc), breaking ties by earliest appearance.
+  const ranked = (['black', 'blue', 'white'] as ColorName[])
+    .filter((c) => counts[c] > 0)
+    .sort((a, b) => counts[b] - counts[a] || firstSeen[a] - firstSeen[b]);
+
+  const primary: ColorName | null = ranked[0] ?? null;
+  // A single-colour mage counts that colour as BOTH primary and secondary, so
+  // it gains the secondary-tier effects too (you are "never colourless").
+  const secondary: ColorName | null = ranked[1] ?? ranked[0] ?? null;
 
   const has = (c: ColorName): boolean => primary === c || secondary === c;
   return {
@@ -141,18 +141,24 @@ export function computeColorProfile(loadout: WordId[]): ColorProfile {
     blueSecondaryTier: secondary === 'blue',
     blackPrimaryTier: has('black'),
     blackSecondaryTier: secondary === 'black',
+    whitePrimaryTier: has('white'),
+    whiteSecondaryTier: secondary === 'white',
   };
 }
 
 /**
  * Mana cost of a word-combo spell for a given color profile.
- *  - Base cost is the spell's own SPELL_MANA entry (length-based default if none).
- *  - Blue secondary: a one-word spell costs no mana.
- *  - Black primary: +2 mana on each spell.
+ *  - Base cost is by word count (1-word free, 2-word ~4-6, 3-word ~9), unless
+ *    the combo has an explicit SPELL_MANA override.
+ *  - Black boon: +2 mana on every word spell (black hits harder but costs more).
+ *  - White boon: -2 mana on every word spell (min 0). A "gen"-style black+white
+ *    loadout nets back to the baseline.
+ * Blue's identity never touches word-spell mana (its discounts are on colour
+ * spells / charges, handled elsewhere).
  */
 export function wordSpellMana(words: WordId[], profile: ColorProfile): number {
-  if (profile.blueSecondaryTier && words.length === 1) return 0;
   let total = SPELL_MANA[comboKey(words)] ?? defaultSpellMana(words);
   if (profile.blackPrimaryTier) total += 2;
-  return total;
+  if (profile.whitePrimaryTier) total -= 2;
+  return Math.max(0, total);
 }

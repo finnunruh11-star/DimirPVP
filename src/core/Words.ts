@@ -12,7 +12,9 @@ export type WordId =
   | 'pierce'
   | 'twist'
   | 'reality'
-  | 'drain';
+  | 'drain'
+  | 'order'
+  | 'slash';
 
 export interface WordDef {
   id: WordId;
@@ -114,6 +116,23 @@ export const WORDS: Record<WordId, WordDef> = {
     charges: 4,
     color: 0x57d6a0,
     blurb: 'Corrosive lifesteal.',
+  },
+  // --- Secret words (GEN easter-egg loadout only; hidden from the menu grid) ---
+  order: {
+    id: 'order',
+    label: 'Order',
+    grantsReaction: false,
+    charges: 4,
+    color: 0xf3ecd2,
+    blurb: 'White word — command and control.',
+  },
+  slash: {
+    id: 'slash',
+    label: 'Slash',
+    grantsReaction: false,
+    charges: 4,
+    color: 0xffe08a,
+    blurb: 'Slashing cones and dashes.',
   },
 };
 

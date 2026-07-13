@@ -24,7 +24,7 @@ export interface StatDef {
 export const STAT_DEFS: StatDef[] = [
   { key: 'strength', name: 'Strength', blurb: 'Basic (melee) attacks deal +value damage.' },
   { key: 'dex', name: 'Dexterity', blurb: 'Move range increases by value%.' },
-  { key: 'int', name: 'Intellect', blurb: 'Spell DCs drop by 1 per 3 points (rounded down).' },
+  { key: 'int', name: 'Intellect', blurb: 'Spell DCs drop by 1 per point.' },
   { key: 'mana', name: 'Mana', blurb: 'Max and starting mana increase by value.' },
   { key: 'hp', name: 'Vitality', blurb: 'Maximum health increases by value.' },
   { key: 'luck', name: 'Luck', blurb: 'A once-per-duel pool spent to nudge a spell roll up to its DC.' },
@@ -59,6 +59,18 @@ export function rollStatAssortment(rng: Dice): DieResult[] {
     const r = rng.roll(spec);
     const value = spec === '1d20' ? r.total : Math.min(STAT_CAP, r.total);
     return { spec, value };
+  });
+}
+
+/**
+ * Swamprun assortment: one d8 per stat (no d20). Same six-slot layout as the
+ * duel assortment so the assignment overlay works unchanged, but every die is a
+ * flat 1d8. Uses the seeded RNG so all peers roll identically.
+ */
+export function rollSwamprunStatDice(rng: Dice): DieResult[] {
+  return STAT_ORDER.map(() => {
+    const value = rng.roll('1d8').total;
+    return { spec: '1d8', value };
   });
 }
 

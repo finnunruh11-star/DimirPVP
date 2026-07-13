@@ -10,7 +10,8 @@ export type DamageType =
   | 'slashing'
   | 'fire'
   | 'heat'
-  | 'light';
+  | 'light'
+  | 'generic';
 
 export interface DamageInstance {
   amount: number;

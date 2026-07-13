@@ -17,12 +17,21 @@ import { getItem } from '../core/Items';
 import {
   addOrExtendStatus,
   type ControlMode,
+  type DotStatus,
   type InvisMode,
+  type OrderJudgmentStatus,
   type StunType,
 } from '../core/Status';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import { FIELD, RANGE_UNIT, SCARAB, SHADOW_DAMAGE_BONUS, VEIL } from '../config/constants';
 import { Dev } from '../config/dev';
+
+/**
+ * The "base" physical damage types a physically-immune (incorporeal) creature
+ * ignores. Elemental/exotic physical-class damage (shadow, corrosive, fire,
+ * heat, ...) still lands — immunity is to plain blows only, not all health hits.
+ */
+const BASE_PHYSICAL_TYPES = new Set<DamageType>(['pierce', 'shatter', 'slashing', 'generic']);
 
 /**
  * Optional bridge the scene supplies so effects can request visuals. Pure logic
@@ -35,6 +44,13 @@ export interface VfxSink {
   hit?(mage: Mage): void;
   /** Animate a gradual dash for `mover`, which has just jumped from `from`. */
   dash?(mover: Mage, from: Vec2): void;
+  /** Play a one-shot hit-effect overlay on `mage` (spell impact / DoT / vanish). */
+  spellEffect?(mage: Mage, kind: 'generic' | 'poison' | 'dot' | 'vanish'): void;
+  /**
+   * Paint the shatter cone stretched to fill a reality wedge: apex at `apex`,
+   * opening toward `angle`, half-arc `halfAngle`, length `range` (px).
+   */
+  wedge?(apex: Vec2, angle: number, halfAngle: number, range: number): void;
 }
 
 /** Options for an interactive point sub-target requested mid-resolution. */
@@ -74,6 +90,11 @@ export interface SubTargeter {
    * in response to the current step (e.g. one blink of a multi-step flurry).
    */
   reactionWindow(source: Mage, label: string, at?: Vec2): Promise<void>;
+  /**
+   * Flush any pending dice rolls and queued hit animations right now, so a
+   * multi-step spell can show a strike land before rolling its next step.
+   */
+  resolveImpacts(): Promise<void>;
 }
 
 export interface EffectContext {
@@ -83,6 +104,8 @@ export interface EffectContext {
   target: Mage | null;
   /** The chosen point, if the spell targets a location. */
   targetPoint: Vec2 | null;
+  /** A second chosen point (two-point spells like Reality Shatter). */
+  targetPoint2?: Vec2 | null;
   rng: Dice;
   log: (msg: string) => void;
   /** Visual feedback bridge (provided by the scene; absent in headless logic). */
@@ -102,6 +125,11 @@ export interface EffectContext {
    * current step. Absent in headless logic — call as `await ctx.reactionWindow?.(...)`.
    */
   reactionWindow?(label: string, at?: Vec2): Promise<void>;
+  /**
+   * Play the pending dice and queued hit animations now (mid-cast), so a strike
+   * is shown before the next step rolls. Call as `await ctx.resolveImpacts?.()`.
+   */
+  resolveImpacts?(): Promise<void>;
 }
 
 // -----------------------------------------------------------------------------
@@ -138,7 +166,15 @@ export function dealDamage(
   ctx: EffectContext,
   target: Mage,
   damage: DamageInstance,
-  opts: { canMiss?: boolean; aoe?: boolean; ignoreResist?: boolean; ignoreArmor?: boolean; trueDamage?: boolean } = {}
+  opts: {
+    canMiss?: boolean;
+    aoe?: boolean;
+    ignoreResist?: boolean;
+    ignoreArmor?: boolean;
+    trueDamage?: boolean;
+    /** Suppress the automatic spell hit-effect overlay (basic attacks, DoT ticks). */
+    noImpactFx?: boolean;
+  } = {}
 ): number {
   const canMiss = opts.canMiss !== false;
   const isAoe = !!opts.aoe;
@@ -153,6 +189,17 @@ export function dealDamage(
   // their next turn.
   if (target.eldritchDefend) {
     ctx.log(`${target.name} stands untouched — eldritch truth voids the blow.`);
+    return 0;
+  }
+
+  // Swamprun creature class-immunities. Mindless things ignore mental (sanity)
+  // damage; incorporeal things ignore physical damage except radiant 'light'.
+  if (target.sanityImmune && damage.damageClass === 'sanity') {
+    ctx.log(`${target.name} is mindless — the psychic assault finds nothing.`);
+    return 0;
+  }
+  if (target.physicalImmune && BASE_PHYSICAL_TYPES.has(damage.type)) {
+    ctx.log(`${target.name} is incorporeal — the blow passes through it.`);
     return 0;
   }
 
@@ -229,6 +276,20 @@ export function dealDamage(
     }
   }
 
+  // A Reaper takes at most `damageCapPerSource` from any single entity per round
+  // cycle (its DoTs never land — it is debuff-immune — so only direct hits count).
+  if (target.damageCapPerSource > 0 && amount > 0) {
+    const used = target.damageBySourceThisCycle.get(ctx.caster) ?? 0;
+    const allowed = Math.max(0, target.damageCapPerSource - used);
+    if (amount > allowed) {
+      ctx.log(
+        `${target.name} shrugs off the excess — only ${allowed} of ${ctx.caster.name}'s damage lands this cycle.`
+      );
+      amount = allowed;
+    }
+    target.damageBySourceThisCycle.set(ctx.caster, used + amount);
+  }
+
   const floorVital = target.unkillable ? 1 : 0;
   if (damage.damageClass === 'sanity') {
     target.sanity = Math.max(floorVital, target.sanity - amount);
@@ -239,11 +300,62 @@ export function dealDamage(
     `${target.name} takes ${amount} ${damage.type} ${damage.damageClass} damage.`
   );
 
+  // Lich "Link": HP damage dealt to a linked victim is mirrored back to the
+  // owning lich as healing (it profits from the party wounding its thralls).
+  if (amount > 0 && damage.damageClass !== 'sanity' && target.drainLinkTo) {
+    const lich = target.drainLinkTo;
+    if (lich !== target && lich.alive && lich.hp < lich.maxHp) {
+      const before = lich.hp;
+      lich.hp = Math.min(lich.maxHp, lich.hp + amount);
+      const healed = lich.hp - before;
+      if (healed > 0) ctx.log(`${lich.name} drains ${healed} life through its link to ${target.name}.`);
+    }
+  }
+
+  // Lich phylactery: the first time it would die, it claws back to half HP
+  // instead. Sanity is also topped up so a mental "kill" can't slip past.
+  if (
+    target.reviveAtHalfAvailable &&
+    (target.hp <= 0 || (!target.sanityImmune && target.sanity <= 0)) &&
+    !target.unkillable
+  ) {
+    target.reviveAtHalfAvailable = false;
+    target.hp = Math.max(1, Math.ceil(target.maxHp / 2));
+    if (target.maxSanity > 0) target.sanity = target.maxSanity;
+    ctx.log(`${target.name} refuses death — its phylactery drags it back at half strength!`);
+  }
+
   // A landed hit can shatter veils. The victim's veil may be torn off; the
   // attacker may reveal themselves by striking. DoT ticks (canMiss === false)
   // do not reveal an attacker.
   if (amount > 0) {
     ctx.vfx?.hit?.(target);
+    // Track that the attacker landed a hit on a foe this turn (Order Curse Drain
+    // reads this to decide its "no damage dealt" bonus), and deepen an Order
+    // Curse Drain if the cursed creature wounds one of the curse-author's allies.
+    if (target.team !== ctx.caster.team) {
+      ctx.caster.dealtDamageThisTurn = true;
+      const ocd = ctx.caster.statuses.find(
+        (s) => s.kind === 'dot' && s.key === 'dot:order-curse-drain'
+      ) as DotStatus | undefined;
+      if (ocd && ocd.extendOwnerTeam === target.team && ocd.extendSeq !== ctx.game.turnSeq) {
+        ocd.duration += 2;
+        ocd.extendSeq = ctx.game.turnSeq;
+        ctx.log(`Order's curse deepens on ${ctx.caster.name} (+2 cycles).`);
+      }
+    }
+    // Order Curse Slash: mark that the bearer struck the entity it was ordered
+    // to engage (read at its next turn to decide whether it earns a stack).
+    const oj = ctx.caster.statuses.find((s) => s.kind === 'orderJudgment') as
+      | OrderJudgmentStatus
+      | undefined;
+    if (oj && ctx.game.mages[oj.targetIndex] === target) oj.attackedTarget = true;
+    // Spell impact overlay on the afflicted target: corrosive → poison splash,
+    // anything else → the generic impact. Suppressed for basic attacks and DoT
+    // ticks (which drive their own 'dot' overlay).
+    if (!opts.noImpactFx) {
+      ctx.vfx?.spellEffect?.(target, damage.type === 'corrosive' ? 'poison' : 'generic');
+    }
     breakVeilOnStruck(ctx, target, damage.damageClass, amount);
     if (canMiss) breakVeilOnStrike(ctx, ctx.caster, amount);
     // A Channeling Ring converts pain into mana.
@@ -366,6 +478,13 @@ export function heal(
     amount = Math.round(amount * target.healMult());
     target.hp = Math.min(target.maxHp, target.hp + amount);
     ctx.log(`${target.name} heals ${amount} health.`);
+    // White primary feeds on healing magic: every heal grants each WHITE-primary
+    // mage an extra color-charge (its "gain 1 whenever someone heals" identity).
+    if (amount > 0) {
+      for (const m of ctx.game.mages) {
+        if (m.alive && m.profile.primary === 'white') m.gainColorCharges(1);
+      }
+    }
   }
 }
 
@@ -400,6 +519,7 @@ export function applyInvisibility(
   ctx.log(
     `${target.name} becomes ${opts.mode === 'full' ? 'fully invisible' : 'hard to see'} (${opts.duration} cycles).`
   );
+  ctx.vfx?.spellEffect?.(target, 'vanish');
 }
 
 // -----------------------------------------------------------------------------
@@ -419,6 +539,10 @@ export function applyStun(
   opts: { duration: number; type: StunType; extend?: boolean }
 ): void {
   if (ctx.game.isLaranegUntouchable(target)) return;
+  if (target.debuffImmune) {
+    ctx.log(`${target.name} cannot be stayed — it shrugs off the binding.`);
+    return;
+  }
   const names: Record<StunType, string> = {
     main: 'Disarmed',
     movement: 'Rooted',
@@ -514,6 +638,17 @@ export function blinkstep(
   ctx.log(`${mover.name} blinksteps ${Math.round(opts.distance)} away.`);
 }
 
+/**
+ * Instantly reposition a mage at `at` with NO travel animation — the mage does
+ * not visibly slide across the field, they simply are somewhere new on the next
+ * redraw. Clamped to the playfield edge. Used for shadow-to-shadow teleports.
+ */
+export function teleport(ctx: EffectContext, mover: Mage, at: Vec2): void {
+  mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x));
+  mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y));
+  ctx.log(`${mover.name} slips through the shadows.`);
+}
+
 /** Distance helper exposed for spells that scale with range. */
 export function distanceBetween(a: Mage, b: Mage): number {
   return dist(a.pos, b.pos);
@@ -567,9 +702,19 @@ export function applyDot(
     stunChance?: number;
     /** Stun kind applied when `stunChance` triggers (default 'full'). */
     stunType?: StunType;
+    /** Index (in game.mages) of the mage healed for this DoT's damage each tick. */
+    lifestealToIndex?: number;
+    /** Extra dice rolled on a tick when the bearer dealt no damage last turn. */
+    bonusNoDamageSpec?: string;
+    /** Owner's team: bearer damaging this team in a cycle extends the DoT +2. */
+    extendOwnerTeam?: number;
     extend?: boolean;
   }
 ): void {
+  if (target.debuffImmune) {
+    ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
+    return;
+  }
   addOrExtendStatus(
     target.statuses,
     {
@@ -582,10 +727,69 @@ export function applyDot(
       band: opts.band,
       stunChance: opts.stunChance,
       stunType: opts.stunType,
+      lifestealToIndex: opts.lifestealToIndex,
+      bonusNoDamageSpec: opts.bonusNoDamageSpec,
+      extendOwnerTeam: opts.extendOwnerTeam,
     },
     !!opts.extend
   );
   ctx.log(`${target.name} is afflicted with ${opts.name} (${opts.duration} cycles).`);
+}
+
+/**
+ * Apply (or add a stack to) a stacking damage-over-time. Each tick rolls
+ * `perStackSpec` once per stack, so a 3-stack "1d2" DoT ticks for 3d2. A fresh
+ * cast on an already-afflicted target adds one stack (capped at `maxStacks`) and
+ * refreshes the duration; landing a stack while already at the cap only refreshes.
+ */
+export function applyStackingDot(
+  ctx: EffectContext,
+  target: Mage,
+  opts: {
+    name: string;
+    key?: string;
+    damage: DamageInstance;
+    perStackSpec: string;
+    maxStacks: number;
+    /** Duration (in cycles) the DoT is refreshed to whenever a stack lands. */
+    refreshDuration: number;
+    /** Lose a stack each cycle in which no fresh stack was applied. */
+    decayPerTick?: boolean;
+    /** Spread the DoT to the owner's enemies within this radius (px) each tick. */
+    infectRadius?: number;
+  }
+): void {
+  if (target.debuffImmune) {
+    ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
+    return;
+  }
+  const key = opts.key ?? `dot:${opts.name}`;
+  const existing = target.statuses.find(
+    (s) => s.key === key && s.kind === 'dot'
+  ) as DotStatus | undefined;
+  if (existing) {
+    const before = existing.stacks ?? 1;
+    existing.stacks = Math.min(opts.maxStacks, before + 1);
+    existing.duration = Math.max(existing.duration, opts.refreshDuration);
+    existing.freshStack = true;
+    ctx.log(`${target.name}'s ${opts.name} deepens to ${existing.stacks} stacks.`);
+    return;
+  }
+  target.statuses.push({
+    key,
+    name: opts.name,
+    kind: 'dot',
+    duration: opts.refreshDuration,
+    damage: opts.damage,
+    perStackSpec: opts.perStackSpec,
+    stacks: 1,
+    maxStacks: opts.maxStacks,
+    freshStack: true,
+    decayPerTick: opts.decayPerTick,
+    infectRadius: opts.infectRadius,
+    sourceTeam: ctx.caster.team,
+  });
+  ctx.log(`${target.name} is afflicted with ${opts.name}.`);
 }
 
 /**
@@ -603,6 +807,10 @@ export function applyDebuff(
   }
 ): void {
   if (ctx.game.isLaranegUntouchable(target)) return;
+  if (target.debuffImmune) {
+    ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
+    return;
+  }
   // A Witch Wand makes every debuff the caster lands last twice as long.
   const duration = ctx.caster.hasWitchWand() ? opts.duration * 2 : opts.duration;
   addOrExtendStatus(
@@ -648,7 +856,7 @@ export function areaDamage(
   const hits = ctx.game
     .magesInRadius(at, radius, ctx.caster)
     .filter((m) => m.team !== ctx.caster.team);
-  for (const m of hits) dealDamage(ctx, m, { ...damage }, { ...opts, aoe: true });
+  for (const m of hits) dealDamage(ctx, m, { ...damage }, { ...opts, aoe: true, noImpactFx: true });
   ctx.game.damageScarabsInRadius(
     at,
     radius,
@@ -674,7 +882,7 @@ export function coneDamage(
   const hits = ctx.game
     .magesInCone(ctx.caster.pos, toward, range, degrees, ctx.caster)
     .filter((m) => m.team !== ctx.caster.team);
-  for (const m of hits) dealDamage(ctx, m, { ...damage }, { ...opts, aoe: true });
+  for (const m of hits) dealDamage(ctx, m, { ...damage }, { ...opts, aoe: true, noImpactFx: true });
   return hits;
 }
 
@@ -688,7 +896,7 @@ export function placeTotem(
   at: Vec2,
   opts: { radius: number; damageSpec: string; slow: number; ttl?: number; lifesteal?: boolean }
 ): void {
-  ctx.game.addTotem(at, ctx.caster.team, opts);
+  ctx.game.addTotem(at, ctx.caster.team, { ...opts, ownerIndex: ctx.game.mages.indexOf(ctx.caster) });
   ctx.log(
     opts.lifesteal
       ? `${ctx.caster.name} raises a leeching totem.`
@@ -717,7 +925,7 @@ export function summonScarabs(
   at: Vec2,
   count = SCARAB.count
 ): void {
-  ctx.game.addScarabs(at, ctx.caster.team, count);
+  ctx.game.addScarabs(at, ctx.caster.team, count, ctx.game.mages.indexOf(ctx.caster));
   ctx.log(`${ctx.caster.name} looses a swarm of ${count} scarabs.`);
 }
 
@@ -735,6 +943,10 @@ export function applyAuraDot(
   }
 ): void {
   if (ctx.game.isLaranegUntouchable(target)) return;
+  if (target.debuffImmune) {
+    ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
+    return;
+  }
   addOrExtendStatus(
     target.statuses,
     {
@@ -779,6 +991,10 @@ export function applyControl(
   opts: { name: string; mode: ControlMode; duration: number }
 ): void {
   if (ctx.game.isLaranegUntouchable(target)) return;
+  if (target.debuffImmune) {
+    ctx.log(`${target.name}'s will is unassailable — the compulsion fails.`);
+    return;
+  }
   if (target.consumeWard('mind')) {
     ctx.log(`${target.name}'s Mind Dodge shrugs off the compulsion.`);
     return;
@@ -795,6 +1011,43 @@ export function applyControl(
     false
   );
   ctx.log(`${target.name} is gripped by ${opts.name} (${opts.duration} cycles).`);
+}
+
+/**
+ * Order Curse Slash: bind `bearer` to engage `entity`. Each of the bearer's
+ * next `evals` turns is judged (move toward + attack the entity); disobedience
+ * accrues stacks that detonate as `perStackSpec` slashing when the count runs
+ * out. Tracked and resolved by GameState.tickOrderJudgments.
+ */
+export function applyOrderJudgment(
+  ctx: EffectContext,
+  bearer: Mage,
+  entity: Mage,
+  opts: { evals: number; perStackSpec: string }
+): void {
+  const targetIndex = ctx.game.mages.indexOf(entity);
+  const ownerIndex = ctx.game.mages.indexOf(ctx.caster);
+  addOrExtendStatus(
+    bearer.statuses,
+    {
+      key: 'orderJudgment',
+      name: 'Order',
+      kind: 'orderJudgment',
+      // Padded past the evaluation window so tickStatuses never expires it
+      // before the judgement detonates (GameState removes it explicitly).
+      duration: opts.evals + 2,
+      targetIndex,
+      ownerIndex,
+      evalsLeft: opts.evals,
+      stacks: 0,
+      lastDist: 0,
+      attackedTarget: false,
+      observing: false,
+      perStackSpec: opts.perStackSpec,
+    },
+    false
+  );
+  ctx.log(`${bearer.name} is bound to Order \u2014 engage ${entity.name} or answer for it.`);
 }
 
 /** Grant the bearer full invisibility while standing in a shadow zone. */
@@ -855,21 +1108,44 @@ export function swapMinds(ctx: EffectContext, target: Mage, turns: number): void
 
 /**
  * Reality+Shatter: raise a wedge "reality break" that blocks all movement.
- * The wedge opens from the caster, centred on the aim direction.
+ * The wedge's apex sits at the caster; its direction and width are derived from
+ * the two aimed edges `cornerA` and `cornerB`, so the caster decides exactly where
+ * the cone points and how wide it spreads. The cone always reaches out to
+ * `opts.length` (the field's edge). Passing a null `cornerB` (AI / headless) falls
+ * back to a default 45° wedge aimed at `cornerA`. Also fires the stretched shatter
+ * animation so the visual matches the barrier.
  */
-export function placeBarrier(
+export function placeRealityWedge(
   ctx: EffectContext,
-  toward: Vec2,
-  opts: { degrees: number; range: number; ttl: number }
+  cornerA: Vec2,
+  cornerB: Vec2 | null,
+  opts: { ttl: number; length: number }
 ): void {
-  const angle = Math.atan2(toward.y - ctx.caster.y, toward.x - ctx.caster.x);
-  ctx.game.addBarrier({ x: ctx.caster.x, y: ctx.caster.y }, angle, {
+  const apex = { x: ctx.caster.x, y: ctx.caster.y };
+  const angA = Math.atan2(cornerA.y - apex.y, cornerA.x - apex.x);
+  let angle: number;
+  let halfAngle: number;
+  if (cornerB && (cornerB.x !== cornerA.x || cornerB.y !== cornerA.y)) {
+    const angB = Math.atan2(cornerB.y - apex.y, cornerB.x - apex.x);
+    // Signed shortest difference so the wedge always spans the narrow arc.
+    let diff = angB - angA;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+    angle = angA + diff / 2;
+    halfAngle = Math.min(Math.abs(diff) / 2, (85 * Math.PI) / 180);
+  } else {
+    angle = angA;
+    halfAngle = ((45 * Math.PI) / 180) / 2;
+  }
+  const range = Math.max(opts.length, 1);
+  ctx.game.addBarrier(apex, angle, {
     shape: 'wedge',
-    halfAngle: ((opts.degrees * Math.PI) / 180) / 2,
-    range: opts.range,
+    halfAngle,
+    range,
     owner: ctx.caster.team,
     ttl: opts.ttl,
   });
+  ctx.vfx?.wedge?.(apex, angle, halfAngle, range);
   ctx.log(`${ctx.caster.name} tears a wedge of reality open — no one may pass.`);
 }
 

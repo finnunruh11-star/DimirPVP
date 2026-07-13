@@ -26,8 +26,10 @@ import {
   applyDot,
   applyForget,
   applyInvisibility,
+  applyOrderJudgment,
   applyShadowTrail,
   applyShadowVeil,
+  applyStackingDot,
   applyStun,
   applyWard,
   areaDamage,
@@ -38,17 +40,20 @@ import {
   dispelVeil,
   drainDamage,
   grantExtraTurn,
-  placeBarrier,
+  heal,
+  placeRealityWedge,
   placeShadow,
   placeTotem,
   rollDice,
   summonScarabs,
   swapMinds,
+  teleport,
   twistStrike,
 } from '../effects/effects';
 import { registerSpell } from './registry';
 import type { Mage } from '../core/Mage';
 import type { EffectContext } from '../effects/effects';
+import type { DotStatus } from '../core/Status';
 
 /** Convert an abstract range number (5 / 10 / 15) to pixels. */
 const R = (units: number): number => units * RANGE_UNIT;
@@ -65,6 +70,24 @@ function enemyNear(ctx: EffectContext, at: { x: number; y: number }, radius: num
     return da - db;
   });
   return foes[0];
+}
+
+/**
+ * Nearest own shadow pool whose disc contains `at` and hasn't already been
+ * spent (its id is not in `used`). Returns null when the point lands on no
+ * fresh shadow.
+ */
+function unusedShadowAt(
+  ctx: EffectContext,
+  at: { x: number; y: number },
+  used: Set<number>
+) {
+  const pools = ctx.game
+    .shadowsOf(ctx.caster.team)
+    .filter((s) => !used.has(s.id) && Math.hypot(s.x - at.x, s.y - at.y) <= s.radius);
+  if (pools.length === 0) return null;
+  pools.sort((a, b) => Math.hypot(a.x - at.x, a.y - at.y) - Math.hypot(b.x - at.x, b.y - at.y));
+  return pools[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +469,7 @@ registerSpell({
   description:
     'Raise a totem (range 5) whose 3-range aura deals 1d3 corrosive damage and 50% slow to enemies within it each turn.',
   visual: { preset: 'burst', color: 0x9be870, size: 50, speed: 1 },
+  noCastSprite: true,
   cast(ctx) {
     if (!ctx.targetPoint) return;
     placeTotem(ctx, ctx.targetPoint, { radius: R(3), damageSpec: '1d3', slow: 0.5 });
@@ -544,11 +568,11 @@ registerSpell({
   name: 'Shatter Corrode',
   words: ['shatter', 'corrode'],
   actionType: 'main',
-  range: R(1),
+  range: R(5),
   targeting: 'enemy',
   dc: 11,
   description:
-    '1d6 shatter + 1d6 corrosive damage at point-blank (range 1), with a 25% chance to fully stun — and a root if the stun fails to land.',
+    '1d6 shatter + 1d6 corrosive damage at range 5, with a 25% chance to fully stun — and a root if the stun fails to land.',
   visual: { preset: 'projectile', color: 0xc6e08a, size: 11, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -875,6 +899,8 @@ registerSpell({
       if (foe) {
         dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Mind Pierce'), 'shadow', 'sanity'));
         dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Mind Pierce'), 'pierce', 'physical'));
+        // Show the strike land (dice + hit animation) before the next d6 roll.
+        await ctx.resolveImpacts?.();
       }
     }
     applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
@@ -944,13 +970,16 @@ registerSpell({
   targeting: 'point',
   dc: 13,
   aoe: { kind: 'cone', radius: 1400, degrees: 45 },
+  twoPointAim: true,
   description:
-    'Tear a 45° wedge of reality open along the aimed direction at unlimited range. For 3 rounds no one may move into it: run in and you are rooted until it mends; dash in and you stop dead as your dash ends.',
+    'Tear a wedge of reality open at unlimited range. Set two points — both before you roll — to steer exactly where the cone opens and how wide it spreads; it then reaches all the way to the edge of the field. For 3 rounds no one may move into it: run in and you are rooted until it mends; dash in and you stop dead as your dash ends.',
   visual: { preset: 'burst', color: 0xff5599, size: 70, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const diag = Math.hypot(FIELD.w, FIELD.h);
-    placeBarrier(ctx, ctx.targetPoint, { degrees: 45, range: diag, ttl: 3 });
+    // Both cone edges were chosen up-front (before the DC roll): targetPoint is
+    // one edge, targetPoint2 the other. The wedge reaches to the field's edge.
+    placeRealityWedge(ctx, ctx.targetPoint, ctx.targetPoint2 ?? null, { ttl: 3, length: diag });
   },
 });
 
@@ -1050,9 +1079,365 @@ registerSpell({
 });
 
 // ===========================================================================
+//  GEN EASTER-EGG SPELLS   (words: Order / Curse / Drain / Slash)
+// ---------------------------------------------------------------------------
+//  Order is the white color word. Several of these spells describe exotic
+//  battlefield-command mechanics (target-locking, action-mirroring) that the
+//  engine cannot fully model; those are approximated with the closest existing
+//  primitives (stuns, debuffs, control labels, DoTs) and noted inline.
+// ===========================================================================
+
+registerSpell({
+  name: 'Slash',
+  words: ['slash'],
+  actionType: 'main',
+  range: R(5),
+  targeting: 'point',
+  dc: 7,
+  aoe: { kind: 'cone', radius: R(5), degrees: 100 },
+  description:
+    '1d8 slashing damage in a 100° cone (range 5), then dash 2 in the aimed direction.',
+  visual: { preset: 'burst', color: 0xffe08a, size: 60, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const amount = rollDice(ctx, '1d8', 'Slash');
+    coneDamage(ctx, ctx.targetPoint, R(5), 100, dmg(amount, 'slashing', 'physical'));
+    dash(ctx, ctx.caster, { toPoint: ctx.targetPoint, distance: R(2) });
+  },
+});
+
+registerSpell({
+  name: 'Order',
+  words: ['order'],
+  actionType: 'main',
+  range: R(20),
+  targeting: 'any',
+  dc: 7,
+  description:
+    'Command an ally or enemy (range 20). Enemy: disarmed for 1 turn (no hostile actions). ' +
+    'Ally: emboldened for 2 turns — +2 damage and healing and +2 movement.',
+  visual: { preset: 'beam', color: 0xf3ecd2, size: 6, speed: 1.1 },
+  cast(ctx) {
+    const target = ctx.target ?? ctx.caster;
+    if (target.team !== ctx.caster.team) {
+      // ENEMY: "cannot take hostile actions for 1 turn". Approximated with a
+      // main-action disarm (they keep move + non-attack options); the engine
+      // cannot distinguish self/ally-only spells, so a full main-stun is used.
+      applyStun(ctx, target, { duration: 1, type: 'main' });
+    } else {
+      // ALLY / SELF: the true buff (+25% dmg & healing, +25% movespeed toward
+      // enemies, but locked to the caster's chosen target) is simplified to a
+      // flat empowerment; target-locking/retargeting flow is not modelled.
+      applyDebuff(ctx, target, {
+        name: 'Emboldened',
+        key: 'buff:order',
+        duration: 2,
+        mods: { damageDealt: 2, moveRange: R(2) },
+      });
+    }
+  },
+});
+
+registerSpell({
+  name: 'Curse Slash',
+  words: ['curse', 'slash'],
+  actionType: 'main',
+  range: R(5),
+  targeting: 'point',
+  dc: 10,
+  aoe: { kind: 'cone', radius: R(5), degrees: 120 },
+  description:
+    '1d8 slashing in a 120° cone (range 5); every enemy struck bleeds for 1d3 over 3 turns.',
+  visual: { preset: 'burst', color: 0xff6b8a, size: 64, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const amount = rollDice(ctx, '1d8', 'Curse Slash');
+    const hits = coneDamage(ctx, ctx.targetPoint, R(5), 120, dmg(amount, 'slashing', 'physical'));
+    for (const h of hits) {
+      applyStackingDot(ctx, h, {
+        name: 'Bleed',
+        key: 'dot:bleed',
+        damage: dmg(0, 'slashing', 'physical'),
+        perStackSpec: '1d3',
+        maxStacks: 6,
+        refreshDuration: 3,
+      });
+    }
+  },
+});
+
+registerSpell({
+  name: 'Slash Drain',
+  words: ['drain', 'slash'],
+  actionType: 'main',
+  range: R(5),
+  targeting: 'point',
+  dc: 11,
+  aoe: { kind: 'cone', radius: R(5), degrees: 80 },
+  description:
+    'An 80° cone (range 5): a narrow 5° core deals 1d8 slashing and lets you dash 2, while the ' +
+    'outer arc deals 1d6 corrosive. All damage heals you for the amount dealt.',
+  visual: { preset: 'burst', color: 0x9ad67a, size: 66, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const p = ctx.targetPoint;
+    const inner = ctx.game
+      .magesInCone(ctx.caster.pos, p, R(5), 5, ctx.caster)
+      .filter((m) => m.team !== ctx.caster.team);
+    const outer = ctx.game
+      .magesInCone(ctx.caster.pos, p, R(5), 80, ctx.caster)
+      .filter((m) => m.team !== ctx.caster.team);
+    const innerSet = new Set(inner);
+    for (const m of outer) {
+      if (innerSet.has(m)) {
+        // Core enemies take slashing + lifesteal (no corrosive), per the spec.
+        drainDamage(ctx, m, dmg(rollDice(ctx, '1d8', 'Slash Drain'), 'slashing', 'physical'), {
+          aoe: true,
+        });
+      } else {
+        drainDamage(ctx, m, dmg(rollDice(ctx, '1d6', 'Slash Drain'), 'corrosive', 'physical'), {
+          aoe: true,
+        });
+      }
+    }
+    if (inner.length > 0) dash(ctx, ctx.caster, { toPoint: p, distance: R(2) });
+  },
+});
+
+registerSpell({
+  name: 'Order Curse',
+  words: ['curse', 'order'],
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 11,
+  description:
+    'Bind an enemy to your will for 5 turns (range 20): they may only strike foes you have marked. ' +
+    'Approximated as a lingering compulsion that saps 2 from their damage.',
+  visual: { preset: 'beam', color: 0xc9a0ff, size: 6, speed: 1.1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    // "Can only attack targets you targeted last turn" is not enforceable by the
+    // engine; represented as a control label plus a damage-sapping debuff.
+    applyControl(ctx, ctx.target, { name: 'Ordered', mode: 'repeat', duration: 5 });
+    applyDebuff(ctx, ctx.target, {
+      name: 'Ordered',
+      key: 'debuff:ordered',
+      duration: 5,
+      mods: { damageDealt: -2 },
+    });
+  },
+});
+
+registerSpell({
+  name: 'Order Slash',
+  words: ['order', 'slash'],
+  actionType: 'main',
+  range: R(5),
+  targeting: 'point',
+  dc: 11,
+  aoe: { kind: 'cone', radius: R(5), degrees: 120 },
+  description:
+    '1d8 slashing in a 120° cone (range 5); every enemy struck is compelled to strike a target of ' +
+    'your choosing on their next turn.',
+  visual: { preset: 'burst', color: 0xf3d08a, size: 64, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const amount = rollDice(ctx, '1d8', 'Order Slash');
+    const hits = coneDamage(ctx, ctx.targetPoint, R(5), 120, dmg(amount, 'slashing', 'physical'));
+    for (const h of hits) {
+      // The "must hit a target you specify" compulsion is labelled as control;
+      // the engine does not enforce the forced target choice.
+      applyControl(ctx, h, { name: 'Commanded', mode: 'repeat', duration: 2 });
+    }
+  },
+});
+
+registerSpell({
+  name: 'Order Drain',
+  words: ['drain', 'order'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 11,
+  description:
+    'Impose your order on the battle for 4 turns: any enemy acting out of turn with you suffers ' +
+    "1d6 corrosive that heals you. Approximated as a 4-turn corrosive judgement on every foe.",
+  visual: { preset: 'nova', color: 0x9ad67a, size: 46, speed: 1.1 },
+  cast(ctx) {
+    // The true effect (mirror the caster's last action; punish deviating foes and
+    // lifesteal 100%) is not modelled; every current enemy takes a 4-turn DoT.
+    const foes = ctx.game.mages.filter((m) => m.alive && m.team !== ctx.caster.team);
+    for (const m of foes) {
+      applyDot(ctx, m, {
+        name: "Order's Judgement",
+        key: 'dot:order',
+        duration: 4,
+        damage: dmg(0, 'corrosive', 'physical'),
+        damageSpec: '1d6',
+      });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  GEN 3-WORD SPELLS
+// ---------------------------------------------------------------------------
+
+registerSpell({
+  name: 'Order Curse Drain',
+  words: ['order', 'curse', 'drain'],
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Bind an enemy in a draining curse for 4 turns (range 20). It may only repeat the next action ' +
+    'it takes (walking stays legal and the compulsion can never be forgotten). Each turn it takes ' +
+    '1d6 corrosive — plus another 1d6 if it dealt no damage last turn — and you heal for all of it. ' +
+    'Whenever it wounds one of your allies, the curse deepens by 2 turns.',
+  visual: { preset: 'beam', color: 0x9ad67a, size: 7, speed: 1.1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const ownerIndex = ctx.game.mages.indexOf(ctx.caster);
+    // The action-lock ("only repeat the next action, never forgotten, walking
+    // legal") is labelled as a compulsion; the engine does not fully enforce the
+    // restriction, but the draining curse below is modelled faithfully.
+    applyControl(ctx, ctx.target, { name: 'Ordered', mode: 'repeat', duration: 4 });
+    applyDot(ctx, ctx.target, {
+      name: "Order's Drain",
+      key: 'dot:order-curse-drain',
+      duration: 4,
+      damage: dmg(0, 'corrosive', 'physical'),
+      damageSpec: '1d6',
+      bonusNoDamageSpec: '1d6',
+      lifestealToIndex: ownerIndex,
+      extendOwnerTeam: ctx.caster.team,
+    });
+  },
+});
+
+registerSpell({
+  name: 'Curse Drain Slash',
+  words: ['curse', 'drain', 'slash'],
+  actionType: 'main',
+  range: R(5),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'cone', radius: R(5), degrees: 120 },
+  description:
+    '1d6 slashing then 1d6 corrosive in a 120° cone (range 5), and every enemy struck gains 2 ' +
+    'stacks of bleed. You then heal 1d3 for each bleed stack now on the wounded foes.',
+  visual: { preset: 'burst', color: 0xd66a9a, size: 66, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const slash = rollDice(ctx, '1d6', 'Curse Drain Slash');
+    const hits = coneDamage(ctx, ctx.targetPoint, R(5), 120, dmg(slash, 'slashing', 'physical'));
+    let leech = 0;
+    for (const h of hits) {
+      dealDamage(ctx, h, dmg(rollDice(ctx, '1d6', 'Curse Drain Slash'), 'corrosive', 'physical'), {
+        aoe: true,
+      });
+      // Two stacks of bleed (one call per stack).
+      for (let i = 0; i < 2; i++) {
+        applyStackingDot(ctx, h, {
+          name: 'Bleed',
+          key: 'dot:bleed',
+          damage: dmg(0, 'slashing', 'physical'),
+          perStackSpec: '1d3',
+          maxStacks: 6,
+          refreshDuration: 3,
+        });
+      }
+      const bleed = h.statuses.find((s) => s.key === 'dot:bleed') as DotStatus | undefined;
+      const stacks = bleed?.stacks ?? 0;
+      for (let i = 0; i < stacks; i++) leech += rollDice(ctx, '1d3', 'Curse Drain Slash — leech');
+    }
+    if (leech > 0) heal(ctx, ctx.caster, leech);
+  },
+});
+
+registerSpell({
+  name: 'Order Drain Slash',
+  words: ['drain', 'order', 'slash'],
+  actionType: 'main',
+  range: R(5),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'cone', radius: R(5), degrees: 120 },
+  description:
+    'Impose order on a 120° cone (range 5): every enemy caught is set to the lowest HP among them. ' +
+    'You heal for the greatest amount of life equalized from any single foe, then dash 2 toward them.',
+  visual: { preset: 'nova', color: 0x8ad0c4, size: 60, speed: 1.1 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const p = ctx.targetPoint;
+    const foes = ctx.game
+      .magesInCone(ctx.caster.pos, p, R(5), 120, ctx.caster)
+      .filter((m) => m.alive && m.team !== ctx.caster.team);
+    if (foes.length > 0) {
+      const minHp = Math.min(...foes.map((f) => f.hp));
+      let mostEqualized = 0;
+      for (const f of foes) {
+        if (f.hp > minHp) {
+          mostEqualized = Math.max(mostEqualized, f.hp - minHp);
+          f.hp = minHp;
+          ctx.vfx?.hit?.(f);
+          ctx.vfx?.spellEffect?.(f, 'generic');
+        }
+      }
+      ctx.log(`${ctx.caster.name} equalizes the cone to ${minHp} HP.`);
+      if (mostEqualized > 0) heal(ctx, ctx.caster, mostEqualized);
+    }
+    dash(ctx, ctx.caster, { toPoint: p, distance: R(2) });
+  },
+});
+
+registerSpell({
+  name: 'Order Curse Slash',
+  words: ['curse', 'order', 'slash'],
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Bind an enemy and name an entity it must engage (range 20). On each of its next 3 turns it ' +
+    'gains a stack for failing to move toward that entity and a stack for failing to attack it. ' +
+    'After the third turn it is dealt 2d3 slashing for every stack.',
+  visual: { preset: 'beam', color: 0xf3d08a, size: 7, speed: 1.1 },
+  async cast(ctx) {
+    if (!ctx.target) return;
+    const enemy = ctx.target;
+    // Pick the "target entity" the enemy must chase and strike. Any mage is a
+    // legal choice, so take a point and snap to the nearest mage to it.
+    const point = ctx.requestPoint
+      ? await ctx.requestPoint({
+          maxRange: R(99),
+          origin: ctx.caster.pos,
+          prompt: 'Name the entity the enemy must engage',
+        })
+      : null;
+    let entity: Mage | null = null;
+    if (point) {
+      let best = Infinity;
+      for (const m of ctx.game.mages) {
+        if (!m.alive) continue;
+        const d = (m.pos.x - point.x) ** 2 + (m.pos.y - point.y) ** 2;
+        if (d < best) {
+          best = d;
+          entity = m;
+        }
+      }
+    }
+    // Headless / no selection: default to the caster ("come at me").
+    if (!entity) entity = ctx.caster;
+    applyOrderJudgment(ctx, enemy, entity, { evals: 3, perStackSpec: '2d3' });
+  },
+});
+
+// ===========================================================================
 //  FINN'S ADDITIONS — 3-WORD SPELLS   (set: 'finns')
 //  Only available when Finn's Additions is enabled on the start screen.
-//  DC 13–15; every spell delivers one "over-the-top" payoff.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -1120,11 +1505,11 @@ registerSpell({
 });
 
 // ---------------------------------------------------------------------------
-//  SHADOW + MIND + PIERCE   —   Umbral Flurry
-//  Chain-dash through every own shadow, lancing whoever is close.
+//  SHADOW + MIND + PIERCE   —   Umbral Lance
+//  Dash-and-blink hunt: dash for the kill, then chain through shadow pools.
 // ---------------------------------------------------------------------------
 registerSpell({
-  name: 'Umbral Flurry',
+  name: 'Umbral Lance',
   words: ['shadow', 'mind', 'pierce'],
   set: 'finns',
   actionType: 'main',
@@ -1132,29 +1517,70 @@ registerSpell({
   targeting: 'self',
   dc: 13,
   description:
-    'Chain-blinkstep through up to 4 of your own shadows (nearest first), lancing the nearest enemy within range 3 of each pool for 1d6 pierce + 1d4 sanity. Each blink invites a reaction. With no shadows on the field the flurry fizzles.',
-  visual: { preset: 'projectile', color: 0x9b7bff, size: 10, speed: 1.8 },
+    'Sink a fresh shadow beneath you (spent on arrival). Then blink to any shadow you have not used yet and mark an enemy within R7: if one is in reach you dash onto them for 1d6 shadow + 1d3 mental, then may dash up to R10 in any direction. Land in another unused shadow to chain the hunt again. It ends the moment no enemy is within R7 or your dash stops outside a fresh shadow.',
+  visual: { preset: 'nova', color: 0x9b7bff, size: 56, speed: 1.4 },
   async cast(ctx) {
-    const pools = ctx.game.shadowsOf(ctx.caster.team).slice();
-    if (pools.length === 0) {
-      ctx.log(`${ctx.caster.name} reaches for shadows that aren't there — the flurry fizzles.`);
-      return;
-    }
-    pools.sort(
-      (a, b) =>
-        Math.hypot(a.x - ctx.caster.x, a.y - ctx.caster.y) -
-        Math.hypot(b.x - ctx.caster.x, b.y - ctx.caster.y)
-    );
-    for (const s of pools.slice(0, 4)) {
+    const used = new Set<number>();
+
+    // Step 1: spawn a shadow beneath the caster — it counts as already used
+    // (you cannot blink back into the pool you started on).
+    placeShadow(ctx, { x: ctx.caster.x, y: ctx.caster.y });
+    const spawned = unusedShadowAt(ctx, ctx.caster.pos, used);
+    if (spawned) used.add(spawned.id);
+
+    // Each iteration blinks to a fresh shadow (consuming it), so the field
+    // drains and the loop is bounded; the guard caps it beyond any pool count.
+    for (let step = 0; step < 24; step++) {
       if (!ctx.caster.alive) return;
-      blinkstep(ctx, ctx.caster, { toPoint: { x: s.x, y: s.y }, distance: 99999 });
-      await ctx.reactionWindow?.('Umbral Flurry — blink', ctx.caster.pos);
+
+      // Step 2a: blink to a shadow not yet teleported to (instant, no animation).
+      const click = ctx.requestPoint
+        ? await ctx.requestPoint({
+            maxRange: Math.hypot(FIELD.w, FIELD.h),
+            origin: ctx.caster.pos,
+            prompt: `${ctx.caster.name}: blink to an unused shadow — Esc to end.`,
+          })
+        : null;
+      if (!click) return;
+      const pool = unusedShadowAt(ctx, click, used);
+      if (!pool) return;
+      used.add(pool.id);
+      teleport(ctx, ctx.caster, { x: pool.x, y: pool.y });
+
+      // Step 2b: target an enemy within R7. None in reach → the spell ends.
+      const foe = ctx.requestEnemy
+        ? await ctx.requestEnemy({
+            range: R(7),
+            origin: ctx.caster.pos,
+            prompt: `${ctx.caster.name}: strike an enemy within R7 — Esc to end.`,
+          })
+        : enemyNear(ctx, ctx.caster.pos, R(7));
+      if (!foe) return;
+
+      // Dash onto the marked enemy (regular roll animation) and lance them.
+      dash(ctx, ctx.caster, { toPoint: foe.pos, distance: R(7) });
+      await ctx.reactionWindow?.('Umbral Lance — dash', ctx.caster.pos);
       if (!ctx.caster.alive) return;
-      const foe = enemyNear(ctx, ctx.caster.pos, R(3));
-      if (foe) {
-        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Umbral Flurry'), 'pierce', 'physical'));
-        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d4', 'Umbral Flurry'), 'shadow', 'sanity'));
-      }
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Umbral Lance'), 'shadow', 'physical'));
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Umbral Lance'), 'shadow', 'sanity'));
+      await ctx.resolveImpacts?.();
+      if (!ctx.caster.alive) return;
+
+      // Step 2c: an optional R10 dash in any direction.
+      const reposition = ctx.requestPoint
+        ? await ctx.requestPoint({
+            maxRange: R(10),
+            origin: ctx.caster.pos,
+            prompt: `${ctx.caster.name}: dash up to R10 in any direction — Esc to end.`,
+          })
+        : null;
+      if (!reposition) return;
+      dash(ctx, ctx.caster, { toPoint: reposition, distance: R(10) });
+      await ctx.reactionWindow?.('Umbral Lance — dash', ctx.caster.pos);
+      if (!ctx.caster.alive) return;
+
+      // Step 3: land in a fresh shadow to repeat Step 2, otherwise the spell ends.
+      if (!unusedShadowAt(ctx, ctx.caster.pos, used)) return;
     }
   },
 });
@@ -1260,14 +1686,14 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Blinkstep to the nearest shadow pool, then lance a target within range 12 for 2d6 pierce + 1d6 corrosive, leaving a corroding wound that bleeds 1d3 each turn for 3 turns. Without a shadow on the field you fire a weaker 1d6 lance from where you stand.',
+    'Blinkstep to the nearest shadow pool, then lance a target within range 12 for 2d6 corrosive + 1d6 shadow. Without a shadow on the field you strike from where you stand for the corrosive damage alone.',
   visual: { preset: 'projectile', color: 0xa8d88a, size: 11, speed: 1.8 },
   cast(ctx) {
     if (!ctx.target) return;
     const pools = ctx.game.shadowsOf(ctx.caster.team);
     if (pools.length === 0) {
-      ctx.log(`${ctx.caster.name} finds no shadow to strike from — the fang is blunted.`);
-      dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Venomfang'), 'pierce', 'physical'));
+      ctx.log(`${ctx.caster.name} finds no shadow to strike from — the fang bites shallow.`);
+      dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Venomfang'), 'corrosive', 'physical'));
       return;
     }
     let best = pools[0];
@@ -1279,14 +1705,8 @@ registerSpell({
         best = s;
     }
     blinkstep(ctx, ctx.caster, { toPoint: { x: best.x, y: best.y }, distance: 99999 });
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Venomfang'), 'pierce', 'physical'));
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Venomfang'), 'corrosive', 'physical'));
-    applyDot(ctx, ctx.target, {
-      name: 'Venomfang',
-      duration: 3,
-      damage: dmg(1, 'corrosive', 'physical'),
-      damageSpec: '1d3',
-    });
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Venomfang'), 'corrosive', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Venomfang'), 'shadow', 'physical'));
   },
 });
 
@@ -1382,21 +1802,17 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description:
-    'Bind the target in corroding chains (range 15): rooted for 4 turns, bleeding 1d3 corrosive each turn for 4 turns, and slowed by 50% even after the root breaks.',
+    'Bind the target in corroding chains (range 15): rooted for 4 turns and gnawed by a stacking rot. Each cast adds a stack (up to 4) that ticks 1d2 corrosive per stack — 1d2, 2d2, 3d2, 4d2. The rot falls off two turns after the last stack lands; re-applying at 4 stacks only refreshes it.',
   visual: { preset: 'beam', color: 0x9be870, size: 6, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
     applyStun(ctx, ctx.target, { duration: 4, type: 'movement' });
-    applyDot(ctx, ctx.target, {
+    applyStackingDot(ctx, ctx.target, {
       name: 'Rotting Shackles',
-      duration: 4,
       damage: dmg(1, 'corrosive', 'physical'),
-      damageSpec: '1d3',
-    });
-    applyDebuff(ctx, ctx.target, {
-      name: 'Etched',
-      duration: 6,
-      mods: { moveRange: -Math.round(MOVE_RANGE * 0.5) },
+      perStackSpec: '1d2',
+      maxStacks: 4,
+      refreshDuration: 3,
     });
   },
 });
@@ -1415,7 +1831,7 @@ registerSpell({
   dc: 14,
   aoe: { kind: 'circle', radius: R(3) },
   description:
-    'Detonate a 3-range blight (range 12): 1d6 shatter + 1d6 corrosive to all enemies caught, a 25% chance to fully stun each, and a corrosive plague bleeding 1d3 per turn for 3 turns.',
+    'Detonate a 3-range blight (range 12): 1d6 shatter + 1d6 corrosive to all enemies caught, a 25% chance to fully stun each, and an infectious corrosive plague. The plague ticks 1d3 per stack, stacks up to 3, spreads to nearby enemies each turn, and decays by one stack for every turn no fresh stack is applied.',
   visual: { preset: 'burst', color: 0xc6e08a, size: 62, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -1432,11 +1848,14 @@ registerSpell({
         canMiss: false,
       });
       if (ctx.rng.chance(0.25)) applyStun(ctx, m, { duration: 2, type: 'full' });
-      applyDot(ctx, m, {
+      applyStackingDot(ctx, m, {
         name: 'Blight',
-        duration: 3,
         damage: dmg(1, 'corrosive', 'physical'),
-        damageSpec: '1d3',
+        perStackSpec: '1d3',
+        maxStacks: 3,
+        refreshDuration: 99,
+        decayPerTick: true,
+        infectRadius: R(3),
       });
     }
   },
