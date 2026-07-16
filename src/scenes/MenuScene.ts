@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH, LOADOUT_SIZE, TEXT } from '../config/constants';
 import { WORDS, WORD_ORDER, type WordId } from '../core/Words';
+import { MAGE_CLASSES, MAGE_CLASS_DEFS, DEFAULT_MAGE_CLASS, toMageClass, type MageClass } from '../core/Classes';
 import { Net, type NetRole, type NetMessage } from '../net/Net';
 
 export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun';
@@ -19,11 +20,18 @@ export interface SeatConfig {
   team: number;
   isAI: boolean;
   loadout: WordId[];
+  /** Chosen class (Objects / Life / Hexcraft). Defaults applied downstream. */
+  mageClass?: MageClass;
 }
 
 export interface MatchConfig {
   mode: MatchMode;
   loadouts: [WordId[], WordId[]];
+  /**
+   * Classes for the classic two-mage layout (parallel to {@link loadouts}).
+   * N-player matches carry the class per seat in {@link seats} instead.
+   */
+  classes?: [MageClass, MageClass];
   /**
    * Optional explicit seat list for N-player matches (up to 4). When present it
    * fully describes every combatant and their team; when absent the classic
@@ -77,10 +85,16 @@ export class MenuScene extends Phaser.Scene {
   private genActive = false;
   /** Enabled item sets for the draft (host decides in online play). */
   private itemSets: ItemSetSelection = { original: true, finns: false, dlc: false };
+  /** The class the seat currently drafting has chosen. */
+  private selectedClass: MageClass = DEFAULT_MAGE_CLASS;
+  /** Collected class per seat while drafting a local match (parallel to loadouts). */
+  private draftClasses: MageClass[] = [];
 
   private wordCells: { rect: Phaser.GameObjects.Rectangle; word: WordId; label: Phaser.GameObjects.Text }[] = [];
   private titleText!: Phaser.GameObjects.Text;
   private hintText!: Phaser.GameObjects.Text;
+  private classTitle!: Phaser.GameObjects.Text;
+  private classBtns: { btn: Phaser.GameObjects.Text; cls: MageClass }[] = [];
   private modeAiBtn!: Phaser.GameObjects.Text;
   private modeHsBtn!: Phaser.GameObjects.Text;
   private modeOnlineBtn!: Phaser.GameObjects.Text;
@@ -147,6 +161,18 @@ export class MenuScene extends Phaser.Scene {
         .setOrigin(0.5);
       rect.on('pointerdown', () => this.toggleWord(word));
       this.wordCells.push({ rect, word, label });
+    });
+
+    // Class selector (right column) — each drafting seat picks its own class.
+    // Shown on every draft screen (unlike the first-screen-only setup controls).
+    const classX = GAME_WIDTH / 2 + 545;
+    this.classTitle = this.add
+      .text(classX, 205, 'Class', { fontSize: '18px', color: TEXT.warn, fontStyle: 'bold' })
+      .setOrigin(0.5);
+    MAGE_CLASSES.forEach((cls, i) => {
+      const btn = this.makeButton(classX, 250 + i * 58, MAGE_CLASS_DEFS[cls].label, () => this.setClass(cls));
+      btn.setFontSize(17).setPadding(14, 8);
+      this.classBtns.push({ btn, cls });
     });
 
     // Mode buttons.
@@ -359,10 +385,24 @@ export class MenuScene extends Phaser.Scene {
   private resetDraft(): void {
     this.draftIndex = 0;
     this.draftLoadouts = [];
+    this.draftClasses = [];
     this.selected = [];
+    this.selectedClass = DEFAULT_MAGE_CLASS;
     this.nadActive = false;
     this.katActive = false;
     this.genActive = false;
+  }
+
+  /** Pick the class for the seat currently drafting. */
+  private setClass(cls: MageClass): void {
+    if (this.connecting) return;
+    this.selectedClass = cls;
+    this.refresh();
+  }
+
+  /** A random class for an AI-filled seat (host broadcasts these to peers). */
+  private randomClass(): MageClass {
+    return MAGE_CLASSES[Math.floor(Math.random() * MAGE_CLASSES.length)];
   }
 
   private toggleWord(word: WordId): void {
@@ -411,6 +451,14 @@ export class MenuScene extends Phaser.Scene {
       cell.rect.setFillStyle(on ? 0x2c2c4a : 0x1a1a2a);
       cell.rect.setStrokeStyle(on ? 4 : 2, on ? COLORS.selected : WORDS[cell.word].color);
     }
+
+    // Class selector: highlight the drafting seat's chosen class.
+    for (const { btn, cls } of this.classBtns) {
+      const on = this.selectedClass === cls;
+      btn.setStyle({ backgroundColor: on ? '#3a3a66' : '#23233a' });
+      btn.setColor(on ? '#ffffff' : TEXT.dim);
+    }
+    this.classTitle.setText(`Class: ${MAGE_CLASS_DEFS[this.selectedClass].label}`);
 
     const aiOn = this.mode === 'ai';
     const hsOn = this.mode === 'hotseat';
@@ -502,9 +550,11 @@ export class MenuScene extends Phaser.Scene {
     const humans = this.humanSeats();
     const seat = humans[this.draftIndex];
     this.draftLoadouts[seat] = [...this.selected];
+    this.draftClasses[seat] = this.selectedClass;
     if (this.draftIndex < humans.length - 1) {
       this.draftIndex++;
       this.selected = [];
+      this.selectedClass = DEFAULT_MAGE_CLASS;
       this.nadActive = false;
       this.katActive = false;
       this.genActive = false;
@@ -522,11 +572,13 @@ export class MenuScene extends Phaser.Scene {
       const human = humanSet.has(s);
       const loadout =
         human && this.draftLoadouts[s]?.length ? this.draftLoadouts[s] : this.randomAILoadout();
-      seats.push({ name: this.seatName(s, human), team: this.teamOf(s), isAI: !human, loadout });
+      const mageClass = human ? (this.draftClasses[s] ?? DEFAULT_MAGE_CLASS) : this.randomClass();
+      seats.push({ name: this.seatName(s, human), team: this.teamOf(s), isAI: !human, loadout, mageClass });
     }
     const config: MatchConfig = {
       mode: this.mode,
       loadouts: [seats[0].loadout, seats[1]?.loadout ?? seats[0].loadout],
+      classes: [seats[0].mageClass ?? DEFAULT_MAGE_CLASS, seats[1]?.mageClass ?? DEFAULT_MAGE_CLASS],
       seats,
       itemSets: { ...this.itemSets },
     };
@@ -544,7 +596,12 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private start(l1: WordId[], l2: WordId[]): void {
-    const config: MatchConfig = { mode: this.mode, loadouts: [l1, l2], itemSets: { ...this.itemSets } };
+    const config: MatchConfig = {
+      mode: this.mode,
+      loadouts: [l1, l2],
+      classes: [this.selectedClass, this.randomClass()],
+      itemSets: { ...this.itemSets },
+    };
     this.scene.start('Game', config);
   }
 
@@ -574,6 +631,7 @@ export class MenuScene extends Phaser.Scene {
     if (url == null) return;
 
     const myLoadout = [...this.selected];
+    const myClass = this.selectedClass;
     this.connecting = true;
     this.refresh();
 
@@ -602,17 +660,22 @@ export class MenuScene extends Phaser.Scene {
       await this.waitFor(net, 'ready');
 
       // Every human announces their loadout; seat 0 assembles the match.
-      net.send({ k: 'hello', seat: mySeat, loadout: myLoadout });
+      net.send({ k: 'hello', seat: mySeat, loadout: myLoadout, class: myClass });
 
       let config: MatchConfig;
       if (mySeat === 0) {
         // Host: gather human loadouts (seats 0..roomHumans-1), then append AI.
         const loadouts = new Map<number, WordId[]>();
+        const classes = new Map<number, MageClass>();
         loadouts.set(0, myLoadout);
+        classes.set(0, myClass);
         while (loadouts.size < roomHumans) {
           const hello = await this.waitFor(net, 'hello');
           const seat = Number(hello.seat) | 0;
-          if (seat >= 0 && seat < roomHumans) loadouts.set(seat, this.sanitizeLoadout(hello.loadout));
+          if (seat >= 0 && seat < roomHumans) {
+            loadouts.set(seat, this.sanitizeLoadout(hello.loadout));
+            classes.set(seat, toMageClass(hello.class));
+          }
         }
         // Humans take seats 0..roomHumans-1; the rest of the table is AI.
         const totalSeats = Math.max(roomHumans, Math.min(4, this.seatCount));
@@ -624,6 +687,7 @@ export class MenuScene extends Phaser.Scene {
             team: this.teamOf(s),
             isAI: !human,
             loadout: human ? (loadouts.get(s) ?? this.randomAILoadout()) : this.randomAILoadout(),
+            mageClass: human ? (classes.get(s) ?? DEFAULT_MAGE_CLASS) : this.randomClass(),
           });
         }
         const seed = (Math.floor(Math.random() * 0x7fffffff) + 1) | 0;
@@ -733,6 +797,7 @@ export class MenuScene extends Phaser.Scene {
         team: typeof v.team === 'number' && Number.isFinite(v.team) ? v.team : s + 1,
         isAI: v.isAI === true,
         loadout: this.sanitizeLoadout(v.loadout),
+        mageClass: toMageClass(v.mageClass),
       });
     }
     return out;

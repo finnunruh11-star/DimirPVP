@@ -13,6 +13,7 @@ import type { DamageInstance, DamageClass, DamageType } from '../core/Damage';
 import type { Dice } from '../core/Dice';
 import type { GameState } from '../core/GameState';
 import type { Mage } from '../core/Mage';
+import type { MageClass } from '../core/Classes';
 import { getItem } from '../core/Items';
 import {
   addOrExtendStatus,
@@ -111,6 +112,13 @@ export interface EffectContext {
   /** Visual feedback bridge (provided by the scene; absent in headless logic). */
   vfx?: VfxSink | null;
   /**
+   * True when this cast rolled a natural 20 on its success check — a critical.
+   * Direct damage is doubled (see {@link dealDamage}); totems, zones and other
+   * duration/area effects double their radius / duration instead (see
+   * {@link critScale}). Absent for effects that never roll (movement, ticks).
+   */
+  crit?: boolean;
+  /**
    * Ask the player (or AI) to pick an extra point mid-resolution. Absent in
    * headless logic, so always call it as `await ctx.requestPoint?.(...)`.
    */
@@ -135,6 +143,39 @@ export interface EffectContext {
 // -----------------------------------------------------------------------------
 //  DICE
 // -----------------------------------------------------------------------------
+
+/**
+ * Double a duration / radius / range on a critical cast (natural-20 success),
+ * otherwise return it unchanged. Damage doubling is handled directly in
+ * {@link dealDamage}; this covers totems, zones, damage-over-time, control and
+ * any other effect whose potency is measured in cycles or pixels.
+ */
+export function critScale(ctx: EffectContext, value: number): number {
+  return ctx.crit ? value * 2 : value;
+}
+
+/**
+ * CLASS-SPELL DISPATCH. Pick the effect variant that matches the caster's class
+ * (Objects / Life / Hexcraft). "Class spells" — word combos of only nouns or
+ * only verbs (see {@link isClassSpell}) — resolve their effect toward the
+ * caster's class, so their `cast` bodies branch through this helper:
+ *
+ *   cast(ctx) {
+ *     byClass(ctx, {
+ *       objects:  (c) => summonWeapon(c),
+ *       life:     (c) => summonScarabs(c, c.targetPoint),
+ *       hexcraft: (c) => placeField(c),
+ *     });
+ *   }
+ *
+ * No new spells are wired yet; this is the seam future class spells plug into.
+ */
+export function byClass<T>(
+  ctx: EffectContext,
+  variants: Record<MageClass, (ctx: EffectContext) => T>
+): T {
+  return variants[ctx.caster.mageClass](ctx);
+}
 
 /**
  * Roll dice from a spec string ("2d6+1", "d20", "3d8"). Logs the result and
@@ -223,7 +264,11 @@ export function dealDamage(
     return 0;
   }
 
-  let amount = damage.amount + ctx.caster.modifier('damageDealt') + target.modifier('damageTaken');
+  // A critical cast (natural-20 success) doubles the raw damage of this hit.
+  let amount =
+    (ctx.crit ? damage.amount * 2 : damage.amount) +
+    ctx.caster.modifier('damageDealt') +
+    target.modifier('damageTaken');
 
   // Shadow empowerment: casting from within a shadow, or striking a target that
   // stands in one, deals extra damage.
@@ -505,19 +550,20 @@ export function applyInvisibility(
   target: Mage,
   opts: { duration: number; mode: InvisMode; extend?: boolean }
 ): void {
+  const duration = critScale(ctx, opts.duration);
   addOrExtendStatus(
     target.statuses,
     {
       key: 'invisibility',
       name: opts.mode === 'full' ? 'Unseen' : 'Veiled',
       kind: 'invisibility',
-      duration: opts.duration,
+      duration,
       mode: opts.mode,
     },
     !!opts.extend
   );
   ctx.log(
-    `${target.name} becomes ${opts.mode === 'full' ? 'fully invisible' : 'hard to see'} (${opts.duration} cycles).`
+    `${target.name} becomes ${opts.mode === 'full' ? 'fully invisible' : 'hard to see'} (${duration} cycles).`
   );
   ctx.vfx?.spellEffect?.(target, 'vanish');
 }
@@ -548,18 +594,19 @@ export function applyStun(
     movement: 'Rooted',
     full: 'Stunned',
   };
+  const duration = critScale(ctx, opts.duration);
   addOrExtendStatus(
     target.statuses,
     {
       key: `stun:${opts.type}`,
       name: names[opts.type],
       kind: 'stun',
-      duration: opts.duration,
+      duration,
       stunType: opts.type,
     },
     !!opts.extend
   );
-  ctx.log(`${target.name} is ${names[opts.type].toLowerCase()} (${opts.duration} cycles).`);
+  ctx.log(`${target.name} is ${names[opts.type].toLowerCase()} (${duration} cycles).`);
 }
 
 // -----------------------------------------------------------------------------
@@ -664,7 +711,7 @@ export function distanceBetween(a: Mage, b: Mage): number {
  * a shadow suffers (or deals) extra damage.
  */
 export function placeShadow(ctx: EffectContext, at: Vec2, ttl?: number): void {
-  ctx.game.addShadow(at, ctx.caster.team, ttl);
+  ctx.game.addShadow(at, ctx.caster.team, ttl != null ? critScale(ctx, ttl) : ttl);
   ctx.log(`${ctx.caster.name} conjures a pool of shadow.`);
 }
 
@@ -715,13 +762,14 @@ export function applyDot(
     ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
     return;
   }
+  const duration = critScale(ctx, opts.duration);
   addOrExtendStatus(
     target.statuses,
     {
       key: opts.key ?? `dot:${opts.name}`,
       name: opts.name,
       kind: 'dot',
-      duration: opts.duration,
+      duration,
       damage: opts.damage,
       damageSpec: opts.damageSpec,
       band: opts.band,
@@ -733,7 +781,7 @@ export function applyDot(
     },
     !!opts.extend
   );
-  ctx.log(`${target.name} is afflicted with ${opts.name} (${opts.duration} cycles).`);
+  ctx.log(`${target.name} is afflicted with ${opts.name} (${duration} cycles).`);
 }
 
 /**
@@ -764,13 +812,14 @@ export function applyStackingDot(
     return;
   }
   const key = opts.key ?? `dot:${opts.name}`;
+  const refreshDuration = critScale(ctx, opts.refreshDuration);
   const existing = target.statuses.find(
     (s) => s.key === key && s.kind === 'dot'
   ) as DotStatus | undefined;
   if (existing) {
     const before = existing.stacks ?? 1;
     existing.stacks = Math.min(opts.maxStacks, before + 1);
-    existing.duration = Math.max(existing.duration, opts.refreshDuration);
+    existing.duration = Math.max(existing.duration, refreshDuration);
     existing.freshStack = true;
     ctx.log(`${target.name}'s ${opts.name} deepens to ${existing.stacks} stacks.`);
     return;
@@ -779,7 +828,7 @@ export function applyStackingDot(
     key,
     name: opts.name,
     kind: 'dot',
-    duration: opts.refreshDuration,
+    duration: refreshDuration,
     damage: opts.damage,
     perStackSpec: opts.perStackSpec,
     stacks: 1,
@@ -812,7 +861,7 @@ export function applyDebuff(
     return;
   }
   // A Witch Wand makes every debuff the caster lands last twice as long.
-  const duration = ctx.caster.hasWitchWand() ? opts.duration * 2 : opts.duration;
+  const duration = critScale(ctx, ctx.caster.hasWitchWand() ? opts.duration * 2 : opts.duration);
   addOrExtendStatus(
     target.statuses,
     {
@@ -896,7 +945,14 @@ export function placeTotem(
   at: Vec2,
   opts: { radius: number; damageSpec: string; slow: number; ttl?: number; lifesteal?: boolean }
 ): void {
-  ctx.game.addTotem(at, ctx.caster.team, { ...opts, ownerIndex: ctx.game.mages.indexOf(ctx.caster) });
+  // A critical cast widens the totem and (if it expires) makes it linger twice
+  // as long.
+  const scaled = {
+    ...opts,
+    radius: critScale(ctx, opts.radius),
+    ttl: opts.ttl != null ? critScale(ctx, opts.ttl) : opts.ttl,
+  };
+  ctx.game.addTotem(at, ctx.caster.team, { ...scaled, ownerIndex: ctx.game.mages.indexOf(ctx.caster) });
   ctx.log(
     opts.lifesteal
       ? `${ctx.caster.name} raises a leeching totem.`
@@ -953,15 +1009,15 @@ export function applyAuraDot(
       key: `auraDot:${opts.name}`,
       name: opts.name,
       kind: 'auraDot',
-      duration: opts.duration,
-      radius: opts.radius,
+      duration: critScale(ctx, opts.duration),
+      radius: critScale(ctx, opts.radius),
       damageSpec: opts.damageSpec,
       type: opts.type,
       damageClass: opts.damageClass ?? 'physical',
     },
     false
   );
-  ctx.log(`${target.name} is wreathed in ${opts.name} (${opts.duration} cycles).`);
+  ctx.log(`${target.name} is wreathed in ${opts.name} (${critScale(ctx, opts.duration)} cycles).`);
 }
 
 /** Grant a consumable ward that negates the next matching hit. */
@@ -976,7 +1032,7 @@ export function applyWard(
       key: `ward:${opts.against}`,
       name: opts.name,
       kind: 'ward',
-      duration: opts.duration,
+      duration: critScale(ctx, opts.duration),
       against: opts.against,
     },
     false
@@ -999,18 +1055,19 @@ export function applyControl(
     ctx.log(`${target.name}'s Mind Dodge shrugs off the compulsion.`);
     return;
   }
+  const duration = critScale(ctx, opts.duration);
   addOrExtendStatus(
     target.statuses,
     {
       key: 'control',
       name: opts.name,
       kind: 'control',
-      duration: opts.duration,
+      duration,
       mode: opts.mode,
     },
     false
   );
-  ctx.log(`${target.name} is gripped by ${opts.name} (${opts.duration} cycles).`);
+  ctx.log(`${target.name} is gripped by ${opts.name} (${duration} cycles).`);
 }
 
 /**

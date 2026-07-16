@@ -80,6 +80,13 @@ export interface Spell {
   visual?: SpellVisual;
 
   /**
+   * Suppress the automatic natural-20 critical for this spell. Class-spell rule:
+   * only Objects-class variants may crit; Life and Hexcraft variants set this so
+   * a natural 20 grants success but never doubles their potency.
+   */
+  noCrit?: boolean;
+
+  /**
    * Suppress the automatic ground cast-sprite (the poison/shatter sheet painted
    * where a point spell lands). Set on spells whose cast leaves a persistent
    * object (e.g. a totem) rather than an instant elemental splash.

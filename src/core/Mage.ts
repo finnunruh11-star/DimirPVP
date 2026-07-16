@@ -21,6 +21,8 @@ import { WORDS } from './Words';
 import type { Dice } from './Dice';
 import type { ColorProfile } from './Colors';
 import { computeColorProfile } from './Colors';
+import type { MageClass } from './Classes';
+import { DEFAULT_MAGE_CLASS } from './Classes';
 import type { DieResult, StatKey } from './Stats';
 import { STAT_ORDER } from './Stats';
 import type { DamageType, DamageClass } from './Damage';
@@ -59,6 +61,12 @@ export class Mage {
 
   /** Color identity derived from the loadout (primary / secondary tiers). */
   profile: ColorProfile;
+
+  /**
+   * Chosen class (Objects / Life / Hexcraft). Picks the second colour-ability
+   * and aligns "class spells" (all-noun or all-verb combos). See core/Classes.ts.
+   */
+  mageClass: MageClass;
 
   /** Mana pool: powers word-spells and color abilities. */
   mana: number;
@@ -180,15 +188,38 @@ export class Mage {
   /** Larger collision body (px) so bulky creatures block passage. */
   intrinsicBodyRadius?: number;
   /** Intrinsic (weaponless) melee strike for creatures. */
-  intrinsicMelee?: { spec: string; type: DamageType; damageClass: DamageClass };
+  intrinsicMelee?: {
+    spec: string;
+    type: DamageType;
+    damageClass: DamageClass;
+    /** Optional rider applied to the victim after a successful intrinsic hit. */
+    onHit?: (ctx: import('../effects/effects').EffectContext, target: Mage) => void;
+  };
   /** Reach (px) of the intrinsic melee, so bulky bodies can still connect. */
   intrinsicMeleeReach?: number;
+  /** Minimum reach (px) of the intrinsic melee (e.g. an archer that can't fire point-blank). */
+  intrinsicMeleeMin?: number;
   /** Spawned mid-combat (e.g. a wisp split): skip its first upcoming turn. */
   justSpawned = false;
   /** Immune to every debuff / DoT / stun / control effect (Lich). */
   debuffImmune = false;
   /** Boss creature marker (unique, tougher, special death rules). */
   isBoss = false;
+
+  // ---- Life-class summons ----------------------------------------------------
+  // A summon is a real mage (so it reuses movement, items, melee, rendering and
+  // damage) but does NOT take its own initiative turn and never counts toward a
+  // team's victory / defeat. Its owner drives it with the "Command" bonus action.
+  /** True if this mage is a Life-class summon (controllable, doesn't win/lose). */
+  isSummon = false;
+  /** Index (in game.mages) of the mage that summoned this unit. */
+  summonOwnerIndex?: number;
+  /** Which kind of summon this is (e.g. 'ghost', 'archer', 'binder'). */
+  summonKind?: string;
+  /** Summon's standing order, set by Command; drives its autonomous behaviour. */
+  summonOrder?: { kind: 'move' | 'attack' | 'follow'; point?: Vec2; targetIndex?: number };
+  /** A summon's own move budget (range-units per command step). */
+  summonMoveUnits?: number;
   /** Lich: a one-time revive at 50% max HP is still available. */
   reviveAtHalfAvailable = false;
   /**
@@ -305,6 +336,7 @@ export class Mage {
     team: number;
     position: Vec2;
     loadout: WordId[];
+    mageClass?: MageClass;
   }) {
     this.name = opts.name;
     this.isAI = opts.isAI;
@@ -317,6 +349,7 @@ export class Mage {
     this.sanity = START_SANITY;
     this.loadout = [...opts.loadout];
     this.profile = computeColorProfile(this.loadout);
+    this.mageClass = opts.mageClass ?? DEFAULT_MAGE_CLASS;
     // Blue primary tier grants every word one extra charge.
     const bonusCharge = this.profile.bluePrimaryTier ? 1 : 0;
     for (const w of this.loadout) this.charges[w] = WORDS[w].charges + bonusCharge;
@@ -487,9 +520,9 @@ export class Mage {
   }
 
   /**
-   * Swamprun rest: restore half of max mana, max HP and each word's max charges.
-   * When a half is fractional the direction is a 50/50 coin flip on the seeded
-   * RNG (so all peers agree). Vitals never exceed their maxima.
+   * Swamprun rest: restore half of max mana, max HP, sanity and each word's max
+   * charges. When a half is fractional the direction is a 50/50 coin flip on the
+   * seeded RNG (so all peers agree). Vitals never exceed their maxima.
    */
   swamprunRest(rng: Dice): void {
     const half = (v: number): number => {
@@ -499,6 +532,7 @@ export class Mage {
     };
     this.gainMana(half(this.maxMana));
     this.hp = Math.min(this.maxHp, this.hp + half(this.maxHp));
+    if (this.maxSanity > 0) this.sanity = Math.min(this.maxSanity, this.sanity + half(this.maxSanity));
     const bonusCharge = this.profile.bluePrimaryTier ? 1 : 0;
     for (const w of this.loadout) {
       const max = WORDS[w].charges + bonusCharge;
@@ -956,6 +990,8 @@ export class Mage {
 
   /** Carry capacity (kg), scaling with Strength. Bag of Holding lifts the cap. */
   carryCap(): number {
+    // Summons ignore weight entirely (their single-item rule limits them instead).
+    if (this.isSummon) return Infinity;
     if (this.hasBagOfHolding()) return Infinity;
     return carryCapacity(this.statStrength);
   }
@@ -963,6 +999,30 @@ export class Mage {
   /** Can this mage take on `extraKg` more weight? */
   canCarry(extraKg: number): boolean {
     return this.carriedWeight() + extraKg <= this.carryCap();
+  }
+
+  /**
+   * Summons carry a single item of substance plus any weightless extras it needs
+   * to use (e.g. a bow's arrows). True when taking `id` would break that rule.
+   */
+  summonItemLimited(id: ItemId): boolean {
+    if (!this.isSummon) return false;
+    if (getItem(id).weight <= 0) return false; // weightless extras are unlimited
+    const weighted = [...this.equippedItems(), ...this.bag].filter(
+      (x) => getItem(x).weight > 0
+    ).length;
+    return weighted >= 1;
+  }
+
+  /**
+   * True when the active weapon needs arrows and none are available. Summons get
+   * their ammo for free (the weightless extra needed to wield a held bow).
+   */
+  outOfAmmo(): boolean {
+    const w = this.activeWeapon();
+    if (!w?.usesArrows) return false;
+    if (this.isSummon) return false;
+    return this.arrows <= 0;
   }
 
   /** Hand items that are not wands — two of these block spellcasting. */

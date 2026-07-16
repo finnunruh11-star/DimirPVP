@@ -2,3 +2,38 @@ cloudflared tunnel --url http://localhost:8787
 npm run dev
 npm run build
 npm run relay
+
+
+============================================================
+ LAN PLAY  (same WiFi / network, no cloudflared needed)
+============================================================
+The relay serves the game AND the WebSocket on the same port
+(0.0.0.0:8787), so the other player just opens your PC's local
+IP in their browser and the lobby auto-connects. No tunnel.
+
+HOST (one player only):
+  1. npm run build              # produces ../dist (relay serves this)
+  2. npm run relay              # listens on 0.0.0.0:8787
+  3. Find your LAN IP:
+       ipconfig
+     Look for "IPv4 Address" under your active Wi-Fi/Ethernet
+     adapter, e.g. 192.168.1.42
+  4. First run: Windows Firewall pops up -> allow access on
+     "Private networks". If you missed it, open the port once:
+       netsh advfirewall firewall add rule name="PVP DIMIR" dir=in action=allow protocol=TCP localport=8787
+
+BOTH PLAYERS:
+  5. Open in a browser:  http://<HOST_LAN_IP>:8787
+       (host can also use  http://localhost:8787 )
+       e.g.  http://192.168.1.42:8787
+  6. Enter the SAME room code in the online lobby and connect.
+
+Notes:
+  - Use "npm run relay" (serves the built game), NOT "npm run dev",
+    so both players share one origin and the WS pairs correctly.
+  - If it won't connect: confirm both devices are on the same
+    network (not a "Guest"/isolated Wi-Fi), and that the firewall
+    rule above is allowed for TCP port 8787.
+  - Change the port if 8787 is taken:  PORT=9000 npm run relay
+    (PowerShell:  $env:PORT=9000; npm run relay ) then open
+    http://<HOST_LAN_IP>:9000

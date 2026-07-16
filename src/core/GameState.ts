@@ -94,6 +94,13 @@ export class GameState {
   /** The initiative roll each mage made (for display / logging). */
   initiativeRolls: number[] = [];
 
+  /**
+   * Set true for the duration of a single spell resolution when that spell's
+   * success check rolled a natural 20 — a critical. The scene toggles it around
+   * {@link effectContext} so the effect helpers double damage / area / duration.
+   */
+  critThisCast = false;
+
   /** Active shadow zones placed by the Shadow word. */
   shadows: ShadowZone[] = [];
 
@@ -177,6 +184,28 @@ export class GameState {
     this.initiativeRolls[idx] = roll + m.effectiveDex();
   }
 
+  /**
+   * Add a Life-class summon controlled by `owner`. Unlike {@link addMage} the
+   * summon is NOT inserted into the initiative order (it never takes an
+   * autonomous turn) and is excluded from victory / defeat bookkeeping. Its
+   * owner drives it with the Command bonus action. Returns the summon.
+   */
+  spawnSummon(m: Mage, owner: Mage, kind: string): Mage {
+    m.isSummon = true;
+    m.summonKind = kind;
+    m.team = owner.team;
+    m.summonOwnerIndex = this.mages.indexOf(owner);
+    this.mages.push(m);
+    this.initiativeRolls[this.mages.length - 1] = 0;
+    return m;
+  }
+
+  /** Living summons owned by `owner`. */
+  summonsOf(owner: Mage): Mage[] {
+    const idx = this.mages.indexOf(owner);
+    return this.mages.filter((s) => s.isSummon && s.alive && s.summonOwnerIndex === idx);
+  }
+
   // ---- Accessors ------------------------------------------------------------
 
   get current(): Mage {
@@ -226,7 +255,7 @@ export class GameState {
   /** Distinct teams that still have at least one living mage. */
   teamsAlive(): number[] {
     const teams = new Set<number>();
-    for (const m of this.mages) if (m.alive) teams.add(m.team);
+    for (const m of this.mages) if (m.alive && !m.isSummon) teams.add(m.team);
     return [...teams];
   }
 
@@ -442,7 +471,7 @@ export class GameState {
     // Co-op survival: the run is lost only once every party member has fallen.
     // Clearing a wave (no foes left) is NOT a game over — the next wave spawns.
     if (this.coopSurvivalTeam != null) {
-      return !this.mages.some((m) => m.alive && m.team === this.coopSurvivalTeam);
+      return !this.mages.some((m) => m.alive && !m.isSummon && m.team === this.coopSurvivalTeam);
     }
     return this.teamsAlive().length <= 1;
   }
@@ -1557,6 +1586,7 @@ export class GameState {
       rng: this.rng,
       log: (m) => this.log(m),
       vfx: this.vfxSink ?? null,
+      crit: this.critThisCast,
       requestPoint: this.subTargeter
         ? (opts) => this.subTargeter!.requestPoint(source, opts)
         : undefined,
@@ -1613,12 +1643,12 @@ export class GameState {
     const weapon = source.activeWeapon();
     // A Needle of Serenity can permanently disable the unarmed strike itself.
     if (!weapon && source.unarmedBanned) return false;
-    // Bows need ammunition to fire.
-    if (weapon?.usesArrows && source.arrows <= 0) return false;
+    // Bows need ammunition to fire (summons get theirs for free).
+    if (source.outOfAmmo()) return false;
     // A crossbow that has just fired cannot shoot again until it reloads.
     if (weapon?.toHit && source.reloadTurns > 0) return false;
     const reach = weapon ? weapon.rangePx : source.intrinsicMeleeReach ?? MELEE_RANGE;
-    const min = weapon?.minRangePx ?? 0;
+    const min = weapon?.minRangePx ?? source.intrinsicMeleeMin ?? 0;
     const d = dist(source.pos, target.pos);
     return d <= reach && d >= min;
   }
@@ -1676,6 +1706,7 @@ export class GameState {
       drop.owner !== source.team ||
       !source.hasFreeHand() ||
       !source.canCarry(def.weight) ||
+      source.summonItemLimited(drop.itemId) ||
       dist(source.pos, { x: drop.x, y: drop.y }) > PICKUP_RANGE
     ) {
       return false;
@@ -2170,6 +2201,7 @@ export class GameState {
           if (amount > 0) {
             dealDamage(ictx, target, dmg(amount, im.type, im.damageClass), {});
           }
+          if (target.alive) im.onHit?.(ictx, target);
           return;
         }
         // Arm a single Greed gain for this attack (Gambler's Blade dedup).
@@ -2236,8 +2268,8 @@ export class GameState {
           } else {
             game.log(`${source.name} attacks (d20 ${rolls.join('+')} + dex ${dex} + ${bonus}).`);
           }
-          // Bows consume one arrow per shot (hit or miss).
-          if (w.usesArrows) {
+          // Bows consume one arrow per shot (hit or miss); summons never run dry.
+          if (w.usesArrows && !source.isSummon) {
             source.arrows = Math.max(0, source.arrows - 1);
             game.log(`${source.name} looses an arrow (${source.arrows} left).`);
           }
@@ -2276,12 +2308,31 @@ export class GameState {
               })
             : 0;
         // Torch / lantern swing (an unarmed strike while holding a light source):
-        // a swing through a light-weak foe sears it for 5 true damage, and a
-        // torch (not the everburning lantern) may be snuffed against a solid foe.
+        // the swing sweeps a 180° arc at melee reach, catching every foe in front.
+        // A swing through a light-weak foe sears it for 5 true damage, and a torch
+        // (not the everburning lantern) may be snuffed against a solid foe.
         if (!w && source.heldLightSourceId()) {
-          if (target.alive && target.isLightWeak()) {
-            dealDamage(ctx, target, dmg(5, 'light', 'physical'), { canMiss: false, trueDamage: true });
-            game.log(`${source.name}'s light source burns ${target.name} for 5 true damage.`);
+          const searLightWeak = (foe: Mage): void => {
+            if (foe.alive && foe.isLightWeak()) {
+              const lctx = game.effectContext(source, foe, null);
+              dealDamage(lctx, foe, dmg(5, 'light', 'physical'), { canMiss: false, trueDamage: true });
+              game.log(`${source.name}'s light source burns ${foe.name} for 5 true damage.`);
+            }
+          };
+          searLightWeak(target);
+          // Sweep: the same swing also strikes any other foe in the 180° arc.
+          const swept = game
+            .magesInCone(source.pos, target.pos, MELEE_RANGE, CLEAVE_DEGREES, source)
+            .filter((m) => m !== target && m.team !== source.team && m.alive);
+          for (const foe of swept) {
+            if (amount > 0) {
+              const sctx = game.effectContext(source, foe, null);
+              dealDamage(sctx, foe, dmg(amount, 'generic', 'physical'), { noImpactFx: true });
+            }
+            searLightWeak(foe);
+          }
+          if (swept.length > 0) {
+            game.log(`${source.name}'s light source sweeps ${swept.length + 1} foes.`);
           }
           const torchId = source.heldTorchId();
           if (torchId && !target.isEthereal() && game.rng.chance(0.1)) {

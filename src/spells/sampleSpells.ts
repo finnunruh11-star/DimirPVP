@@ -106,7 +106,7 @@ registerSpell({
   targeting: 'point',
   dc: 7,
   description:
-    'Conjure a pool of shadow anywhere on the field. You can cast from and bounce spells through your shadows, and any mage standing in one takes +2 damage.',
+    'Place a shadow pool anywhere on the field. You can cast spells from your shadow pools and bounce spells through them, and any mage standing in a shadow takes +2 damage.',
   visual: { preset: 'burst', color: 0x8a6bff, size: 70, speed: 1 },
   cast(ctx) {
     if (ctx.targetPoint) placeShadow(ctx, ctx.targetPoint);
@@ -137,7 +137,7 @@ registerSpell({
   range: R(8),
   targeting: 'enemy',
   dc: 6,
-  description: 'A precise lance. 1d6 pierce damage (range 8).',
+  description: 'Deal 1d6 pierce damage to one enemy (range 8).',
   visual: { preset: 'projectile', color: 0xfffbe0, size: 8, speed: 1.6 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -154,7 +154,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 8,
   description:
-    "Read the target's intentions (range 20): you predict their next move, so they cannot hold a reaction and take +2 damage during their next turn.",
+    "Target one enemy (range 20). On its next turn it cannot use reactions and takes +2 damage.",
   visual: { preset: 'beam', color: 0xff8be0, size: 5, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -172,7 +172,7 @@ registerSpell({
   dc: 6,
   reaction: true, // can flicker out of sight in response to an incoming attack
   description:
-    'Slip a chosen mage behind a half veil for 2 cycles: targeted attacks miss more often the further the attacker stands (50% point-blank, up to 95% at long range). Any landed hit — or an enemy stepping within 1 — drops it. Castable as a reaction, so it can make an incoming spell miss.',
+    'Give a chosen mage a half veil for 2 turns. Targeted attacks against it miss more often the farther away the attacker is (50% at point-blank, up to 95% at long range). Any landed hit, or an enemy moving within 1 of it, removes the veil. Can be cast as a reaction to make an incoming attack miss.',
   visual: { preset: 'heal', color: 0xb98bff, size: 44, speed: 1 },
   cast(ctx) {
     applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'partial' });
@@ -187,7 +187,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 6,
   reaction: true,
-  description: 'Snare the target so it moves at 50% speed for a turn (range 20).',
+  description: "Reduce one enemy's movement by 50% for 1 turn (range 20).",
   visual: { preset: 'beam', color: 0x6ad1ff, size: 7, speed: 1.4 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -208,7 +208,7 @@ registerSpell({
   dc: 7,
   aoe: { kind: 'circle', radius: R(1.6) },
   description:
-    '1d6 corrosive damage in a small area (range 10). Each victim has a 33% chance to be left with a weak corrosion and 20% chance to be slowed.',
+    '1d6 corrosive damage to all enemies in a small area (radius 1.6, aimed within range 10). Each enemy hit has a 33% chance to take 1 corrosive damage per turn for 2 turns, and a 20% chance to move 30% slower for 2 turns.',
   visual: { preset: 'burst', color: 0x9be870, size: 60, speed: 1 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -240,7 +240,7 @@ registerSpell({
   range: R(15),
   targeting: 'enemy',
   dc: 7,
-  description: "A withering hex: 1d3 damage at the start of each of the target's next 4 turns (range 15).",
+  description: "Deal 1d3 shadow damage to one enemy at the start of each of its next 4 turns (range 15).",
   visual: { preset: 'beam', color: 0xff9f6b, size: 5, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -265,7 +265,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    '1d6 sanity damage with a 50% chance to fully stun (range 15). A stun landed as a reaction stifles the action it answers.',
+    '1d6 sanity damage to one enemy, with a 50% chance to fully stun it (range 15). If the stun lands as a reaction, it cancels the action it answers.',
   visual: { preset: 'beam', color: 0xff8be0, size: 6, speed: 1.2 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -283,7 +283,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description:
-    'Lock the target into a loop: for 3 turns it must repeat its last action. If it cannot, it does nothing (range 15).',
+    'For 3 turns the target must repeat its last action; if it cannot, it does nothing (range 15).',
   visual: { preset: 'beam', color: 0xc59bff, size: 6, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -316,7 +316,7 @@ registerSpell({
   targeting: 'any',
   dc: 9,
   reaction: true,
-  description: 'Ready a Mind Dodge on a chosen mage that negates the next instance of sanity damage or mental compulsion.',
+  description: 'Give a chosen mage a Mind Dodge that blocks the next instance of sanity damage or mental control.',
   visual: { preset: 'heal', color: 0xd8a0ff, size: 44, speed: 1 },
   cast(ctx) {
     applyWard(ctx, ctx.target ?? ctx.caster, { name: 'Mind Dodge', against: 'mind', duration: 5 });
@@ -331,7 +331,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    "Scramble the target's focus: for 3 turns its spells are chosen at random instead of by its caster (range 20).",
+    "For 3 turns the target's spells are chosen at random instead of by its controller (range 20).",
   visual: { preset: 'beam', color: 0xff7bb0, size: 6, speed: 0.9 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -347,7 +347,7 @@ registerSpell({
   targeting: 'point',
   dc: 10,
   description:
-    'Blink up to range 10 toward a point; an enemy you dash to or through takes 1d6 pierce and 1d4 sanity damage.',
+    'Dash up to range 10 toward a point. An enemy you dash to or through takes 1d6 pierce damage and 1d4 sanity damage.',
   visual: { preset: 'projectile', color: 0xffb0e0, size: 9, speed: 1.8 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -400,7 +400,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    'Wreathe the target in clawing dark: 1d6 shadow damage to everyone around it each turn for 3 turns — including you if you stand too close (range 10).',
+    'Curse one enemy (range 10): each turn for 3 turns it deals 1d6 shadow damage to everyone within range 2 of it — including you if you stand too close.',
   visual: { preset: 'beam', color: 0x6a4bd0, size: 6, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -423,7 +423,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description:
-    'Strike from the dark for 1d6 shadow + 1d6 pierce damage. Must be cast from one of your own shadows (range 5).',
+    '1d6 shadow damage + 1d6 pierce damage to one enemy (range 5). You must be standing in one of your shadow pools, or have a shadow pool within range 5 of the target.',
   visual: { preset: 'conjure', color: 0xb09bff, size: 28, speed: 1.2 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -449,7 +449,7 @@ registerSpell({
   dc: 10,
   reaction: true,
   description:
-    'Blink up to range 10 and bind an enemy you reach, locking down its movement and attacks. May be cast as a reaction, but does not counter the triggering spell.',
+    'Dash up to range 10 toward a point, then fully stun the nearest enemy within about range 2 of where you land. Can be cast as a reaction, but does not counter the triggering action.',
   visual: { preset: 'projectile', color: 0x9ad8ff, size: 10, speed: 1.7 },
   cast(ctx) {
     if (ctx.targetPoint) dash(ctx, ctx.caster, { toPoint: ctx.targetPoint, distance: R(10) });
@@ -458,23 +458,8 @@ registerSpell({
   },
 });
 
-registerSpell({
-  name: 'Corrode Curse',
-  words: ['corrode', 'curse'],
-  actionType: 'bonus',
-  range: R(5),
-  targeting: 'point',
-  dc: 11,
-  aoe: { kind: 'circle', radius: R(3) },
-  description:
-    'Raise a totem (range 5) whose 3-range aura deals 1d3 corrosive damage and 50% slow to enemies within it each turn.',
-  visual: { preset: 'burst', color: 0x9be870, size: 50, speed: 1 },
-  noCastSprite: true,
-  cast(ctx) {
-    if (!ctx.targetPoint) return;
-    placeTotem(ctx, ctx.targetPoint, { radius: R(3), damageSpec: '1d3', slow: 0.5 });
-  },
-});
+// NOTE: Corrode Curse (corrode + curse) is a CLASS SPELL and now lives in
+// spells/classSpells.ts (registerClassSpell), resolving per mage class.
 
 registerSpell({
   name: 'Veil Pierce',
@@ -484,7 +469,7 @@ registerSpell({
   targeting: 'point',
   dc: 10,
   description:
-    'Blink up to range 10, striking an enemy you reach for 1d6 pierce, then slip behind a half veil after the dash.',
+    'Dash up to range 10 toward a point, dealing 1d6 pierce damage to the nearest enemy within about range 2 of where you land, then gain a half veil for 2 turns.',
   visual: { preset: 'projectile', color: 0xd9c0ff, size: 9, speed: 1.8 },
   cast(ctx) {
     if (ctx.targetPoint) dash(ctx, ctx.caster, { toPoint: ctx.targetPoint, distance: R(10) });
@@ -507,7 +492,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description:
-    'Hex the target so it bleeds 3d3 pierce damage each turn — but only while it stays at mid range (7-13) from you. Cast at range 7-13.',
+    'Curse one enemy (cast at range 7-13). It takes 3d3 pierce damage each turn for 4 turns, but only on turns when it is between range 7 and 13 from you.',
   visual: { preset: 'beam', color: 0xc0d0ff, size: 6, speed: 1.1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -530,7 +515,7 @@ registerSpell({
   dc: 12,
   aoe: { kind: 'circle', radius: R(3) },
   description:
-    'Slam a 3-range pool of shadow at a point (range 15): 1d6 shadow damage and roots every enemy caught, then a shadow lingers there for 5 turns.',
+    'At a point (range 15), deal 1d6 shadow damage to every enemy within range 3 and root them for 3 turns, then leave a shadow pool there for 5 turns.',
   visual: { preset: 'burst', color: 0x7a5bd0, size: 55, speed: 1.1 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -554,7 +539,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 10,
   description:
-    '1d3 shatter damage at point-blank (range 1): a brief full stun that gives way to a longer root.',
+    '1d3 shatter damage to an adjacent enemy (range 1), fully stunning it for 2 turns and rooting it for 4 turns.',
   visual: { preset: 'beam', color: 0xff9bd0, size: 7, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -572,7 +557,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    '1d6 shatter + 1d6 corrosive damage at range 5, with a 25% chance to fully stun — and a root if the stun fails to land.',
+    '1d6 shatter damage + 1d6 corrosive damage to one enemy (range 5). 25% chance to fully stun it for 2 turns; if that fails, root it for 3 turns instead.',
   visual: { preset: 'projectile', color: 0xc6e08a, size: 11, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -591,7 +576,7 @@ registerSpell({
   targeting: 'any',
   dc: 11,
   description:
-    'Erupt with anti-stealth force: every veiled entity takes 1d6 shatter and is stunned, all veils across the field are torn down, then a chosen mage slips behind a half veil for 2 turns.',
+    'Every veiled mage takes 1d6 shatter damage and is fully stunned for 2 turns. All veils on the field are removed, then a chosen mage gains a half veil for 2 turns.',
   visual: { preset: 'nova', color: 0xff8be0, size: 70, speed: 1.4 },
   cast(ctx) {
     const isVeiled = (m: Mage) =>
@@ -616,7 +601,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    'Curse the target with splintering pain: 1d6 shatter damage each turn for 3 turns, each tick carrying a 25% chance to fully stun (range 5).',
+    'Curse one enemy (range 5): 1d6 shatter damage each turn for 3 turns, with a 25% chance to fully stun on each turn it ticks.',
   visual: { preset: 'beam', color: 0xff7bb0, size: 6, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -641,7 +626,7 @@ registerSpell({
   dc: 13,
   aoe: { kind: 'circle', radius: R(5) },
   description:
-    'A long-range bombardment landing exactly at range 15: a 5-range blast of 1d6 shatter with a 25% slow, and a 1-range core of 2d6 pierce that roots.',
+    'Aimed exactly at range 15. Enemies within range 5 take 1d6 shatter damage and have a 25% chance to move 50% slower for 2 turns; enemies within range 1 of the center also take 2d6 pierce damage and are rooted for 3 turns.',
   visual: { preset: 'burst', color: 0xffd08a, size: 60, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -671,23 +656,8 @@ registerSpell({
   },
 });
 
-registerSpell({
-  name: 'Mind Shadow',
-  words: ['mind', 'shadow'],
-  actionType: 'main',
-  range: R(8),
-  targeting: 'enemy',
-  dc: 11,
-  description:
-    '1d6 sanity + 1d3 shadow damage (range 8), and your shadow clings to the target — wherever it walks next turn it leaves a pool of your shadow that lasts 5 turns.',
-  visual: { preset: 'projectile', color: 0x9b7bff, size: 10, speed: 1.4 },
-  cast(ctx) {
-    if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Mind Shadow'), 'shadow', 'sanity'));
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d3', 'Mind Shadow'), 'shadow', 'physical'));
-    applyShadowTrail(ctx, ctx.target, { duration: 2, perShadowTtl: 5 });
-  },
-});
+// NOTE: Mind Shadow (mind + shadow) is a CLASS SPELL and now lives in
+// spells/classSpells.ts (registerClassSpell), resolving per mage class.
 
 registerSpell({
   name: 'Shadow Corrode',
@@ -698,7 +668,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    '1d6 corrosive + 2d6 shadow damage (range 10). If the target stands in one of your shadows you can strike it from anywhere on the field.',
+    '1d6 corrosive damage + 2d6 shadow damage to one enemy (range 10). If the target is standing in one of your shadow pools, you can hit it from anywhere on the field.',
   visual: { preset: 'projectile', color: 0xa8d88a, size: 11, speed: 1.4 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -707,23 +677,8 @@ registerSpell({
   },
 });
 
-registerSpell({
-  name: 'Bind Veil',
-  words: ['bind', 'veil'],
-  actionType: 'bonus',
-  range: 0,
-  targeting: 'any',
-  dc: 10,
-  reaction: true,
-  description:
-    'Vanish and ensnare: slip a chosen mage behind a half veil for 2 turns and root the nearest enemy within range 10 for 2 turns, so nothing can give chase. Castable as a reaction.',
-  visual: { preset: 'nova', color: 0x8ad1ff, size: 60, speed: 1.1 },
-  cast(ctx) {
-    applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'partial' });
-    const foe = enemyNear(ctx, ctx.caster.pos, R(10));
-    if (foe) applyStun(ctx, foe, { duration: 2, type: 'movement' });
-  },
-});
+// NOTE: Bind Veil (bind + veil) is a CLASS SPELL and now lives in
+// spells/classSpells.ts (registerClassSpell), resolving per mage class.
 
 registerSpell({
   name: 'Bind Corrode',
@@ -733,7 +688,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    '1d6 corrosive damage and the target is rooted for 2 turns as caustic rot sets in, bleeding 1d3 corrosive each turn for 3 turns (range 10).',
+    '1d6 corrosive damage to one enemy (range 10), root it for 2 turns, and deal 1d3 corrosive damage each turn for 3 turns.',
   visual: { preset: 'projectile', color: 0x9be870, size: 11, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -748,27 +703,8 @@ registerSpell({
   },
 });
 
-registerSpell({
-  name: 'Bind Curse',
-  words: ['bind', 'curse'],
-  actionType: 'main',
-  range: R(15),
-  targeting: 'enemy',
-  dc: 12,
-  description:
-    'A shackling hex (range 15): for 4 turns the target is rooted in place and withers for 1d3 shadow damage at the start of each of its turns.',
-  visual: { preset: 'beam', color: 0x6a7bd0, size: 6, speed: 1 },
-  cast(ctx) {
-    if (!ctx.target) return;
-    applyStun(ctx, ctx.target, { duration: 4, type: 'movement' });
-    applyDot(ctx, ctx.target, {
-      name: 'Bind Curse',
-      duration: 4,
-      damage: dmg(2, 'shadow', 'physical'),
-      damageSpec: '1d3',
-    });
-  },
-});
+// NOTE: Bind Curse (bind + curse) is a CLASS SPELL and now lives in
+// spells/classSpells.ts (registerClassSpell), resolving per mage class.
 
 registerSpell({
   name: 'Veil Corrode',
@@ -779,7 +715,7 @@ registerSpell({
   dc: 10,
   aoe: { kind: 'circle', radius: R(2) },
   description:
-    'Cloak a chosen mage in a caustic haze: it slips behind a half veil for 2 turns while every enemy within range 2 of the caster takes 1d6 corrosive damage and is slowed.',
+    'Give a chosen mage a half veil for 2 turns. Every enemy within range 2 of you takes 1d6 corrosive damage and moves 30% slower for 2 turns.',
   visual: { preset: 'nova', color: 0x9be870, size: 60, speed: 1 },
   cast(ctx) {
     applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'partial' });
@@ -807,7 +743,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    'Hex from hiding (range 15): the target bleeds 1d3 shadow damage each turn for 4 turns, and you slip behind a half veil for 2 turns as the curse takes hold.',
+    'Deal 1d3 shadow damage to one enemy each turn for 4 turns (range 15), and gain a half veil for 2 turns.',
   visual: { preset: 'beam', color: 0xb98bff, size: 6, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -829,7 +765,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    'A corrosive lance (range 10): 1d6 pierce + 1d6 corrosive damage, leaving the target bleeding 1d3 corrosive each turn for 2 turns and slowed.',
+    '1d6 pierce damage + 1d6 corrosive damage to one enemy (range 10), then deal 1d3 corrosive damage each turn for 2 turns and slow it (30% less movement) for 2 turns.',
   visual: { preset: 'projectile', color: 0xc6f08a, size: 9, speed: 1.6 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -861,7 +797,7 @@ registerSpell({
   targeting: 'any',
   dc: 4,
   description:
-    'A push-your-luck flurry: roll a d6 and, for each fresh result, blinkstep (a teleport that ignores movement modifiers) to a point within R(4) then lash an enemy within R(5) of you for 1d3 sanity + 1d3 pierce. Each blink invites a reaction. The moment a number repeats, you turn fully invisible for 2 rounds and the flurry ends.',
+    'Repeatedly roll a d6. On each new result, teleport to a point within range 4 (ignoring roots and barriers), then deal 1d3 sanity damage + 1d3 pierce damage to an enemy within range 5. Each teleport lets enemies react. The first time a number repeats, you turn fully invisible for 2 turns and the spell ends.',
   visual: { preset: 'nova', color: 0xd9c0ff, size: 60, speed: 1.3 },
   async cast(ctx) {
     const seen = new Set<number>();
@@ -921,7 +857,7 @@ registerSpell({
   reaction: true,
   counters: true, // as a reaction it stifles whatever it answers (even a move)
   description:
-    'A far-reaching warp (range 25). Cast as a reaction it stifles any action it answers — a spell or even a move. Twisting the same target twice in one turn deals 2d6 physical; otherwise it disarms their next action.',
+    'Target one enemy (range 25). Cast as a reaction, it cancels any action it answers, including a move. If you Twist the same target twice in one turn, deal 2d6 physical damage; otherwise disarm its next action.',
   visual: { preset: 'beam', color: 0x66ffd1, size: 5, speed: 1.4 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -937,7 +873,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description:
-    "Warp the target's memory: it forgets 2 random actions (move, melee, or one of its words) for 2 turns.",
+    "3d3 sanity damage to one enemy (range 15). It also forgets 2 random actions (move, melee, or one of its words) for 3 turns.",
   visual: { preset: 'beam', color: 0x66ffd1, size: 6, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -954,7 +890,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 14,
   description:
-    'Swap minds with the target for the next exchange: you pilot their mage and they pilot yours for the next 2 turns.',
+    'Swap control with the target for 2 turns (range 20): you control their mage and they control yours.',
   visual: { preset: 'beam', color: 0xff5599, size: 7, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -972,7 +908,7 @@ registerSpell({
   aoe: { kind: 'cone', radius: 1400, degrees: 45 },
   twoPointAim: true,
   description:
-    'Tear a wedge of reality open at unlimited range. Set two points — both before you roll — to steer exactly where the cone opens and how wide it spreads; it then reaches all the way to the edge of the field. For 3 rounds no one may move into it: run in and you are rooted until it mends; dash in and you stop dead as your dash ends.',
+    'Aim two points (both chosen before the roll) to set where a wedge opens and how wide it is; it extends to the edge of the field. For 3 rounds no one can move into it: walk in and you are rooted until it ends; dash in and your dash stops at its edge.',
   visual: { preset: 'burst', color: 0xff5599, size: 70, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -991,7 +927,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 15,
   description:
-    'Bend the timeline: you take an extra turn after this one, and the target takes 3d3 mental damage and cannot move for 1 turn.',
+    'Take an extra turn after this one. The target takes 3d3 sanity damage and cannot move for 1 turn (range 20).',
   visual: { preset: 'beam', color: 0xff5599, size: 7, speed: 1.1 },
   cast(ctx) {
     grantExtraTurn(ctx, ctx.caster);
@@ -1035,7 +971,7 @@ registerSpell({
   dc: 11,
   aoe: { kind: 'circle', radius: R(3) },
   description:
-    'Raise a leeching totem (range 5) whose 3-range aura deals 1d3 corrosive damage to enemies each turn and heals you for the damage dealt.',
+    'Place a totem (aimed within range 5). Each turn it deals 1d3 corrosive damage to enemies within range 3 of it and heals you for the damage dealt.',
   visual: { preset: 'burst', color: 0x57d6a0, size: 50, speed: 1 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -1052,7 +988,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    '1d6 corrosive + 2d6 shadow damage (range 10), healing you for the full amount dealt. If the target stands in one of your shadows you can strike it from anywhere on the field.',
+    '1d6 corrosive damage + 2d6 shadow damage to one enemy (range 10), healing you for the full amount dealt. If the target is standing in one of your shadow pools, you can hit it from anywhere on the field.',
   visual: { preset: 'projectile', color: 0x57d6a0, size: 11, speed: 1.4 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -1070,8 +1006,10 @@ registerSpell({
   dc: 13,
   aoe: { kind: 'circle', radius: R(5) },
   description:
-    'Loose a swarm of 5 scarabs around a point (range 5). Each turn they crawl toward the nearest enemy (up to 3 per foe, never straying past range 8 from you), bite for 1d3, then return to heal you for 1d3. They have 5 health and 5 sanity and can be destroyed by area effects.',
+    'Summon 5 scarabs around a point (range 5). Each turn they move toward the nearest enemy (up to 3 per enemy, staying within range 8 of you), bite for 1d3, then return to heal you for 1d3. Each scarab has 5 health and 5 sanity and can be killed by area effects.',
   visual: { preset: 'burst', color: 0x57d6a0, size: 70, speed: 1.1 },
+  // CLASS SPELL (all verbs). Currently hard-wired to the Life alignment (summon);
+  // future Objects / Hexcraft variants plug in through byClass().
   cast(ctx) {
     if (!ctx.targetPoint) return;
     summonScarabs(ctx, ctx.targetPoint);
@@ -1114,8 +1052,8 @@ registerSpell({
   targeting: 'any',
   dc: 7,
   description:
-    'Command an ally or enemy (range 20). Enemy: disarmed for 1 turn (no hostile actions). ' +
-    'Ally: emboldened for 2 turns — +2 damage and healing and +2 movement.',
+    'Target an ally or enemy (range 20). Enemy: disarmed for 1 turn (cannot take main actions). ' +
+    'Ally: for 2 turns it deals +2 damage and gains +2 movement.',
   visual: { preset: 'beam', color: 0xf3ecd2, size: 6, speed: 1.1 },
   cast(ctx) {
     const target = ctx.target ?? ctx.caster;
@@ -1147,7 +1085,7 @@ registerSpell({
   dc: 10,
   aoe: { kind: 'cone', radius: R(5), degrees: 120 },
   description:
-    '1d8 slashing in a 120° cone (range 5); every enemy struck bleeds for 1d3 over 3 turns.',
+    '1d8 slashing damage in a 120° cone (range 5). Every enemy hit gains a bleed stack that deals 1d3 per stack each turn (stacks up to 6), lasting 3 turns.',
   visual: { preset: 'burst', color: 0xff6b8a, size: 64, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -1175,8 +1113,7 @@ registerSpell({
   dc: 11,
   aoe: { kind: 'cone', radius: R(5), degrees: 80 },
   description:
-    'An 80° cone (range 5): a narrow 5° core deals 1d8 slashing and lets you dash 2, while the ' +
-    'outer arc deals 1d6 corrosive. All damage heals you for the amount dealt.',
+    '80° cone (range 5). Enemies in the narrow 5° center take 1d8 slashing damage and you dash 2 toward them; enemies elsewhere in the cone take 1d6 corrosive damage. All damage heals you for the amount dealt.',
   visual: { preset: 'burst', color: 0x9ad67a, size: 66, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -1212,8 +1149,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    'Bind an enemy to your will for 5 turns (range 20): they may only strike foes you have marked. ' +
-    'Approximated as a lingering compulsion that saps 2 from their damage.',
+    'For 5 turns the target is forced to repeat its actions and deals 2 less damage (range 20).',
   visual: { preset: 'beam', color: 0xc9a0ff, size: 6, speed: 1.1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -1238,8 +1174,7 @@ registerSpell({
   dc: 11,
   aoe: { kind: 'cone', radius: R(5), degrees: 120 },
   description:
-    '1d8 slashing in a 120° cone (range 5); every enemy struck is compelled to strike a target of ' +
-    'your choosing on their next turn.',
+    '1d8 slashing damage in a 120° cone (range 5). Every enemy hit is forced to repeat its action for 2 turns.',
   visual: { preset: 'burst', color: 0xf3d08a, size: 64, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -1261,8 +1196,7 @@ registerSpell({
   targeting: 'none',
   dc: 11,
   description:
-    'Impose your order on the battle for 4 turns: any enemy acting out of turn with you suffers ' +
-    "1d6 corrosive that heals you. Approximated as a 4-turn corrosive judgement on every foe.",
+    'Every current enemy takes 1d6 corrosive damage each turn for 4 turns.',
   visual: { preset: 'nova', color: 0x9ad67a, size: 46, speed: 1.1 },
   cast(ctx) {
     // The true effect (mirror the caster's last action; punish deviating foes and
@@ -1292,10 +1226,9 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Bind an enemy in a draining curse for 4 turns (range 20). It may only repeat the next action ' +
-    'it takes (walking stays legal and the compulsion can never be forgotten). Each turn it takes ' +
-    '1d6 corrosive — plus another 1d6 if it dealt no damage last turn — and you heal for all of it. ' +
-    'Whenever it wounds one of your allies, the curse deepens by 2 turns.',
+    'Curse one enemy for 4 turns (range 20). It is forced to repeat its actions. Each turn it takes ' +
+    '1d6 corrosive damage — plus another 1d6 if it dealt no damage last turn — and you heal for all of it. ' +
+    'Whenever it damages one of your allies, the curse lasts 2 turns longer.',
   visual: { preset: 'beam', color: 0x9ad67a, size: 7, speed: 1.1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -1326,8 +1259,8 @@ registerSpell({
   dc: 13,
   aoe: { kind: 'cone', radius: R(5), degrees: 120 },
   description:
-    '1d6 slashing then 1d6 corrosive in a 120° cone (range 5), and every enemy struck gains 2 ' +
-    'stacks of bleed. You then heal 1d3 for each bleed stack now on the wounded foes.',
+    '1d6 slashing damage then 1d6 corrosive damage in a 120° cone (range 5). Every enemy hit gains 2 ' +
+    'bleed stacks (1d3 per stack each turn). You then heal 1d3 for each bleed stack on those enemies.',
   visual: { preset: 'burst', color: 0xd66a9a, size: 66, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -1366,8 +1299,8 @@ registerSpell({
   dc: 13,
   aoe: { kind: 'cone', radius: R(5), degrees: 120 },
   description:
-    'Impose order on a 120° cone (range 5): every enemy caught is set to the lowest HP among them. ' +
-    'You heal for the greatest amount of life equalized from any single foe, then dash 2 toward them.',
+    'Every enemy in a 120° cone (range 5) is set to the lowest HP among them. ' +
+    'You heal for the largest amount of HP removed from any single enemy, then dash 2 toward them.',
   visual: { preset: 'nova', color: 0x8ad0c4, size: 60, speed: 1.1 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -1454,7 +1387,7 @@ registerSpell({
   dc: 13,
   reaction: true,
   description:
-    'Foresee the blow and slip aside: drop behind a full veil for 2 turns (often dodging the triggering attack), root the nearest enemy within range 12 for 2 turns, and mark them — no reaction and +2 damage next turn. Does not counter the action.',
+    'Gain a full veil for 2 turns (often dodging the triggering attack), root the nearest enemy within range 12 for 2 turns, and mark it (no reactions and +2 damage taken on its next turn). Can be cast as a reaction but does not counter the action.',
   visual: { preset: 'nova', color: 0xb98bff, size: 60, speed: 1.1 },
   cast(ctx) {
     applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
@@ -1480,7 +1413,7 @@ registerSpell({
   targeting: 'self',
   dc: 12,
   description:
-    'Step out of the world: turn fully invisible for 2 turns and blinkstep to your nearest shadow pool. The nearest enemy within range 10 is foreseen — no reaction and +2 damage taken next turn. With no shadow on the field you vanish where you stand.',
+    'Turn fully invisible for 2 turns and teleport to your nearest shadow pool. The nearest enemy within range 10 is marked (no reactions and +2 damage taken on its next turn). With no shadow on the field, you turn invisible where you stand.',
   visual: { preset: 'nova', color: 0x8a6bff, size: 60, speed: 1.2 },
   cast(ctx) {
     applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
@@ -1517,7 +1450,7 @@ registerSpell({
   targeting: 'self',
   dc: 13,
   description:
-    'Sink a fresh shadow beneath you (spent on arrival). Then blink to any shadow you have not used yet and mark an enemy within R7: if one is in reach you dash onto them for 1d6 shadow + 1d3 mental, then may dash up to R10 in any direction. Land in another unused shadow to chain the hunt again. It ends the moment no enemy is within R7 or your dash stops outside a fresh shadow.',
+    'Place a shadow pool beneath you (counts as already used). Then teleport to any shadow pool you have not used yet: if an enemy is within range 7, dash onto it for 1d6 shadow damage + 1d3 sanity damage, then optionally dash up to range 10 in any direction. If you land in another unused shadow pool you can repeat. Ends when no enemy is within range 7 or your dash stops outside an unused shadow pool.',
   visual: { preset: 'nova', color: 0x9b7bff, size: 56, speed: 1.4 },
   async cast(ctx) {
     const used = new Set<number>();
@@ -1598,7 +1531,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 15,
   description:
-    'Drive a spike of force through mind and body (range 12): 2d6 pierce + 1d6 sanity damage. If the target is left below a quarter of its HP or sanity, the wound splits open for 3d6 true pierce damage.',
+    '2d6 pierce damage + 1d6 sanity damage to one enemy (range 12). If this leaves it below a quarter of its HP or sanity, deal an extra 3d6 true pierce damage (ignores armor and resistances).',
   visual: { preset: 'projectile', color: 0xffb0e0, size: 11, speed: 1.9 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -1629,7 +1562,7 @@ registerSpell({
   dc: 13,
   aoe: { kind: 'circle', radius: R(4) },
   description:
-    'Unleash an anti-magic pulse: 1d6 shatter to every enemy within range 4, strip all veils from the field, conjure a shadow pool at your feet, then slip behind a full veil yourself.',
+    '1d6 shatter damage to every enemy within range 4. Remove all veils on the field, place a shadow pool at your feet, then gain a full veil for 2 turns.',
   visual: { preset: 'nova', color: 0xff8be0, size: 70, speed: 1.3 },
   cast(ctx) {
     areaDamage(
@@ -1658,7 +1591,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 14,
   description:
-    'Crack the target\'s mind with shattering force (range 4): 2d4 shatter + 2d4 sanity damage and root for 3 turns. If this drops them below a quarter sanity, you are granted an extra turn.',
+    '2d4 shatter damage + 2d4 sanity damage to one enemy (range 4) and root it for 3 turns. If this leaves it below a quarter of its sanity, you gain an extra turn.',
   visual: { preset: 'conjure', color: 0xff8be0, size: 40, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -1686,7 +1619,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Blinkstep to the nearest shadow pool, then lance a target within range 12 for 2d6 corrosive + 1d6 shadow. Without a shadow on the field you strike from where you stand for the corrosive damage alone.',
+    'Teleport to the nearest shadow pool, then deal 2d6 corrosive damage + 1d6 shadow damage to one enemy (range 12). With no shadow on the field, you stay where you are and deal only the corrosive damage.',
   visual: { preset: 'projectile', color: 0xa8d88a, size: 11, speed: 1.8 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -1724,7 +1657,7 @@ registerSpell({
   dc: 13,
   aoe: { kind: 'cone', radius: R(6), degrees: CONE_DEGREES },
   description:
-    'Fire a 90° cone of nightmare shatter (range 6): 1d6 shatter to every enemy caught. Veiled targets are stripped and take an extra 1d6. All targets struck are cursed with a sanity rot: 1d3 sanity damage per turn for 3 turns.',
+    '1d6 shatter damage to every enemy in a 90° cone (range 6). Veiled enemies lose their veil and take an extra 1d6. Every enemy hit also takes 1d3 sanity damage each turn for 3 turns.',
   visual: { preset: 'burst', color: 0xff7bb0, size: 60, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -1769,7 +1702,7 @@ registerSpell({
   dc: 13,
   aoe: { kind: 'circle', radius: R(3) },
   description:
-    'Open a 3-range pool of grasping shadow (range 10): every enemy caught is rooted for 3 turns and cursed to bleed 1d3 shadow damage each turn for 4 turns. The shadow lingers for 5 turns.',
+    'At a point (range 10), every enemy within range 3 is rooted for 3 turns and takes 1d3 shadow damage each turn for 4 turns. Leaves a shadow pool there for 5 turns.',
   visual: { preset: 'burst', color: 0x7a5bd0, size: 60, speed: 1.1 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -1802,7 +1735,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description:
-    'Bind the target in corroding chains (range 15): rooted for 4 turns and gnawed by a stacking rot. Each cast adds a stack (up to 4) that ticks 1d2 corrosive per stack — 1d2, 2d2, 3d2, 4d2. The rot falls off two turns after the last stack lands; re-applying at 4 stacks only refreshes it.',
+    'Root one enemy for 4 turns (range 15) and apply a stacking corrosive rot. Each cast adds a stack (up to 4); it deals 1d2 corrosive per stack each turn (so 1d2, 2d2, 3d2, 4d2). The rot ends two turns after the last stack is applied; casting again at 4 stacks only refreshes it.',
   visual: { preset: 'beam', color: 0x9be870, size: 6, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -1831,7 +1764,7 @@ registerSpell({
   dc: 14,
   aoe: { kind: 'circle', radius: R(3) },
   description:
-    'Detonate a 3-range blight (range 12): 1d6 shatter + 1d6 corrosive to all enemies caught, a 25% chance to fully stun each, and an infectious corrosive plague. The plague ticks 1d3 per stack, stacks up to 3, spreads to nearby enemies each turn, and decays by one stack for every turn no fresh stack is applied.',
+    'At a point (range 12), every enemy within range 3 takes 1d6 shatter damage + 1d6 corrosive damage, with a 25% chance to be fully stunned. Each also gets a corrosive plague: 1d3 damage per stack each turn, stacks up to 3, spreads to nearby enemies each turn, and loses one stack on any turn no new stack is added.',
   visual: { preset: 'burst', color: 0xc6e08a, size: 62, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -1875,7 +1808,7 @@ registerSpell({
   dc: 12,
   reaction: true,
   description:
-    'Root the nearest enemy within range 10 for 3 turns, conjure a shadow pool at their location, then slip behind a full veil for 2 turns. Castable as a reaction.',
+    'Root the nearest enemy within range 10 for 3 turns, place a shadow pool at its location, then gain a full veil for 2 turns. Can be cast as a reaction.',
   visual: { preset: 'nova', color: 0x8ad1ff, size: 60, speed: 1.1 },
   cast(ctx) {
     const foe = enemyNear(ctx, ctx.caster.pos, R(10));
@@ -1900,7 +1833,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Smash corrosive crystal into an adjacent foe (range 1): 1d6 shatter + 1d6 corrosive damage, a brief full stun that hardens into a 3-turn root, then a calcification slow that persists for 6 turns.',
+    '1d6 shatter damage + 1d6 corrosive damage to an adjacent enemy (range 1), fully stun it for 2 turns, root it for 3 turns, and slow it (40% less movement) for 6 turns.',
   visual: { preset: 'conjure', color: 0xc6e08a, size: 30, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -1929,7 +1862,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Seed a spreading mental plague (range 15): expose the target for 2 turns (no reaction, +2 damage taken), inflict a 1d3 sanity rot for 4 turns, and a 1d3 corrosive wound for 4 turns. Zero burst — pure attrition.',
+    'Mark one enemy (range 15) for 2 turns (no reactions, +2 damage taken). It also takes 1d3 sanity damage each turn for 4 turns and 1d3 corrosive damage each turn for 4 turns.',
   visual: { preset: 'beam', color: 0xff8be0, size: 6, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -1965,7 +1898,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 14,
   description:
-    'Hurl a cursed piercing shard at long range (range 18): 2d6 pierce damage and a harrowing curse that deals 1d6 shatter each turn for 3 turns, with a 33% chance to fully stun on each tick.',
+    '2d6 pierce damage to one enemy (range 18), then 1d6 shatter damage each turn for 3 turns, with a 33% chance to fully stun on each turn it ticks.',
   visual: { preset: 'projectile', color: 0xffd08a, size: 9, speed: 1.7 },
   cast(ctx) {
     if (!ctx.target) return;

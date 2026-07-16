@@ -13,6 +13,8 @@
 
 import type { Spell } from './Spell';
 import type { ColorName } from '../core/Colors';
+import type { MageClass } from '../core/Classes';
+import { DEFAULT_MAGE_CLASS } from '../core/Classes';
 import type { EffectContext } from '../effects/effects';
 import { applyDebuff, dealDamage, placeWall, rollDice } from '../effects/effects';
 import { dmg } from '../core/Damage';
@@ -232,8 +234,45 @@ export const COLOR_ABILITIES: ColorAbility[] = [
   deathRealm,
 ];
 
-/** The two color abilities granted by a given primary color. */
-export function getColorAbilitiesFor(color: ColorName | null): ColorAbility[] {
+/**
+ * Each colour grants a fixed FIRST ability plus a SECOND ability chosen by the
+ * caster's class. The primary colour still decides the pair; the class swaps out
+ * the second slot only (e.g. blue Objects → Wall, blue Hexcraft → a portal, blue
+ * Life → a summon-warding aura).
+ *
+ * The class-specific variants are not authored yet, so every class currently
+ * points at the colour's original second ability. When the new spells land, drop
+ * them into the matching {@link MageClass} slot below — no caller changes needed.
+ */
+interface ColorAbilitySet {
+  first: ColorAbility;
+  second: Record<MageClass, ColorAbility>;
+}
+
+const ABILITIES_BY_COLOR: Record<ColorName, ColorAbilitySet> = {
+  blue: {
+    first: rejuvenate,
+    second: { objects: wall, life: wall, hexcraft: wall },
+  },
+  black: {
+    first: bane,
+    second: { objects: necrosis, life: necrosis, hexcraft: necrosis },
+  },
+  white: {
+    first: whiteBane,
+    second: { objects: deathRealm, life: deathRealm, hexcraft: deathRealm },
+  },
+};
+
+/**
+ * The two colour abilities granted by a primary colour, for a given class. The
+ * first is fixed; the second depends on the class (see {@link ABILITIES_BY_COLOR}).
+ */
+export function getColorAbilitiesFor(
+  color: ColorName | null,
+  mageClass: MageClass = DEFAULT_MAGE_CLASS
+): ColorAbility[] {
   if (!color) return [];
-  return COLOR_ABILITIES.filter((a) => a.color === color);
+  const set = ABILITIES_BY_COLOR[color];
+  return [set.first, set.second[mageClass]];
 }

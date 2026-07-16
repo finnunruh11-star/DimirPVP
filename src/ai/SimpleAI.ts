@@ -47,7 +47,7 @@ export class SimpleAI {
   private castableSpells(action: 'main' | 'bonus'): Spell[] {
     const set = new Set(this.self.loadout);
     const forgotten = this.self.forgotten();
-    return allSpells().filter(
+    return allSpells(this.self.mageClass).filter(
       (s) =>
         s.actionType === action &&
         s.words.every((w) => set.has(w)) &&
@@ -107,7 +107,7 @@ export class SimpleAI {
     const forgotten = this.self.forgotten();
     // With a reaction word the AI may answer with ANY castable spell.
     const grants = this.self.grantsReaction;
-    const reactions = allSpells().filter(
+    const reactions = allSpells(this.self.mageClass).filter(
       (s) =>
         this.self.hasCharges(s.words) &&
         s.words.every((w) => set.has(w)) &&

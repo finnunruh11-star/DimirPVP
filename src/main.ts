@@ -6,6 +6,7 @@ import { GameScene } from './scenes/GameScene';
 // Registering the sample spells (side-effect import). Add your own spell files
 // the same way, or import them here.
 import './spells/sampleSpells';
+import './spells/classSpells';
 
 new Phaser.Game({
   type: Phaser.AUTO,
