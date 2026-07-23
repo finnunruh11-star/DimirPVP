@@ -68,6 +68,16 @@ export class SimpleAI {
     const enemy = this.chooseTarget();
     const acts = this.self.actions;
 
+    // No visible foe (everyone is veiled): the AI does not know where anyone is,
+    // so it holds position — but will still swat a scarab that is biting it.
+    if (!enemy) {
+      if (acts.main > 0) {
+        const scarab = this.game.enemyScarabsInRange(this.self, MELEE_RANGE)[0];
+        if (scarab) return { type: 'scarab', scarab };
+      }
+      return { type: 'end' };
+    }
+
     // At most one spell per turn.
     if (!this.self.hasCastThisTurn) {
       // 1. If we can land a damaging main spell, do it.
@@ -176,17 +186,21 @@ export class SimpleAI {
   //  their own nearest foe. Without a Lich they use the plain nearest-enemy pick.
   // ---------------------------------------------------------------------------
 
-  /** The mage this AI should attack this turn. */
-  private chooseTarget(): Mage {
+  /** The mage this AI should attack this turn, or null when every foe is veiled. */
+  private chooseTarget(): Mage | null {
     if (this.game.hasAliveLich() && this.self.enemyKind) {
-      return this.bestKillTarget() ?? this.game.opponentOf(this.self);
+      return this.bestKillTarget();
     }
-    return this.game.opponentOf(this.self);
+    const foe = this.game.opponentOf(this.self);
+    if (foe && !foe.isInvisible()) return foe;
+    // The obvious opponent is hidden — fall back to any other foe we can see.
+    return this.bestKillTarget();
   }
 
   /** Living foe with the lowest remaining vitality (focus fire), else nearest. */
   private bestKillTarget(): Mage | null {
-    const foes = this.game.livingEnemiesOf(this.self);
+    // A veiled foe cannot be seen, so it is never a valid target.
+    const foes = this.game.livingEnemiesOf(this.self).filter((m) => !m.isInvisible());
     if (foes.length === 0) return null;
     const vitality = (m: Mage): number => m.hp + (m.sanityImmune ? 0 : m.sanity);
     let best = foes[0];

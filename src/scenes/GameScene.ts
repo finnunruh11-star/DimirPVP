@@ -289,6 +289,7 @@ type TurnCommand =
   | { t: 'cleave'; x: number; y: number }
   | { t: 'command'; summon: number }
   | { t: 'uncommand' }
+  | { t: 'mantle-bind' }
   | { t: 'end' };
 
 /** A reaction-window choice (a counter/response, or a pass). */
@@ -311,6 +312,39 @@ type DraftCommand = { t: 'draft'; index: number };
 
 const MAGE_RADIUS = 22;
 const HUD_Y = FIELD.y + FIELD.h + 18;
+
+const UI = {
+  panel: 0x0b111a,
+  panelRaised: 0x111b29,
+  panelHover: 0x203149,
+  panelDisabled: 0x0e151f,
+  border: 0x41536d,
+  borderSoft: 0x26364a,
+  cyan: 0x48b8d0,
+  gold: 0xd9a441,
+  coral: 0xf06a5d,
+  green: 0x47c98b,
+  violet: 0xa78bfa,
+};
+
+interface ModalChromeOptions {
+  width: number;
+  height: number;
+  title: string;
+  subtitle?: string;
+  accent?: number;
+  dismiss?: () => void;
+}
+
+interface MenuButtonOptions {
+  width?: number;
+  height?: number;
+  color?: string;
+  accent?: number;
+  enabled?: boolean;
+  fontSize?: number;
+  onClick: () => void;
+}
 
 /** One purchasable slot in the swamprun shop (rerolled every visit). */
 interface SwampShopSlot {
@@ -1042,7 +1076,7 @@ export class GameScene extends Phaser.Scene {
       .filter((m) => m.team === 1 && m.alive)
       .reduce((sum, m) => sum + m.maxLuck, 0);
     const makeItemSlot = (rarity: Rarity): SwampShopSlot => {
-      const id = draftChoices(rarity, () => rng.float(), 1)[0];
+      const id = draftChoices(rarity, () => rng.float(), 1, true)[0];
       const r = rng.float();
       const discount: 0 | 0.5 | 0.8 = r < 0.05 ? 0.8 : r < 0.25 ? 0.5 : 0;
       const price = Math.max(1, Math.round(SWAMP_PRICE[rarity] * (1 - discount)));
@@ -1055,9 +1089,9 @@ export class GameScene extends Phaser.Scene {
       return { kind: 'item', id: 'torch', rarity: 'consumeable', price, discount, sold: false };
     };
     const rollNonConsumable = (): Rarity => {
-      let rarity = rollRarity(() => rng.float(), partyLuck);
+      let rarity = rollRarity(() => rng.float(), partyLuck, true);
       let guard = 0;
-      while (rarity === 'consumeable' && guard++ < 50) rarity = rollRarity(() => rng.float(), partyLuck);
+      while (rarity === 'consumeable' && guard++ < 50) rarity = rollRarity(() => rng.float(), partyLuck, true);
       return rarity === 'consumeable' ? 'common' : rarity;
     };
     const slots: SwampShopSlot[] = [];
@@ -1066,9 +1100,9 @@ export class GameScene extends Phaser.Scene {
     for (let i = 0; i < 3; i++) slots.push(makeItemSlot(rollNonConsumable())); // slots 3-5
     // Slot 6: guaranteed unreal-or-better.
     const unrealRank = rarityRank('unreal');
-    let hi = rollRarity(() => rng.float(), partyLuck);
+    let hi = rollRarity(() => rng.float(), partyLuck, true);
     let guard = 0;
-    while (rarityRank(hi) < unrealRank && guard++ < 80) hi = rollRarity(() => rng.float(), partyLuck);
+    while (rarityRank(hi) < unrealRank && guard++ < 80) hi = rollRarity(() => rng.float(), partyLuck, true);
     if (rarityRank(hi) < unrealRank) hi = 'unreal';
     slots.push(makeItemSlot(hi));
     // Slot 7: stat up (priced dynamically as it is bought).
@@ -1118,11 +1152,11 @@ export class GameScene extends Phaser.Scene {
   /** Deterministic AI starting pick: one non-consumable item. */
   private aiStartPick(mage: Mage): ItemId[] {
     const rng = this.gs.rng;
-    let rarity = rollRarity(() => rng.float(), mage.maxLuck);
+    let rarity = rollRarity(() => rng.float(), mage.maxLuck, true);
     let guard = 0;
-    while (rarity === 'consumeable' && guard++ < 50) rarity = rollRarity(() => rng.float(), mage.maxLuck);
+    while (rarity === 'consumeable' && guard++ < 50) rarity = rollRarity(() => rng.float(), mage.maxLuck, true);
     if (rarity === 'consumeable') rarity = 'common';
-    const opts = draftChoices(rarity, () => rng.float(), 3);
+    const opts = draftChoices(rarity, () => rng.float(), 3, true);
     return opts.length ? [opts[Math.floor(rng.float() * opts.length)]] : [];
   }
 
@@ -1162,16 +1196,18 @@ export class GameScene extends Phaser.Scene {
     this.swampShopPanel = c;
     const cx = GAME_WIDTH / 2;
     const cy = GAME_HEIGHT / 2;
-    const dim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.8).setOrigin(0, 0);
-    const panel = this.add
-      .rectangle(cx, cy, 940, 580, 0x10101c, 0.98)
-      .setOrigin(0.5)
-      .setStrokeStyle(2, 0x5a5a88);
-    c.add([dim, panel]);
+    this.addModalChrome(c, {
+      width: 940,
+      height: 580,
+      title: 'PARTY SHOP  //  WAITING',
+      subtitle: `${mage.name} is choosing the party's next upgrade`,
+      accent: UI.green,
+    });
     c.add(
       this.add
-        .text(cx, cy - 40, `${mage.name} is shopping…`, {
-          fontSize: '26px',
+        .text(cx, cy - 10, `${this.swamprunGold}g`, {
+          fontFamily: 'Trebuchet MS',
+          fontSize: '46px',
           color: TEXT.warn,
           fontStyle: 'bold',
         })
@@ -1179,17 +1215,10 @@ export class GameScene extends Phaser.Scene {
     );
     c.add(
       this.add
-        .text(cx, cy + 16, `Party gold: ${this.swamprunGold}g`, {
-          fontSize: '20px',
-          color: '#ffdf80',
-        })
-        .setOrigin(0.5)
-    );
-    c.add(
-      this.add
-        .text(cx, cy + 64, 'Waiting for them to finish their picks.', {
-          fontSize: '16px',
+        .text(cx, cy + 42, 'SHARED PARTY GOLD', {
+          fontSize: '11px',
           color: TEXT.dim,
+          fontStyle: 'bold',
         })
         .setOrigin(0.5)
     );
@@ -1223,36 +1252,17 @@ export class GameScene extends Phaser.Scene {
     this.swampShopPanel = c;
     const cx = GAME_WIDTH / 2;
     const cy = GAME_HEIGHT / 2;
-    const dim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.8).setOrigin(0, 0);
-    const panel = this.add
-      .rectangle(cx, cy, 1180, 620, 0x10101c, 0.98)
-      .setOrigin(0.5)
-      .setStrokeStyle(2, 0x5a5a88);
-    c.add([dim, panel]);
-
     const gold = this.swamprunGold;
-    c.add(
-      this.add
-        .text(cx, cy - 288, `${mage.name} — Shop  (Wave ${this.swamprunWave})`, {
-          fontSize: '24px',
-          color: TEXT.warn,
-          fontStyle: 'bold',
-        })
-        .setOrigin(0.5)
-    );
     const cap = mage.hasBagOfHolding() ? Infinity : mage.carryCap();
     const over = mage.carriedWeight() > cap;
     const capTxt = cap === Infinity ? '∞' : `${cap}`;
-    c.add(
-      this.add
-        .text(
-          cx,
-          cy - 256,
-          `Party gold: ${gold}g     Carry: ${mage.carriedWeight()}/${capTxt} kg`,
-          { fontSize: '19px', color: over ? '#ff9a9a' : '#ffdf80' }
-        )
-        .setOrigin(0.5)
-    );
+    this.addModalChrome(c, {
+      width: 1180,
+      height: 620,
+      title: `${mage.name.toUpperCase()}  //  WAVE ${this.swamprunWave} SHOP`,
+      subtitle: `Party gold ${gold}g  •  Carry ${mage.carriedWeight()}/${capTxt} kg${over ? '  •  OVER CAPACITY' : ''}`,
+      accent: over ? UI.coral : UI.green,
+    });
     if (this.swampShopMsg) {
       c.add(
         this.add.text(cx, cy - 230, this.swampShopMsg, { fontSize: '15px', color: '#9fe6a0' }).setOrigin(0.5)
@@ -1452,12 +1462,14 @@ export class GameScene extends Phaser.Scene {
     }
     const card = this.add
       .text(x - w / 2, y, `${title}\n${price}g\n${body}`, {
+        fontFamily: 'Trebuchet MS',
         fontSize: '13px',
         color,
-        backgroundColor: canBuy ? '#181826' : '#141420',
+        backgroundColor: canBuy ? '#111b29' : '#0e151f',
         padding: { x: 10, y: 8 },
         wordWrap: { width: w - 24 },
         fixedWidth: w,
+        fixedHeight: 172,
         align: 'left',
       })
       .setOrigin(0, 0);
@@ -1471,8 +1483,14 @@ export class GameScene extends Phaser.Scene {
           this.swampBuySlot(mage, i);
         }
       });
-      card.on('pointerover', () => card.setStroke('#ffffff', 2));
-      card.on('pointerout', () => card.setStroke('#000000', 0));
+      card.on('pointerover', () => {
+        card.setStroke('#d9a441', 2);
+        card.setBackgroundColor('#203149');
+      });
+      card.on('pointerout', () => {
+        card.setStroke('#000000', 0);
+        card.setBackgroundColor('#111b29');
+      });
     }
     c.add(card);
   }
@@ -1489,18 +1507,19 @@ export class GameScene extends Phaser.Scene {
   ): void {
     const t = this.add
       .text(x, y, txt, {
+        fontFamily: 'Trebuchet MS',
         fontSize: '16px',
         fontStyle: 'bold',
         color: enabled ? color : '#555',
-        backgroundColor: enabled ? '#1c1c30' : '#141420',
+        backgroundColor: enabled ? '#111b29' : '#0e151f',
         padding: { x: 12, y: 7 },
       })
       .setOrigin(0.5);
     if (enabled) {
       t.setInteractive({ useHandCursor: true });
       t.on('pointerdown', onClick);
-      t.on('pointerover', () => t.setBackgroundColor('#2c2c50'));
-      t.on('pointerout', () => t.setBackgroundColor('#1c1c30'));
+      t.on('pointerover', () => t.setBackgroundColor('#203149'));
+      t.on('pointerout', () => t.setBackgroundColor('#111b29'));
     }
     c.add(t);
   }
@@ -1764,36 +1783,57 @@ export class GameScene extends Phaser.Scene {
     const dim = this.add
       .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.78)
       .setOrigin(0, 0);
+    const shadow = this.add
+      .rectangle(GAME_WIDTH / 2 + 10, GAME_HEIGHT / 2 + 12, 980, 600, 0x000000, 0.42)
+      .setOrigin(0.5);
     const panel = this.add
-      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 980, 600, 0x10101c, 0.98)
+      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 980, 600, 0x0b111a, 0.98)
       .setOrigin(0.5)
-      .setStrokeStyle(2, 0x5a5a88);
+      .setStrokeStyle(2, UI.border);
+    const inner = this.add
+      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 968, 588, 0x000000, 0)
+      .setStrokeStyle(1, UI.borderSoft);
+    const rail = this.add.rectangle(GAME_WIDTH / 2, 64, 950, 5, UI.gold, 1);
+    const allocationBed = this.add
+      .rectangle(GAME_WIDTH / 2, 405, 820, 330, UI.panelRaised, 0.58)
+      .setStrokeStyle(1, UI.borderSoft);
     this.assignTitle = this.add
-      .text(GAME_WIDTH / 2, 70, '', { fontSize: '24px', color: TEXT.warn, fontStyle: 'bold' })
+      .text(GAME_WIDTH / 2, 79, '', {
+        fontFamily: 'Trebuchet MS', fontSize: '24px', color: TEXT.warn, fontStyle: 'bold',
+      })
       .setOrigin(0.5);
     const subtitle = this.add
       .text(
         GAME_WIDTH / 2,
-        104,
+        110,
         'Click a die, then a stat to assign it. Click a filled stat to take its die back. All six must be placed.',
         { fontSize: '14px', color: TEXT.dim }
       )
       .setOrigin(0.5);
 
-    const children: Phaser.GameObjects.GameObject[] = [dim, panel, this.assignTitle, subtitle];
+    const diceLabel = this.add.text(244, 132, 'ROLLED DICE', {
+      fontFamily: 'Trebuchet MS', fontSize: '11px', color: '#71c7d8', fontStyle: 'bold',
+    });
+    const statLabel = this.add.text(244, 215, 'ARCANE ATTRIBUTES', {
+      fontFamily: 'Trebuchet MS', fontSize: '11px', color: TEXT.warn, fontStyle: 'bold',
+    });
+    const children: Phaser.GameObjects.GameObject[] = [
+      dim, shadow, panel, inner, rail, allocationBed, this.assignTitle, subtitle, diceLabel, statLabel,
+    ];
 
     // Dice row.
     const startX = GAME_WIDTH / 2 - (6 * 120 + 5 * 12) / 2;
     this.assignDieTexts = [];
     for (let i = 0; i < 6; i++) {
       const t = this.add
-        .text(startX + i * 132, 140, '', {
+        .text(startX + i * 132, 148, '', {
           fontSize: '16px',
           color: TEXT.body,
           align: 'center',
-          backgroundColor: '#181826',
+          backgroundColor: '#172231',
           padding: { x: 6, y: 8 },
           fixedWidth: 120,
+          fixedHeight: 54,
         })
         .setInteractive({ useHandCursor: true });
       t.on('pointerdown', () => this.onAssignDieClick(i));
@@ -1810,7 +1850,7 @@ export class GameScene extends Phaser.Scene {
           fontSize: '18px',
           color: TEXT.warn,
           align: 'center',
-          backgroundColor: '#23233a',
+          backgroundColor: '#1a2636',
           padding: { x: 6, y: 8 },
           fixedWidth: 64,
         })
@@ -1829,7 +1869,7 @@ export class GameScene extends Phaser.Scene {
         fontSize: '20px',
         color: TEXT.dim,
         fontStyle: 'bold',
-        backgroundColor: '#181826',
+        backgroundColor: '#172231',
         padding: { x: 18, y: 10 },
       })
       .setOrigin(0.5)
@@ -1883,7 +1923,7 @@ export class GameScene extends Phaser.Scene {
       t.setText(d ? `${d.spec}\n${d.value}` : '');
       const used = this.assignPlacement.includes(i);
       const selected = this.assignSelectedDie === i;
-      t.setBackgroundColor(selected ? '#5a5a1a' : used ? '#15251a' : '#181826');
+      t.setBackgroundColor(selected ? '#58451f' : used ? '#17372b' : '#172231');
       t.setColor(selected ? TEXT.warn : used ? TEXT.dim : TEXT.body);
     });
     this.assignSlotTexts.forEach((t, s) => {
@@ -2048,16 +2088,18 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     const luck = this.shopMage?.maxLuck ?? 0;
-    let rarity = rollRarity(Math.random, luck);
+    let rarity = rollRarity(Math.random, luck, this.swamprun);
     if (this.swampStartDraftActive) {
       // The start-of-run pick never offers a consumable.
       let guard = 0;
-      while (rarity === 'consumeable' && guard++ < 50) rarity = rollRarity(Math.random, luck);
+      while (rarity === 'consumeable' && guard++ < 50) rarity = rollRarity(Math.random, luck, true);
       if (rarity === 'consumeable') rarity = 'common';
     }
-    // Three rolled choices, plus a guaranteed fourth option that is always a
-    // torch — a reliable light source is never more than one draft pick away.
-    this.shopOptions = [...draftChoices(rarity, Math.random, 3), 'torch'];
+    // Swamprun keeps its guaranteed fourth Torch; every other mode rolls four
+    // ordinary choices and cannot draw either light-source item.
+    this.shopOptions = this.swamprun
+      ? [...draftChoices(rarity, Math.random, 3, true), 'torch']
+      : draftChoices(rarity, Math.random, 4);
     this.refreshShopOverlay();
   }
 
@@ -2099,20 +2141,34 @@ export class GameScene extends Phaser.Scene {
     }
     this.shopPanel = this.add.container(0, 0).setDepth(95).setVisible(false);
     const dim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.78).setOrigin(0, 0);
+    const shadow = this.add
+      .rectangle(GAME_WIDTH / 2 + 10, GAME_HEIGHT / 2 + 12, 1120, 650, 0x000000, 0.42)
+      .setOrigin(0.5);
     const panel = this.add
-      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 1120, 650, 0x10101c, 0.98)
+      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 1120, 650, 0x0b111a, 0.98)
       .setOrigin(0.5)
-      .setStrokeStyle(2, 0x5a5a88);
+      .setStrokeStyle(2, UI.border);
+    const inner = this.add
+      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 1108, 638, 0x000000, 0)
+      .setStrokeStyle(1, UI.borderSoft);
+    const rail = this.add.rectangle(GAME_WIDTH / 2, 39, 1090, 5, UI.cyan, 1);
     this.shopTitle = this.add
-      .text(GAME_WIDTH / 2, 70, '', { fontSize: '26px', color: TEXT.warn, fontStyle: 'bold' })
+      .text(GAME_WIDTH / 2, 70, '', {
+        fontFamily: 'Trebuchet MS', fontSize: '26px', color: TEXT.warn, fontStyle: 'bold',
+      })
       .setOrigin(0.5);
     this.shopInfo = this.add
       .text(GAME_WIDTH / 2, 110, '', { fontSize: '16px', color: TEXT.body })
       .setOrigin(0.5);
 
-    const children: Phaser.GameObjects.GameObject[] = [dim, panel, this.shopTitle, this.shopInfo];
+    const choiceLabel = this.add.text(92, 148, 'CHOOSE ONE ITEM', {
+      fontFamily: 'Trebuchet MS', fontSize: '11px', color: '#71c7d8', fontStyle: 'bold',
+    });
+    const children: Phaser.GameObjects.GameObject[] = [
+      dim, shadow, panel, inner, rail, this.shopTitle, this.shopInfo, choiceLabel,
+    ];
 
-    // Four draft option cards, side by side (the last is always a torch).
+    // Four draft option cards, side by side.
     this.shopOptionTexts = [];
     const cardW = 258;
     const gap = 20;
@@ -2124,18 +2180,25 @@ export class GameScene extends Phaser.Scene {
           fontSize: '15px',
           color: TEXT.body,
           wordWrap: { width: cardW - 28 },
-          backgroundColor: '#181826',
+          backgroundColor: '#172231',
           padding: { x: 14, y: 14 },
           fixedWidth: cardW,
+          fixedHeight: 270,
           align: 'left',
         })
         .setOrigin(0, 0)
         .setInteractive({ useHandCursor: true });
       t.on('pointerdown', () => this.onDraftPick(i));
       t.on('pointerover', () => {
-        if (!this.shopLocked) t.setStroke('#ffffff', 2);
+        if (!this.shopLocked) {
+          t.setStroke('#d9a441', 2);
+          t.setBackgroundColor('#203149');
+        }
       });
-      t.on('pointerout', () => t.setStroke('#000000', 0));
+      t.on('pointerout', () => {
+        t.setStroke('#000000', 0);
+        t.setBackgroundColor('#172231');
+      });
       this.shopOptionTexts.push(t);
       children.push(t);
     }
@@ -2828,6 +2891,10 @@ export class GameScene extends Phaser.Scene {
       case 'weapon-action': {
         const abilityIds = me.weaponAbilityItems();
         const firstAbility = abilityIds.length ? getItem(abilityIds[0]).weaponAbility : undefined;
+        const weaponActionLabel =
+          firstAbility === 'blackBellMode'
+            ? `Black Bell — ${me.blackBellCondense ? 'Condense' : 'Toll'}`
+            : 'Weapon Action';
         if (firstAbility && me.isActionBanned(`weapon:${firstAbility}`)) {
           this.gs.log(`${me.name}'s weapon action has been stifled forever.`);
           break;
@@ -2836,8 +2903,11 @@ export class GameScene extends Phaser.Scene {
         await this.runStack(
           this.gs.makeActionItem({
             source: me,
-            label: 'Weapon Action',
-            description: `${me.name} uses a weapon action.`,
+            label: weaponActionLabel,
+            description:
+              firstAbility === 'blackBellMode'
+                ? `${me.name} changes Black Bell from ${me.blackBellCondense ? 'Condense' : 'Toll'} mode.`
+                : `${me.name} uses a weapon action.`,
             needleBan: firstAbility
               ? { kind: 'ability', key: `weapon:${firstAbility}`, label: 'that weapon action' }
               : undefined,
@@ -2847,6 +2917,7 @@ export class GameScene extends Phaser.Scene {
                 if (ability === 'bastionSwap') game.swapBastionForm(me);
                 else if (ability === 'mutivargZone') game.castMutivargZone(me);
                 else if (ability === 'gamblerCash') await this.gamblerCashOut(me);
+                else if (ability === 'blackBellMode') game.toggleBlackBellMode(me);
               }
             },
           })
@@ -2930,6 +3001,20 @@ export class GameScene extends Phaser.Scene {
           this.puppet = null;
           this.gs.log(`${owner.name} resumes their turn.`);
         }
+        break;
+      }
+      case 'mantle-bind': {
+        if (me.bindMantleCharges <= 0) break;
+        me.spend('bonus');
+        me.bindMantleCharges -= 1;
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Weak Bind',
+            description: `${me.name} invokes a binding mantle.`,
+            resolve: (game) => game.applyMantleBind(me),
+          })
+        );
         break;
       }
       case 'end':
@@ -3058,8 +3143,8 @@ export class GameScene extends Phaser.Scene {
     }
     const drafted: string[] = [];
     for (let i = 0; i < n; i++) {
-      const rarity = rollRarity(() => game.rng.float(), mage.maxLuck);
-      const options = draftChoices(rarity, () => game.rng.float(), 3);
+      const rarity = rollRarity(() => game.rng.float(), mage.maxLuck, this.swamprun);
+      const options = draftChoices(rarity, () => game.rng.float(), 3, this.swamprun);
       if (!options.length) continue;
       const idx = await this.chooseGamblerItem(mage, options, i + 1, n);
       const id = options[Math.max(0, Math.min(options.length - 1, idx))];
@@ -3507,6 +3592,8 @@ export class GameScene extends Phaser.Scene {
     const order = this.gs.initiativeOrder.length
       ? this.gs.initiativeOrder
       : this.gs.mages.map((_, i) => i);
+    // While a summon is puppeted (Command), its owner is still taking their turn.
+    const turnOwner = this.puppet?.owner ?? this.gs.current;
     return order
       .map((i) => this.gs.mages[i])
       .filter(
@@ -3515,6 +3602,7 @@ export class GameScene extends Phaser.Scene {
           m.alive &&
           m !== top.source &&
           m !== this.gs.current &&
+          m !== turnOwner &&
           m.team !== top.source.team
       );
   }
@@ -3527,8 +3615,10 @@ export class GameScene extends Phaser.Scene {
    */
   private reactorCanRespond(reactor: Mage, top: StackItem): boolean {
     if (reactor === top.source) return false;
-    // You may never react during your own turn.
+    // You may never react during your own turn (including while you puppet a
+    // summon via Command, when `current` is the summon rather than you).
     if (reactor === this.gs.current) return false;
+    if (reactor === this.puppet?.owner) return false;
     // Physical reactions are meaningless against non-attack triggers (end of
     // turn, a blink step) — only counter-magic answers those.
     const physical = !top.noPhysicalReaction;
@@ -4129,51 +4219,32 @@ export class GameScene extends Phaser.Scene {
     this.hideEldritchMenu();
     this.mode = 'eldritch-menu';
     const cont = this.add.container(0, 0).setDepth(97);
-    const dim = this.add
-      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.6)
-      .setOrigin(0, 0)
-      .setInteractive();
-    dim.on('pointerdown', () => this.hideEldritchMenu());
     const cx = GAME_WIDTH / 2;
     const cy = GAME_HEIGHT / 2;
-    const box = this.add
-      .rectangle(cx, cy, 460, 300, 0x120a1c, 0.98)
-      .setOrigin(0.5)
-      .setStrokeStyle(2, 0x8a5cff);
-    const title = this.add
-      .text(cx, cy - 118, 'Mantle of Eldritch Truth', {
-        fontSize: '20px',
-        color: '#c9a6ff',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-    cont.add([dim, box, title]);
+    this.addModalChrome(cont, {
+      width: 500,
+      height: 350,
+      title: 'MANTLE OF ELDRITCH TRUTH',
+      subtitle: 'Choose how the mantle bends reality this turn',
+      accent: UI.violet,
+      dismiss: () => this.hideEldritchMenu(),
+    });
     const opts: { choice: 'attack' | 'defend' | 'restore'; label: string; desc: string }[] = [
       { choice: 'attack', label: 'Attack', desc: '10 true damage to any one target' },
       { choice: 'defend', label: 'Defend', desc: 'Void all damage until your next turn' },
       { choice: 'restore', label: 'Restore', desc: '+5 HP, +10 mana, +2 of each word' },
     ];
     opts.forEach((o, i) => {
-      const y = cy - 60 + i * 58;
-      const btn = this.add
-        .text(cx, y, o.label, {
-          fontSize: '17px',
-          color: '#e8dcff',
-          backgroundColor: '#241633',
-          fontStyle: 'bold',
-          padding: { x: 14, y: 6 },
-          fixedWidth: 380,
-          align: 'center',
-        })
-        .setOrigin(0.5)
-        .setInteractive({ useHandCursor: true });
-      btn.on('pointerover', () => btn.setBackgroundColor('#3a2352'));
-      btn.on('pointerout', () => btn.setBackgroundColor('#241633'));
-      btn.on('pointerdown', () => this.onEldritchChoice(o.choice));
+      const y = cy - 60 + i * 68;
+      const btn = this.addMenuButton(cont, cx, y, o.label.toUpperCase(), {
+        width: 410,
+        accent: UI.violet,
+        onClick: () => this.onEldritchChoice(o.choice),
+      });
       const desc = this.add
-        .text(cx, y + 20, o.desc, { fontSize: '11px', color: TEXT.dim })
+        .text(cx, y + 22, o.desc, { fontSize: '11px', color: TEXT.dim })
         .setOrigin(0.5);
-      cont.add([btn, desc]);
+      cont.add(desc);
     });
     this.eldritchMenu = cont;
   }
@@ -4219,50 +4290,31 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'thunder-menu';
     const me = this.gs.current;
     const cont = this.add.container(0, 0).setDepth(97);
-    const dim = this.add
-      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.6)
-      .setOrigin(0, 0)
-      .setInteractive();
-    dim.on('pointerdown', () => this.hideThunderMenu());
     const cx = GAME_WIDTH / 2;
     const cy = GAME_HEIGHT / 2;
-    const box = this.add
-      .rectangle(cx, cy, 480, 280, 0x0a1420, 0.98)
-      .setOrigin(0.5)
-      .setStrokeStyle(2, 0x5cc8ff);
-    const title = this.add
-      .text(cx, cy - 108, `Roaring Thunder — ${me.thunderStacks} stacks`, {
-        fontSize: '20px',
-        color: '#9cd8ff',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-    cont.add([dim, box, title]);
+    this.addModalChrome(cont, {
+      width: 520,
+      height: 320,
+      title: `ROARING THUNDER  //  ${me.thunderStacks} STACKS`,
+      subtitle: 'Build the storm or release every stored charge',
+      accent: UI.cyan,
+      dismiss: () => this.hideThunderMenu(),
+    });
     const opts: { choice: 'charge' | 'discharge'; label: string; desc: string }[] = [
       { choice: 'charge', label: 'Charge Up', desc: 'Spend mana + 1d6 true dmg; roll d4 stacks & color charges' },
       { choice: 'discharge', label: 'Discharge', desc: 'Dump all stacks as bouncing lightning (1d3 per stack)' },
     ];
     opts.forEach((o, i) => {
-      const y = cy - 45 + i * 70;
-      const btn = this.add
-        .text(cx, y, o.label, {
-          fontSize: '17px',
-          color: '#dff2ff',
-          backgroundColor: '#16323f',
-          fontStyle: 'bold',
-          padding: { x: 14, y: 6 },
-          fixedWidth: 400,
-          align: 'center',
-        })
-        .setOrigin(0.5)
-        .setInteractive({ useHandCursor: true });
-      btn.on('pointerover', () => btn.setBackgroundColor('#22506a'));
-      btn.on('pointerout', () => btn.setBackgroundColor('#16323f'));
-      btn.on('pointerdown', () => this.onThunderChoice(o.choice));
+      const y = cy - 42 + i * 82;
+      this.addMenuButton(cont, cx, y, o.label.toUpperCase(), {
+        width: 430,
+        accent: UI.cyan,
+        onClick: () => this.onThunderChoice(o.choice),
+      });
       const desc = this.add
-        .text(cx, y + 22, o.desc, { fontSize: '11px', color: TEXT.dim })
+        .text(cx, y + 23, o.desc, { fontSize: '11px', color: TEXT.dim })
         .setOrigin(0.5);
-      cont.add([btn, desc]);
+      cont.add(desc);
     });
     this.thunderMenu = cont;
   }
@@ -4397,9 +4449,14 @@ export class GameScene extends Phaser.Scene {
 
     // Weapon action (only if a carried weapon has one).
     if (me.hasWeaponAction()) {
+      const hasBlackBell = me.weaponAbilityItems().some(
+        (id) => getItem(id).weaponAbility === 'blackBellMode'
+      );
       entries.push({
         id: 'weapon',
-        label: 'Weapon action',
+        label: hasBlackBell
+          ? `Black Bell: ${me.blackBellCondense ? 'Condense' : 'Toll'}`
+          : 'Weapon action',
         hotkey: 'R',
         desc: 'Trigger your weapon\u2019s special ability.',
         enabled: me.actions.bonus > 0 || inf,
@@ -4445,6 +4502,19 @@ export class GameScene extends Phaser.Scene {
         enabled: me.actions.bonus > 0 || inf,
         reason: 'Needs a bonus action.',
         run: () => this.beginThunder(),
+      });
+    }
+
+    // Veil Bind mantle: a weak Bind granted as a bonus action.
+    if (me.bindMantleCharges > 0) {
+      entries.push({
+        id: 'mantle-bind',
+        label: 'Weak Bind',
+        hotkey: 'B',
+        desc: `Root the nearest enemy for 1 turn (${me.bindMantleCharges} left).`,
+        enabled: me.actions.bonus > 0 || inf,
+        reason: 'Needs a bonus action.',
+        run: () => this.submitTurn({ t: 'mantle-bind' }),
       });
     }
 
@@ -4655,14 +4725,30 @@ export class GameScene extends Phaser.Scene {
     const headH = 74;
     const panelH = headH + entries.length * rowH + 14;
     const top0 = Math.max(30, Math.round((GAME_HEIGHT - panelH) / 2));
+    const shadow = this.add
+      .rectangle(cx + 8, top0 + panelH / 2 + 10, panelW, panelH, 0x000000, 0.4)
+      .setOrigin(0.5);
     const box = this.add
-      .rectangle(cx, top0 + panelH / 2, panelW, panelH, 0x0c0c18, 0.98)
+      .rectangle(cx, top0 + panelH / 2, panelW, panelH, UI.panel, 0.99)
       .setOrigin(0.5)
-      .setStrokeStyle(2, reaction ? 0xff8a5c : 0x6a6ad0);
+      .setStrokeStyle(2, UI.border);
+    const inner = this.add
+      .rectangle(cx, top0 + panelH / 2, panelW - 12, panelH - 12, 0x000000, 0)
+      .setOrigin(0.5)
+      .setStrokeStyle(1, UI.borderSoft);
+    const rail = this.add.rectangle(
+      cx,
+      top0 + 4,
+      panelW - 24,
+      5,
+      reaction ? UI.coral : UI.gold,
+      1
+    );
     const titleT = this.add
-      .text(cx, top0 + 22, reaction ? 'Reaction — choose a response' : 'Actions', {
+      .text(cx, top0 + 22, reaction ? 'REACTION WINDOW' : 'AVAILABLE ACTIONS', {
+        fontFamily: 'Trebuchet MS',
         fontSize: '20px',
-        color: reaction ? '#ffb98a' : TEXT.warn,
+        color: '#f5f8fc',
         fontStyle: 'bold',
       })
       .setOrigin(0.5);
@@ -4672,15 +4758,15 @@ export class GameScene extends Phaser.Scene {
         color: TEXT.dim,
       })
       .setOrigin(0.5);
-    cont.add([dim, box, titleT, hintT]);
+    cont.add([dim, shadow, box, inner, rail, titleT, hintT]);
 
     const left = cx - panelW / 2;
     entries.forEach((e, i) => {
       const y = top0 + headH + i * rowH;
       const rowBg = this.add
-        .rectangle(cx, y + rowH / 2 - 4, panelW - 28, rowH - 6, e.enabled ? 0x1b1b30 : 0x141420, 1)
+        .rectangle(cx, y + rowH / 2 - 4, panelW - 28, rowH - 6, e.enabled ? UI.panelRaised : UI.panelDisabled, 1)
         .setOrigin(0.5)
-        .setStrokeStyle(1, e.enabled ? 0x3a3a66 : 0x24243a);
+        .setStrokeStyle(1, e.enabled ? UI.borderSoft : 0x1a2533);
       const key = this.add
         .text(left + 22, y + 7, e.hotkey, {
           fontSize: '12px',
@@ -4707,8 +4793,8 @@ export class GameScene extends Phaser.Scene {
       cont.add([rowBg, key, label, desc]);
       if (e.enabled) {
         rowBg.setInteractive({ useHandCursor: true });
-        rowBg.on('pointerover', () => rowBg.setFillStyle(0x2a2a4a));
-        rowBg.on('pointerout', () => rowBg.setFillStyle(0x1b1b30));
+        rowBg.on('pointerover', () => rowBg.setFillStyle(UI.panelHover));
+        rowBg.on('pointerout', () => rowBg.setFillStyle(UI.panelRaised));
         rowBg.on('pointerdown', () => {
           // The very same click reaches the field's global pointerdown right
           // after this. Guard it so an action that starts aiming doesn't also
@@ -4953,31 +5039,32 @@ export class GameScene extends Phaser.Scene {
     const me = this.gs.current;
     const panel = this.add.container(0, 0).setDepth(96).setVisible(false);
     const children: Phaser.GameObjects.GameObject[] = [];
-
-    const dim = this.add
-      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72)
-      .setOrigin(0, 0)
-      .setInteractive();
-    dim.on('pointerdown', () => this.closeInventory());
-    const box = this.add
-      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 920, 560, 0x10101c, 0.98)
-      .setOrigin(0.5)
-      .setStrokeStyle(2, 0x5a5a88);
-    const title = this.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 250, `${me.name} — Inventory`, {
-        fontSize: '22px',
-        color: TEXT.warn,
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-    children.push(dim, box, title);
+    this.addModalChrome(panel, {
+      width: 960,
+      height: 600,
+      title: `${me.name.toUpperCase()}  //  INVENTORY`,
+      subtitle: `Carry ${me.carriedWeight()}/${Number.isFinite(me.carryCap()) ? me.carryCap() : '∞'} kg  •  hover status effects for details`,
+      accent: UI.gold,
+      dismiss: () => this.closeInventory(),
+    });
 
     const leftX = GAME_WIDTH / 2 - 440;
     const rightX = GAME_WIDTH / 2 + 20;
     const topY = GAME_HEIGHT / 2 - 200;
 
     children.push(
-      this.add.text(leftX, topY - 30, 'Items', { fontSize: '16px', color: TEXT.body, fontStyle: 'bold' })
+      this.add
+        .rectangle(leftX + 210, GAME_HEIGHT / 2 + 12, 430, 438, UI.panelRaised, 0.72)
+        .setStrokeStyle(1, UI.borderSoft),
+      this.add
+        .rectangle(rightX + 200, GAME_HEIGHT / 2 + 12, 420, 438, UI.panelRaised, 0.72)
+        .setStrokeStyle(1, UI.borderSoft)
+    );
+
+    children.push(
+      this.add.text(leftX, topY - 30, 'EQUIPMENT & SUPPLIES', {
+        fontFamily: 'Trebuchet MS', fontSize: '13px', color: TEXT.warn, fontStyle: 'bold',
+      })
     );
     const items: { id: ItemId; where: 'hand' | 'bag' | 'utility' | 'accessory' }[] = [
       ...me.hands.map((id) => ({ id, where: 'hand' as const })),
@@ -5006,7 +5093,7 @@ export class GameScene extends Phaser.Scene {
           .text(bx, y, '[ Consume ]', {
             fontSize: '13px',
             color: '#7cfc9a',
-            backgroundColor: '#181826',
+            backgroundColor: '#152a25',
             padding: { x: 6, y: 3 },
           })
           .setInteractive({ useHandCursor: true });
@@ -5019,7 +5106,7 @@ export class GameScene extends Phaser.Scene {
           .text(bx, y, '[ Throw ]', {
             fontSize: '13px',
             color: '#ffcf6b',
-            backgroundColor: '#181826',
+            backgroundColor: '#2b2415',
             padding: { x: 6, y: 3 },
           })
           .setInteractive({ useHandCursor: true });
@@ -5032,7 +5119,7 @@ export class GameScene extends Phaser.Scene {
           .text(bx, y, '[ Equip ]', {
             fontSize: '13px',
             color: '#7cd0ff',
-            backgroundColor: '#181826',
+            backgroundColor: '#142739',
             padding: { x: 6, y: 3 },
           })
           .setInteractive({ useHandCursor: true });
@@ -5045,7 +5132,7 @@ export class GameScene extends Phaser.Scene {
           .text(bx, y, '[ Unequip ]', {
             fontSize: '13px',
             color: '#7cd0ff',
-            backgroundColor: '#181826',
+            backgroundColor: '#142739',
             padding: { x: 6, y: 3 },
           })
           .setInteractive({ useHandCursor: true });
@@ -5056,7 +5143,7 @@ export class GameScene extends Phaser.Scene {
           .text(bx, y, '[ Drop ]', {
             fontSize: '13px',
             color: TEXT.warn,
-            backgroundColor: '#181826',
+            backgroundColor: '#2b2415',
             padding: { x: 6, y: 3 },
           })
           .setInteractive({ useHandCursor: true });
@@ -5068,7 +5155,7 @@ export class GameScene extends Phaser.Scene {
           .text(bx, y, '[ Drop ]', {
             fontSize: '13px',
             color: TEXT.warn,
-            backgroundColor: '#181826',
+            backgroundColor: '#2b2415',
             padding: { x: 6, y: 3 },
           })
           .setInteractive({ useHandCursor: true });
@@ -5078,9 +5165,10 @@ export class GameScene extends Phaser.Scene {
     });
 
     children.push(
-      this.add.text(rightX, topY - 30, 'Status Effects', {
-        fontSize: '16px',
-        color: TEXT.body,
+      this.add.text(rightX, topY - 30, 'ACTIVE STATUS EFFECTS', {
+        fontFamily: 'Trebuchet MS',
+        fontSize: '13px',
+        color: '#71c7d8',
         fontStyle: 'bold',
       })
     );
@@ -5095,7 +5183,7 @@ export class GameScene extends Phaser.Scene {
         .text(rightX, y, `${s.name}  (${s.duration})`, {
           fontSize: '13px',
           color: TEXT.body,
-          backgroundColor: '#181826',
+          backgroundColor: '#15202f',
           padding: { x: 6, y: 3 },
           fixedWidth: 380,
         })
@@ -5126,7 +5214,7 @@ export class GameScene extends Phaser.Scene {
       .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 + 240, '[ Close ]  (I / Esc)', {
         fontSize: '16px',
         color: TEXT.dim,
-        backgroundColor: '#181826',
+        backgroundColor: '#111b29',
         padding: { x: 14, y: 6 },
       })
       .setOrigin(0.5)
@@ -5665,7 +5753,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.autoPassButton) return;
     const on = this.autoPassReactions;
     this.autoPassButton.setText(`Auto-pass: ${on ? 'ON' : 'OFF'}  [O]`);
-    this.autoPassButton.setBackgroundColor(on ? '#4caf50' : '#2a2a3c');
+    this.autoPassButton.setBackgroundColor(on ? '#24543f' : '#1a2636');
     this.autoPassButton.setColor(on ? '#0c0c18' : TEXT.dim);
   }
 
@@ -5706,7 +5794,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.spectateButton) return;
     const on = this.spectateAll;
     this.spectateButton.setText(`Spectate: ${on ? 'ON' : 'OFF'}  [Y]`);
-    this.spectateButton.setBackgroundColor(on ? '#4caf50' : '#2a2a3c');
+    this.spectateButton.setBackgroundColor(on ? '#24543f' : '#1a2636');
     this.spectateButton.setColor(on ? '#0c0c18' : TEXT.dim);
   }
 
@@ -5881,12 +5969,15 @@ export class GameScene extends Phaser.Scene {
     const y = FIELD.y + 10;
     const c = this.add.container(0, 0).setDepth(70).setVisible(false);
     const bg = this.add
-      .rectangle(x, y, w, headerH + bodyH, 0x0b0b14, 0.94)
+      .rectangle(x, y, w, headerH + bodyH, UI.panel, 0.97)
       .setOrigin(0, 0)
-      .setStrokeStyle(1, 0x3a3a52)
+      .setStrokeStyle(1, UI.border)
       .setInteractive();
+    const accent = this.add.rectangle(x, y, 5, headerH + bodyH, UI.violet, 1).setOrigin(0, 0);
     const title = this.add
-      .text(x + 8, y + 5, '', { fontSize: '14px', color: '#ffd166', fontStyle: 'bold' })
+      .text(x + 12, y + 5, '', {
+        fontFamily: 'Trebuchet MS', fontSize: '14px', color: TEXT.warn, fontStyle: 'bold',
+      })
       .setOrigin(0, 0);
     const hint = this.add
       .text(x + w - 8, y + 6, 'scroll ↕', { fontSize: '11px', color: TEXT.dim })
@@ -5902,7 +5993,7 @@ export class GameScene extends Phaser.Scene {
     const maskShape = this.add.graphics().setVisible(false);
     maskShape.fillStyle(0xffffff).fillRect(x, y + headerH, w, bodyH);
     body.setMask(maskShape.createGeometryMask());
-    c.add([bg, title, hint, body]);
+    c.add([bg, accent, title, hint, body]);
     // The background spans the whole panel and catches wheel scrolls (the body
     // text on top is non-interactive, so events fall through to it).
     bg.on('wheel', (_p: Phaser.Input.Pointer, _dx: number, dy: number) => this.scrollSpellInfo(dy));
@@ -6137,11 +6228,6 @@ export class GameScene extends Phaser.Scene {
   ): Promise<DodgeChoice | null> {
     return new Promise((resolve) => {
       const panel = this.add.container(0, 0).setDepth(97);
-      const dim = this.add
-        .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.72)
-        .setOrigin(0, 0)
-        .setInteractive();
-      panel.add(dim);
 
       const options: { label: string; color: string; choice: DodgeChoice | null }[] = [];
       if (canRiposte) {
@@ -6156,38 +6242,38 @@ export class GameScene extends Phaser.Scene {
       options.push({ label: 'Skip', color: TEXT.dim, choice: null });
 
       const cx = GAME_WIDTH / 2;
-      const rowH = 34;
-      const panelH = 72 + options.length * rowH;
-      const top0 = Math.max(50, GAME_HEIGHT / 2 - panelH / 2);
-      const rect = this.add
-        .rectangle(cx, top0 + panelH / 2, 480, panelH, 0x12121e, 0.98)
-        .setOrigin(0.5)
-        .setStrokeStyle(2, 0x7cc4ff);
-      panel.add(rect);
-      const title = this.add
-        .text(cx, top0 + 22, `Dodge follow-up — ${reactor.name}`, {
-          fontSize: '18px',
-          color: TEXT.warn,
-          fontStyle: 'bold',
-        })
-        .setOrigin(0.5);
-      panel.add(title);
+      const rowH = 38;
+      const panelH = 112 + options.length * rowH;
+      const top0 = GAME_HEIGHT / 2 - panelH / 2;
+      this.addModalChrome(panel, {
+        width: 520,
+        height: panelH,
+        title: 'DODGE FOLLOW-UP',
+        subtitle: `${reactor.name} earned an immediate counterplay`,
+        accent: UI.cyan,
+      });
 
       const finish = (c: DodgeChoice | null): void => {
         panel.destroy();
         resolve(c);
       };
       options.forEach((opt, i) => {
-        const y = top0 + 54 + i * rowH;
+        const y = top0 + 82 + i * rowH;
         const t = this.add
           .text(cx, y, opt.label, {
-            fontSize: '16px',
+            fontFamily: 'Trebuchet MS',
+            fontSize: '15px',
             color: opt.color,
-            backgroundColor: '#23233a',
+            backgroundColor: '#111b29',
+            align: 'center',
+            fixedWidth: 440,
+            fixedHeight: 30,
             padding: { x: 12, y: 5 },
           })
           .setOrigin(0.5)
           .setInteractive({ useHandCursor: true });
+        t.on('pointerover', () => t.setBackgroundColor('#203149'));
+        t.on('pointerout', () => t.setBackgroundColor('#111b29'));
         t.on('pointerdown', () => finish(opt.choice));
         panel.add(t);
       });
@@ -6356,14 +6442,136 @@ export class GameScene extends Phaser.Scene {
   //  RENDERING
   // ===========================================================================
 
+  private addModalChrome(
+    container: Phaser.GameObjects.Container,
+    options: ModalChromeOptions
+  ): {
+    dim: Phaser.GameObjects.Rectangle;
+    box: Phaser.GameObjects.Rectangle;
+    title: Phaser.GameObjects.Text;
+  } {
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    const accent = options.accent ?? UI.gold;
+    const dim = this.add
+      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x020407, 0.82)
+      .setOrigin(0, 0)
+      .setInteractive();
+    if (options.dismiss) dim.on('pointerdown', options.dismiss);
+    const shadow = this.add
+      .rectangle(cx + 9, cy + 12, options.width, options.height, 0x000000, 0.42)
+      .setOrigin(0.5);
+    const box = this.add
+      .rectangle(cx, cy, options.width, options.height, UI.panel, 0.99)
+      .setOrigin(0.5)
+      .setStrokeStyle(2, UI.border);
+    const inner = this.add
+      .rectangle(cx, cy, options.width - 12, options.height - 12, 0x000000, 0)
+      .setOrigin(0.5)
+      .setStrokeStyle(1, UI.borderSoft, 0.9);
+    const rail = this.add.rectangle(cx, cy - options.height / 2 + 4, options.width - 24, 5, accent, 1);
+    const marker = this.add.rectangle(cx - options.width / 2 + 25, cy - options.height / 2 + 29, 5, 26, accent, 1);
+    const title = this.add
+      .text(cx - options.width / 2 + 40, cy - options.height / 2 + 18, options.title, {
+        fontFamily: 'Trebuchet MS',
+        fontSize: '20px',
+        color: '#f5f8fc',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0, 0);
+    container.add([dim, shadow, box, inner, rail, marker, title]);
+    if (options.subtitle) {
+      const subtitle = this.add.text(
+        cx - options.width / 2 + 40,
+        cy - options.height / 2 + 45,
+        options.subtitle,
+        { fontSize: '12px', color: TEXT.dim }
+      );
+      container.add(subtitle);
+    }
+    return { dim, box, title };
+  }
+
+  private addMenuButton(
+    container: Phaser.GameObjects.Container,
+    x: number,
+    y: number,
+    label: string,
+    options: MenuButtonOptions
+  ): Phaser.GameObjects.Text {
+    const enabled = options.enabled ?? true;
+    const width = options.width ?? 220;
+    const accent = options.accent ?? UI.cyan;
+    const button = this.add
+      .text(x, y, label, {
+        fontFamily: 'Trebuchet MS',
+        fontSize: `${options.fontSize ?? 15}px`,
+        color: enabled ? options.color ?? TEXT.body : '#637084',
+        backgroundColor: enabled ? '#111b29' : '#0e151f',
+        fontStyle: 'bold',
+        align: 'center',
+        fixedWidth: width,
+        fixedHeight: options.height ?? 38,
+        padding: { x: 12, y: 8 },
+      })
+      .setOrigin(0.5);
+    if (enabled) {
+      button.setInteractive({ useHandCursor: true });
+      button.setStroke(Phaser.Display.Color.IntegerToColor(accent).rgba, 1);
+      button.on('pointerover', () => button.setBackgroundColor('#203149'));
+      button.on('pointerout', () => button.setBackgroundColor('#111b29'));
+      button.on('pointerdown', options.onClick);
+    }
+    container.add(button);
+    return button;
+  }
+
   private buildStaticGraphics(): void {
     this.gfxStatic = this.add.graphics();
     const g = this.gfxStatic;
+    g.fillStyle(0x080b11, 1).fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     g.fillStyle(COLORS.field, 1).fillRect(FIELD.x, FIELD.y, FIELD.w, FIELD.h);
-    g.lineStyle(2, COLORS.fieldBorder, 1).strokeRect(FIELD.x, FIELD.y, FIELD.w, FIELD.h);
-    g.lineStyle(1, COLORS.grid, 0.6);
+    for (let x = FIELD.x; x < FIELD.x + FIELD.w; x += 60) {
+      for (let y = FIELD.y; y < FIELD.y + FIELD.h; y += 60) {
+        if (((x - FIELD.x) / 60 + (y - FIELD.y) / 60) % 2 === 0) {
+          g.fillStyle(0x162131, 0.42).fillRect(x, y, 60, 60);
+        }
+      }
+    }
+    g.fillStyle(COLORS.team1, 0.055).fillRect(FIELD.x, FIELD.y, FIELD.w * 0.22, FIELD.h);
+    g.fillStyle(COLORS.team2, 0.055).fillRect(FIELD.x + FIELD.w * 0.78, FIELD.y, FIELD.w * 0.22, FIELD.h);
+    g.lineStyle(1, COLORS.grid, 0.72);
     for (let x = FIELD.x; x <= FIELD.x + FIELD.w; x += 60) g.lineBetween(x, FIELD.y, x, FIELD.y + FIELD.h);
     for (let y = FIELD.y; y <= FIELD.y + FIELD.h; y += 60) g.lineBetween(FIELD.x, y, FIELD.x + FIELD.w, y);
+
+    const centerX = FIELD.x + FIELD.w / 2;
+    const centerY = FIELD.y + FIELD.h / 2;
+    g.lineStyle(1, 0x6b7b91, 0.28).strokeCircle(centerX, centerY, 82);
+    g.lineStyle(2, 0x6b7b91, 0.22).strokeCircle(centerX, centerY, 58);
+    g.lineStyle(1, 0x6b7b91, 0.22).lineBetween(centerX - 112, centerY, centerX + 112, centerY);
+    g.lineBetween(centerX, centerY - 112, centerX, centerY + 112);
+    g.lineStyle(3, COLORS.fieldBorder, 1).strokeRect(FIELD.x, FIELD.y, FIELD.w, FIELD.h);
+    g.lineStyle(1, 0xb8c5d8, 0.4).strokeRect(FIELD.x + 5, FIELD.y + 5, FIELD.w - 10, FIELD.h - 10);
+
+    const corner = 28;
+    g.lineStyle(4, COLORS.selected, 0.9);
+    g.lineBetween(FIELD.x, FIELD.y + corner, FIELD.x, FIELD.y);
+    g.lineBetween(FIELD.x, FIELD.y, FIELD.x + corner, FIELD.y);
+    g.lineBetween(FIELD.x + FIELD.w - corner, FIELD.y, FIELD.x + FIELD.w, FIELD.y);
+    g.lineBetween(FIELD.x + FIELD.w, FIELD.y, FIELD.x + FIELD.w, FIELD.y + corner);
+    g.lineBetween(FIELD.x, FIELD.y + FIELD.h - corner, FIELD.x, FIELD.y + FIELD.h);
+    g.lineBetween(FIELD.x, FIELD.y + FIELD.h, FIELD.x + corner, FIELD.y + FIELD.h);
+    g.lineBetween(FIELD.x + FIELD.w - corner, FIELD.y + FIELD.h, FIELD.x + FIELD.w, FIELD.y + FIELD.h);
+    g.lineBetween(FIELD.x + FIELD.w, FIELD.y + FIELD.h - corner, FIELD.x + FIELD.w, FIELD.y + FIELD.h);
+
+    g.fillStyle(0x0d131d, 1).fillRect(0, HUD_Y - 12, GAME_WIDTH, GAME_HEIGHT - HUD_Y + 12);
+    g.fillStyle(0x111a27, 1).fillRect(20, HUD_Y - 4, 426, 216);
+    g.fillStyle(0x101824, 1).fillRect(458, HUD_Y - 4, 442, 216);
+    g.lineStyle(1, 0x314056, 1).lineBetween(0, HUD_Y - 12, GAME_WIDTH, HUD_Y - 12);
+    g.lineBetween(452, HUD_Y, 452, GAME_HEIGHT);
+    g.lineBetween(906, HUD_Y, 906, GAME_HEIGHT);
+    g.fillStyle(COLORS.selected, 1).fillRect(20, HUD_Y - 4, 72, 3);
+    g.fillStyle(COLORS.team1, 1).fillRect(458, HUD_Y - 4, 72, 3);
 
     this.gfx = this.add.graphics();
     // Pulsing valid-target highlights live on their own layer, animated in update().
@@ -6375,16 +6583,37 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buildHud(): void {
-    this.turnText = this.add.text(FIELD.x, HUD_Y, '', { fontSize: '20px', color: TEXT.body, fontStyle: 'bold' });
-    this.comboText = this.add.text(FIELD.x, HUD_Y + 28, '', {
-      fontSize: '16px',
+    this.add.text(32, HUD_Y + 5, 'TURN COMMAND', {
+      fontFamily: 'Trebuchet MS', fontSize: '10px', color: TEXT.warn, fontStyle: 'bold',
+    });
+    this.add.text(470, HUD_Y + 5, 'SPELL LOADOUT', {
+      fontFamily: 'Trebuchet MS', fontSize: '10px', color: '#71c7d8', fontStyle: 'bold',
+    });
+    this.turnText = this.add.text(32, HUD_Y + 22, '', {
+      fontFamily: 'Trebuchet MS', fontSize: '18px', color: TEXT.body, fontStyle: 'bold',
+    });
+    this.comboText = this.add.text(32, HUD_Y + 50, '', {
+      fontSize: '14px',
       color: TEXT.warn,
-      wordWrap: { width: 440 },
+      wordWrap: { width: 402 },
       lineSpacing: 2,
     });
-    this.actionText = this.add.text(FIELD.x, HUD_Y + 114, '', { fontSize: '16px', color: TEXT.body });
-    this.resourceText = this.add.text(FIELD.x, HUD_Y + 138, '', { fontSize: '15px', color: TEXT.warn });
-    this.hintText = this.add.text(FIELD.x, HUD_Y + 162, '', { fontSize: '15px', color: TEXT.dim });
+    this.actionText = this.add.text(32, HUD_Y + 101, '', { fontSize: '14px', color: TEXT.body });
+    this.resourceText = this.add.text(32, HUD_Y + 126, '', {
+      fontSize: '12px', color: TEXT.dim, wordWrap: { width: 400 }, lineSpacing: 2,
+    });
+    this.hintText = this.add
+      .text(FIELD.x + FIELD.w / 2, FIELD.y + FIELD.h - 12, '', {
+        fontFamily: 'Trebuchet MS',
+        fontSize: '14px',
+        color: '#f8fafc',
+        backgroundColor: '#080b11dd',
+        align: 'center',
+        fixedWidth: 760,
+        padding: { x: 12, y: 7 },
+      })
+      .setOrigin(0.5, 1)
+      .setDepth(44);
 
     // A clear, always-visible resource read-out (top-left of the field).
     this.resourceGfx = this.add.graphics().setDepth(40).setVisible(false);
@@ -6404,23 +6633,23 @@ export class GameScene extends Phaser.Scene {
       );
     }
 
-    this.add.text(FIELD.x, HUD_Y + 186,
-      'New here? Click ☰ Actions (or press [Tab] / right-click) to see everything you can do — no need to memorise keys.',
-      { fontSize: '13px', color: TEXT.dim });
-
     // Word boxes laid out as a 2x2 grid so they clear the history panel.
     for (let i = 0; i < 4; i++) {
       const col = i % 2;
       const row = Math.floor(i / 2);
       const box = this.add
-        .text(FIELD.x + 470 + col * 195, HUD_Y + row * 60, '', {
-          fontSize: '15px',
+        .text(470 + col * 205, HUD_Y + 24 + row * 55, '', {
+          fontFamily: 'Trebuchet MS',
+          fontSize: '14px',
           color: TEXT.body,
-          backgroundColor: '#181826',
+          backgroundColor: '#172231',
           padding: { x: 8, y: 6 },
-          fixedWidth: 178,
+          fixedWidth: 190,
+          fixedHeight: 46,
         })
         .setInteractive({ useHandCursor: true });
+      box.on('pointerover', () => box.setAlpha(0.82));
+      box.on('pointerout', () => box.setAlpha(1));
       // Clicking a word box toggles that word's selection (same as [1]–[4]).
       box.on('pointerdown', () => this.onWordKey(i));
       this.wordTexts.push(box);
@@ -6428,26 +6657,31 @@ export class GameScene extends Phaser.Scene {
 
     // Always-visible entry point to the context action menu.
     this.actionMenuButton = this.add
-      .text(FIELD.x + 470, HUD_Y + 128, '☰  Actions  ([Tab] / right-click)', {
-        fontSize: '15px',
-        color: '#0c0c18',
-        backgroundColor: '#ffd166',
+      .text(470, HUD_Y + 139, '☰  Actions  ([Tab] / right-click)', {
+        fontFamily: 'Trebuchet MS',
+        fontSize: '14px',
+        color: '#090d14',
+        backgroundColor: '#d9a441',
         fontStyle: 'bold',
+        align: 'center',
+        fixedWidth: 395,
         padding: { x: 12, y: 7 },
       })
       .setDepth(46)
       .setInteractive({ useHandCursor: true });
-    this.actionMenuButton.on('pointerover', () => this.actionMenuButton?.setBackgroundColor('#ffe08a'));
-    this.actionMenuButton.on('pointerout', () => this.actionMenuButton?.setBackgroundColor('#ffd166'));
+    this.actionMenuButton.on('pointerover', () => this.actionMenuButton?.setBackgroundColor('#edbd5a'));
+    this.actionMenuButton.on('pointerout', () => this.actionMenuButton?.setBackgroundColor('#d9a441'));
     this.actionMenuButton.on('pointerdown', () => this.toggleActionMenu());
 
     // Always-available toggle: auto-pass reaction windows.
     this.autoPassButton = this.add
-      .text(FIELD.x + 470, HUD_Y + 162, '', {
-        fontSize: '14px',
+      .text(470, HUD_Y + 179, '', {
+        fontSize: '12px',
         color: TEXT.dim,
-        backgroundColor: '#2a2a3c',
+        backgroundColor: '#1a2636',
         fontStyle: 'bold',
+        align: 'center',
+        fixedWidth: 190,
         padding: { x: 12, y: 6 },
       })
       .setDepth(46)
@@ -6457,11 +6691,13 @@ export class GameScene extends Phaser.Scene {
 
     // Always-available toggle: hand every seat to the AI and just watch.
     this.spectateButton = this.add
-      .text(FIELD.x + 470, HUD_Y + 194, '', {
-        fontSize: '14px',
+      .text(675, HUD_Y + 179, '', {
+        fontSize: '12px',
         color: TEXT.dim,
-        backgroundColor: '#2a2a3c',
+        backgroundColor: '#1a2636',
         fontStyle: 'bold',
+        align: 'center',
+        fixedWidth: 190,
         padding: { x: 12, y: 6 },
       })
       .setDepth(46)
@@ -6491,13 +6727,18 @@ export class GameScene extends Phaser.Scene {
 
     this.bannerText = this.add
       .text(GAME_WIDTH / 2, FIELD.y + FIELD.h / 2, '', {
-        fontSize: '44px',
-        color: TEXT.warn,
+        fontFamily: 'Trebuchet MS',
+        fontSize: '36px',
+        color: '#f5f8fc',
         fontStyle: 'bold',
-        backgroundColor: '#000000cc',
-        padding: { x: 24, y: 16 },
+        backgroundColor: '#0b111af2',
+        align: 'center',
+        fixedWidth: 650,
+        lineSpacing: 10,
+        padding: { x: 30, y: 24 },
       })
       .setOrigin(0.5)
+      .setShadow(0, 8, '#000000', 14)
       .setDepth(60)
       .setVisible(false);
 
@@ -6523,9 +6764,9 @@ export class GameScene extends Phaser.Scene {
   private buildHistoryPanel(): void {
     this.historyPanel = this.add.container(0, 0).setDepth(45);
     this.historyBg = this.add
-      .rectangle(0, 0, 10, 10, 0x05050c, 0.92)
+      .rectangle(0, 0, 10, 10, UI.panel, 0.96)
       .setOrigin(0, 0)
-      .setStrokeStyle(1, 0x5a5a88);
+      .setStrokeStyle(1, UI.border);
     this.historyTitle = this.add
       .text(10, 6, '', { fontSize: '14px', color: TEXT.warn, fontStyle: 'bold' })
       .setInteractive({ useHandCursor: true });
@@ -6575,10 +6816,10 @@ export class GameScene extends Phaser.Scene {
     const w = expanded ? 760 : 360;
     const h = expanded ? 540 : 224;
     const px = expanded ? Math.round((GAME_WIDTH - w) / 2) : GAME_WIDTH - w - 6;
-    const py = expanded ? 80 : HUD_Y - 12;
+    const py = expanded ? 80 : HUD_Y - 4;
     this.historyPanel.setPosition(px, py).setDepth(expanded ? 70 : 45);
-    this.historyBg.setSize(w, h);
-    this.historyTitle.setText(`— History —   (${expanded ? 'click to shrink' : 'click to enlarge'})`);
+    this.historyBg.setSize(w, h).setFillStyle(0x0b111a, 0.98).setStrokeStyle(1, 0x314056);
+    this.historyTitle.setText(`COMBAT HISTORY   ${expanded ? '[shrink]' : '[expand]'}`);
 
     let tx = 10;
     const toggleY = 28;
@@ -6622,9 +6863,9 @@ export class GameScene extends Phaser.Scene {
     const py = FIELD.y + 6;
     this.devPanel = this.add.container(px, py).setDepth(60);
     const bg = this.add
-      .rectangle(0, 0, 170, 117, 0x000000, 0.55)
+      .rectangle(0, 0, 170, 117, UI.panel, 0.9)
       .setOrigin(0, 0)
-      .setStrokeStyle(1, 0x5a5a88);
+      .setStrokeStyle(1, UI.border);
     const title = this.add.text(8, 5, 'DEV MODE  (` to hide)', {
       fontSize: '12px',
       color: TEXT.warn,
@@ -6686,22 +6927,15 @@ export class GameScene extends Phaser.Scene {
   private buildTrainingOverlay(): void {
     if (this.trainPanel) return;
     const panel = this.add.container(0, 0).setDepth(96).setVisible(false);
-    const dim = this.add
-      .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.78)
-      .setOrigin(0, 0)
-      .setInteractive();
-    const rect = this.add
-      .rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, 820, 620, 0x10101c, 0.98)
-      .setOrigin(0.5)
-      .setStrokeStyle(2, 0x5a5a88);
-    this.trainTitle = this.add
-      .text(GAME_WIDTH / 2, GAME_HEIGHT / 2 - 288, '', {
-        fontSize: '22px',
-        color: TEXT.warn,
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-    panel.add([dim, rect, this.trainTitle]);
+    const chrome = this.addModalChrome(panel, {
+      width: 860,
+      height: 640,
+      title: 'TRAINING LAB',
+      subtitle: 'Configure combatants, resources, stacks, and equipment in real time',
+      accent: UI.cyan,
+      dismiss: () => this.closeTrainingOverlay(),
+    });
+    this.trainTitle = chrome.title;
     this.trainPanel = panel;
   }
 
@@ -6716,12 +6950,16 @@ export class GameScene extends Phaser.Scene {
     label: string,
     onClick: () => void,
     color = '#e8e8f0',
-    bg = '#23233a',
+    bg = '#111b29',
   ): Phaser.GameObjects.Text {
     const t = this.add
-      .text(x, y, label, { fontSize: '15px', color, backgroundColor: bg, padding: { x: 8, y: 4 } })
+      .text(x, y, label, {
+        fontFamily: 'Trebuchet MS', fontSize: '14px', color, backgroundColor: bg, padding: { x: 9, y: 5 },
+      })
       .setInteractive({ useHandCursor: true });
     t.on('pointerdown', () => onClick());
+    t.on('pointerover', () => t.setAlpha(0.78));
+    t.on('pointerout', () => t.setAlpha(1));
     this.trainPanel!.add(t);
     this.trainWidgets.push(t);
     return t;
@@ -6743,7 +6981,7 @@ export class GameScene extends Phaser.Scene {
     }
     const left = GAME_WIDTH / 2 - 380;
     let y = GAME_HEIGHT / 2 - 250;
-    this.trainTitle!.setText('TRAINING TOOLS');
+    this.trainTitle!.setText('TRAINING LAB');
 
     // Enemy configuration.
     this.trainLabel(left, y, 'Enemy:');
@@ -6761,7 +6999,7 @@ export class GameScene extends Phaser.Scene {
         label,
         () => this.setTrainingEnemy(k),
         on ? '#7cfc9a' : '#e8e8f0',
-        on ? '#2f5d3a' : '#23233a',
+        on ? '#24543f' : '#111b29',
       );
       bx += b.width + 10;
     }
@@ -6781,7 +7019,7 @@ export class GameScene extends Phaser.Scene {
           this.refreshTrainingOverlay();
         },
         on ? '#7cfc9a' : '#e8e8f0',
-        on ? '#3a3a66' : '#23233a',
+        on ? '#285b67' : '#111b29',
       );
       bx += b.width + 10;
     }
@@ -6878,7 +7116,7 @@ export class GameScene extends Phaser.Scene {
           this.refreshTrainingOverlay();
         },
         on ? '#7cfc9a' : '#e8e8f0',
-        on ? '#3a3a66' : '#23233a',
+        on ? '#285b67' : '#111b29',
       );
       hx += b.width + 8;
     }
@@ -7049,6 +7287,9 @@ export class GameScene extends Phaser.Scene {
     // Shadow pools (under everything else on the field).
     this.drawShadows(g);
 
+    // Veil Bind linking circles.
+    this.drawVeilBindZones(g);
+
     // Reality-break barriers.
     this.drawBarriers(g);
 
@@ -7067,8 +7308,14 @@ export class GameScene extends Phaser.Scene {
     // Torch / lantern light auras.
     this.drawLightAuras(g);
 
+    // Rot Sentry corrosion auras.
+    this.drawIntrinsicDamageAuras(g);
+
     // Aiming ranges.
     this.drawAimingRange(g);
+
+    // Bind Curse ranges follow their afflicted bearers.
+    this.drawBindCurseAuras(g);
 
     // Mages. Dead bodies vanish outright — hide their bars and name label so no
     // corpse clutter lingers on the field after a foe falls.
@@ -7102,12 +7349,41 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private drawIntrinsicDamageAuras(g: Phaser.GameObjects.Graphics): void {
+    for (const mage of this.gs.mages) {
+      if (!mage.alive || !mage.intrinsicDamageAura) continue;
+      const radius = mage.intrinsicDamageAura.radius;
+      g.fillStyle(0x8ecf58, 0.08).fillCircle(mage.x, mage.y, radius);
+      g.lineStyle(1, 0x9be870, 0.55).strokeCircle(mage.x, mage.y, radius);
+    }
+  }
+
   private drawShadows(g: Phaser.GameObjects.Graphics): void {
     for (const s of this.gs.shadows) {
       const tint = s.owner === 1 ? COLORS.team1 : COLORS.team2;
       g.fillStyle(COLORS.shadow, 0.22).fillCircle(s.x, s.y, s.radius);
       g.fillStyle(0x000000, 0.28).fillCircle(s.x, s.y, s.radius * 0.7);
       g.lineStyle(2, tint, 0.55).strokeCircle(s.x, s.y, s.radius);
+    }
+  }
+
+  private drawVeilBindZones(g: Phaser.GameObjects.Graphics): void {
+    for (const zone of this.gs.veilBindZones) {
+      const tint = zone.owner === 1 ? COLORS.team1 : COLORS.team2;
+      g.fillStyle(0x8ad1ff, 0.09).fillCircle(zone.x, zone.y, zone.radius);
+      g.lineStyle(2, 0x8ad1ff, 0.7).strokeCircle(zone.x, zone.y, zone.radius);
+      g.lineStyle(1, tint, 0.55).strokeCircle(zone.x, zone.y, zone.radius - 5);
+    }
+  }
+
+  private drawBindCurseAuras(g: Phaser.GameObjects.Graphics): void {
+    for (const mage of this.gs.mages) {
+      if (!mage.alive) continue;
+      for (const status of mage.statuses) {
+        if (status.kind !== 'bindCurseAura') continue;
+        g.fillStyle(0x6a7bd0, 0.06).fillCircle(mage.x, mage.y, status.radius);
+        g.lineStyle(1, 0x8b96df, 0.5).strokeCircle(mage.x, mage.y, status.radius);
+      }
     }
   }
 
@@ -7153,6 +7429,9 @@ export class GameScene extends Phaser.Scene {
     for (const z of this.gs.mutivargZones)
       show(`mv${z.id}`, z.x, z.y - z.radius - 10, z.turnsLeft, z.owner);
     for (const b of this.gs.barriers) show(`ba${b.id}`, b.x, b.y, b.ttl, b.owner);
+    for (const zone of this.gs.veilBindZones) {
+      show(`vb${zone.id}`, zone.x, zone.y - zone.radius - 10, zone.roundsLeft, zone.owner);
+    }
     // Recycle labels for zones that have since collapsed.
     for (const [k, t] of this.zoneLabels) {
       if (!live.has(k)) {
@@ -7946,10 +8225,21 @@ export class GameScene extends Phaser.Scene {
     } else {
       const cur = this.gs.current;
       const swap = this.gs.controlSwapped ? '   ⟲ MINDS SWAPPED' : '';
+      const needlepoint = this.gs.needlepointDomains.length
+        ? `   ◈ NEEDLEPOINT ${Math.max(...this.gs.needlepointDomains.map((domain) => domain.roundsLeft))}`
+        : '';
+      const hexcraft = this.gs.hexcraftGlobals
+        .map((effect) =>
+          effect.kind === 'mindShadow'
+            ? `MIND SHADOW ${effect.roundsLeft}`
+            : `CURSE CORRODE ${effect.roundsLeft}`
+        )
+        .map((label) => `   ◈ ${label}`)
+        .join('');
       this.turnText.setText(
         this.gs.isOver
           ? ''
-          : `Round ${this.gs.round} — ${cur.name}'s turn${this.controllerIsAI(cur) ? ' (AI thinking…)' : ''}${swap}`
+          : `Round ${this.gs.round} — ${cur.name}'s turn${this.controllerIsAI(cur) ? ' (AI thinking…)' : ''}${swap}${needlepoint}${hexcraft}`
       );
     }
 
@@ -7992,7 +8282,7 @@ export class GameScene extends Phaser.Scene {
       const on = this.selectedIdx.includes(i);
       const reaction = WORDS[w].grantsReaction ? ' ⚡' : '';
       t.setText(`[${i + 1}] ${WORDS[w].label}${reaction}\ncharges: ${me.charges[w] ?? 0}`);
-      t.setBackgroundColor(on ? '#3a3a1a' : '#181826');
+      t.setBackgroundColor(on ? '#58451f' : '#172231');
       t.setColor(on ? TEXT.warn : (me.charges[w] ?? 0) > 0 ? TEXT.body : TEXT.dim);
     }
 
@@ -8090,7 +8380,7 @@ export class GameScene extends Phaser.Scene {
     const pad = 8;
     const h = pad * 2 + rows.length * rowH;
     g.fillStyle(0x05050c, 0.82).fillRect(x, y, w, h);
-    g.lineStyle(1, 0x5a5a88, 0.9).strokeRect(x, y, w, h);
+    g.lineStyle(1, UI.border, 0.9).strokeRect(x, y, w, h);
     g.setVisible(true);
 
     const barX = x + 66;
@@ -8201,6 +8491,11 @@ export class GameScene extends Phaser.Scene {
         return t.lifesteal
           ? 'Corrosion totem — each round it saps the health of mages within its aura and heals its owner for the damage dealt.'
           : 'Corrosion totem — each round it saps the health of every mage standing within its aura.';
+      }
+    }
+    for (const zone of this.gs.veilBindZones) {
+      if (dist(p, zone) <= zone.radius) {
+        return 'Veil Bind - inside this circle, gaining a veil also roots the bearer; being rooted or bound grants a half veil for the same duration.';
       }
     }
     return null;
@@ -8527,20 +8822,25 @@ export class GameScene extends Phaser.Scene {
       const panelW = Math.max(diceW + 150, titleText.length * 11 + 40);
 
       this.dicePanel.removeAll(true);
-      const bg = this.add.rectangle(0, 0, panelW, 116, 0x10101c, 0.97).setStrokeStyle(2, COLORS.stack);
+      const shadow = this.add.rectangle(7, 9, panelW, 126, 0x000000, 0.4);
+      const bg = this.add.rectangle(0, 0, panelW, 126, UI.panel, 0.99).setStrokeStyle(2, UI.border);
+      const inner = this.add.rectangle(0, 0, panelW - 10, 116, 0x000000, 0).setStrokeStyle(1, UI.borderSoft);
+      const rail = this.add.rectangle(0, -59, panelW - 18, 5, UI.violet, 1);
       const title = this.add
-        .text(0, -42, titleText, { fontSize: '18px', color: TEXT.warn, fontStyle: 'bold' })
+        .text(0, -43, titleText.toUpperCase(), {
+          fontFamily: 'Trebuchet MS', fontSize: '17px', color: TEXT.warn, fontStyle: 'bold',
+        })
         .setOrigin(0.5);
       const label = this.add
         .text(-panelW / 2 + 14, -16, roll.spec, { fontSize: '13px', color: TEXT.dim })
         .setOrigin(0, 0.5);
-      this.dicePanel.add([bg, title, label]);
+      this.dicePanel.add([shadow, bg, inner, rail, title, label]);
 
       const faces: Phaser.GameObjects.Text[] = [];
       const startX = -diceW / 2 + dieSize / 2;
       for (let i = 0; i < n; i++) {
         const dx = startX + i * (dieSize + gap);
-        const sq = this.add.rectangle(dx, 16, dieSize, dieSize, 0xf4f4ff).setStrokeStyle(2, 0x333355);
+        const sq = this.add.rectangle(dx, 16, dieSize, dieSize, 0xdfe7f2).setStrokeStyle(2, UI.cyan);
         const face = this.add
           .text(dx, 16, '?', { fontSize: '26px', color: '#15151f', fontStyle: 'bold' })
           .setOrigin(0.5);

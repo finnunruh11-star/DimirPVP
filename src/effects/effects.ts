@@ -220,6 +220,11 @@ export function dealDamage(
   const canMiss = opts.canMiss !== false;
   const isAoe = !!opts.aoe;
   const isTrue = !!opts.trueDamage;
+  // An armed veil is consumed by beginning an attack, even if the attack later
+  // misses or is prevented. Bonus damage is released only after a landed hit.
+  const veilCorrodePiercePower = canMiss
+    ? ctx.game.prepareVeilCorrodePierce(ctx.caster)
+    : 0;
 
   // Second Ring of Lareneg: untouchable to all hostile damage in cycles 3 & 4.
   if (ctx.game.isLaranegUntouchable(target)) {
@@ -269,6 +274,12 @@ export function dealDamage(
     (ctx.crit ? damage.amount * 2 : damage.amount) +
     ctx.caster.modifier('damageDealt') +
     target.modifier('damageTaken');
+
+  const globalHexcraftBonus = ctx.game.hexcraftDamageBonus(damage.type, damage.damageClass);
+  if (globalHexcraftBonus > 0) {
+    amount += globalHexcraftBonus;
+    ctx.log(`Mind Shadow deepens the attack (+${globalHexcraftBonus}).`);
+  }
 
   // Shadow empowerment: casting from within a shadow, or striking a target that
   // stands in one, deals extra damage.
@@ -403,6 +414,7 @@ export function dealDamage(
     }
     breakVeilOnStruck(ctx, target, damage.damageClass, amount);
     if (canMiss) breakVeilOnStrike(ctx, ctx.caster, amount);
+    ctx.game.resolveVeilCorrodePierce(ctx.caster, target, veilCorrodePiercePower);
     // A Channeling Ring converts pain into mana.
     const manaBack = target.manaOnHit();
     if (manaBack > 0) {
@@ -485,17 +497,13 @@ function breakVeilOnStruck(
   }
 }
 
-/** A veiled attacker may reveal themselves when they land a blow. */
+/** Attacking with anything reveals you: any blow that lands tears your veil away. */
 function breakVeilOnStrike(ctx: EffectContext, attacker: Mage, amount: number): void {
   const inv = attacker.getInvisibility();
   if (!inv) return;
-  const eligible =
-    inv.mode === 'partial' ? amount > 0 : amount > VEIL.full.revealDealThreshold;
-  const chance =
-    inv.mode === 'partial' ? VEIL.half.revealOnDealChance : VEIL.full.revealOnDealChance;
-  if (eligible && ctx.rng.chance(chance)) {
+  if (amount > 0) {
     removeInvisibility(attacker);
-    ctx.log(`${attacker.name}'s veil flickers as they strike.`);
+    ctx.log(`${attacker.name} is revealed by their attack.`);
   }
 }
 
@@ -548,7 +556,7 @@ export function heal(
 export function applyInvisibility(
   ctx: EffectContext,
   target: Mage,
-  opts: { duration: number; mode: InvisMode; extend?: boolean }
+  opts: { duration: number; mode: InvisMode; extend?: boolean; veilBindLinked?: boolean }
 ): void {
   const duration = critScale(ctx, opts.duration);
   addOrExtendStatus(
@@ -566,6 +574,9 @@ export function applyInvisibility(
     `${target.name} becomes ${opts.mode === 'full' ? 'fully invisible' : 'hard to see'} (${duration} cycles).`
   );
   ctx.vfx?.spellEffect?.(target, 'vanish');
+  if (!opts.veilBindLinked && ctx.game.isInVeilBindZone(target)) {
+    applyStun(ctx, target, { duration, type: 'movement', veilBindLinked: true });
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -582,7 +593,7 @@ export function applyInvisibility(
 export function applyStun(
   ctx: EffectContext,
   target: Mage,
-  opts: { duration: number; type: StunType; extend?: boolean }
+  opts: { duration: number; type: StunType; extend?: boolean; veilBindLinked?: boolean }
 ): void {
   if (ctx.game.isLaranegUntouchable(target)) return;
   if (target.debuffImmune) {
@@ -607,6 +618,13 @@ export function applyStun(
     !!opts.extend
   );
   ctx.log(`${target.name} is ${names[opts.type].toLowerCase()} (${duration} cycles).`);
+  if (!opts.veilBindLinked && opts.type !== 'main' && ctx.game.isInVeilBindZone(target)) {
+    applyInvisibility(ctx, target, {
+      duration,
+      mode: 'partial',
+      veilBindLinked: true,
+    });
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -647,6 +665,7 @@ export function dash(
   mover.x = bc.dest.x;
   mover.y = bc.dest.y;
   ctx.vfx?.dash?.(mover, from);
+  ctx.game.triggerNeedlepointDomains(mover);
   if (bc.blocked) {
     ctx.log(`${mover.name} slams into a reality break and stops short.`);
   } else {
@@ -682,6 +701,7 @@ export function blinkstep(
   mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x));
   mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y));
   ctx.vfx?.dash?.(mover, from);
+  ctx.game.triggerNeedlepointDomains(mover);
   ctx.log(`${mover.name} blinksteps ${Math.round(opts.distance)} away.`);
 }
 
@@ -693,6 +713,7 @@ export function blinkstep(
 export function teleport(ctx: EffectContext, mover: Mage, at: Vec2): void {
   mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x));
   mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y));
+  ctx.game.triggerNeedlepointDomains(mover);
   ctx.log(`${mover.name} slips through the shadows.`);
 }
 
@@ -781,6 +802,7 @@ export function applyDot(
     },
     !!opts.extend
   );
+  ctx.game.syncCurseCorrodeSlow(target);
   ctx.log(`${target.name} is afflicted with ${opts.name} (${duration} cycles).`);
 }
 
@@ -821,6 +843,7 @@ export function applyStackingDot(
     existing.stacks = Math.min(opts.maxStacks, before + 1);
     existing.duration = Math.max(existing.duration, refreshDuration);
     existing.freshStack = true;
+    ctx.game.syncCurseCorrodeSlow(target);
     ctx.log(`${target.name}'s ${opts.name} deepens to ${existing.stacks} stacks.`);
     return;
   }
@@ -838,6 +861,7 @@ export function applyStackingDot(
     infectRadius: opts.infectRadius,
     sourceTeam: ctx.caster.team,
   });
+  ctx.game.syncCurseCorrodeSlow(target);
   ctx.log(`${target.name} is afflicted with ${opts.name}.`);
 }
 
@@ -1017,6 +1041,7 @@ export function applyAuraDot(
     },
     false
   );
+  ctx.game.syncCurseCorrodeSlow(target);
   ctx.log(`${target.name} is wreathed in ${opts.name} (${critScale(ctx, opts.duration)} cycles).`);
 }
 

@@ -162,6 +162,20 @@ export class Mage {
   /** Orientation (radians) chosen for the next rotatable wall this mage places. */
   wallAngle = 0;
 
+  // ---- Objects-class enchants / sabotage / conjured gear --------------------
+  /** Active basic-attack enchant from an Objects class spell, if any. */
+  weaponEnchant?: 'mindShadow' | 'curseCorrode';
+  /** Items sabotaged by Bind Curse (Objects): bound in place, damage & stats halved. */
+  sabotagedItems = new Set<ItemId>();
+  /** Weak-Bind bonus-action charges granted by a Veil Bind (Objects) mantle. */
+  bindMantleCharges = 0;
+  /** Combats left on a conjured Veil Corrode Pierce bow (0 = none held). */
+  conjuredBowCombatsLeft = 0;
+  /** Set on the turn the conjured bow fires, keeping the wielder visible until their next turn. */
+  conjuredBowFiredThisTurn = false;
+  /** Black Bell attack mode: false = Toll (long wound), true = Condense (cash out afflictions). */
+  blackBellCondense = false;
+
   /** Training sandbox: this mage cannot die (HP/sanity never drop it below alive). */
   unkillable = false;
   /** Training sandbox: this mage never takes a turn action and declines reactions. */
@@ -199,6 +213,15 @@ export class Mage {
   intrinsicMeleeReach?: number;
   /** Minimum reach (px) of the intrinsic melee (e.g. an archer that can't fire point-blank). */
   intrinsicMeleeMin?: number;
+  /** This entity cannot make weapon, intrinsic, or unarmed attacks. */
+  cannotAttack = false;
+  /** Damage aura pulsed on this summon owner's turn while the summon lives. */
+  intrinsicDamageAura?: {
+    radius: number;
+    damageSpec: string;
+    type: DamageType;
+    damageClass: DamageClass;
+  };
   /** Spawned mid-combat (e.g. a wisp split): skip its first upcoming turn. */
   justSpawned = false;
   /** Immune to every debuff / DoT / stun / control effect (Lich). */
@@ -677,21 +700,47 @@ export class Mage {
     this.statsAssigned = true;
   }
 
+  /**
+   * Stat penalty from sabotaged items (Bind Curse, Objects): each contributes
+   * floor(v / 2), so the kept half rounds up in the holder's favour.
+   */
+  private sabotageStatPenalty(pick: (def: ReturnType<typeof getItem>) => number): number {
+    if (this.sabotagedItems.size === 0) return 0;
+    let pen = 0;
+    for (const id of this.equippedItems()) {
+      if (this.sabotagedItems.has(id)) pen += Math.floor(pick(getItem(id)) / 2);
+    }
+    return pen;
+  }
+
   /** Effective Strength including equipment stat tweaks (Bracelet of Might). */
   effectiveStr(): number {
-    return this.statStrength + this.itemSum((d) => d.statMods?.str ?? 0);
+    return (
+      this.statStrength +
+      this.itemSum((d) => d.statMods?.str ?? 0) -
+      this.sabotageStatPenalty((d) => d.statMods?.str ?? 0)
+    );
   }
 
   /** Effective Dexterity including equipment stat tweaks. */
   effectiveDex(): number {
-    return this.statDex + this.itemSum((d) => d.statMods?.dex ?? 0);
+    return (
+      this.statDex +
+      this.itemSum((d) => d.statMods?.dex ?? 0) -
+      this.sabotageStatPenalty((d) => d.statMods?.dex ?? 0)
+    );
   }
 
   /** Effective Intellect including a worn Caster Robe / rings and the blue boon. */
   effectiveInt(): number {
     // Blue boon (any blue in your identity) grants +2 Intellect.
     const blueBoon = this.profile.bluePrimaryTier ? 2 : 0;
-    return this.statInt + blueBoon + this.itemSum((d) => d.statMods?.int ?? 0);
+    return (
+      this.statInt +
+      blueBoon +
+      this.itemSum((d) => d.statMods?.int ?? 0) -
+      this.sabotageStatPenalty((d) => d.statMods?.int ?? 0)
+    );
   }
 
   /** How much a spell's DC is reduced by this mage's intellect. */
@@ -1032,17 +1081,22 @@ export class Mage {
 
   /** Holding two non-wand hand items locks you out of casting spells. */
   blocksCasting(): boolean {
-    return this.nonWandHandCount() >= 2;
+    return this.nonWandHandCount() >= 2 || this.hands.some((id) => !!getItem(id).twoHanded);
   }
 
   hasFreeHand(): boolean {
-    return this.hands.length < SLOT_CAPS.hand;
+    return this.hands.length < SLOT_CAPS.hand && !this.hands.some((id) => !!getItem(id).twoHanded);
   }
 
   /** Equip a hand item out of the bag, if a hand slot is free. Returns success. */
   equipHand(id: ItemId): boolean {
     const i = this.bag.indexOf(id);
-    if (i < 0 || this.hands.length >= SLOT_CAPS.hand) return false;
+    if (
+      i < 0 ||
+      this.hands.length >= SLOT_CAPS.hand ||
+      this.hands.some((held) => !!getItem(held).twoHanded) ||
+      (!!getItem(id).twoHanded && this.hands.length > 0)
+    ) return false;
     this.bag.splice(i, 1);
     this.hands.push(id);
     // Lighting a torch starts its burn timer (measured in combats).
@@ -1058,7 +1112,18 @@ export class Mage {
   unequipHand(id: ItemId): boolean {
     const i = this.hands.indexOf(id);
     if (i < 0) return false;
+    // Bind Curse (Objects): a sabotaged item is bound in place and cannot be removed.
+    if (this.sabotagedItems.has(id)) return false;
     this.hands.splice(i, 1);
+    // A conjured bow (Veil Corrode Pierce, Objects) dissipates when unequipped.
+    if (getItem(id).conjuredVeilBow) {
+      this.conjuredBowCombatsLeft = 0;
+      return true;
+    }
+    if (getItem(id).conjuredBlackBell) {
+      this.blackBellCondense = false;
+      return true;
+    }
     if (getItem(id).torchCombats != null) {
       // Snuffing a torch consumes it — it does not go back into the bag.
       if (!this.hands.some((h) => getItem(h).torchCombats != null)) this.torchCombatsLeft = 0;

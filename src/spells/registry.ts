@@ -23,7 +23,7 @@ const registry = new Map<string, Spell>();
  * full {@link Spell} per class here, keyed by the (order-independent) combo key.
  * The active variant is chosen at lookup time from the caster's class.
  */
-const classRegistry = new Map<string, Record<MageClass, Spell>>();
+const classRegistry = new Map<string, Partial<Record<MageClass, Spell>>>();
 
 /**
  * Which spell sets are active this match. Mirrors {@link setActiveItemSets} and
@@ -77,6 +77,26 @@ export function registerClassSpell(def: {
   return built;
 }
 
+/**
+ * Override one combination for selected classes. Classes without an override
+ * keep the ordinary registered spell, or remain uncastable when none exists.
+ * This supports deliberate mixed-grammar exceptions without weakening the
+ * noun/verb class-spell rule for every other combination.
+ */
+export function registerClassSpellVariants(def: {
+  words: WordId[];
+  variants: Partial<Record<MageClass, ClassSpellVariant>>;
+}): Partial<Record<MageClass, Spell>> {
+  const key = comboKey(def.words);
+  const built = classRegistry.get(key) ?? {};
+  for (const cls of MAGE_CLASSES) {
+    const variant = def.variants[cls];
+    if (variant) built[cls] = { ...variant, words: def.words, id: `${key}@${cls}` } as Spell;
+  }
+  classRegistry.set(key, built);
+  return built;
+}
+
 /** True if the given combo is a class spell (resolves per caster class). */
 export function isClassSpellCombo(words: WordId[]): boolean {
   return classRegistry.has(comboKey(words));
@@ -93,10 +113,8 @@ export function getSpell(
 ): Spell | undefined {
   const key = comboKey(words);
   const variants = classRegistry.get(key);
-  if (variants) {
-    const s = variants[mageClass];
-    return s && spellActive(s) ? s : undefined;
-  }
+  const variant = variants?.[mageClass];
+  if (variant) return spellActive(variant) ? variant : undefined;
   const s = registry.get(key);
   return s && spellActive(s) ? s : undefined;
 }
@@ -111,7 +129,7 @@ export function spellById(id: string): Spell | undefined {
   if (normal) return normal;
   for (const variants of classRegistry.values()) {
     for (const cls of MAGE_CLASSES) {
-      if (variants[cls].id === id) return variants[cls];
+      if (variants[cls]?.id === id) return variants[cls];
     }
   }
   return undefined;
@@ -123,12 +141,17 @@ export function spellById(id: string): Spell | undefined {
  * should pass that mage's class so class spells surface correctly.
  */
 export function allSpells(mageClass: MageClass = DEFAULT_MAGE_CLASS): Spell[] {
-  const out = [...registry.values()].filter(spellActive);
-  for (const variants of classRegistry.values()) {
-    const s = variants[mageClass];
-    if (spellActive(s)) out.push(s);
+  const resolved = new Map<string, Spell>();
+  for (const spell of registry.values()) {
+    if (spellActive(spell)) resolved.set(comboKey(spell.words), spell);
   }
-  return out;
+  for (const [key, variants] of classRegistry) {
+    const variant = variants[mageClass];
+    if (!variant) continue;
+    if (spellActive(variant)) resolved.set(key, variant);
+    else resolved.delete(key);
+  }
+  return [...resolved.values()];
 }
 
 /** All reaction-capable spells castable from a given loadout. */

@@ -94,6 +94,9 @@ export const SCARAB = {
 // Veil / invisibility tuning. All `*Dist` values are abstract range units
 // (multiply by RANGE_UNIT for pixels), matching the "cm" scale used elsewhere.
 export const VEIL = {
+  // An enemy within this many range units of a veiled mage collapses ANY veil
+  // (half or full), however it was applied.
+  proximityBreak: 2,
   // Half (partial) veil — slipperier the further the attacker stands.
   half: {
     farDist: 10, // beyond this distance: best dodge
@@ -122,25 +125,25 @@ export const LOADOUT_SIZE = 4;
 export const MAX_SPELL_WORDS = 3;
 
 export const COLORS = {
-  bg: 0x07070d,
-  field: 0x12121d,
-  fieldBorder: 0x2c2c44,
-  grid: 0x1b1b2b,
-  team1: 0x57a6ff,
-  team2: 0xff6f6f,
+  bg: 0x070a0f,
+  field: 0x101722,
+  fieldBorder: 0x53647c,
+  grid: 0x243247,
+  team1: 0x48b8d0,
+  team2: 0xf06a5d,
   rangeStroke: 0x6ad1ff,
-  selected: 0xffd166,
-  stack: 0x9a7bff,
-  hp: 0x4ade80,
-  sanity: 0xc084fc,
+  selected: 0xd9a441,
+  stack: 0xa78bfa,
+  hp: 0x47c98b,
+  sanity: 0xd183c7,
   shadow: 0x8a6bff,
   totem: 0x9be870,
-  textHex: 0xe8e8f5,
+  textHex: 0xe9eef6,
 };
 export const TEXT = {
-  body: '#e8e8f5',
-  dim: '#9aa0b5',
-  warn: '#ffd166',
-  bad: '#ff6f6f',
-  good: '#4ade80',
+  body: '#e9eef6',
+  dim: '#93a1b5',
+  warn: '#d9a441',
+  bad: '#f06a5d',
+  good: '#47c98b',
 };

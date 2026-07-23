@@ -15,7 +15,9 @@ export type StatusKind =
   | 'shadowVeil'
   | 'shadowTrail'
   | 'forget'
-  | 'orderJudgment';
+  | 'orderJudgment'
+  | 'bindCurseAura'
+  | 'veilCorrodePierce';
 export type StunType = 'main' | 'movement' | 'full';
 export type InvisMode = 'full' | 'partial';
 /** Kinds of mental compulsion the Mind word can inflict. */
@@ -167,6 +169,20 @@ export interface OrderJudgmentStatus extends BaseStatus {
   perStackSpec: string;
 }
 
+/** Hexcraft Bind Curse: binds nearby enemies when the bearer's turn starts. */
+export interface BindCurseAuraStatus extends BaseStatus {
+  kind: 'bindCurseAura';
+  radius: number;
+  ownerIndex: number;
+  /** Lifetime trigger count per enemy mage index; each may be bound twice. */
+  boundCounts: Record<number, number>;
+}
+
+/** Hexcraft Veil Corrode Pierce: converts a broken attacker's veil into damage. */
+export interface VeilCorrodePierceStatus extends BaseStatus {
+  kind: 'veilCorrodePierce';
+}
+
 export type Status =
   | InvisibilityStatus
   | StunStatus
@@ -178,7 +194,9 @@ export type Status =
   | ShadowVeilStatus
   | ShadowTrailStatus
   | ForgetStatus
-  | OrderJudgmentStatus;
+  | OrderJudgmentStatus
+  | BindCurseAuraStatus
+  | VeilCorrodePierceStatus;
 
 /**
  * Add a status, or refresh/extend an existing one that shares the same key.

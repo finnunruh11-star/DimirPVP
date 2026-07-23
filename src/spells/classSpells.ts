@@ -18,14 +18,17 @@
 import { RANGE_UNIT } from '../config/constants';
 import { dmg } from '../core/Damage';
 import type { Mage } from '../core/Mage';
+import { addOrExtendStatus } from '../core/Status';
 import {
   makeArcherSummon,
   makeBinderSummon,
   makeCorrosionSentry,
   makeGhostSummon,
+  makeNeuralLeech,
+  makeThoughtLeech,
 } from '../core/summons';
 import {
-  applyAuraDot,
+  applyControl,
   applyDebuff,
   applyDot,
   applyInvisibility,
@@ -33,14 +36,14 @@ import {
   applyStun,
   dealDamage,
   dispelVeil,
-  placeTotem,
   rollDice,
 } from '../effects/effects';
 import type { EffectContext } from '../effects/effects';
-import { registerClassSpell } from './registry';
+import { registerClassSpell, registerClassSpellVariants } from './registry';
 
 /** Abstract range number (5 / 10 / 15) to pixels. */
 const R = (units: number): number => units * RANGE_UNIT;
+const HEXCRAFT_FIELD_DURATION = 8;
 
 /** Nearest living enemy of the caster within `radius` of `at`, if any. */
 function nearestEnemy(ctx: EffectContext, at: { x: number; y: number }, radius: number): Mage | null {
@@ -67,20 +70,20 @@ registerClassSpell({
   words: ['mind', 'shadow'],
   variants: {
     objects: {
-      name: 'Mind Shadow Edge',
+      name: 'Mind Shadow',
       actionType: 'main',
-      range: R(8),
-      targeting: 'enemy',
+      range: 0,
+      targeting: 'self',
       dc: 11,
+      noCrit: true,
+      noCastSprite: true,
       description:
-        'Conjure a shadow-edged strike: 1d6 sanity + 1d3 shadow to one enemy (range 8). ' +
-        'For its next turn, wherever it moves it trails your shadow pools (each lasts 5 turns).',
-      visual: { preset: 'projectile', color: 0x9b7bff, size: 10, speed: 1.4 },
+        'Enchant your held weapon: for the rest of the fight its strikes deal ' +
+        'shadow-typed "mill" (sanity) damage instead of their normal damage.',
+      visual: { preset: 'conjure', color: 0x9b7bff, size: 22, speed: 1 },
       cast(ctx) {
-        if (!ctx.target) return;
-        dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Mind Shadow Edge'), 'shadow', 'sanity'));
-        dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d3', 'Mind Shadow Edge'), 'shadow', 'physical'));
-        applyShadowTrail(ctx, ctx.target, { duration: 2, perShadowTtl: 5 });
+        ctx.caster.weaponEnchant = 'mindShadow';
+        ctx.log(`${ctx.caster.name}'s weapon is sheathed in mind-eating shadow.`);
       },
     },
     life: {
@@ -95,7 +98,7 @@ registerClassSpell({
         'Summon a ghost (aimed within range 6). It deals "mill" (sanity) damage, ' +
         'can hold and use one item, and obeys your Command bonus action. HP 7; ' +
         'its str/dex/int scale with the cast roll and your intellect. Incorporeal ' +
-        'and undead, but weak to light — bad in daylight.',
+        'and undead, but weak to light - bad in daylight.',
       visual: { preset: 'conjure', color: 0x9b7bff, size: 26, speed: 1 },
       cast(ctx) {
         if (!ctx.targetPoint) return;
@@ -113,24 +116,184 @@ registerClassSpell({
     hexcraft: {
       name: 'Mind Shadow',
       actionType: 'main',
-      range: R(8),
-      targeting: 'enemy',
+      range: 0,
+      targeting: 'self',
       dc: 12,
       noCrit: true,
       description:
-        'Wreathe one enemy (range 8) in a mind-shadow aura for 4 turns: at the start of ' +
-        "each turn it and every enemy within range 3 of it take 1d3 shadow \u201cmill\u201d damage.",
-      visual: { preset: 'nova', color: 0x9b7bff, size: 46, speed: 1 },
+        'Deepen shadow across the entire battlefield for 8 rounds. Every instance of ' +
+        'shadow damage or mill (sanity) damage deals 2 additional damage, regardless of source.',
+      visual: { preset: 'nova', color: 0x9b7bff, size: 110, speed: 0.8 },
       cast(ctx) {
-        if (!ctx.target) return;
-        applyAuraDot(ctx, ctx.target, {
-          name: 'Mind Shadow',
-          duration: 4,
-          radius: R(3),
-          damageSpec: '1d3',
-          type: 'shadow',
-          damageClass: 'sanity',
+        ctx.game.addHexcraftGlobal('mindShadow', ctx.caster.team, HEXCRAFT_FIELD_DURATION);
+      },
+    },
+  },
+});
+
+// ===========================================================================
+//  TARGETED CLASS OVERRIDES
+// ---------------------------------------------------------------------------
+//  These mixed-grammar combinations deliberately align for one class only.
+//  Other classes keep their ordinary spell, or have no spell when no ordinary
+//  combination exists.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+//  CORRODE MIND · LIFE — summon a parasite that eats sanity and reactions.
+// ---------------------------------------------------------------------------
+registerClassSpellVariants({
+  words: ['corrode', 'mind'],
+  variants: {
+    life: {
+      name: 'Corrode Mind',
+      actionType: 'main',
+      range: R(6),
+      targeting: 'point',
+      dc: 12,
+      noCrit: true,
+      noCastSprite: true,
+      description:
+        'Raise a Neural Leech within range 6. Its bite deals 1d3 corrosive sanity ' +
+        'damage and inflicts Neural Rot for 3 turns: 1 corrosive sanity damage each ' +
+        'turn and no reactions while the rot remains. HP 5; obeys Command.',
+      visual: { preset: 'conjure', color: 0xb7dd77, size: 24, speed: 1 },
+      cast(ctx) {
+        if (!ctx.targetPoint) return;
+        const leech = makeNeuralLeech({
+          ownerInt: ctx.caster.effectiveInt(),
+          dcRoll: summonVigor(ctx),
+          ownerName: ctx.caster.name,
+          pos: ctx.targetPoint,
+          team: ctx.caster.team,
         });
+        leech.intrinsicMelee!.onHit = (hitCtx, victim) => {
+          applyDot(hitCtx, victim, {
+            name: 'Neural Rot',
+            duration: 3,
+            damage: dmg(1, 'corrosive', 'sanity'),
+          });
+          applyControl(hitCtx, victim, {
+            name: 'Reaction Eaten',
+            mode: 'expose',
+            duration: 3,
+          });
+        };
+        ctx.game.spawnSummon(leech, ctx.caster, 'neural-leech');
+        ctx.log(`${ctx.caster.name} breeds ${leech.name} (HP ${leech.hp}).`);
+      },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DRAIN MIND · LIFE — summon a thought-eater that steals charged words.
+// ---------------------------------------------------------------------------
+registerClassSpellVariants({
+  words: ['drain', 'mind'],
+  variants: {
+    life: {
+      name: 'Drain Mind',
+      actionType: 'main',
+      range: R(6),
+      targeting: 'point',
+      dc: 12,
+      noCrit: true,
+      noCastSprite: true,
+      description:
+        'Raise a Thought Leech within range 6. Its bite deals 1d3 sanity damage and ' +
+        'drains one random charged word from the victim. If you know that word, its ' +
+        'charge transfers to you; otherwise the thought is digested into 2 mana. HP 5; obeys Command.',
+      visual: { preset: 'conjure', color: 0x57d6a0, size: 24, speed: 1 },
+      cast(ctx) {
+        if (!ctx.targetPoint) return;
+        const leech = makeThoughtLeech({
+          ownerInt: ctx.caster.effectiveInt(),
+          dcRoll: summonVigor(ctx),
+          ownerName: ctx.caster.name,
+          pos: ctx.targetPoint,
+          team: ctx.caster.team,
+        });
+        leech.intrinsicMelee!.onHit = (hitCtx, victim) => {
+          const charged = victim.loadout.filter((word) => (victim.charges[word] ?? 0) > 0);
+          if (charged.length === 0) {
+            hitCtx.log(`${leech.name} finds no charged thought to drain.`);
+            return;
+          }
+          const stolen = hitCtx.rng.pick(charged);
+          victim.charges[stolen] = Math.max(0, (victim.charges[stolen] ?? 0) - 1);
+          const owner =
+            leech.summonOwnerIndex != null ? hitCtx.game.mages[leech.summonOwnerIndex] : undefined;
+          if (!owner?.alive) return;
+          if (owner.loadout.includes(stolen)) {
+            owner.charges[stolen] = (owner.charges[stolen] ?? 0) + 1;
+            hitCtx.log(`${leech.name} transfers ${stolen} from ${victim.name} to ${owner.name}.`);
+          } else {
+            owner.gainMana(2);
+            hitCtx.log(`${leech.name} digests ${victim.name}'s ${stolen} thought into 2 mana.`);
+          }
+        };
+        ctx.game.spawnSummon(leech, ctx.caster, 'thought-leech');
+        ctx.log(`${ctx.caster.name} breeds ${leech.name} (HP ${leech.hp}).`);
+      },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  PIERCE BIND · HEXCRAFT — make every chosen destination a binding rune.
+// ---------------------------------------------------------------------------
+registerClassSpellVariants({
+  words: ['pierce', 'bind'],
+  variants: {
+    hexcraft: {
+      name: 'Needlepoint Domain',
+      actionType: 'main',
+      range: 0,
+      targeting: 'self',
+      dc: 12,
+      noCrit: true,
+      description:
+        'Impose a battlefield-wide domain for 8 rounds. The first time each enemy ' +
+        'repositions during a turn, its chosen destination becomes a binding rune: ' +
+        'it takes 1d4 pierce damage and is rooted there for the rest of that turn.',
+      visual: { preset: 'nova', color: 0x9ad8ff, size: 110, speed: 0.8 },
+      cast(ctx) {
+        ctx.game.addNeedlepointDomain(ctx.caster.team, HEXCRAFT_FIELD_DURATION);
+      },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW SHATTER CURSE · OBJECTS — conjure Black Bell.
+// ---------------------------------------------------------------------------
+registerClassSpellVariants({
+  words: ['shadow', 'shatter', 'curse'],
+  variants: {
+    objects: {
+      name: 'Black Bell',
+      actionType: 'main',
+      range: 0,
+      targeting: 'self',
+      dc: 14,
+      noCastSprite: true,
+      description:
+        'Conjure Black Bell into both hands. Toll strikes deal only 1 direct damage, ' +
+        'then inflict 1d3 shadow damage for 6 turns (9 when the victim stands in shadow). ' +
+        'Weapon Action toggles Condense: strikes clear every harmful status, roll all ' +
+        'remaining DoT damage immediately as half shatter / half shadow, and create a ' +
+        'normal shadow enlarged by 1 for each non-damaging debuff consumed.',
+      visual: { preset: 'conjure', color: 0x7658b8, size: 34, speed: 0.8 },
+      cast(ctx) {
+        const caster = ctx.caster;
+        for (const held of [...caster.hands]) {
+          caster.hands = caster.hands.filter((item) => item !== held);
+          caster.bag.push(held);
+        }
+        caster.hands.push('conjuredBlackBell');
+        caster.blackBellCondense = false;
+        ctx.log(`${caster.name} conjures Black Bell; its first toll waits inside the glass.`);
       },
     },
   },
@@ -148,22 +311,19 @@ registerClassSpell({
     objects: {
       name: 'Corrode Curse',
       actionType: 'main',
-      range: R(6),
-      targeting: 'enemy',
+      range: 0,
+      targeting: 'self',
       dc: 11,
+      noCrit: true,
+      noCastSprite: true,
       description:
-        'Etch one enemy with acid (range 6): 1d6 corrosive damage now, then 1d3 corrosive ' +
-        'at the start of each of its next 3 turns.',
-      visual: { preset: 'projectile', color: 0x9be870, size: 11, speed: 1.4 },
+        'Curse your held weapon with living acid: while you wield it you rot for 1d3 ' +
+        'corrosive at the start of each turn, but every enemy it strikes begins ' +
+        'corroding too (1d3 corrosive for 3 turns).',
+      visual: { preset: 'conjure', color: 0x9be870, size: 22, speed: 1 },
       cast(ctx) {
-        if (!ctx.target) return;
-        dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Corrode Curse'), 'corrosive', 'physical'));
-        applyDot(ctx, ctx.target, {
-          name: 'Corrosion',
-          duration: 3,
-          damage: dmg(2, 'corrosive', 'physical'),
-          damageSpec: '1d3',
-        });
+        ctx.caster.weaponEnchant = 'curseCorrode';
+        ctx.log(`${ctx.caster.name}'s weapon weeps corrosive acid \u2014 at a price.`);
       },
     },
     life: {
@@ -175,9 +335,9 @@ registerClassSpell({
       noCrit: true,
       noCastSprite: true,
       description:
-        'Raise a Rot Sentry (aimed within range 5): a slow, walking totem (moves 5) that ' +
-        'corrodes what it strikes and mires it (\u2013 movement for 2 turns). HP 8; obeys your ' +
-        'Command bonus action. Its stats scale with the cast roll and your intellect.',
+        'Raise a Rot Sentry within range 5. It cannot attack, but at the start of each of ' +
+        'your turns its range-3 aura deals 1d3 corrosive damage to everyone except you ' +
+        'and your summons, including other allies. HP 8, move 5; obeys Command.',
       visual: { preset: 'conjure', color: 0x9be870, size: 30, speed: 1 },
       cast(ctx) {
         if (!ctx.targetPoint) return;
@@ -188,13 +348,6 @@ registerClassSpell({
           pos: ctx.targetPoint,
           team: ctx.caster.team,
         });
-        sentry.intrinsicMelee!.onHit = (hitCtx, victim) => {
-          applyDebuff(hitCtx, victim, {
-            name: 'Mired',
-            duration: 2,
-            mods: { moveRange: -R(4) },
-          });
-        };
         ctx.game.spawnSummon(sentry, ctx.caster, 'sentry');
         ctx.log(`${ctx.caster.name} raises ${sentry.name} (HP ${sentry.hp}).`);
       },
@@ -202,19 +355,16 @@ registerClassSpell({
     hexcraft: {
       name: 'Corrode Curse',
       actionType: 'bonus',
-      range: R(5),
-      targeting: 'point',
+      range: 0,
+      targeting: 'self',
       dc: 11,
       noCrit: true,
-      aoe: { kind: 'circle', radius: R(3) },
-      noCastSprite: true,
       description:
-        'Plant a corroding totem (aimed within range 5). Each turn it deals 1d3 corrosive ' +
-        'damage to enemies within range 3 of it and slows them by 50%.',
-      visual: { preset: 'burst', color: 0x9be870, size: 50, speed: 1 },
+        'Impose a global curse for 8 rounds. Any unit carrying a DoT is slowed by 75% ' +
+        'for the DoT\'s full duration, and each DoT tick also deals 1d3 corrosive damage.',
+      visual: { preset: 'nova', color: 0x9be870, size: 110, speed: 0.8 },
       cast(ctx) {
-        if (!ctx.targetPoint) return;
-        placeTotem(ctx, ctx.targetPoint, { radius: R(3), damageSpec: '1d3', slow: 0.5 });
+        ctx.game.addHexcraftGlobal('curseCorrode', ctx.caster.team, HEXCRAFT_FIELD_DURATION);
       },
     },
   },
@@ -230,20 +380,20 @@ registerClassSpell({
   words: ['bind', 'veil'],
   variants: {
     objects: {
-      name: 'Bind Veil',
-      actionType: 'bonus',
-      range: 0,
+      name: 'Veil Bind',
+      actionType: 'main',
+      range: R(8),
       targeting: 'any',
       dc: 10,
-      reaction: true,
+      noCrit: true,
       description:
-        'Give a chosen mage a half veil for 2 turns and root the nearest enemy within ' +
-        'range 10 for 2 turns. Can be cast as a reaction.',
+        'Lay a binding mantle on a chosen mage (range 8): it grants them two uses of a ' +
+        'weak Bind \u2014 a bonus action that roots the nearest enemy for 1 turn.',
       visual: { preset: 'nova', color: 0x8ad1ff, size: 60, speed: 1.1 },
       cast(ctx) {
-        applyInvisibility(ctx, ctx.target ?? ctx.caster, { duration: 2, mode: 'partial' });
-        const foe = nearestEnemy(ctx, ctx.caster.pos, R(10));
-        if (foe) applyStun(ctx, foe, { duration: 2, type: 'movement' });
+        const who = ctx.target ?? ctx.caster;
+        who.bindMantleCharges += 2;
+        ctx.log(`${who.name} is wrapped in a binding mantle (2 weak Binds).`);
       },
     },
     life: {
@@ -278,28 +428,21 @@ registerClassSpell({
     hexcraft: {
       name: 'Bind Veil',
       actionType: 'bonus',
-      range: 0,
-      targeting: 'self',
+      range: R(15),
+      targeting: 'point',
       dc: 11,
       noCrit: true,
-      aoe: { kind: 'circle', radius: R(4) },
+      aoe: { kind: 'circle', radius: R(5) },
+      noCastSprite: true,
       reaction: true,
       description:
-        'A veiling field bursts from you (range 4): you and every ally within it gain a ' +
-        'half veil for 2 turns, and every enemy within it is rooted for 2 turns. Can be ' +
-        'cast as a reaction.',
-      visual: { preset: 'nova', color: 0x8ad1ff, size: 90, speed: 1.1 },
+        'Place a range-5 linking circle within range 15 for 8 rounds. Inside it, gaining ' +
+        'a veil also roots the bearer, while being rooted or bound grants a half veil ' +
+        'for the same duration. Can be cast as a reaction.',
+      visual: { preset: 'burst', color: 0x8ad1ff, size: 100, speed: 1.1 },
       cast(ctx) {
-        const near = ctx.game.magesInRadius(ctx.caster.pos, R(4));
-        for (const m of near) {
-          if (!m.alive) continue;
-          if (m.team === ctx.caster.team) {
-            applyInvisibility(ctx, m, { duration: 2, mode: 'partial' });
-          } else {
-            applyStun(ctx, m, { duration: 2, type: 'movement' });
-          }
-        }
-        applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+        if (!ctx.targetPoint) return;
+        ctx.game.addVeilBindZone(ctx.targetPoint, ctx.caster.team, HEXCRAFT_FIELD_DURATION);
       },
     },
   },
@@ -317,17 +460,24 @@ registerClassSpell({
     objects: {
       name: 'Bind Curse',
       actionType: 'main',
-      range: R(12),
+      range: R(10),
       targeting: 'enemy',
       dc: 12,
+      noCrit: true,
       description:
-        'Hurl a manacle-bolt at one enemy (range 12): 1d6 shadow damage and root it for ' +
-        '2 turns.',
+        "Shackle one of an enemy's items (range 10): it can no longer be unequipped, and " +
+        'all of its damage and stats are halved (kept half rounds up in the holder\u2019s favour).',
       visual: { preset: 'projectile', color: 0x6a7bd0, size: 11, speed: 1.4 },
       cast(ctx) {
-        if (!ctx.target) return;
-        dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Bind Curse'), 'shadow', 'physical'));
-        applyStun(ctx, ctx.target, { duration: 2, type: 'movement' });
+        const t = ctx.target;
+        if (!t) return;
+        const id = t.activeWeaponId() ?? t.hands[0] ?? t.equippedItems()[0];
+        if (!id) {
+          ctx.log(`${t.name} has nothing to shackle.`);
+          return;
+        }
+        t.sabotagedItems.add(id);
+        ctx.log(`${ctx.caster.name} shackles ${t.name}'s gear \u2014 it is stuck and weakened.`);
       },
     },
     life: {
@@ -367,18 +517,22 @@ registerClassSpell({
       dc: 12,
       noCrit: true,
       description:
-        'Root one enemy for 4 turns and deal 1d3 shadow damage at the start of each of ' +
-        'its turns for 4 turns (range 15).',
-      visual: { preset: 'beam', color: 0x6a7bd0, size: 6, speed: 1 },
+        'Curse one enemy with a range-3 binding aura for 8 turns. At each of its turn ' +
+        'starts, nearby enemies are bound for 1 round; if anyone is caught, the cursed ' +
+        'bearer is bound too. Each enemy can be caught by this aura at most twice.',
+      visual: { preset: 'nova', color: 0x6a7bd0, size: 60, speed: 1 },
       cast(ctx) {
         if (!ctx.target) return;
-        applyStun(ctx, ctx.target, { duration: 4, type: 'movement' });
-        applyDot(ctx, ctx.target, {
+        addOrExtendStatus(ctx.target.statuses, {
+          key: `hexcraft:bind-curse:${ctx.game.mages.indexOf(ctx.caster)}`,
           name: 'Bind Curse',
-          duration: 4,
-          damage: dmg(2, 'shadow', 'physical'),
-          damageSpec: '1d3',
-        });
+          kind: 'bindCurseAura',
+          duration: HEXCRAFT_FIELD_DURATION,
+          radius: R(3),
+          ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+          boundCounts: {},
+        }, false);
+        ctx.log(`${ctx.target.name} bears a binding aura for 8 turns.`);
       },
     },
   },
@@ -396,24 +550,29 @@ registerClassSpell({
     objects: {
       name: 'Veil Corrode Pierce',
       actionType: 'main',
-      range: R(8),
-      targeting: 'enemy',
+      range: 0,
+      targeting: 'self',
       dc: 13,
+      noCrit: true,
+      noCastSprite: true,
       description:
-        'A veiled acid lance runs one enemy through (range 8): 1d8 piercing-corrosive ' +
-        'damage plus 1d3 corrosive at the start of each of its next 2 turns. You slip ' +
-        'into a half veil for 2 turns.',
-      visual: { preset: 'projectile', color: 0x9be870, size: 12, speed: 1.6 },
+        'Conjure a two-handed Veil Bow into your hands (replacing what you held) and slip ' +
+        'into a half veil. While held it re-cloaks you each turn; firing costs 2 mana, ' +
+        'reveals you for that turn, deals Dex-scaled corrosive damage and mires the mark ' +
+        '(2 turns). It lasts until unsummoned or 3 combats; unequipping it erases it.',
+      visual: { preset: 'conjure', color: 0x9be870, size: 26, speed: 1 },
       cast(ctx) {
-        if (!ctx.target) return;
-        dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d8', 'Veil Corrode Pierce'), 'corrosive', 'physical'));
-        applyDot(ctx, ctx.target, {
-          name: 'Corrosion',
-          duration: 2,
-          damage: dmg(2, 'corrosive', 'physical'),
-          damageSpec: '1d3',
-        });
-        applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+        const c = ctx.caster;
+        // Free the hands into the bag, then conjure the bow.
+        for (const held of [...c.hands]) {
+          c.hands = c.hands.filter((h) => h !== held);
+          c.bag.push(held);
+        }
+        c.hands.push('conjuredVeilBow');
+        c.conjuredBowCombatsLeft = 3;
+        c.conjuredBowFiredThisTurn = false;
+        applyInvisibility(ctx, c, { duration: 1, mode: 'partial' });
+        ctx.log(`${c.name} conjures a Veil Bow and fades from sight.`);
       },
     },
     life: {
@@ -454,25 +613,18 @@ registerClassSpell({
       name: 'Veil Corrode Pierce',
       actionType: 'main',
       range: R(10),
-      targeting: 'enemy',
+      targeting: 'any',
+      requiresInvisibleTarget: true,
       dc: 13,
       noCrit: true,
       description:
-        'Wreathe one enemy (range 10) in a piercing acid aura for 3 turns: at the start of ' +
-        'each turn it and every enemy within range 3 of it take 1d3 corrosive damage. You ' +
-        'slip into a half veil for 2 turns.',
-      visual: { preset: 'nova', color: 0x9be870, size: 48, speed: 1 },
+        'Arm an invisible unit within range 10 without revealing the caster. Its next ' +
+        'attack consumes its remaining stealth and, on a hit, deals an extra corrosive ' +
+        'and piercing die whose size equals the lost duration, capped at 1d7.',
+      visual: { preset: 'conjure', color: 0x9be870, size: 34, speed: 1 },
       cast(ctx) {
         if (!ctx.target) return;
-        applyAuraDot(ctx, ctx.target, {
-          name: 'Acid Veil',
-          duration: 3,
-          radius: R(3),
-          damageSpec: '1d3',
-          type: 'corrosive',
-          damageClass: 'physical',
-        });
-        applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+        ctx.game.armVeilCorrodePierce(ctx.target);
       },
     },
   },

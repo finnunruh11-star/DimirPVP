@@ -3,7 +3,7 @@ import { Mage } from './Mage';
 import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
 import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
-import { dealDamage, heal, applyDot, rollDice } from '../effects/effects';
+import { dealDamage, heal, applyDot, applyDebuff, applyInvisibility, applyStun, rollDice } from '../effects/effects';
 import { dmg } from './Damage';
 import type { DamageType, DamageClass } from './Damage';
 import type { ItemId, ItemDef } from './Items';
@@ -30,7 +30,16 @@ import type { Scarab } from './Scarab';
 import { scarabAlive, scarabFlying } from './Scarab';
 import type { BarrierZone } from './Barrier';
 import { barrierContains } from './Barrier';
-import { addOrExtendStatus, type ControlStatus, type DotStatus, type OrderJudgmentStatus, type ShadowTrailStatus } from './Status';
+import {
+  addOrExtendStatus,
+  type AuraDotStatus,
+  type BindCurseAuraStatus,
+  type ControlStatus,
+  type DotStatus,
+  type OrderJudgmentStatus,
+  type ShadowTrailStatus,
+  type Status,
+} from './Status';
 
 /**
  * A board-wide escalating damage effect (Necrosis): on each round rollover every
@@ -44,6 +53,35 @@ export interface GlobalEscalation {
   type: DamageType;
   damageClass: DamageClass;
   potency: number;
+}
+
+/**
+ * Hexcraft Pierce Bind: a battlefield-wide law that nails each enemy to the
+ * first destination it chooses in a turn.
+ */
+export interface NeedlepointDomain {
+  owner: number;
+  roundsLeft: number;
+  lastTriggeredTurnByMage: Record<number, number>;
+}
+
+export type HexcraftGlobalKind = 'mindShadow' | 'curseCorrode';
+
+/** A timed battlefield-wide Hexcraft law affecting every team equally. */
+export interface HexcraftGlobalEffect {
+  kind: HexcraftGlobalKind;
+  owner: number;
+  roundsLeft: number;
+}
+
+/** Hexcraft Veil Bind: a circle that links veiling and binding. */
+export interface VeilBindZone {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+  owner: number;
+  roundsLeft: number;
 }
 
 /** An item lying on the ground, droppable/retrievable as a bonus action. */
@@ -115,6 +153,15 @@ export class GameState {
 
   /** Board-wide escalating damage effects (Necrosis). */
   globalEscalations: GlobalEscalation[] = [];
+
+  /** Active battlefield-wide Pierce Bind domains. */
+  needlepointDomains: NeedlepointDomain[] = [];
+
+  /** Timed global Hexcraft laws (Mind Shadow / Curse Corrode). */
+  hexcraftGlobals: HexcraftGlobalEffect[] = [];
+
+  /** Persistent Veil Bind linking circles. */
+  veilBindZones: VeilBindZone[] = [];
 
   /** Items dropped on the ground, awaiting pickup by their owner. */
   droppedItems: DroppedItem[] = [];
@@ -495,7 +542,9 @@ export class GameState {
     this.updateAttachedScarabs();
     // Ground hazards and shadow-curse auras strike before the mage's own turn.
     this.applyTotemAuras(m);
+    this.applyOwnedSummonAuras(m);
     this.applyAuraDots(m);
+    this.applyBindCurseAuras(m);
     this.applyLightAuras(m);
     this.applyDotDamage(m);
     this.applyMutivargZones(m);
@@ -504,10 +553,57 @@ export class GameState {
     this.tickOrderJudgments(m);
     const ticks = m.tickStatuses();
     for (const line of ticks) this.log(line);
+    this.syncCurseCorrodeSlow(m);
     this.applyControlOnTurnStart(m);
     this.tickDrainLink(m);
     this.regenResources(m);
+    this.applyObjectsGear(m);
+    // Reveal anyone a foe is already standing next to at the start of the turn.
+    this.breakProximityVeils();
     m.beginTurn();
+  }
+
+  /**
+   * Objects-class upkeep at the wielder's turn start: the Curse Corrode enchant's
+   * self-toll and the conjured Veil bow's re-veil.
+   */
+  private applyObjectsGear(m: Mage): void {
+    // Curse Corrode enchant: the wielder rots 1d3 each turn it keeps the weapon.
+    if (m.weaponEnchant === 'curseCorrode' && m.alive) {
+      const ctx = this.effectContext(m, m, null);
+      dealDamage(ctx, m, dmg(this.rng.roll('1d3').total, 'corrosive', 'physical'), { canMiss: false });
+    }
+    // Conjured Veil bow: re-cloak its holder at the start of each of their turns.
+    const bowId = m.hands.find((id) => getItem(id).conjuredVeilBow);
+    if (bowId && m.conjuredBowCombatsLeft > 0 && m.alive) {
+      m.conjuredBowFiredThisTurn = false;
+      const ctx = this.effectContext(m, m, null);
+      applyInvisibility(ctx, m, { duration: 1, mode: 'partial' });
+    }
+  }
+
+  /**
+   * Veil Bind (Objects) mantle: a weak Bind that roots the nearest living enemy
+   * for a single turn. Deterministic (nearest by distance), so it is online-safe.
+   */
+  applyMantleBind(m: Mage): void {
+    let best: Mage | null = null;
+    let bestD = Infinity;
+    for (const o of this.mages) {
+      if (!o.alive || o.team === m.team) continue;
+      const d = (o.x - m.x) ** 2 + (o.y - m.y) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = o;
+      }
+    }
+    if (!best) {
+      this.log(`${m.name}'s mantle finds no one to bind.`);
+      return;
+    }
+    const ctx = this.effectContext(m, best, null);
+    applyStun(ctx, best, { duration: 1, type: 'movement' });
+    this.log(`${m.name}'s binding mantle roots ${best.name} in place.`);
   }
 
   /** Age a Lich life-link on `m`; drop it when it expires or its Lich dies. */
@@ -552,6 +648,9 @@ export class GameState {
         this.tickTotems();
         this.tickBarriers();
         this.tickGlobalEscalations();
+        this.tickNeedlepointDomains();
+        this.tickHexcraftGlobals();
+        this.tickVeilBindZones();
         this.startRound();
       }
       const idx = this.initiativeOrder[this.turnPtr];
@@ -605,6 +704,218 @@ export class GameState {
       e.index += 1;
     }
     this.globalEscalations = this.globalEscalations.filter((e) => e.index < e.stages.length);
+  }
+
+  /** Establish or refresh one team's battlefield-wide Needlepoint Domain. */
+  addNeedlepointDomain(owner: number, rounds = 8): void {
+    this.needlepointDomains = this.needlepointDomains.filter((domain) => domain.owner !== owner);
+    this.needlepointDomains.push({ owner, roundsLeft: rounds, lastTriggeredTurnByMage: {} });
+    this.log('Needlepoint Domain fixes every destination beneath an unseen needle.');
+  }
+
+  /** Age Needlepoint Domains on round rollover. */
+  private tickNeedlepointDomains(): void {
+    for (const domain of this.needlepointDomains) domain.roundsLeft -= 1;
+    const ended = this.needlepointDomains.filter((domain) => domain.roundsLeft <= 0);
+    if (ended.length > 0) this.log('The Needlepoint Domain releases its hold on the battlefield.');
+    this.needlepointDomains = this.needlepointDomains.filter((domain) => domain.roundsLeft > 0);
+  }
+
+  /**
+   * Resolve destination-runes after any reposition. Each enemy is struck only
+   * once per turn sequence, even if several movement effects move it again.
+   */
+  triggerNeedlepointDomains(mover: Mage): void {
+    if (!mover.alive) return;
+    const mageIndex = this.mages.indexOf(mover);
+    if (mageIndex < 0) return;
+    for (const domain of this.needlepointDomains) {
+      if (domain.owner === mover.team) continue;
+      if (domain.lastTriggeredTurnByMage[mageIndex] === this.turnSeq) continue;
+      domain.lastTriggeredTurnByMage[mageIndex] = this.turnSeq;
+      const caster = this.mages.find((mage) => mage.alive && mage.team === domain.owner);
+      if (!caster) continue;
+      const ctx = this.effectContext(caster, mover, mover.pos);
+      dealDamage(ctx, mover, dmg(this.rng.roll('1d4').total, 'pierce', 'physical'), {
+        canMiss: false,
+      });
+      if (mover.alive) applyStun(ctx, mover, { duration: 1, type: 'movement' });
+      this.log(`${mover.name}'s destination is nailed by the Needlepoint Domain.`);
+    }
+  }
+
+  /** Establish or refresh a battlefield-wide Hexcraft law without stacking it. */
+  addHexcraftGlobal(kind: HexcraftGlobalKind, owner: number, roundsLeft: number): void {
+    this.hexcraftGlobals = this.hexcraftGlobals.filter((effect) => effect.kind !== kind);
+    this.hexcraftGlobals.push({ kind, owner, roundsLeft });
+    this.log(
+      kind === 'mindShadow'
+        ? 'Mind Shadow deepens every shadow and every wound to sanity.'
+        : 'Curse Corrode infects every lingering affliction with universal decay.'
+    );
+    if (kind === 'curseCorrode') {
+      for (const mage of this.mages) this.syncCurseCorrodeSlow(mage);
+    }
+  }
+
+  /** Keep Curse Corrode's 75% slow exactly as long as the bearer's longest DoT. */
+  syncCurseCorrodeSlow(mage: Mage): void {
+    const key = 'debuff:curse-corrode-slow';
+    const existing = mage.statuses.find((status) => status.key === key);
+    const dots = mage.statuses.filter(
+      (status) => status.kind === 'dot' || status.kind === 'auraDot'
+    );
+    if (dots.length === 0) {
+      mage.statuses = mage.statuses.filter((status) => status.key !== key);
+      return;
+    }
+    if (!existing && !this.hasHexcraftGlobal('curseCorrode')) return;
+    const duration = Math.max(...dots.map((status) => status.duration));
+    const slow = {
+      key,
+      name: 'Curse Corrode Slow',
+      kind: 'debuff' as const,
+      duration,
+      mods: { moveRange: -Math.round(MOVE_RANGE * 0.75) },
+    };
+    if (existing) Object.assign(existing, slow);
+    else mage.statuses.push(slow);
+  }
+
+  hasHexcraftGlobal(kind: HexcraftGlobalKind): boolean {
+    return this.hexcraftGlobals.some((effect) => effect.kind === kind && effect.roundsLeft > 0);
+  }
+
+  /** Mind Shadow adds one global amplification, even when damage is both shadow and mill. */
+  hexcraftDamageBonus(type: DamageType, damageClass: DamageClass): number {
+    return this.hasHexcraftGlobal('mindShadow') && (type === 'shadow' || damageClass === 'sanity')
+      ? 2
+      : 0;
+  }
+
+  private tickHexcraftGlobals(): void {
+    for (const effect of this.hexcraftGlobals) effect.roundsLeft -= 1;
+    const ended = this.hexcraftGlobals.filter((effect) => effect.roundsLeft <= 0);
+    for (const effect of ended) {
+      this.log(
+        effect.kind === 'mindShadow'
+          ? 'The global Mind Shadow thins away.'
+          : 'The global Curse Corrode finally loses its purchase.'
+      );
+    }
+    this.hexcraftGlobals = this.hexcraftGlobals.filter((effect) => effect.roundsLeft > 0);
+  }
+
+  /** Place a range-5 Veil Bind circle, replacing this team's previous circle. */
+  addVeilBindZone(at: Vec2, owner: number, roundsLeft = 8): VeilBindZone {
+    this.veilBindZones = this.veilBindZones.filter((zone) => zone.owner !== owner);
+    const zone: VeilBindZone = {
+      id: this.nextId++,
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y)),
+      radius: 5 * RANGE_UNIT,
+      owner,
+      roundsLeft,
+    };
+    this.veilBindZones.push(zone);
+    this.log('A Veil Bind circle stitches concealment to restraint.');
+    return zone;
+  }
+
+  isInVeilBindZone(mage: Mage): boolean {
+    return this.veilBindZones.some(
+      (zone) => dist(mage.pos, { x: zone.x, y: zone.y }) <= zone.radius
+    );
+  }
+
+  private tickVeilBindZones(): void {
+    for (const zone of this.veilBindZones) zone.roundsLeft -= 1;
+    if (this.veilBindZones.some((zone) => zone.roundsLeft <= 0)) {
+      this.log('A Veil Bind circle unravels.');
+    }
+    this.veilBindZones = this.veilBindZones.filter((zone) => zone.roundsLeft > 0);
+  }
+
+  /** Trigger every Bind Curse aura carried by the mage whose turn is starting. */
+  private applyBindCurseAuras(bearer: Mage): void {
+    const auras = bearer.statuses.filter(
+      (status) => status.kind === 'bindCurseAura'
+    ) as BindCurseAuraStatus[];
+    for (const aura of auras) {
+      const owner = this.mages[aura.ownerIndex] ?? bearer;
+      const ctx = this.effectContext(owner, bearer, bearer.pos);
+      let boundAny = false;
+      for (let index = 0; index < this.mages.length; index++) {
+        const enemy = this.mages[index];
+        if (!enemy.alive || enemy.team === bearer.team) continue;
+        if (dist(enemy.pos, bearer.pos) > aura.radius + enemy.bodyRadius()) continue;
+        if ((aura.boundCounts[index] ?? 0) >= 2) continue;
+        if (enemy.debuffImmune || this.isLaranegUntouchable(enemy)) continue;
+        applyStun(ctx, enemy, { duration: 2, type: 'movement' });
+        aura.boundCounts[index] = (aura.boundCounts[index] ?? 0) + 1;
+        boundAny = true;
+      }
+      if (boundAny) {
+        applyStun(ctx, bearer, { duration: 2, type: 'movement' });
+        this.log(`${bearer.name}'s binding aura catches its bearer in the same knot.`);
+      }
+    }
+  }
+
+  /** Remaining turns of any active stealth effect that an attack can consume. */
+  stealthDuration(mage: Mage): number {
+    const invisibility = mage.getInvisibility();
+    const shadowVeil = mage.statuses.find((status) => status.kind === 'shadowVeil');
+    return Math.max(
+      invisibility?.duration ?? 0,
+      shadowVeil && this.isInShadow(mage) ? shadowVeil.duration : 0
+    );
+  }
+
+  /** Arm an invisible mage to turn the veil lost on its next attack into damage. */
+  armVeilCorrodePierce(mage: Mage): void {
+    const duration = this.stealthDuration(mage);
+    if (duration <= 0) return;
+    addOrExtendStatus(
+      mage.statuses,
+      {
+        key: 'buff:veil-corrode-pierce',
+        name: 'Veil Corrode Pierce',
+        kind: 'veilCorrodePierce',
+        duration,
+      },
+      false
+    );
+    this.log(`${mage.name}'s remaining veil is honed into a corrosive point.`);
+  }
+
+  /** Remove an attacker's veil and return the armed damage die size, capped at d7. */
+  prepareVeilCorrodePierce(attacker: Mage): number {
+    const armed = attacker.statuses.some((status) => status.kind === 'veilCorrodePierce');
+    if (!armed) return 0;
+    const power = Math.min(7, this.stealthDuration(attacker));
+    attacker.statuses = attacker.statuses.filter(
+      (status) =>
+        status.kind !== 'invisibility' &&
+        status.kind !== 'shadowVeil' &&
+        status.kind !== 'veilCorrodePierce'
+    );
+    if (power > 0) this.log(`${attacker.name} breaks a ${power}-turn veil into an attack.`);
+    return power;
+  }
+
+  /** Deal the two damage halves released by Veil Corrode Pierce. */
+  resolveVeilCorrodePierce(attacker: Mage, target: Mage, power: number): void {
+    if (power <= 0 || !target.alive) return;
+    const ctx = this.effectContext(attacker, target, target.pos);
+    dealDamage(ctx, target, dmg(this.rng.roll(`1d${power}`).total, 'corrosive', 'physical'), {
+      canMiss: false,
+    });
+    if (target.alive) {
+      dealDamage(ctx, target, dmg(this.rng.roll(`1d${power}`).total, 'pierce', 'physical'), {
+        canMiss: false,
+      });
+    }
   }
 
   /** Pop the next queued extra-turn mage, if any. */
@@ -950,6 +1261,46 @@ export class GameState {
           noImpactFx: true,
         });
         if (dealt > 0) this.vfxSink?.spellEffect?.(victim, 'dot');
+        if (this.hasHexcraftGlobal('curseCorrode') && victim.alive) {
+          const corrosive = this.rng.roll('1d3').total;
+          victim.hp = Math.max(0, victim.hp - corrosive);
+          addOrExtendStatus(
+            victim.statuses,
+            {
+              key: 'debuff:curse-corrode-slow',
+              name: 'Curse Corrode Slow',
+              kind: 'debuff',
+              duration: 2,
+              mods: { moveRange: -Math.round(MOVE_RANGE * 0.5) },
+            },
+            false
+          );
+          this.log(`${s.name} also corrodes ${victim.name} for ${corrosive} and slows them by 50%.`);
+        }
+      }
+    }
+  }
+
+  /** Pulse intrinsic auras from every living summon owned by `owner`. */
+  private applyOwnedSummonAuras(owner: Mage): void {
+    const ownerIndex = this.mages.indexOf(owner);
+    for (const summon of this.summonsOf(owner)) {
+      const aura = summon.intrinsicDamageAura;
+      if (!aura) continue;
+      for (const victim of this.mages) {
+        if (!victim.alive || victim === owner) continue;
+        if (victim.isSummon && victim.summonOwnerIndex === ownerIndex) continue;
+        if (dist(victim.pos, summon.pos) > aura.radius) continue;
+        const ctx = this.effectContext(summon, victim, null);
+        const amount = this.rng.roll(aura.damageSpec).total;
+        const dealt = dealDamage(ctx, victim, dmg(amount, aura.type, aura.damageClass), {
+          canMiss: false,
+          noImpactFx: true,
+        });
+        if (dealt > 0) {
+          this.log(`${summon.name}'s rot aura corrodes ${victim.name} for ${dealt}.`);
+          this.vfxSink?.spellEffect?.(victim, 'dot');
+        }
       }
     }
   }
@@ -1003,7 +1354,8 @@ export class GameState {
         s.bonusNoDamageSpec && !m.dealtDamageThisTurn
           ? Math.max(0, this.rng.roll(s.bonusNoDamageSpec).total)
           : 0;
-      const total = amount + bonus;
+      const total =
+        amount + bonus + this.hexcraftDamageBonus(s.damage.type, s.damage.damageClass);
       if (s.damage.damageClass === 'sanity') m.sanity = Math.max(0, m.sanity - total);
       else m.hp = Math.max(0, m.hp - total);
       // Order Curse Drain: the curse's author drinks the damage as healing.
@@ -1018,6 +1370,11 @@ export class GameState {
         this.vfxSink?.spellEffect?.(m, 'dot');
       }
       this.log(`${m.name} suffers ${total} ${s.damage.type} from ${s.name}.`);
+      if (this.hasHexcraftGlobal('curseCorrode') && m.alive) {
+        const corrosive = this.rng.roll('1d3').total;
+        m.hp = Math.max(0, m.hp - corrosive);
+        this.log(`${s.name} also corrodes ${m.name} for ${corrosive}.`);
+      }
       if (s.stunChance && this.rng.chance(s.stunChance)) {
         const type = s.stunType ?? 'full';
         const labels: Record<typeof type, string> = {
@@ -1134,6 +1491,7 @@ export class GameState {
         infectRadius: s.infectRadius,
         sourceTeam: s.sourceTeam,
       });
+      this.syncCurseCorrodeSlow(other);
       this.log(`${s.name} spreads to ${other.name}!`);
     }
   }
@@ -1147,8 +1505,8 @@ export class GameState {
     const trail = m.statuses.find((s) => s.kind === 'shadowTrail') as
       | ShadowTrailStatus
       | undefined;
-    if (!trail) return;
-    this.addShadow({ x: m.pos.x, y: m.pos.y }, trail.team, trail.perShadowTtl);
+    if (trail) this.addShadow({ x: m.pos.x, y: m.pos.y }, trail.team, trail.perShadowTtl);
+    this.triggerNeedlepointDomains(m);
   }
 
   /**
@@ -1287,19 +1645,17 @@ export class GameState {
   }
 
   /**
-   * Collapse half (partial) veils whose bearer now has an enemy standing within
-   * point-blank range. Call this after any movement resolves.
+   * Collapse ANY veil (half or full) whose bearer now has an enemy standing
+   * within {@link VEIL.proximityBreak} range units. Call this after any movement
+   * resolves and at the start of each turn.
    */
   breakProximityVeils(): void {
+    const reach = VEIL.proximityBreak * RANGE_UNIT;
     for (const m of this.mages) {
       const inv = m.getInvisibility();
-      if (!inv || inv.mode !== 'partial') continue;
+      if (!inv) continue;
       const enemyClose = this.mages.some(
-        (e) =>
-          e !== m &&
-          e.team !== m.team &&
-          e.alive &&
-          dist(e.pos, m.pos) <= VEIL.half.breakProximity * RANGE_UNIT
+        (e) => e !== m && e.team !== m.team && e.alive && dist(e.pos, m.pos) <= reach
       );
       if (enemyClose) {
         m.statuses = m.statuses.filter((s) => s.kind !== 'invisibility');
@@ -1605,6 +1961,7 @@ export class GameState {
   /** Is `target` a legal target for `spell` cast by `source` right now? */
   isValidSpellTarget(spell: Spell, source: Mage, target: Mage): boolean {
     if (!target.alive) return false;
+    if (spell.requiresInvisibleTarget && this.stealthDuration(target) <= 0) return false;
     switch (spell.targeting) {
       case 'self':
         return target === source;
@@ -1612,7 +1969,9 @@ export class GameState {
         return target === source;
       case 'any':
         // Castable on any living mage — yourself, an ally, or an enemy.
-        return true;
+        if (target === source) return true;
+        if (spell.minRange && dist(source.pos, target.pos) < spell.minRange) return false;
+        return this.withinCastRange(source, target.pos, spell.range);
       case 'enemy': {
         if (target === source) return false;
         if (this.isUntargetable(target, source)) return false;
@@ -1638,6 +1997,7 @@ export class GameState {
   }
 
   canMelee(source: Mage, target: Mage): boolean {
+    if (source.cannotAttack) return false;
     if (source.hasForgotten('melee')) return false;
     if (target === source || !target.alive || this.isUntargetable(target, source)) return false;
     const weapon = source.activeWeapon();
@@ -1934,6 +2294,85 @@ export class GameState {
     );
   }
 
+  /** Toggle Black Bell between its long-wound Toll and debuff-cashing Condense modes. */
+  toggleBlackBellMode(source: Mage): void {
+    source.blackBellCondense = !source.blackBellCondense;
+    this.log(
+      `${source.name} turns Black Bell to ${source.blackBellCondense ? 'Condense' : 'Toll'} mode.`
+    );
+  }
+
+  /** Whether a status is a harmful affliction Black Bell can condense. */
+  private blackBellConsumes(status: Status): boolean {
+    return (
+      status.kind === 'stun' ||
+      status.kind === 'dot' ||
+      status.kind === 'debuff' ||
+      status.kind === 'auraDot' ||
+      status.kind === 'control' ||
+      status.kind === 'shadowTrail' ||
+      status.kind === 'forget' ||
+      status.kind === 'orderJudgment'
+    );
+  }
+
+  /** Roll the damage a consumed DoT would have dealt over all remaining ticks. */
+  private rollBlackBellDot(status: DotStatus | AuraDotStatus): number {
+    let total = 0;
+    if (status.kind === 'auraDot') {
+      for (let tick = 0; tick < status.duration; tick++) {
+        total += Math.max(0, this.rng.roll(status.damageSpec).total);
+      }
+      return total;
+    }
+
+    let stacks = status.stacks ?? 0;
+    let fresh = status.freshStack ?? false;
+    for (let tick = 0; tick < status.duration; tick++) {
+      if (status.damageSpec) {
+        total += Math.max(0, this.rng.roll(status.damageSpec).total);
+      } else if (stacks > 0 && status.perStackSpec) {
+        for (let stack = 0; stack < stacks; stack++) {
+          total += Math.max(0, this.rng.roll(status.perStackSpec).total);
+        }
+      } else {
+        total += Math.max(0, status.damage.amount);
+      }
+      if (status.decayPerTick && !fresh) stacks = Math.max(0, stacks - 1);
+      fresh = false;
+    }
+    return total;
+  }
+
+  /** Consume an enemy's afflictions, detonate their DoTs, and leave an enlarged shadow. */
+  condenseWithBlackBell(source: Mage, target: Mage): void {
+    const consumed = target.statuses.filter((status) => this.blackBellConsumes(status));
+    const damaging = consumed.filter(
+      (status): status is DotStatus | AuraDotStatus => status.kind === 'dot' || status.kind === 'auraDot'
+    );
+    const nonDamageCount = consumed.length - damaging.length;
+    let storedDamage = 0;
+    for (const status of damaging) storedDamage += this.rollBlackBellDot(status);
+    target.statuses = target.statuses.filter((status) => !this.blackBellConsumes(status));
+
+    const ctx = this.effectContext(source, target, target.pos);
+    const shatterDamage = Math.ceil(storedDamage / 2);
+    const shadowDamage = storedDamage - shatterDamage;
+    if (shatterDamage > 0) {
+      dealDamage(ctx, target, dmg(shatterDamage, 'shatter', 'physical'), { canMiss: false });
+    }
+    if (shadowDamage > 0) {
+      dealDamage(ctx, target, dmg(shadowDamage, 'shadow', 'physical'), { canMiss: false });
+    }
+    const shadow = this.addShadow(target.pos, source.team);
+    shadow.radius += nonDamageCount * RANGE_UNIT;
+    this.log(
+      `${source.name} condenses ${consumed.length} affliction${consumed.length === 1 ? '' : 's'} ` +
+      `on ${target.name} for ${storedDamage} stored damage; the impact opens a shadow ` +
+      `${nonDamageCount} step${nonDamageCount === 1 ? '' : 's'} larger.`
+    );
+  }
+
   /** Remove a held item from a mage's hands (Gambler's Blade self-destruct). */
   destroyHeldItem(source: Mage, id: ItemId): void {
     const i = source.hands.indexOf(id);
@@ -2046,6 +2485,9 @@ export class GameState {
     this.scarabs = [];
     this.barriers = [];
     this.globalEscalations = [];
+    this.needlepointDomains = [];
+    this.hexcraftGlobals = [];
+    this.veilBindZones = [];
     this.droppedItems = [];
     this.mutivargZones = [];
     this.extraTurnQueue = [];
@@ -2177,8 +2619,12 @@ export class GameState {
 
   makeMeleeItem(source: Mage, target: Mage): StackItem {
     const weapon = source.activeWeapon();
+    const weaponId = source.activeWeaponId();
+    const blackBell = weaponId != null && !!getItem(weaponId).conjuredBlackBell;
     const label =
-      weapon?.toHit || weapon?.oneShotSpec
+      blackBell && source.blackBellCondense
+        ? 'Condense'
+        : weapon?.toHit || weapon?.oneShotSpec
         ? 'Shot'
         : weapon?.kind === 'dex'
           ? 'Shot'
@@ -2189,7 +2635,9 @@ export class GameState {
       source,
       target,
       label,
-      description: `${source.name} attacks ${target.name}.`,
+      description: blackBell
+        ? `${source.name} strikes ${target.name} with Black Bell in ${source.blackBellCondense ? 'Condense' : 'Toll'} mode.`
+        : `${source.name} attacks ${target.name}.`,
       isStillValid: (game) => game.canMelee(source, target),
       resolve: async (game) => {
         // Swamprun creatures strike with an intrinsic (weaponless) attack that
@@ -2293,20 +2741,73 @@ export class GameState {
             game.log(`${source.name} lands a critical hit!`);
           }
         }
+        const activeId = source.activeWeaponId();
+        const blackBellStrike = activeId != null && !!getItem(activeId).conjuredBlackBell;
+        if (blackBellStrike) amount = 1;
         // Tantrum Gloves: a stored fizzle supercharges this strike.
         if (source.rageBonus > 0) {
           amount = Math.round(amount * (1 + source.rageBonus));
           game.log(`${source.name} swings in a fury (+${Math.round(source.rageBonus * 100)}%).`);
           source.rageBonus = 0;
         }
+        // ---- Objects-class weapon enchants / sabotage / conjured gear -------
+        let dmgClass: DamageClass = 'physical';
+        const enchant = source.weaponEnchant;
+        if (enchant === 'mindShadow') {
+          // Mind Shadow enchant (converter): the blow now mills — shadow-typed sanity damage.
+          type = 'shadow';
+          dmgClass = 'sanity';
+        }
+        const wid = activeId;
+        // Bind Curse sabotage: a bound weapon hits for half (the kept half rounds up).
+        if (wid && source.sabotagedItems.has(wid)) amount = Math.ceil(amount / 2);
+        // Conjured Veil bow: firing spends mana and reveals the shooter for this turn.
+        const bowFire = wid != null && !!getItem(wid).conjuredVeilBow;
+        if (bowFire) {
+          source.conjuredBowFiredThisTurn = true;
+          source.mana = Math.max(0, source.mana - 2);
+        }
+        // Attacking with anything reveals you: any strike (hit or miss) tears
+        // your own veil away before the blow lands.
+        const veilCorrodePiercePower = game.prepareVeilCorrodePierce(source);
+        if (source.isInvisible()) {
+          source.statuses = source.statuses.filter((s) => s.kind !== 'invisibility');
+          game.log(`${source.name} is revealed by their attack.`);
+        }
         const dealt =
           amount > 0
-            ? dealDamage(ctx, target, dmg(amount, type, 'physical'), {
+            ? dealDamage(ctx, target, dmg(amount, type, dmgClass), {
                 ignoreResist: !!w?.ignoreResist,
                 ignoreArmor: !!w?.ignoreArmor,
                 noImpactFx: true,
               })
             : 0;
+          if (dealt > 0) game.resolveVeilCorrodePierce(source, target, veilCorrodePiercePower);
+        // Curse Corrode enchant: every landed strike plants a fresh corrosion.
+        if (enchant === 'curseCorrode' && dealt > 0 && target.alive) {
+          applyDot(ctx, target, {
+            name: 'Corrosion',
+            duration: 3,
+            damage: dmg(2, 'corrosive', 'physical'),
+            damageSpec: '1d3',
+          });
+        }
+        if (blackBellStrike) {
+          if (source.blackBellCondense) {
+            game.condenseWithBlackBell(source, target);
+          } else if (target.alive) {
+            applyDot(ctx, target, {
+              name: 'Tolling Wound',
+              duration: game.shadowAt(target.pos) ? 9 : 6,
+              damage: dmg(0, 'shadow', 'physical'),
+              damageSpec: '1d3',
+            });
+          }
+        }
+        // Conjured Veil bow: its acid bite mires the struck for two turns.
+        if (bowFire && dealt > 0 && target.alive) {
+          applyDebuff(ctx, target, { name: 'Mired', duration: 2, mods: { moveRange: -RANGE_UNIT * 4 } });
+        }
         // Torch / lantern swing (an unarmed strike while holding a light source):
         // the swing sweeps a 180° arc at melee reach, catching every foe in front.
         // A swing through a light-weak foe sears it for 5 true damage, and a torch

@@ -26,7 +26,7 @@ export type ItemSlot = 'hand' | 'head' | 'torso' | 'boots' | 'accessory' | 'util
  *   - finns:    Finn's Additions (extra sidegrade gear).
  *   - dlc:      Dimir Faithful DLC (Buckler, Throwing Dagger).
  */
-export type ItemSet = 'original' | 'finns' | 'dlc';
+export type ItemSet = 'original' | 'finns' | 'dlc' | 'conjured';
 
 /** How many items each slot can hold. Utility (potions / arrows) is unlimited. */
 export const SLOT_CAPS: Record<ItemSlot, number> = {
@@ -85,7 +85,10 @@ export type ItemId =
   | 'silverShortsword'
   | 'manaWand'
   // ---- Rare additions (original set) ----
-  | 'wordVial';
+  | 'wordVial'
+  // ---- Conjured (never drafted; created by Objects class spells) ----
+  | 'conjuredVeilBow'
+  | 'conjuredBlackBell';
 
 /**
  * Rarity tiers, ordered from most common to rarest. The shop draft rolls a
@@ -128,7 +131,7 @@ export const RARITY_COLOR: Record<Rarity, string> = {
 /** Base draw weight per tier (higher = more likely). Empty tiers are skipped. */
 const RARITY_WEIGHT: Record<Rarity, number> = {
   common: 50,
-  consumeable: 40,
+  consumeable: 35,
   rare: 26,
   epic: 15,
   unreal: 7,
@@ -308,7 +311,9 @@ export interface ItemDef {
   /** Basic-attack profile used while this item is in shield form (Greatshield). */
   shieldWeapon?: WeaponMod;
   /** What this weapon does when its owner takes the Weapon Action. */
-  weaponAbility?: 'bastionSwap' | 'mutivargZone' | 'gamblerCash';
+  weaponAbility?: 'bastionSwap' | 'mutivargZone' | 'gamblerCash' | 'blackBellMode';
+  /** Occupies both hands even though it is represented by one item id. */
+  twoHanded?: boolean;
   /** This weapon's basic attack is a bonus action (Gambler's Blade). */
   bonusActionAttack?: boolean;
   /** Gambler's Blade: each hit (melee or spell) grants 1d3 Greed stacks. */
@@ -346,8 +351,14 @@ export interface ItemDef {
   lightRadiusPx?: number;
   /** Lantern: the aura also shines while the item is merely stowed in the bag. */
   lightInBag?: boolean;
+  /** Exclude this item from every draft/shop outside Swamprun. */
+  swamprunOnly?: boolean;
   /** Torch: number of combats a lit torch burns for before it is used up. */
   torchCombats?: number;
+  /** A conjured Veil Corrode Pierce bow (Objects): veils its holder; special firing rider. */
+  conjuredVeilBow?: boolean;
+  /** Shadow Shatter Curse (Objects): low-damage hammer with Toll / Condense modes. */
+  conjuredBlackBell?: boolean;
 }
 
 const U = RANGE_UNIT;
@@ -355,6 +366,44 @@ const U = RANGE_UNIT;
 const g = (gold: number): number => gold * SILVER_PER_GOLD;
 
 export const ITEM_DEFS: ItemDef[] = [
+  // ---- Conjured (never offered in the shop; made by Objects class spells) --
+  {
+    id: 'conjuredBlackBell',
+    name: 'Black Bell',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb:
+      'A two-handed doomglass hammer. Toll mode deals only 1 direct damage but leaves a 1d3 shadow wound for 6 turns (9 if the victim stands in shadow). Weapon Action toggles Condense mode: the next attacks clear harmful statuses, cash out every remaining DoT tick as half shatter / half shadow, and leave a shadow enlarged by each non-damaging debuff consumed.',
+    conjuredBlackBell: true,
+    twoHanded: true,
+    weaponAbility: 'blackBellMode',
+    weapon: {
+      rangePx: MELEE_RANGE,
+      kind: 'strength',
+      multiplier: 0.1,
+      damageType: 'shatter',
+    },
+  },
+  {
+    id: 'conjuredVeilBow',
+    name: 'Conjured Veil Bow',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb:
+      'A two-handed acid bow woven from shadow. Keeps its holder veiled while held (until unsummoned or 3 combats; unequipping erases it). Firing spends mana, reveals the shooter for a turn, looses a Dex-scaled corrosive shot that mires on hit, and re-veils at the start of the next turn.',
+    conjuredVeilBow: true,
+    weapon: {
+      rangePx: 15 * U,
+      kind: 'dex',
+      damageType: 'corrosive',
+    },
+  },
   // ---- Legendary ----------------------------------------------------------
   {
     id: 'roaringThunder',
@@ -749,6 +798,7 @@ export const ITEM_DEFS: ItemDef[] = [
     lightSource: true,
     lightRadiusPx: 3 * U,
     torchCombats: 3,
+    swamprunOnly: true,
   },
   {
     id: 'lantern',
@@ -762,6 +812,7 @@ export const ITEM_DEFS: ItemDef[] = [
     lightSource: true,
     lightRadiusPx: 3 * U,
     lightInBag: true,
+    swamprunOnly: true,
   },
 
   // ===========================================================================
@@ -1026,9 +1077,14 @@ export function setActiveItemSets(sets: Partial<Record<ItemSet, boolean>>): void
   ACTIVE_ITEM_SETS = next;
 }
 
-/** All catalogue items of a given rarity tier, limited to the active item sets. */
-export function itemsOfRarity(rarity: Rarity): ItemDef[] {
-  return ITEM_DEFS.filter((d) => d.rarity === rarity && ACTIVE_ITEM_SETS.has(d.set ?? 'original'));
+/** All catalogue items of a rarity tier, optionally including Swamprun-only gear. */
+export function itemsOfRarity(rarity: Rarity, includeSwamprunOnly = false): ItemDef[] {
+  return ITEM_DEFS.filter(
+    (d) =>
+      d.rarity === rarity &&
+      ACTIVE_ITEM_SETS.has(d.set ?? 'original') &&
+      (includeSwamprunOnly || !d.swamprunOnly)
+  );
 }
 
 /**
@@ -1036,8 +1092,8 @@ export function itemsOfRarity(rarity: Rarity): ItemDef[] {
  * roll slightly toward rarer tiers. Only tiers that contain items are eligible.
  * `rng` returns a float in [0, 1).
  */
-export function rollRarity(rng: () => number, luck = 0): Rarity {
-  const tiers = RARITY_ORDER.filter((r) => itemsOfRarity(r).length > 0);
+export function rollRarity(rng: () => number, luck = 0, includeSwamprunOnly = false): Rarity {
+  const tiers = RARITY_ORDER.filter((r) => itemsOfRarity(r, includeSwamprunOnly).length > 0);
   const weights = tiers.map((r) => RARITY_WEIGHT[r] * (1 + Math.max(0, luck) * 0.02 * rarityRank(r)));
   const total = weights.reduce((a, b) => a + b, 0);
   let x = rng() * total;
@@ -1049,8 +1105,13 @@ export function rollRarity(rng: () => number, luck = 0): Rarity {
 }
 
 /** Pick up to `count` distinct items of `rarity` to offer as draft choices. */
-export function draftChoices(rarity: Rarity, rng: () => number, count = 3): ItemId[] {
-  const pool = itemsOfRarity(rarity).map((d) => d.id);
+export function draftChoices(
+  rarity: Rarity,
+  rng: () => number,
+  count = 3,
+  includeSwamprunOnly = false
+): ItemId[] {
+  const pool = itemsOfRarity(rarity, includeSwamprunOnly).map((d) => d.id);
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];

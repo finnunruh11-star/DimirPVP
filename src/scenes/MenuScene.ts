@@ -3,6 +3,7 @@ import { COLORS, GAME_HEIGHT, GAME_WIDTH, LOADOUT_SIZE, TEXT } from '../config/c
 import { WORDS, WORD_ORDER, type WordId } from '../core/Words';
 import { MAGE_CLASSES, MAGE_CLASS_DEFS, DEFAULT_MAGE_CLASS, toMageClass, type MageClass } from '../core/Classes';
 import { Net, type NetRole, type NetMessage } from '../net/Net';
+import magePreviewUrl from '../Sprites/Idle/Idle1.png';
 
 export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun';
 
@@ -67,6 +68,8 @@ function defaultRelayUrl(): string {
 /** Loadout / mode selection before the duel begins. */
 export class MenuScene extends Phaser.Scene {
   private mode: MatchMode = 'ai';
+  private onlineRole: NetRole = 'host';
+  private swampRole: 'local' | NetRole = 'local';
   private selected: WordId[] = [];
   /** Local N-player match setup. */
   private seatCount = 2;
@@ -91,6 +94,9 @@ export class MenuScene extends Phaser.Scene {
   private draftClasses: MageClass[] = [];
 
   private wordCells: { rect: Phaser.GameObjects.Rectangle; word: WordId; label: Phaser.GameObjects.Text }[] = [];
+  private modeSectionText!: Phaser.GameObjects.Text;
+  private rulesSectionText!: Phaser.GameObjects.Text;
+  private rulesSummaryText!: Phaser.GameObjects.Text;
   private titleText!: Phaser.GameObjects.Text;
   private hintText!: Phaser.GameObjects.Text;
   private classTitle!: Phaser.GameObjects.Text;
@@ -109,6 +115,7 @@ export class MenuScene extends Phaser.Scene {
   /** One team-toggle button per seat (teams mode with 3+ combatants). */
   private seatBtns: Phaser.GameObjects.Text[] = [];
   private startBtn!: Phaser.GameObjects.Text;
+  private localBtn!: Phaser.GameObjects.Text;
   private hostBtn!: Phaser.GameObjects.Text;
   private joinBtn!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
@@ -119,96 +126,177 @@ export class MenuScene extends Phaser.Scene {
     super('Menu');
   }
 
+  preload(): void {
+    this.load.image('menu-mage-preview', magePreviewUrl);
+  }
+
   create(): void {
     this.cameras.main.setBackgroundColor(COLORS.bg);
 
+    const backdrop = this.add.graphics();
+    backdrop.fillStyle(0x080b12, 1).fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    backdrop.fillStyle(0x111827, 0.92).fillRect(0, 0, GAME_WIDTH, 82);
+    backdrop.fillStyle(0x0d121c, 1).fillRect(0, 82, GAME_WIDTH, 386);
+    backdrop.fillStyle(0x090d15, 1).fillRect(0, 468, GAME_WIDTH, GAME_HEIGHT - 468);
+    backdrop.lineStyle(1, 0x293449, 0.75).lineBetween(0, 82, GAME_WIDTH, 82);
+    backdrop.lineStyle(1, 0x293449, 0.75).lineBetween(0, 468, GAME_WIDTH, 468);
+    for (let x = -180; x < GAME_WIDTH + 180; x += 180) {
+      backdrop.lineStyle(1, 0x1e293b, 0.35).lineBetween(x, 82, x + 240, 448);
+    }
+    backdrop.fillStyle(0xd9a441, 1).fillRect(30, 25, 5, 34);
+
     this.add
-      .text(GAME_WIDTH / 2, 50, 'PVP DIMIR — Mage Duel', {
-        fontSize: '40px',
-        color: TEXT.body,
+      .text(50, 22, 'DIMIR // ARENA', {
+        fontFamily: 'Trebuchet MS',
+        fontSize: '30px',
+        color: '#f8fafc',
         fontStyle: 'bold',
       })
-      .setOrigin(0.5);
+      .setOrigin(0, 0);
+
+    this.add.text(50, 54, 'TACTICAL MAGE COMBAT', {
+      fontFamily: 'Trebuchet MS',
+      fontSize: '11px',
+      color: '#d9a441',
+    });
+
+    this.modeSectionText = this.add.text(36, 96, '1 // CHOOSE BATTLE', {
+      fontFamily: 'Trebuchet MS',
+      fontSize: '11px',
+      color: '#d9a441',
+      fontStyle: 'bold',
+    });
 
     this.titleText = this.add
-      .text(GAME_WIDTH / 2, 110, '', { fontSize: '24px', color: TEXT.warn })
-      .setOrigin(0.5);
+      .text(36, 162, '', {
+        fontFamily: 'Trebuchet MS',
+        fontSize: '21px',
+        color: '#f8fafc',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0, 0);
 
     this.hintText = this.add
-      .text(GAME_WIDTH / 2, 145, '', { fontSize: '16px', color: TEXT.dim })
-      .setOrigin(0.5);
+      .text(36, 192, '', {
+        fontSize: '13px',
+        color: TEXT.dim,
+        wordWrap: { width: 800 },
+        lineSpacing: 2,
+      })
+      .setOrigin(0, 0);
+
+    this.add.text(36, 225, 'SPELL WORDS', {
+      fontFamily: 'Trebuchet MS',
+      fontSize: '12px',
+      color: '#d9a441',
+      fontStyle: 'bold',
+    });
+    this.add.text(882, 162, 'MAGE DISCIPLINE', {
+      fontFamily: 'Trebuchet MS',
+      fontSize: '12px',
+      color: '#d9a441',
+      fontStyle: 'bold',
+    });
+    this.add
+      .rectangle(1060, 326, 330, 270, 0x111a27, 0.5)
+      .setStrokeStyle(1, 0x293a51, 0.9);
+    this.add.ellipse(1208, 444, 76, 20, 0x48b8d0, 0.12).setStrokeStyle(1, 0x48b8d0, 0.3);
+    this.add.image(1208, 435, 'menu-mage-preview').setScale(2.8).setOrigin(0.5, 1);
 
     // Word grid (4 x 2).
     const cols = 4;
-    const cw = 230;
-    const ch = 110;
-    const startX = GAME_WIDTH / 2 - (cols * cw) / 2 + cw / 2;
-    const startY = 240;
+    const cw = 205;
+    const ch = 92;
+    const startX = 36 + cw / 2;
+    const startY = 282;
     WORD_ORDER.forEach((word, i) => {
       const x = startX + (i % cols) * cw;
-      const y = startY + Math.floor(i / cols) * (ch + 20);
+      const y = startY + Math.floor(i / cols) * (ch + 16);
       const rect = this.add
-        .rectangle(x, y, cw - 20, ch, 0x1a1a2a)
-        .setStrokeStyle(2, WORDS[word].color)
+        .rectangle(x, y, cw - 12, ch, 0x141b28)
+        .setStrokeStyle(1, WORDS[word].color, 0.75)
         .setInteractive({ useHandCursor: true });
       const label = this.add
         .text(x, y, this.cellText(word), {
-          fontSize: '16px',
+          fontFamily: 'Trebuchet MS',
+          fontSize: '14px',
           color: TEXT.body,
           align: 'center',
-          wordWrap: { width: cw - 40 },
+          wordWrap: { width: cw - 28 },
+          lineSpacing: 2,
         })
         .setOrigin(0.5);
+      rect.on('pointerover', () => rect.setFillStyle(0x202b3d));
+      rect.on('pointerout', () => this.refresh());
       rect.on('pointerdown', () => this.toggleWord(word));
       this.wordCells.push({ rect, word, label });
     });
 
     // Class selector (right column) — each drafting seat picks its own class.
     // Shown on every draft screen (unlike the first-screen-only setup controls).
-    const classX = GAME_WIDTH / 2 + 545;
+    const classX = 1060;
     this.classTitle = this.add
-      .text(classX, 205, 'Class', { fontSize: '18px', color: TEXT.warn, fontStyle: 'bold' })
+      .text(classX, 204, 'Class', {
+        fontFamily: 'Trebuchet MS',
+        fontSize: '19px',
+        color: TEXT.body,
+        fontStyle: 'bold',
+      })
       .setOrigin(0.5);
     MAGE_CLASSES.forEach((cls, i) => {
-      const btn = this.makeButton(classX, 250 + i * 58, MAGE_CLASS_DEFS[cls].label, () => this.setClass(cls));
-      btn.setFontSize(17).setPadding(14, 8);
+      const btn = this.makeButton(classX, 255 + i * 58, MAGE_CLASS_DEFS[cls].label, () => this.setClass(cls), 300);
+      btn.setFontSize(17).setPadding(14, 10);
       this.classBtns.push({ btn, cls });
     });
 
     // Mode buttons.
-    this.modeAiBtn = this.makeButton(GAME_WIDTH / 2 - 440, 560, 'Vs AI', () => this.setMode('ai'));
-    this.modeHsBtn = this.makeButton(GAME_WIDTH / 2 - 220, 560, 'Hotseat (2P)', () => this.setMode('hotseat'));
-    this.modeOnlineBtn = this.makeButton(GAME_WIDTH / 2, 560, 'Online', () => this.setMode('online'));
-    this.modeTrainingBtn = this.makeButton(GAME_WIDTH / 2 + 220, 560, 'Training', () => this.setMode('training'));
-    this.modeSwamprunBtn = this.makeButton(GAME_WIDTH / 2 + 440, 560, 'Swamprun', () => this.setMode('swamprun'));
+    this.modeAiBtn = this.makeButton(128, 126, 'VS AI', () => this.setMode('ai'), 172);
+    this.modeHsBtn = this.makeButton(322, 126, 'HOTSEAT', () => this.setMode('hotseat'), 172);
+    this.modeOnlineBtn = this.makeButton(516, 126, 'ONLINE', () => this.setMode('online'), 172);
+    this.modeTrainingBtn = this.makeButton(710, 126, 'TRAINING', () => this.setMode('training'), 172);
+    this.modeSwamprunBtn = this.makeButton(904, 126, 'SWAMPRUN', () => this.setMode('swamprun'), 172);
+
+    this.rulesSectionText = this.add.text(36, 480, '', {
+      fontFamily: 'Trebuchet MS',
+      fontSize: '11px',
+      color: '#d9a441',
+      fontStyle: 'bold',
+    });
+    this.rulesSummaryText = this.add.text(36, 548, '', {
+      fontSize: '14px',
+      color: TEXT.dim,
+      wordWrap: { width: 850 },
+      lineSpacing: 3,
+    });
 
     // Item-set toggles (host decides in online play).
-    this.setOriginalBtn = this.makeButton(GAME_WIDTH / 2 - 300, 500, '', () => this.toggleSet('original'));
-    this.setFinnsBtn = this.makeButton(GAME_WIDTH / 2, 500, '', () => this.toggleSet('finns'));
-    this.setDlcBtn = this.makeButton(GAME_WIDTH / 2 + 300, 500, '', () => this.toggleSet('dlc'));
+    this.setOriginalBtn = this.makeButton(198, 607, '', () => this.toggleSet('original'), 290);
+    this.setFinnsBtn = this.makeButton(498, 607, '', () => this.toggleSet('finns'), 290);
+    this.setDlcBtn = this.makeButton(798, 607, '', () => this.toggleSet('dlc'), 290);
 
     // Local N-player setup: number of combatants, team layout, and AI fill.
-    this.playersBtn = this.makeButton(GAME_WIDTH / 2 - 280, 445, '', () => this.cyclePlayers());
-    this.formatBtn = this.makeButton(GAME_WIDTH / 2, 445, '', () => this.toggleFormat());
-    this.aiFillBtn = this.makeButton(GAME_WIDTH / 2 + 280, 445, '', () => this.cycleAiFill());
+    this.playersBtn = this.makeButton(176, 563, '', () => this.cyclePlayers(), 245);
+    this.formatBtn = this.makeButton(431, 563, '', () => this.toggleFormat(), 245);
+    this.aiFillBtn = this.makeButton(686, 563, '', () => this.cycleAiFill(), 245);
 
     // Per-seat team pickers (teams mode with 3+ combatants) — build mixed sides
     // such as player + AI vs player + AI. Compact so the row fits under the modes.
     for (let s = 0; s < 4; s++) {
-      const btn = this.makeButton(0, 600, '', () => this.cycleSeatTeam(s));
+      const btn = this.makeButton(0, 646, '', () => this.cycleSeatTeam(s), 180);
       btn.setFontSize(15).setPadding(12, 6);
       btn.setVisible(false);
       this.seatBtns.push(btn);
     }
     this.syncSeatTeams();
 
-    this.startBtn = this.makeButton(GAME_WIDTH / 2, 640, 'Confirm', () => this.confirm());
-    this.hostBtn = this.makeButton(GAME_WIDTH / 2 - 120, 640, 'Host Game', () => this.startOnline('host'));
-    this.joinBtn = this.makeButton(GAME_WIDTH / 2 + 120, 640, 'Join Game', () => this.startOnline('guest'));
+    this.localBtn = this.makeButton(176, 519, 'LOCAL RUN', () => this.setSessionRole('local'), 245);
+    this.hostBtn = this.makeButton(431, 519, 'HOST MATCH', () => this.setSessionRole('host'), 245);
+    this.joinBtn = this.makeButton(686, 519, 'JOIN MATCH', () => this.setSessionRole('guest'), 245);
+    this.startBtn = this.makeButton(1128, 665, 'Confirm', () => this.primaryAction(), 260, true);
 
     this.statusText = this.add
-      .text(GAME_WIDTH / 2, 695, '', { fontSize: '16px', color: TEXT.warn })
-      .setOrigin(0.5);
+      .text(36, 696, '', { fontSize: '13px', color: TEXT.warn })
+      .setOrigin(0, 0.5);
 
     // Hidden easter egg: typing "NAD" loads a secret premade loadout.
     this.input.keyboard?.on('keydown', (e: KeyboardEvent) => this.onKey(e));
@@ -256,16 +344,29 @@ export class MenuScene extends Phaser.Scene {
     return `${d.label}${tag}\n${d.blurb}`;
   }
 
-  private makeButton(x: number, y: number, label: string, onClick: () => void): Phaser.GameObjects.Text {
+  private makeButton(
+    x: number,
+    y: number,
+    label: string,
+    onClick: () => void,
+    width = 190,
+    primary = false
+  ): Phaser.GameObjects.Text {
     const t = this.add
       .text(x, y, label, {
-        fontSize: '20px',
-        color: TEXT.body,
-        backgroundColor: '#23233a',
-        padding: { x: 18, y: 10 },
+        fontFamily: 'Trebuchet MS',
+        fontSize: '15px',
+        color: primary ? '#0a0e16' : TEXT.body,
+        backgroundColor: primary ? '#d9a441' : '#182131',
+        fontStyle: 'bold',
+        align: 'center',
+        fixedWidth: width,
+        padding: { x: 12, y: 9 },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
+    t.on('pointerover', () => t.setShadow(0, 0, primary ? '#f2c76e' : '#71c7d8', 8));
+    t.on('pointerout', () => t.setShadow(0, 0, '#000000', 0));
     t.on('pointerdown', onClick);
     return t;
   }
@@ -281,6 +382,26 @@ export class MenuScene extends Phaser.Scene {
     this.clampAiCount();
     this.resetDraft();
     this.refresh();
+  }
+
+  private setSessionRole(role: 'local' | NetRole): void {
+    if (this.connecting) return;
+    if (this.mode === 'online' && role !== 'local') this.onlineRole = role;
+    if (this.mode === 'swamprun') this.swampRole = role;
+    this.statusText.setText('');
+    this.refresh();
+  }
+
+  private primaryAction(): void {
+    if (this.mode === 'online') {
+      void this.startOnline(this.onlineRole);
+      return;
+    }
+    if (this.mode === 'swamprun' && this.swampRole !== 'local') {
+      void this.startOnline(this.swampRole);
+      return;
+    }
+    this.confirm();
   }
 
   /** Toggle an item set on/off; never allow every set to be disabled. */
@@ -423,7 +544,7 @@ export class MenuScene extends Phaser.Scene {
     const humans = this.humanSeats();
     const draftingSeat = humans[this.draftIndex] ?? 0;
     const who = `Player ${draftingSeat + 1}`;
-    this.titleText.setText(`${who}: choose ${LOADOUT_SIZE} words  (${this.selected.length}/${LOADOUT_SIZE})`);
+    this.titleText.setText(`2 // BUILD ${who.toUpperCase()}  •  ${this.selected.length}/${LOADOUT_SIZE} WORDS`);
     if (this.nadActive) {
       this.hintText.setText('✨ NAD unlocked: Mind · Shatter · Twist · Reality');
     } else if (this.katActive) {
@@ -431,10 +552,10 @@ export class MenuScene extends Phaser.Scene {
     } else if (this.genActive) {
       this.hintText.setText('✨ GEN unlocked: Order · Curse · Drain · Slash');
     } else if (this.mode === 'online') {
-      const humans = this.humanCount();
-      const fill = this.aiCount > 0 ? ` + ${this.aiCount} AI` : '';
       this.hintText.setText(
-        `Online ${this.formatLabel()} (${humans} human${humans > 1 ? 's' : ''}${fill}) — host sets Players/Format/AI; then Host or Join with a shared room code.`
+        this.onlineRole === 'host'
+          ? 'Choose your mage, set the match rules below, then create a room for the other players.'
+          : 'Choose only your mage. The host supplies player count, format, AI fill, and content packs.'
       );
     } else if (this.mode === 'training') {
       this.hintText.setText('Training: solo sandbox — spawn dummies, grant items, tweak HP/mana/stacks, reset the field.');
@@ -447,15 +568,18 @@ export class MenuScene extends Phaser.Scene {
     }
 
     for (const cell of this.wordCells) {
-      const on = this.selected.includes(cell.word);
-      cell.rect.setFillStyle(on ? 0x2c2c4a : 0x1a1a2a);
-      cell.rect.setStrokeStyle(on ? 4 : 2, on ? COLORS.selected : WORDS[cell.word].color);
+      const slot = this.selected.indexOf(cell.word);
+      const on = slot >= 0;
+      cell.rect.setFillStyle(on ? 0x26374a : 0x141b28);
+      cell.rect.setStrokeStyle(on ? 3 : 1, on ? COLORS.selected : WORDS[cell.word].color, on ? 1 : 0.75);
+      cell.label.setColor(on ? '#ffffff' : TEXT.body);
+      cell.label.setText(`${on ? `SLOT ${slot + 1}  •  ` : ''}${this.cellText(cell.word)}`);
     }
 
     // Class selector: highlight the drafting seat's chosen class.
     for (const { btn, cls } of this.classBtns) {
       const on = this.selectedClass === cls;
-      btn.setStyle({ backgroundColor: on ? '#3a3a66' : '#23233a' });
+      btn.setStyle({ backgroundColor: on ? '#285b67' : '#182131' });
       btn.setColor(on ? '#ffffff' : TEXT.dim);
     }
     this.classTitle.setText(`Class: ${MAGE_CLASS_DEFS[this.selectedClass].label}`);
@@ -465,11 +589,11 @@ export class MenuScene extends Phaser.Scene {
     const onlineOn = this.mode === 'online';
     const trainingOn = this.mode === 'training';
     const swamprunOn = this.mode === 'swamprun';
-    this.modeAiBtn.setStyle({ backgroundColor: aiOn ? '#3a3a66' : '#23233a' });
-    this.modeHsBtn.setStyle({ backgroundColor: hsOn ? '#3a3a66' : '#23233a' });
-    this.modeOnlineBtn.setStyle({ backgroundColor: onlineOn ? '#3a3a66' : '#23233a' });
-    this.modeTrainingBtn.setStyle({ backgroundColor: trainingOn ? '#3a3a66' : '#23233a' });
-    this.modeSwamprunBtn.setStyle({ backgroundColor: swamprunOn ? '#3a3a66' : '#23233a' });
+    this.modeAiBtn.setStyle({ backgroundColor: aiOn ? '#285b67' : '#182131' });
+    this.modeHsBtn.setStyle({ backgroundColor: hsOn ? '#285b67' : '#182131' });
+    this.modeOnlineBtn.setStyle({ backgroundColor: onlineOn ? '#285b67' : '#182131' });
+    this.modeTrainingBtn.setStyle({ backgroundColor: trainingOn ? '#285b67' : '#182131' });
+    this.modeSwamprunBtn.setStyle({ backgroundColor: swamprunOn ? '#285b67' : '#182131' });
     // Mode is only chosen on the first draft screen.
     this.modeAiBtn.setVisible(firstScreen);
     this.modeHsBtn.setVisible(firstScreen);
@@ -477,23 +601,49 @@ export class MenuScene extends Phaser.Scene {
     this.modeTrainingBtn.setVisible(firstScreen);
     this.modeSwamprunBtn.setVisible(firstScreen);
 
-    // Item-set toggles (first screen only; the guest inherits the host's choice).
+    const networkRole = onlineOn ? this.onlineRole : swamprunOn ? this.swampRole : 'local';
+    const rulesOwner = networkRole !== 'guest';
+    const showRole = firstScreen && (onlineOn || swamprunOn);
+    this.localBtn.setVisible(showRole && swamprunOn);
+    this.hostBtn.setVisible(showRole);
+    this.joinBtn.setVisible(showRole);
+    if (onlineOn) {
+      this.hostBtn.setX(304);
+      this.joinBtn.setX(559);
+    } else {
+      this.hostBtn.setX(431);
+      this.joinBtn.setX(686);
+    }
+    this.localBtn.setStyle({ backgroundColor: networkRole === 'local' ? '#285b67' : '#182131' });
+    this.hostBtn.setStyle({ backgroundColor: networkRole === 'host' ? '#285b67' : '#182131' });
+    this.joinBtn.setStyle({ backgroundColor: networkRole === 'guest' ? '#285b67' : '#182131' });
+
+    this.rulesSectionText.setVisible(firstScreen);
+    this.rulesSectionText.setText(
+      showRole ? `3 // SESSION  •  ${rulesOwner ? 'RULES' : 'HOST RULES'}` : '3 // MATCH RULES'
+    );
+    this.rulesSummaryText.setVisible(firstScreen && !rulesOwner);
+    this.rulesSummaryText.setText(
+      'No rule setup needed. Choose your words and class, then join with the room code from your host.'
+    );
+
+    // Item-set toggles (first screen only; guests inherit the host's choice).
     const setBtns: [Phaser.GameObjects.Text, keyof ItemSetSelection, string][] = [
       [this.setOriginalBtn, 'original', 'Original Dimir'],
       [this.setFinnsBtn, 'finns', "Finn's Additions"],
       [this.setDlcBtn, 'dlc', 'Dimir Faithful DLC'],
     ];
-    const showSets = firstScreen;
+    const showSets = firstScreen && rulesOwner;
     for (const [btn, key, label] of setBtns) {
       const on = this.itemSets[key];
-      btn.setText(`${label}: ${on ? 'ON' : 'off'}`);
-      btn.setStyle({ backgroundColor: on ? '#2f5d3a' : '#23233a' });
+      btn.setText(`${on ? '✓' : '○'}  ${label}`);
+      btn.setStyle({ backgroundColor: on ? '#24543f' : '#182131' });
       btn.setVisible(showSets);
     }
 
     // Player-count / format controls: local teamfights & online room setup.
     // Swamprun is co-op survival, so it shows Players + AI but no team format.
-    const showSetup = firstScreen && this.mode !== 'training';
+    const showSetup = firstScreen && this.mode !== 'training' && rulesOwner;
     this.playersBtn.setText(`Players: ${this.seatCount}`);
     this.playersBtn.setVisible(showSetup);
     this.formatBtn.setText(`Format: ${this.formatLabel()}`);
@@ -505,7 +655,7 @@ export class MenuScene extends Phaser.Scene {
     // split is actually a choice (e.g. player + AI vs player + AI).
     const showSeatTeams =
       showSetup && this.mode !== 'swamprun' && this.teamMode === 'teams' && this.seatCount >= 3;
-    const spacing = 210;
+    const spacing = 190;
     for (let s = 0; s < this.seatBtns.length; s++) {
       const btn = this.seatBtns[s];
       if (showSeatTeams && s < this.seatCount) {
@@ -522,19 +672,18 @@ export class MenuScene extends Phaser.Scene {
 
     const ready = this.selected.length === LOADOUT_SIZE;
     const moreSeats = this.draftIndex < humans.length - 1;
-    // Online shows Host/Join buttons; swamprun offers BOTH a local start and
-    // online co-op, so its lobby buttons appear alongside Start Swamprun.
-    this.startBtn.setVisible(!onlineOn);
+    this.startBtn.setVisible(true);
     this.startBtn.setAlpha(ready ? 1 : 0.4);
     this.startBtn.setText(
-      moreSeats ? 'Next' : this.mode === 'training' ? 'Start Training' : this.mode === 'swamprun' ? 'Start Swamprun' : 'Start Duel'
+      moreSeats
+        ? 'NEXT MAGE'
+        : onlineOn
+          ? this.onlineRole === 'host' ? 'CREATE ONLINE ROOM' : 'JOIN ONLINE ROOM'
+          : swamprunOn
+            ? this.swampRole === 'local' ? 'START SWAMPRUN' : this.swampRole === 'host' ? 'HOST CO-OP ROOM' : 'JOIN CO-OP ROOM'
+            : this.mode === 'training' ? 'START TRAINING' : 'START DUEL'
     );
-    const showLobby = (onlineOn || swamprunOn) && firstScreen;
-    this.hostBtn.setVisible(showLobby);
-    this.joinBtn.setVisible(showLobby);
-    const lobbyEnabled = ready && !this.connecting;
-    this.hostBtn.setAlpha(lobbyEnabled ? 1 : 0.4);
-    this.joinBtn.setAlpha(lobbyEnabled ? 1 : 0.4);
+    this.startBtn.setColor(ready ? '#0a0e16' : '#4d4431');
   }
 
   private confirm(): void {

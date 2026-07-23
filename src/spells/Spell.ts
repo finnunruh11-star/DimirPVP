@@ -47,6 +47,8 @@ export interface Spell {
    */
   bonusRangeInOwnShadow?: number;
   targeting: Targeting;
+  /** This spell may select only a mage currently protected by a stealth effect. */
+  requiresInvisibleTarget?: boolean;
   description: string;
 
   /**

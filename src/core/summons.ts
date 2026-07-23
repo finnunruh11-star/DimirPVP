@@ -60,7 +60,7 @@ function baseSummon(opts: {
  *   str / dex / int = ceil(dcRoll / 4) + ceil(ownerInt / 3)
  *   mana            = 5 + int
  *   hp              = 7
- * It is incorporeal (physical damage voided bar light), mindless (sanity damage
+ * It is incorporeal (physical damage voiöded bar light), mindless (sanity damage
  * voided) and weak to light — "bad in the daylight" like every other ghost.
  */
 export function makeGhostSummon(opts: {
@@ -99,9 +99,8 @@ export function makeGhostSummon(opts: {
   g.mana = g.maxMana;
   g.statsAssigned = true;
 
-  // Incorporeal ghost traits: physical damage voided (except light), weak to
-  // light. Mill (sanity/shadow) fists when it has no item in hand.
-  g.physicalImmune = true;
+  // Mundane blows pass through it; magical physical damage still connects.
+  g.intrinsicImmuneTypes = ['pierce', 'shatter', 'slashing', 'generic'];
   g.intrinsicWeakTypes = ['light'];
   g.intrinsicMelee = { spec: '1d4', type: 'shadow', damageClass: 'sanity' };
 
@@ -109,9 +108,9 @@ export function makeGhostSummon(opts: {
 }
 
 /**
- * Life · Corrode Curse — a slow, physical "walking totem". It trudges a fixed 5
- * range-units a step (independent of Dex) and corrodes what it touches. The
- * corrosion / slow rider is attached by the caller. A stocky construct (hp 8).
+ * Life · Corrode Curse — a slow, pacifist "walking totem". It trudges a fixed 5
+ * range-units a step and pulses corrosive damage around itself. A stocky
+ * construct (hp 8).
  */
 export function makeCorrosionSentry(opts: {
   ownerInt: number;
@@ -124,8 +123,13 @@ export function makeCorrosionSentry(opts: {
   unit.maxHp = 8;
   unit.hp = 8;
   unit.intrinsicMoveUnits = 5; // ponderous, totem-like crawl
-  unit.intrinsicMelee = { spec: '1d4', type: 'corrosive', damageClass: 'physical' };
-  unit.intrinsicMeleeReach = MELEE_RANGE;
+  unit.cannotAttack = true;
+  unit.intrinsicDamageAura = {
+    radius: R(3),
+    damageSpec: '1d3',
+    type: 'corrosive',
+    damageClass: 'physical',
+  };
   return unit;
 }
 
@@ -168,5 +172,46 @@ export function makeArcherSummon(opts: {
   unit.intrinsicMelee = { spec: '1d4', type: 'corrosive', damageClass: 'physical' };
   unit.intrinsicMeleeReach = R(15);
   unit.intrinsicMeleeMin = R(10);
+  return unit;
+}
+
+/**
+ * Life · Corrode Mind — a neural parasite whose bite corrodes sanity and the
+ * victim's ability to react. Fragile, quick, and dangerous only at close range.
+ */
+export function makeNeuralLeech(opts: {
+  ownerInt: number;
+  dcRoll: number;
+  ownerName: string;
+  pos: Vec2;
+  team: number;
+}): Mage {
+  const { unit } = baseSummon({ ...opts, suffix: 'Neural Leech' });
+  unit.maxHp = 5;
+  unit.hp = 5;
+  unit.intrinsicMoveUnits = 7;
+  unit.intrinsicMelee = { spec: '1d3', type: 'corrosive', damageClass: 'sanity' };
+  unit.intrinsicMeleeReach = MELEE_RANGE;
+  return unit;
+}
+
+/**
+ * Life · Drain Mind — a thought-eater that steals one charged word whenever it
+ * bites. Its spell-layer rider decides whether the stolen thought becomes a
+ * matching word charge or raw mana for the owner.
+ */
+export function makeThoughtLeech(opts: {
+  ownerInt: number;
+  dcRoll: number;
+  ownerName: string;
+  pos: Vec2;
+  team: number;
+}): Mage {
+  const { unit } = baseSummon({ ...opts, suffix: 'Thought Leech' });
+  unit.maxHp = 5;
+  unit.hp = 5;
+  unit.intrinsicMoveUnits = 8;
+  unit.intrinsicMelee = { spec: '1d3', type: 'shadow', damageClass: 'sanity' };
+  unit.intrinsicMeleeReach = MELEE_RANGE;
   return unit;
 }
