@@ -14,8 +14,8 @@
 import type { WordId } from './Words';
 import { comboKey } from './Words';
 
-export type WordColor = 'black' | 'blue' | 'white' | 'none';
-export type ColorName = 'black' | 'blue' | 'white';
+export type WordColor = 'black' | 'blue' | 'white' | 'red' | 'none';
+export type ColorName = 'black' | 'blue' | 'white' | 'red';
 
 /** Which color each word belongs to. */
 export const WORD_COLOR: Record<WordId, WordColor> = {
@@ -23,6 +23,9 @@ export const WORD_COLOR: Record<WordId, WordColor> = {
   corrode: 'black',
   curse: 'black',
   drain: 'black',
+  pain: 'black',
+  fire: 'red',
+  lightning: 'red',
   mind: 'blue',
   bind: 'blue',
   veil: 'blue',
@@ -55,12 +58,15 @@ const WORD_POTENCY: Record<WordId, number> = {
   order: 2,
   shadow: 2,
   reality: 2,
+  pain: 2,
   // Medium: solid utility / damage.
   corrode: 1,
   bind: 1,
   twist: 1,
   pierce: 1,
   slash: 1,
+  fire: 1,
+  lightning: 1,
   // Weak: cheap, low-impact words.
   veil: 0,
   mind: 0,
@@ -104,27 +110,31 @@ export interface ColorProfile {
   whitePrimaryTier: boolean;
   /** White is your secondary colour: colour spells heal caster + nearest ally. */
   whiteSecondaryTier: boolean;
+  /** Red boon active: +1 range movement, first initiative/weapon-hit bonus, -1 Int. */
+  redPrimaryTier: boolean;
+  /** Red is secondary: begin combat with 5 additional color charges. */
+  redSecondaryTier: boolean;
 }
 
 /** Work out a mage's color identity from its loadout. */
 export function computeColorProfile(loadout: WordId[]): ColorProfile {
-  const counts: Record<ColorName, number> = { black: 0, blue: 0, white: 0 };
+  const counts: Record<ColorName, number> = { black: 0, blue: 0, white: 0, red: 0 };
   for (const w of loadout) {
     const c = WORD_COLOR[w];
-    if (c === 'black' || c === 'blue' || c === 'white') counts[c] += 1;
+    if (c !== 'none') counts[c] += 1;
   }
 
   // First appearance of each color, used to break count ties deterministically.
-  const firstSeen: Record<ColorName, number> = { black: 999, blue: 999, white: 999 };
+  const firstSeen: Record<ColorName, number> = { black: 999, blue: 999, white: 999, red: 999 };
   loadout.forEach((w, i) => {
     const c = WORD_COLOR[w];
-    if ((c === 'black' || c === 'blue' || c === 'white') && firstSeen[c] === 999) {
+    if (c !== 'none' && firstSeen[c] === 999) {
       firstSeen[c] = i;
     }
   });
 
   // Rank colors present by count (desc), breaking ties by earliest appearance.
-  const ranked = (['black', 'blue', 'white'] as ColorName[])
+  const ranked = (['black', 'blue', 'white', 'red'] as ColorName[])
     .filter((c) => counts[c] > 0)
     .sort((a, b) => counts[b] - counts[a] || firstSeen[a] - firstSeen[b]);
 
@@ -143,6 +153,8 @@ export function computeColorProfile(loadout: WordId[]): ColorProfile {
     blackSecondaryTier: secondary === 'black',
     whitePrimaryTier: has('white'),
     whiteSecondaryTier: secondary === 'white',
+    redPrimaryTier: has('red'),
+    redSecondaryTier: secondary === 'red',
   };
 }
 

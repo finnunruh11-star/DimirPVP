@@ -5,6 +5,8 @@ import { MAGE_CLASSES, MAGE_CLASS_DEFS, DEFAULT_MAGE_CLASS, toMageClass, type Ma
 import { Net, type NetRole, type NetMessage } from '../net/Net';
 import magePreviewUrl from '../Sprites/Idle/Idle1.png';
 
+const NAD_LOADOUT: WordId[] = ['mind', 'shatter', 'twist', 'reality'];
+
 export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun';
 
 /** Which toggleable item catalogues the draft draws from. */
@@ -86,6 +88,7 @@ export class MenuScene extends Phaser.Scene {
   private nadActive = false;
   private katActive = false;
   private genActive = false;
+  private sniffActive = false;
   /** Enabled item sets for the draft (host decides in online play). */
   private itemSets: ItemSetSelection = { original: true, finns: false, dlc: false };
   /** The class the seat currently drafting has chosen. */
@@ -308,25 +311,28 @@ export class MenuScene extends Phaser.Scene {
   private onKey(e: KeyboardEvent): void {
     const key = (e.key ?? '').toUpperCase();
     if (key.length === 1 && key >= 'A' && key <= 'Z') {
-      this.typed = (this.typed + key).slice(-3);
-      if (this.typed === 'NAD') this.applyNadLoadout();
-      else if (this.typed === 'KAT') this.applyKatLoadout();
-      else if (this.typed === 'GEN') this.applyGenLoadout();
+      this.typed = (this.typed + key).slice(-5);
+      if (this.typed.endsWith('NAD')) this.applyNadLoadout();
+      else if (this.typed.endsWith('KAT')) this.applyKatLoadout();
+      else if (this.typed.endsWith('GEN')) this.applyGenLoadout();
+      else if (this.typed === 'SNIFF') this.applySniffLoadout();
     }
   }
 
   private applyNadLoadout(): void {
-    this.selected = ['mind', 'shatter', 'twist', 'reality'];
+    this.selected = [...NAD_LOADOUT];
     this.nadActive = true;
     this.katActive = false;
+    this.sniffActive = false;
     this.refresh();
   }
 
   private applyKatLoadout(): void {
-    this.selected = ['corrode', 'curse', 'shadow', 'drain'];
+    this.selected = ['corrode', 'curse', 'shadow', 'drain', 'pain'];
     this.katActive = true;
     this.nadActive = false;
     this.genActive = false;
+    this.sniffActive = false;
     this.refresh();
   }
 
@@ -335,6 +341,16 @@ export class MenuScene extends Phaser.Scene {
     this.genActive = true;
     this.nadActive = false;
     this.katActive = false;
+    this.sniffActive = false;
+    this.refresh();
+  }
+
+  private applySniffLoadout(): void {
+    this.selected = ['pierce', 'mind', 'veil', 'fire', 'lightning'];
+    this.sniffActive = true;
+    this.nadActive = false;
+    this.katActive = false;
+    this.genActive = false;
     this.refresh();
   }
 
@@ -512,6 +528,7 @@ export class MenuScene extends Phaser.Scene {
     this.nadActive = false;
     this.katActive = false;
     this.genActive = false;
+    this.sniffActive = false;
   }
 
   /** Pick the class for the seat currently drafting. */
@@ -527,16 +544,29 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private toggleWord(word: WordId): void {
-    this.nadActive = false;
+    const wasNad = this.isNadSelection();
     this.katActive = false;
     this.genActive = false;
+    this.sniffActive = false;
     const idx = this.selected.indexOf(word);
     if (idx >= 0) {
       this.selected.splice(idx, 1);
     } else if (this.selected.length < LOADOUT_SIZE) {
       this.selected.push(word);
     }
+    this.nadActive = wasNad && this.isNadSelection();
     this.refresh();
+  }
+
+  private isNadSelection(): boolean {
+    return (
+      (this.selected.length === NAD_LOADOUT.length || this.selected.length === LOADOUT_SIZE) &&
+      NAD_LOADOUT.every((word) => this.selected.includes(word))
+    );
+  }
+
+  private loadoutReady(): boolean {
+    return this.selected.length === LOADOUT_SIZE || this.isNadSelection();
   }
 
   private refresh(): void {
@@ -545,12 +575,14 @@ export class MenuScene extends Phaser.Scene {
     const draftingSeat = humans[this.draftIndex] ?? 0;
     const who = `Player ${draftingSeat + 1}`;
     this.titleText.setText(`2 // BUILD ${who.toUpperCase()}  •  ${this.selected.length}/${LOADOUT_SIZE} WORDS`);
-    if (this.nadActive) {
-      this.hintText.setText('✨ NAD unlocked: Mind · Shatter · Twist · Reality');
+    if (this.nadActive || this.isNadSelection()) {
+      this.hintText.setText('✨ NAD unlocked: Mind · Shatter · Twist · Reality · optional fifth word');
     } else if (this.katActive) {
-      this.hintText.setText('✨ KAT unlocked: Corrode · Curse · Shadow · Drain');
+      this.hintText.setText('✨ KAT unlocked: Corrode · Curse · Shadow · Drain · Pain');
     } else if (this.genActive) {
       this.hintText.setText('✨ GEN unlocked: Order · Curse · Drain · Slash');
+    } else if (this.sniffActive) {
+      this.hintText.setText('✨ SNIFF unlocked: Pierce · Mind · Veil · Fire · Lightning');
     } else if (this.mode === 'online') {
       this.hintText.setText(
         this.onlineRole === 'host'
@@ -670,7 +702,7 @@ export class MenuScene extends Phaser.Scene {
       }
     }
 
-    const ready = this.selected.length === LOADOUT_SIZE;
+    const ready = this.loadoutReady();
     const moreSeats = this.draftIndex < humans.length - 1;
     this.startBtn.setVisible(true);
     this.startBtn.setAlpha(ready ? 1 : 0.4);
@@ -687,7 +719,7 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private confirm(): void {
-    if (this.selected.length !== LOADOUT_SIZE) return;
+    if (!this.loadoutReady()) return;
     if (this.mode === 'online') return; // online starts via Host / Join
     if (this.mode === 'training') {
       // Solo sandbox: a single loadout against a training dummy.
@@ -707,6 +739,7 @@ export class MenuScene extends Phaser.Scene {
       this.nadActive = false;
       this.katActive = false;
       this.genActive = false;
+      this.sniffActive = false;
       this.refresh();
       return;
     }
@@ -761,7 +794,7 @@ export class MenuScene extends Phaser.Scene {
   /** Begin an online match. Seat 0 (the first to join) hosts the handshake. */
   private async startOnline(role: NetRole): Promise<void> {
     if (this.connecting) return;
-    if (this.selected.length !== LOADOUT_SIZE) {
+    if (!this.loadoutReady()) {
       this.statusText.setText('Pick your full loadout first.');
       return;
     }

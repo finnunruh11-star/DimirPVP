@@ -5,6 +5,7 @@ import {
   FIELD,
   GAME_HEIGHT,
   GAME_WIDTH,
+  LOADOUT_SIZE,
   MAX_SPELL_WORDS,
   MAX_WEAPON_REACTIONS,
   MAX_WORD_SPELL_REACTIONS,
@@ -26,6 +27,7 @@ import poisonSheetUrl from '../Sprites/Spell/Poison Attack.png';
 import vanishSheetUrl from '../Sprites/Spell/Vanish.png';
 import shatterSheetUrl from '../Sprites/Spell/Shatter.png';
 import disruptSheetUrl from '../Sprites/Spell/Disrupt.png';
+import lightningSheetUrl from '../Sprites/Spell/Lightning.png';
 import { scarabAlive, type ScarabState } from '../core/Scarab';
 import { Dev, type DevToggle } from '../config/dev';
 import { WORDS, type WordId } from '../core/Words';
@@ -483,6 +485,7 @@ export class GameScene extends Phaser.Scene {
   private gfx!: Phaser.GameObjects.Graphics;
   private gfxFx!: Phaser.GameObjects.Graphics;
   private gfxScarab!: Phaser.GameObjects.Graphics;
+  private lightningTrailSprites: Phaser.GameObjects.Sprite[] = [];
   private hoverGfx!: Phaser.GameObjects.Graphics;
   private dicePanel!: Phaser.GameObjects.Container;
   private turnText!: Phaser.GameObjects.Text;
@@ -628,6 +631,7 @@ export class GameScene extends Phaser.Scene {
     this.load.spritesheet('fx-vanish', vanishSheetUrl, { frameWidth: 64, frameHeight: 64 });
     this.load.spritesheet('fx-shatter', shatterSheetUrl, { frameWidth: 64, frameHeight: 64 });
     this.load.spritesheet('fx-disrupt', disruptSheetUrl, { frameWidth: 128, frameHeight: 128 });
+    this.load.spritesheet('fx-lightning', lightningSheetUrl, { frameWidth: 256, frameHeight: 128 });
   }
 
   create(config: MatchConfig): void {
@@ -706,8 +710,11 @@ export class GameScene extends Phaser.Scene {
       diceRoll: (spec, total, rolls, label) => this.pendingDice.push({ spec, total, rolls, label }),
       hit: (m) => this.playHit(m),
       dash: (mover, from) => this.animateDash(mover, from),
+      lightningBolt: (from, to) => this.vfxLightningBolt(from, to),
       spellEffect: (m, kind) => this.pendingEffects.push({ mage: m, kind }),
       wedge: (apex, angle, halfAngle, range) => this.vfxWedge(apex, angle, halfAngle, range),
+      lightningTrail: (segments) => this.setLightningTrail(segments),
+      clearLightningTrail: () => this.clearLightningTrail(),
     };
     this.gs.subTargeter = {
       requestPoint: (source, opts) => this.requestSubtargetPoint(source, opts),
@@ -785,7 +792,6 @@ export class GameScene extends Phaser.Scene {
       await this.runSwamprunStartDraft();
       if (this.opponentLeft) return;
       this.setupSwamprun();
-      this.gs.startRound();
       this.startTurn();
       return;
     }
@@ -814,11 +820,6 @@ export class GameScene extends Phaser.Scene {
 
   /** Arm the party of survivors and unleash the first wave. */
   private setupSwamprun(): void {
-    for (const m of this.gs.mages) {
-      if (m.team !== 1) continue;
-      m.resetDodges();
-      m.resetCombatReactions();
-    }
     this.swamprunWave = 0;
     this.swamprunGold = 0;
     this.gs.log('Swamprun — the swamp stirs. Survive as long as you can.');
@@ -830,9 +831,7 @@ export class GameScene extends Phaser.Scene {
     this.swamprunWave = n;
     this.swamprunWaveEnemies = [];
     this.swamprunWispCopies.clear();
-    // Each wave is a fresh combat: reset the party's positions and re-arm their
-    // per-combat gear (crossbow reloads, recovered arrows). HP / sanity / mana /
-    // words carry over (attrition), and standing summons (scarabs) persist.
+    // Build a genuinely fresh combat around the surviving, persistent party.
     this.beginWaveCombat(n);
     const kinds = waveComposition(n, this.gs.rng);
     this.gs.log(`— Wave ${n} — ${kinds.length} foe${kinds.length === 1 ? '' : 's'} emerge from the mire! —`);
@@ -847,49 +846,33 @@ export class GameScene extends Phaser.Scene {
       this.spawnEnemy('reaper');
       this.gs.log('— The REAPER glides from the mist. Flee, and it only follows. —');
     }
+    // The complete roster now exists: reset round/turn state and roll everyone
+    // into a new initiative order before the first turn starts.
+    this.gs.startNewCombat();
     this.updateWaveHud();
     this.redraw();
   }
 
   /**
-   * Fresh-combat setup at the start of every wave: line the surviving party up
-   * again at their starting positions, clear any half-finished crossbow reload,
-   * and record how many arrows each owns so they can be recovered next interlude.
-   * Standing summons (scarabs) are dragged along to the new formation so they
-   * persist between waves instead of loitering where the last fight ended.
+   * Keep run progression, but discard the previous combat roster and restore
+   * every survivor's combat-scoped state before assembling the next wave.
    */
   private beginWaveCombat(n: number): void {
-    const party = this.gs.mages.filter((m) => m.team === 1 && m.alive);
-    // Every wave (including the first) forms up close to the mire so the fight
-    // is joined almost immediately instead of after a long run-up.
+    const party = this.gs.mages.filter((m) => m.team === 1 && m.alive && !m.isSummon);
+    const removed = this.gs.mages.filter((m) => !party.includes(m));
+    for (const mage of removed) this.ais.delete(mage);
+    this.gs.mages = party;
     this.resetPartyPositions(party);
     for (const m of party) {
-      m.reloadTurns = 0;
+      m.resetForNewCombat();
       this.swamprunArrowsOwned.set(m, m.arrows);
-      // A little of the mind knits back between fights.
-      if (m.maxSanity > 0) m.sanity = Math.min(m.maxSanity, m.sanity + 1);
     }
   }
 
-  /** Re-line the living party in a column on the left and gather their scarabs. */
+  /** Return the living party to the standard left-side starting formation. */
   private resetPartyPositions(party: Mage[]): void {
-    const cx = FIELD.x + 440;
-    const cy = FIELD.y + FIELD.h / 2;
-    party.forEach((m, i) => {
-      const offset = i - (party.length - 1) / 2;
-      m.x = cx;
-      m.y = cy + 130 * offset;
-    });
-    // Bring each owner's scarabs to their side and let them re-acquire a foe.
-    for (const s of this.gs.scarabs) {
-      if (!scarabAlive(s)) continue;
-      const owner = party.find((m) => m.team === s.owner);
-      if (!owner) continue;
-      s.x = owner.x + (this.gs.rng.float() - 0.5) * 60;
-      s.y = owner.y + (this.gs.rng.float() - 0.5) * 60;
-      s.target = null;
-      s.state = 'resting';
-    }
+    const starts = this.computeSpawns(party.map((m) => m.team));
+    party.forEach((m, i) => Object.assign(m, starts[i]));
   }
 
   /** Instantiate one creature, wire its AI and sprite, and add it to the fight. */
@@ -938,26 +921,23 @@ export class GameScene extends Phaser.Scene {
    * survivors up, let them shop, then unleash the next wave. Clearing a wave
    * never ends the run — it only opens the shop and escalates.
    */
-  private async runWaveInterlude(): Promise<void> {
-    if (this.swamprunInterludeActive) return;
+  private async runWaveInterlude(): Promise<boolean> {
+    if (this.swamprunInterludeActive) return false;
     this.swamprunInterludeActive = true;
     try {
       this.awardWaveLoot();
-      // Attrition design: survivors carry their wounds into the next wave.
-      // Only per-combat action budgets (dodges, focus, leaps, reactions) reset.
       for (const m of this.gs.mages) {
         if (m.team !== 1 || !m.alive) continue;
-        m.resetDodges();
-        m.resetCombatReactions();
         this.tickTorches(m);
-        // New combat each wave: recover every fired arrow and clear any reload.
+        // Ammunition belongs to the run inventory, but shots are recovered when
+        // the old battlefield is left behind.
         const owned = this.swamprunArrowsOwned.get(m);
         if (owned != null) m.arrows = owned;
-        m.reloadTurns = 0;
       }
       // A shop opens only every third cleared wave; other waves flow straight on.
       if (this.swamprunWave % 3 === 0) await this.runSwamprunShop();
       this.spawnWave(this.swamprunWave + 1);
+      return true;
     } finally {
       this.swamprunInterludeActive = false;
     }
@@ -2308,7 +2288,7 @@ export class GameScene extends Phaser.Scene {
     // Swamprun: if the last wave has fallen, the between-wave interlude (loot +
     // shop + next wave) runs before we check for a match end — clearing a wave
     // never ends the run.
-    if (this.swamprunWaveCleared()) await this.runWaveInterlude();
+    if (this.swamprunWaveCleared() && (await this.runWaveInterlude())) return this.startTurn();
     if (this.gs.isOver) return this.endGame();
     this.gs.beginTurn();
     // A creature spawned mid-combat (a wisp split) sits out its first turn, so a
@@ -2333,7 +2313,7 @@ export class GameScene extends Phaser.Scene {
     // Swamprun: a creature's own turn-start DoT tick can empty the board — run
     // the interlude rather than declaring the run over, and skip a creature that
     // just died.
-    if (this.swamprunWaveCleared()) await this.runWaveInterlude();
+    if (this.swamprunWaveCleared() && (await this.runWaveInterlude())) return this.startTurn();
     if (this.gs.isOver) return this.endGame();
     if (this.swamprun && !this.gs.current.alive) return this.nextTurn();
 
@@ -2347,7 +2327,9 @@ export class GameScene extends Phaser.Scene {
 
     if (this.controllerIsAI(this.gs.current)) {
       this.mode = 'busy';
+      const wave = this.swamprunWave;
       await this.runAITurn();
+      if (this.swamprun && wave !== this.swamprunWave) return;
       if (this.gs.isOver) return this.endGame();
       await this.nextTurn();
     } else if (this.online && !this.isLocalTurn()) {
@@ -2367,6 +2349,7 @@ export class GameScene extends Phaser.Scene {
   private async runCompelledTurn(): Promise<void> {
     this.mode = 'busy';
     const me = this.gs.current;
+    const wave = this.swamprunWave;
     await this.delay(400);
     const item = this.buildCompelledAction(me);
     if (item) {
@@ -2376,6 +2359,7 @@ export class GameScene extends Phaser.Scene {
       this.gs.log(`${me.name} is compelled but cannot act — they do nothing.`);
       await this.delay(300);
     }
+    if (this.swamprun && wave !== this.swamprunWave) return;
     if (this.gs.isOver) return this.endGame();
     await this.nextTurn();
   }
@@ -2464,7 +2448,7 @@ export class GameScene extends Phaser.Scene {
   private async nextTurn(): Promise<void> {
     // Swamprun: refill the board the instant a wave is cleared so the run never
     // stalls out on an empty arena.
-    if (this.swamprunWaveCleared()) await this.runWaveInterlude();
+    if (this.swamprunWaveCleared() && (await this.runWaveInterlude())) return this.startTurn();
     // As the acting mage moves to end their turn, opponents get one last chance
     // to spend their reaction (counter-magic only) before the turn passes.
     await this.offerReactionWindow(this.gs.current, 'End of Turn', {
@@ -3255,7 +3239,7 @@ export class GameScene extends Phaser.Scene {
     // Swamprun: if the acting player's blow cleared the wave, run the between-wave
     // interlude (loot + shop + next wave) before the game-over check — otherwise
     // the run would freeze on an empty board.
-    if (this.swamprunWaveCleared()) await this.runWaveInterlude();
+    const restartedCombat = this.swamprunWaveCleared() ? await this.runWaveInterlude() : false;
     if (this.gs.isOver) {
       this.mode = 'over';
     } else if (this.online && !this.isLocalTurn()) {
@@ -3267,6 +3251,7 @@ export class GameScene extends Phaser.Scene {
       this.mode = 'idle';
     }
     this.redraw();
+    if (restartedCombat) await this.startTurn();
   }
 
   /**
@@ -3446,6 +3431,7 @@ export class GameScene extends Phaser.Scene {
     // the spell fizzles entirely (charges/actions are already spent) and no
     // counter effect triggers. A natural 20 also crits (doubled potency).
     this.gs.critThisCast = false;
+    this.gs.spellRollThisCast = 0;
     if (item.kind === 'spell' && item.spell && item.spell.dc) {
       this.pendingDice = [];
       const res = this.rollSpellSuccess(item.spell, item.source);
@@ -3456,6 +3442,7 @@ export class GameScene extends Phaser.Scene {
         return item;
       }
       this.gs.critThisCast = res.crit;
+      this.gs.spellRollThisCast = res.roll;
     }
 
     if (item.counters && item.respondingTo != null) {
@@ -3479,6 +3466,7 @@ export class GameScene extends Phaser.Scene {
     // The crit flag only applies to the cast that rolled it; clear it now so
     // later ticks / effects (which build their own context) are never doubled.
     this.gs.critThisCast = false;
+    this.gs.spellRollThisCast = 0;
     // A hostile single-target spell that dealt no instant damage (no hit overlay
     // was queued for its foe) paints the "disrupt" sheet on the target instead,
     // so pure control spells (Mind, Bind, Twist, …) still read as landing.
@@ -3497,7 +3485,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Roll 1d20 against a spell's DC, queue the die for display, and log it. */
-  private rollSpellSuccess(spell: Spell, source: Mage): { ok: boolean; crit: boolean } {
+  private rollSpellSuccess(spell: Spell, source: Mage): { ok: boolean; crit: boolean; roll: number } {
     // Blue primary tier and assigned Intellect both lower a spell's difficulty.
     // A flat +3 raises the baseline difficulty of every spell, and the easier
     // spells (base DC 14 or lower) take a further +2 so INT can't trivialise them.
@@ -3540,7 +3528,7 @@ export class GameScene extends Phaser.Scene {
     if (!ok) {
       for (const line of source.onSpellFizzle()) this.gs.log(line);
     }
-    return { ok, crit };
+    return { ok, crit, roll: best.total };
   }
 
   /** Reaction spells the reactor could actually cast right now (charges + valid target). */
@@ -3777,7 +3765,7 @@ export class GameScene extends Phaser.Scene {
 
   private bindInput(): void {
     const kb = this.input.keyboard!;
-    const keys = ['ONE', 'TWO', 'THREE', 'FOUR'];
+    const keys = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE'];
     keys.forEach((k, i) => kb.on(`keydown-${k}`, () => this.onWordKey(i)));
     kb.on('keydown-ENTER', () => this.onCast());
     kb.on('keydown-M', () => this.beginMove());
@@ -4822,7 +4810,7 @@ export class GameScene extends Phaser.Scene {
       this.reactionPendingSpell = null;
       this.aimingSource = null;
       this.mode = 'reaction';
-      this.flashHint('Reaction — [1-4]+Enter to cast, or Space/E to pass.');
+      this.flashHint('Reaction — [1-5]+Enter to cast, or Space/E to pass.');
       this.redraw();
       return;
     }
@@ -5007,6 +4995,10 @@ export class GameScene extends Phaser.Scene {
       }
       case 'dot':
         return `Damage over time — takes damage at the start of your turn. (${turns})`;
+      case 'fire':
+        return `Fire — ${s.stacks} stack${s.stacks === 1 ? '' : 's'}; flares and decays at turn start.`;
+      case 'blueflare':
+        return `Blueflare — ${s.stacks} mental-flame stack${s.stacks === 1 ? '' : 's'}; spreads from 3+.`;
       case 'debuff': {
         const parts: string[] = [];
         if (s.mods.moveRange) parts.push(`move ${s.mods.moveRange > 0 ? '+' : ''}${s.mods.moveRange}`);
@@ -5417,6 +5409,7 @@ export class GameScene extends Phaser.Scene {
       this.pendingSpell = null;
       this.pendingAbility = null;
       this.pendingFirstPoint = null;
+      if (ability) this.flashHint('', true);
       if (first) {
         this.submitTurn({
           t: 'spell',
@@ -5669,7 +5662,7 @@ export class GameScene extends Phaser.Scene {
           : '';
       const dodge = physical && this.canDodge(reactor) ? `  [D] dodge (${reactor.dodgesRemaining})` : '';
       this.flashHint(
-        `${reactor.name}: REACTION — [1-4]+Enter to cast${abil}${block}${bash}${weapon}${needle}${dodge}, or Space/E to pass.`
+        `${reactor.name}: REACTION — [1-5]+Enter to cast${abil}${block}${bash}${weapon}${needle}${dodge}, or Space/E to pass.`
       );
       this.redraw();
     });
@@ -6434,6 +6427,7 @@ export class GameScene extends Phaser.Scene {
     this.subtargetRange = 0;
     this.subtargetMinRange = 0;
     this.mode = 'busy';
+    this.flashHint('', true);
     this.redraw();
     if (r) r(value);
   }
@@ -6633,24 +6627,24 @@ export class GameScene extends Phaser.Scene {
       );
     }
 
-    // Word boxes laid out as a 2x2 grid so they clear the history panel.
-    for (let i = 0; i < 4; i++) {
-      const col = i % 2;
-      const row = Math.floor(i / 2);
+    // Five word boxes in a compact 3 + 2 grid above the action controls.
+    for (let i = 0; i < LOADOUT_SIZE; i++) {
+      const col = i % 3;
+      const row = Math.floor(i / 3);
       const box = this.add
-        .text(470 + col * 205, HUD_Y + 24 + row * 55, '', {
+        .text(470 + col * 134, HUD_Y + 24 + row * 55, '', {
           fontFamily: 'Trebuchet MS',
-          fontSize: '14px',
+          fontSize: '13px',
           color: TEXT.body,
           backgroundColor: '#172231',
           padding: { x: 8, y: 6 },
-          fixedWidth: 190,
+          fixedWidth: 126,
           fixedHeight: 46,
         })
         .setInteractive({ useHandCursor: true });
       box.on('pointerover', () => box.setAlpha(0.82));
       box.on('pointerout', () => box.setAlpha(1));
-      // Clicking a word box toggles that word's selection (same as [1]–[4]).
+      // Clicking a word box toggles that word's selection (same as [1]–[5]).
       box.on('pointerdown', () => this.onWordKey(i));
       this.wordTexts.push(box);
     }
@@ -7044,7 +7038,7 @@ export class GameScene extends Phaser.Scene {
     vital('Mana', t.mana, t.maxMana, 'mana');
     vital('Sanity', t.sanity, t.maxSanity, 'sanity');
 
-    const stack = (label: string, cur: number, field: 'thunder' | 'greed') => {
+    const stack = (label: string, cur: number, field: 'thunder' | 'greed' | 'color') => {
       this.trainLabel(left, y, `${label}: ${cur}`);
       let vx = left + 220;
       for (const [d, txt] of [
@@ -7059,6 +7053,7 @@ export class GameScene extends Phaser.Scene {
     };
     stack('Thunder stacks', t.thunderStacks, 'thunder');
     stack('Greed stacks', t.greedStacks, 'greed');
+    stack('Color charges', t.colorCharges, 'color');
     y += 14;
 
     // Bottom action row.
@@ -7169,10 +7164,11 @@ export class GameScene extends Phaser.Scene {
     this.redraw();
   }
 
-  private adjustStacks(field: 'thunder' | 'greed', delta: number): void {
+  private adjustStacks(field: 'thunder' | 'greed' | 'color', delta: number): void {
     const t = this.mageByTeam(this.trainTarget);
     if (field === 'thunder') t.thunderStacks = Math.max(0, t.thunderStacks + delta);
-    else t.greedStacks = Math.max(0, t.greedStacks + delta);
+    else if (field === 'greed') t.greedStacks = Math.max(0, t.greedStacks + delta);
+    else t.colorCharges = Math.max(0, Math.min(t.maxColorCharges, t.colorCharges + delta));
     this.refreshTrainingOverlay();
     this.redraw();
   }
@@ -7290,6 +7286,9 @@ export class GameScene extends Phaser.Scene {
     // Veil Bind linking circles.
     this.drawVeilBindZones(g);
 
+    // Permanent Red Objects static orbs.
+    this.drawRedOrbs(g);
+
     // Reality-break barriers.
     this.drawBarriers(g);
 
@@ -7373,6 +7372,15 @@ export class GameScene extends Phaser.Scene {
       g.fillStyle(0x8ad1ff, 0.09).fillCircle(zone.x, zone.y, zone.radius);
       g.lineStyle(2, 0x8ad1ff, 0.7).strokeCircle(zone.x, zone.y, zone.radius);
       g.lineStyle(1, tint, 0.55).strokeCircle(zone.x, zone.y, zone.radius - 5);
+    }
+  }
+
+  private drawRedOrbs(g: Phaser.GameObjects.Graphics): void {
+    for (const orb of this.gs.redOrbs) {
+      g.fillStyle(0xff3b24, 0.09).fillCircle(orb.x, orb.y, orb.radius);
+      g.lineStyle(2, 0xff5a36, 0.78).strokeCircle(orb.x, orb.y, orb.radius);
+      g.fillStyle(0xffd447, 0.92).fillCircle(orb.x, orb.y, 9);
+      g.lineStyle(2, 0xffffff, 0.5).strokeCircle(orb.x, orb.y, 12);
     }
   }
 
@@ -7971,6 +7979,14 @@ export class GameScene extends Phaser.Scene {
         repeat: 0,
       });
     }
+    if (!this.anims.exists('fx-lightning-loop')) {
+      this.anims.create({
+        key: 'fx-lightning-loop',
+        frames: this.anims.generateFrameNumbers('fx-lightning', { start: 0, end: 3 }),
+        frameRate: 16,
+        repeat: -1,
+      });
+    }
   }
 
   private mageAnims = new Map<Mage, MageAnim>();
@@ -7990,6 +8006,14 @@ export class GameScene extends Phaser.Scene {
   /** Create/position each mage's sprite and pick its resting animation. */
   private syncMageSprites(): void {
     if (!this.gs) return;
+    const roster = new Set(this.gs.mages);
+    for (const [mage, rec] of this.mageAnims) {
+      if (roster.has(mage)) continue;
+      rec.sprite.destroy();
+      this.mageAnims.delete(mage);
+      this.mageLabels.get(mage)?.destroy();
+      this.mageLabels.delete(mage);
+    }
     // Frames are bottom-aligned (the 16x16 idle/run/role/hit sets and the 32x32
     // attack/charge sets all rest their feet on the frame's bottom edge), so
     // anchor sprites by the feet. This keeps every animation's body in line; the
@@ -8142,6 +8166,43 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  /** Create one animated bolt whose visible endpoints align with a segment. */
+  private lightningSprite(from: Vec2, to: Vec2, depth: number): Phaser.GameObjects.Sprite {
+    const length = Math.max(1, dist(from, to));
+    const sprite = this.add
+      .sprite((from.x + to.x) / 2, (from.y + to.y) / 2, 'fx-lightning', 0)
+      .setDepth(depth)
+      .setRotation(Math.atan2(to.y - from.y, to.x - from.x))
+      .setScale(length / 210, 0.5)
+      .setBlendMode(Phaser.BlendModes.ADD);
+    sprite.play('fx-lightning-loop');
+    return sprite;
+  }
+
+  /** Show one complete lightning cycle between consecutive chain targets. */
+  private vfxLightningBolt(from: Vec2, to: Vec2): Promise<void> {
+    return new Promise((resolve) => {
+      const sprite = this.lightningSprite(from, to, 30);
+      this.time.delayedCall(250, () => {
+        sprite.destroy();
+        resolve();
+      });
+    });
+  }
+
+  /** Rebuild the persistent animated Lightning Fire Pierce trail. */
+  private setLightningTrail(segments: readonly { from: Vec2; to: Vec2 }[]): void {
+    this.clearLightningTrail();
+    this.lightningTrailSprites = segments.map((segment) =>
+      this.lightningSprite(segment.from, segment.to, 7.5)
+    );
+  }
+
+  private clearLightningTrail(): void {
+    for (const sprite of this.lightningTrailSprites) sprite.destroy();
+    this.lightningTrailSprites = [];
+  }
+
   private drawMage(g: Phaser.GameObjects.Graphics, m: Mage): void {
     let alpha = 1;
     if (m.isFullyInvisible()) alpha = 0.18;
@@ -8175,7 +8236,11 @@ export class GameScene extends Phaser.Scene {
     }
     const statuses = m.statuses
       .map((s) =>
-        Number.isFinite(s.duration) && s.duration > 0 ? `${s.name} ⌛${s.duration}` : s.name
+        s.kind === 'fire' || s.kind === 'blueflare'
+          ? `${s.name} ×${s.stacks}`
+          : Number.isFinite(s.duration) && s.duration > 0
+            ? `${s.name} ⌛${s.duration}`
+            : s.name
       )
       .join(', ');
     t.setText(`${m.name}\n${m.hp}❤ ${m.sanity}🧠${statuses ? `\n${statuses}` : ''}`);
@@ -8220,7 +8285,7 @@ export class GameScene extends Phaser.Scene {
     if (this.mode === 'reaction' && this.reactor) {
       const abil = this.castableAbilities(this.reactor).length > 0 ? ', [Z/X] color ability' : '';
       this.turnText.setText(
-        `${this.reactor.name}: REACTION — [1-4]+Enter to cast${abil}, Space/E to pass`
+        `${this.reactor.name}: REACTION — [1-5]+Enter to cast${abil}, Space/E to pass`
       );
     } else {
       const cur = this.gs.current;
@@ -8271,7 +8336,7 @@ export class GameScene extends Phaser.Scene {
     this.drawResourcePanel(me);
 
     // Word boxes for the active human.
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < LOADOUT_SIZE; i++) {
       const t = this.wordTexts[i];
       if (this.controllerIsAI(me) || i >= me.loadout.length) {
         t.setText('').setVisible(false);

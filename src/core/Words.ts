@@ -14,7 +14,10 @@ export type WordId =
   | 'reality'
   | 'drain'
   | 'order'
-  | 'slash';
+  | 'slash'
+  | 'pain'
+  | 'fire'
+  | 'lightning';
 
 export interface WordDef {
   id: WordId;
@@ -117,6 +120,30 @@ export const WORDS: Record<WordId, WordDef> = {
     color: 0x57d6a0,
     blurb: 'Corrosive lifesteal.',
   },
+  pain: {
+    id: 'pain',
+    label: 'Pain',
+    grantsReaction: false,
+    charges: 4,
+    color: 0xe06b9f,
+    blurb: 'Mental damage.',
+  },
+  fire: {
+    id: 'fire',
+    label: 'Fire',
+    grantsReaction: false,
+    charges: 4,
+    color: 0xff5a36,
+    blurb: 'Stacking flames.',
+  },
+  lightning: {
+    id: 'lightning',
+    label: 'Lightning',
+    grantsReaction: false,
+    charges: 4,
+    color: 0xffe45c,
+    blurb: 'Gambles on the cast roll.',
+  },
   // --- Secret words (GEN easter-egg loadout only; hidden from the menu grid) ---
   order: {
     id: 'order',
@@ -182,6 +209,9 @@ export const WORD_KIND: Record<WordId, WordKind> = {
   corrode: 'verb',
   veil: 'verb',
   drain: 'verb',
+  pain: 'noun',
+  fire: 'verb',
+  lightning: 'modifier',
   // Not yet classified (secret/white words); never form class spells for now.
   reality: 'other',
   twist: 'other',

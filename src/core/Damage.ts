@@ -11,6 +11,7 @@ export type DamageType =
   | 'fire'
   | 'heat'
   | 'light'
+  | 'typeless'
   | 'generic';
 
 export interface DamageInstance {

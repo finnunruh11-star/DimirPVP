@@ -17,7 +17,9 @@ export type StatusKind =
   | 'forget'
   | 'orderJudgment'
   | 'bindCurseAura'
-  | 'veilCorrodePierce';
+  | 'veilCorrodePierce'
+  | 'fire'
+  | 'blueflare';
 export type StunType = 'main' | 'movement' | 'full';
 export type InvisMode = 'full' | 'partial';
 /** Kinds of mental compulsion the Mind word can inflict. */
@@ -82,6 +84,23 @@ export interface DotStatus extends BaseStatus {
   extendOwnerTeam?: number;
   /** turnSeq of the last cycle-extension (dedups multi-hit extensions). */
   extendSeq?: number;
+}
+
+/** Persistent Fire stacks. Their damage, spread, and decay are resolved at turn start. */
+export interface FireStatus extends BaseStatus {
+  kind: 'fire';
+  stacks: number;
+  /** Index of the mage whose spell originally applied the fire. */
+  ownerIndex: number;
+}
+
+/** Mental counterpart to Fire: easier spread, half damage, and slower decay. */
+export interface BlueflareStatus extends BaseStatus {
+  kind: 'blueflare';
+  stacks: number;
+  ownerIndex: number;
+  /** Low-stack Blueflare decays only on alternating bearer turns. */
+  decayNext: boolean;
 }
 
 export interface DebuffStatus extends BaseStatus {
@@ -196,7 +215,9 @@ export type Status =
   | ForgetStatus
   | OrderJudgmentStatus
   | BindCurseAuraStatus
-  | VeilCorrodePierceStatus;
+  | VeilCorrodePierceStatus
+  | FireStatus
+  | BlueflareStatus;
 
 /**
  * Add a status, or refresh/extend an existing one that shares the same key.

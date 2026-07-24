@@ -36,6 +36,8 @@ import {
   type BindCurseAuraStatus,
   type ControlStatus,
   type DotStatus,
+  type FireStatus,
+  type BlueflareStatus,
   type OrderJudgmentStatus,
   type ShadowTrailStatus,
   type Status,
@@ -63,6 +65,15 @@ export interface NeedlepointDomain {
   owner: number;
   roundsLeft: number;
   lastTriggeredTurnByMage: Record<number, number>;
+}
+
+/** Red Objects color ability: a permanent slowing orb that zaps movers inside it. */
+export interface RedOrb {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+  ownerIndex: number;
 }
 
 export type HexcraftGlobalKind = 'mindShadow' | 'curseCorrode';
@@ -138,9 +149,12 @@ export class GameState {
    * {@link effectContext} so the effect helpers double damage / area / duration.
    */
   critThisCast = false;
+  /** Kept natural d20 for the spell currently resolving. */
+  spellRollThisCast = 0;
 
   /** Active shadow zones placed by the Shadow word. */
   shadows: ShadowZone[] = [];
+  redOrbs: RedOrb[] = [];
 
   /** Active totems placed by the Corrode+Curse combo. */
   totems: Totem[] = [];
@@ -208,9 +222,9 @@ export class GameState {
     const scored = this.mages.map((m, i) => {
       const roll = this.rng.roll('1d20').total;
       const total = roll + m.effectiveDex();
-      return { i, total, tie: this.rng.roll('1d1000').total };
+      return { i, total, red: m.profile.redPrimaryTier ? 1 : 0, tie: this.rng.roll('1d1000').total };
     });
-    scored.sort((a, b) => b.total - a.total || b.tie - a.tie);
+    scored.sort((a, b) => b.red - a.red || b.total - a.total || b.tie - a.tie);
     this.initiativeOrder = scored.map((s) => s.i);
     this.initiativeRolls = [];
     for (const s of scored) this.initiativeRolls[s.i] = s.total;
@@ -231,6 +245,18 @@ export class GameState {
     this.initiativeRolls[idx] = roll + m.effectiveDex();
   }
 
+  /** Reset turn/field state and roll initiative for a newly assembled combat roster. */
+  startNewCombat(): void {
+    this.clearFieldObjects();
+    this.round = 1;
+    this.turnSeq = 0;
+    this.critThisCast = false;
+    this.spellRollThisCast = 0;
+    this.prevScarabAlive = {};
+    this.rollInitiative();
+    this.startRound();
+  }
+
   /**
    * Add a Life-class summon controlled by `owner`. Unlike {@link addMage} the
    * summon is NOT inserted into the initiative order (it never takes an
@@ -242,6 +268,7 @@ export class GameState {
     m.summonKind = kind;
     m.team = owner.team;
     m.summonOwnerIndex = this.mages.indexOf(owner);
+    m.summonMoveMultiplier = owner.redSummonHaste ? 2 : 1;
     this.mages.push(m);
     this.initiativeRolls[this.mages.length - 1] = 0;
     return m;
@@ -546,6 +573,8 @@ export class GameState {
     this.applyAuraDots(m);
     this.applyBindCurseAuras(m);
     this.applyLightAuras(m);
+    this.applyFireDamage(m);
+    this.applyBlueflareDamage(m);
     this.applyDotDamage(m);
     this.applyMutivargZones(m);
     this.applyThunderBlessing(m);
@@ -742,6 +771,38 @@ export class GameState {
       if (mover.alive) applyStun(ctx, mover, { duration: 1, type: 'movement' });
       this.log(`${mover.name}'s destination is nailed by the Needlepoint Domain.`);
     }
+    for (const orb of this.redOrbs) {
+      if (dist(mover.pos, orb) > orb.radius) continue;
+      const owner = this.mages[orb.ownerIndex];
+      if (!owner?.alive) continue;
+      const ctx = this.effectContext(owner, mover, mover.pos);
+      dealDamage(ctx, mover, dmg(this.rng.roll('1d3').total, 'typeless', 'physical'), {
+        canMiss: false,
+        trueDamage: true,
+      });
+      if (mover.alive) {
+        applyDebuff(ctx, mover, {
+          name: 'Orb Static',
+          key: 'debuff:red-orb-slow',
+          duration: 2,
+          mods: { moveRange: -Math.round(MOVE_RANGE * 0.5) },
+        });
+      }
+      this.log(`${mover.name} is zapped inside the red orb.`);
+    }
+  }
+
+  addRedOrb(at: Vec2, owner: Mage): void {
+    const ownerIndex = this.mages.indexOf(owner);
+    this.redOrbs = this.redOrbs.filter((orb) => orb.ownerIndex !== ownerIndex);
+    this.redOrbs.push({
+      id: this.nextId++,
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y)),
+      radius: 3 * RANGE_UNIT,
+      ownerIndex,
+    });
+    this.log(`${owner.name} forms a crackling red orb.`);
   }
 
   /** Establish or refresh a battlefield-wide Hexcraft law without stacking it. */
@@ -1090,6 +1151,7 @@ export class GameState {
     );
     if (mine.length === 0) return;
     const anchor = owner.pos;
+    const moveStep = SCARAB.moveStep * (owner.redSummonHaste ? 2 : 1);
     const enemies = this.mages.filter((g) => g.team !== owner.team && g.alive);
 
     // How many scarabs already hound each enemy (for the per-enemy cap).
@@ -1124,7 +1186,7 @@ export class GameState {
         // Bite, then fly back this same turn — reaching (and perching on) the
         // summoner in one go when close enough.
         s.target = null;
-        this.creepScarab(s, anchor, SCARAB.moveStep, anchor);
+        this.creepScarab(s, anchor, moveStep, anchor);
         if (dist({ x: s.x, y: s.y }, anchor) <= SCARAB.attachDist) {
           this.healScarabOwner(s, owner);
           s.state = 'resting';
@@ -1136,7 +1198,7 @@ export class GameState {
 
       if (s.state === 'returning') {
         // Still crossing open ground on the way home.
-        this.creepScarab(s, anchor, SCARAB.moveStep, anchor);
+        this.creepScarab(s, anchor, moveStep, anchor);
         if (dist({ x: s.x, y: s.y }, anchor) <= SCARAB.attachDist) {
           this.healScarabOwner(s, owner);
           s.state = 'resting';
@@ -1158,11 +1220,11 @@ export class GameState {
       }
       if (!tgt) {
         // No enemy to hunt — settle back onto the summoner and wait.
-        this.creepScarab(s, anchor, SCARAB.moveStep, anchor);
+        this.creepScarab(s, anchor, moveStep, anchor);
         s.state = 'resting';
         continue;
       }
-      this.creepScarab(s, tgt.pos, SCARAB.moveStep, anchor);
+      this.creepScarab(s, tgt.pos, moveStep, anchor);
       if (dist({ x: s.x, y: s.y }, tgt.pos) <= SCARAB.attachDist) {
         s.state = 'attached';
       }
@@ -1325,6 +1387,148 @@ export class GameState {
       this.log(`${m.name} sears in the light for ${dealt}.`);
       this.vfxSink?.spellEffect?.(m, 'dot');
     }
+  }
+
+  /** Resolve Fire's threshold damage, spread, and stack decay at turn start. */
+  private applyFireDamage(m: Mage): void {
+    if (!m.alive) return;
+    const fire = m.statuses.find((s) => s.kind === 'fire') as FireStatus | undefined;
+    if (!fire || fire.stacks <= 0) return;
+    const owner = this.mages[fire.ownerIndex] ?? m;
+    const ctx = this.effectContext(owner, m, null);
+    const highFire = fire.stacks >= 4;
+    const spec = highFire ? '1d6' : '1d3';
+    this.log(`${m.name}'s Fire flares at ${fire.stacks} stacks.`);
+    dealDamage(ctx, m, dmg(this.rng.roll(spec).total, 'fire', 'physical'), {
+      canMiss: false,
+      noImpactFx: true,
+    });
+    this.vfxSink?.spellEffect?.(m, 'dot');
+    if (highFire) {
+      const nearby = this.mages.filter(
+        (other) => other !== m && other.alive && dist(other.pos, m.pos) <= 2 * RANGE_UNIT
+      );
+      for (const other of nearby) this.applyFireStacks(other, 1, owner);
+    }
+    fire.stacks -= highFire ? 2 : 1;
+    if (fire.stacks <= 0) {
+      m.statuses = m.statuses.filter((s) => s !== fire);
+      this.log(`Fire burns out on ${m.name}.`);
+    }
+  }
+
+  /** Apply Fire stacks, resolving every stack above six as an immediate detonation. */
+  applyFireStacks(target: Mage, count: number, owner: Mage): void {
+    if (!target.alive || count <= 0) return;
+    if (target.debuffImmune) {
+      this.log(`${target.name} is beyond affliction — Fire finds no purchase.`);
+      return;
+    }
+    let fire = target.statuses.find((s) => s.kind === 'fire') as FireStatus | undefined;
+    if (!fire) {
+      fire = {
+        key: 'fire',
+        name: 'Fire',
+        kind: 'fire',
+        duration: Infinity,
+        stacks: 0,
+        ownerIndex: this.mages.indexOf(owner),
+      };
+      target.statuses.push(fire);
+    }
+    fire.ownerIndex = this.mages.indexOf(owner);
+    for (let i = 0; i < count; i++) {
+      fire.stacks += 1;
+      if (fire.stacks <= 6) continue;
+      this.log(`${target.name}'s Fire overflows!`);
+      const ctx = this.effectContext(owner, target, null);
+      dealDamage(ctx, target, dmg(this.rng.roll('1d10').total, 'fire', 'physical'), {
+        canMiss: false,
+      });
+      fire.stacks = 5;
+      const nearbyEnemies = this.mages.filter(
+        (other) =>
+          other !== target &&
+          other.alive &&
+          other.team !== owner.team &&
+          dist(other.pos, target.pos) <= 2 * RANGE_UNIT
+      );
+      for (const other of nearbyEnemies) this.applyFireStacks(other, 1, owner);
+    }
+    this.log(`${target.name} has ${fire.stacks} Fire stack${fire.stacks === 1 ? '' : 's'}.`);
+  }
+
+  /** Blueflare mirrors Fire at half mental damage, with easier spread and slower decay. */
+  private applyBlueflareDamage(m: Mage): void {
+    if (!m.alive) return;
+    const flare = m.statuses.find((s) => s.kind === 'blueflare') as BlueflareStatus | undefined;
+    if (!flare || flare.stacks <= 0) return;
+    const owner = this.mages[flare.ownerIndex] ?? m;
+    const highFlare = flare.stacks >= 3;
+    const rolled = this.rng.roll(highFlare ? '1d6' : '1d3').total;
+    const amount = Math.max(1, Math.ceil(rolled / 2));
+    this.log(`${m.name}'s Blueflare pulses at ${flare.stacks} stacks.`);
+    dealDamage(this.effectContext(owner, m, null), m, dmg(amount, 'fire', 'sanity'), {
+      canMiss: false,
+      noImpactFx: true,
+    });
+    this.vfxSink?.spellEffect?.(m, 'dot');
+    if (highFlare) {
+      for (const other of this.mages) {
+        if (other === m || !other.alive || dist(other.pos, m.pos) > 3 * RANGE_UNIT) continue;
+        this.applyBlueflareStacks(other, 1, owner);
+      }
+      flare.stacks -= 1;
+    } else {
+      if (flare.decayNext) flare.stacks -= 1;
+      flare.decayNext = !flare.decayNext;
+    }
+    if (flare.stacks <= 0) {
+      m.statuses = m.statuses.filter((status) => status !== flare);
+      this.log(`Blueflare fades from ${m.name}.`);
+    }
+  }
+
+  applyBlueflareStacks(target: Mage, count: number, owner: Mage): void {
+    if (!target.alive || count <= 0) return;
+    if (target.debuffImmune) {
+      this.log(`${target.name} is beyond affliction — Blueflare finds no purchase.`);
+      return;
+    }
+    let flare = target.statuses.find((s) => s.kind === 'blueflare') as BlueflareStatus | undefined;
+    if (!flare) {
+      flare = {
+        key: 'blueflare',
+        name: 'Blueflare',
+        kind: 'blueflare',
+        duration: Infinity,
+        stacks: 0,
+        ownerIndex: this.mages.indexOf(owner),
+        decayNext: false,
+      };
+      target.statuses.push(flare);
+    }
+    flare.ownerIndex = this.mages.indexOf(owner);
+    for (let i = 0; i < count; i++) {
+      flare.stacks += 1;
+      if (flare.stacks <= 6) continue;
+      const amount = Math.max(1, Math.ceil(this.rng.roll('1d10').total / 2));
+      this.log(`${target.name}'s Blueflare overflows!`);
+      dealDamage(this.effectContext(owner, target, null), target, dmg(amount, 'fire', 'sanity'), {
+        canMiss: false,
+      });
+      flare.stacks = 5;
+      for (const other of this.mages) {
+        if (
+          other === target ||
+          !other.alive ||
+          other.team === owner.team ||
+          dist(other.pos, target.pos) > 3 * RANGE_UNIT
+        ) continue;
+        this.applyBlueflareStacks(other, 1, owner);
+      }
+    }
+    this.log(`${target.name} has ${flare.stacks} Blueflare stack${flare.stacks === 1 ? '' : 's'}.`);
   }
 
   /**
@@ -1943,6 +2147,7 @@ export class GameState {
       log: (m) => this.log(m),
       vfx: this.vfxSink ?? null,
       crit: this.critThisCast,
+      spellRoll: this.spellRollThisCast || undefined,
       requestPoint: this.subTargeter
         ? (opts) => this.subTargeter!.requestPoint(source, opts)
         : undefined,
@@ -2488,6 +2693,7 @@ export class GameState {
     this.needlepointDomains = [];
     this.hexcraftGlobals = [];
     this.veilBindZones = [];
+    this.redOrbs = [];
     this.droppedItems = [];
     this.mutivargZones = [];
     this.extraTurnQueue = [];
@@ -2782,7 +2988,32 @@ export class GameState {
                 noImpactFx: true,
               })
             : 0;
-          if (dealt > 0) game.resolveVeilCorrodePierce(source, target, veilCorrodePiercePower);
+        if (w && !source.redFirstWeaponAttackUsed) {
+          source.redFirstWeaponAttackUsed = true;
+          if (dealt > 0 && source.profile.redPrimaryTier && target.alive) {
+            const bonus = game.rng.roll('1d3').total;
+            dealDamage(ctx, target, dmg(bonus, type, dmgClass), {
+              canMiss: false,
+              ignoreResist: !!w.ignoreResist,
+              ignoreArmor: !!w.ignoreArmor,
+              noImpactFx: true,
+            });
+            game.log(`${source.name}'s first weapon strike surges for ${bonus} additional damage.`);
+          }
+        }
+        if (dealt > 0) game.resolveVeilCorrodePierce(source, target, veilCorrodePiercePower);
+        if (
+          enchant === 'lightningEcho' &&
+          activeId === source.lightningEchoWeapon &&
+          dealt > 0
+        ) {
+          const fireEcho = Math.max(1, Math.round(dealt * 0.5));
+          const mentalEcho = Math.max(1, Math.round(dealt * 0.25));
+          game.log(`${source.name}'s weapon releases a Lightning Echo.`);
+          dealDamage(ctx, target, dmg(fireEcho, 'fire', 'physical'), { canMiss: false });
+          dealDamage(ctx, target, dmg(mentalEcho, 'heat', 'sanity'), { canMiss: false });
+          if (target.alive) game.applyBlueflareStacks(target, 1, source);
+        }
         // Curse Corrode enchant: every landed strike plants a fresh corrosion.
         if (enchant === 'curseCorrode' && dealt > 0 && target.alive) {
           applyDot(ctx, target, {

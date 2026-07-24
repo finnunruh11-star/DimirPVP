@@ -225,6 +225,89 @@ const deathRealm: ColorAbility = {
   },
 };
 
+// ---------------------------------------------------------------------------
+//  RED COLOR ABILITIES
+// ---------------------------------------------------------------------------
+
+const lightningBolt: ColorAbility = {
+  id: 'ability:lightning-bolt',
+  name: 'Lightning Bolt',
+  color: 'red',
+  words: [],
+  actionType: 'bonus',
+  range: R(15),
+  targeting: 'enemy',
+  chargeCost: 6,
+  manaCost: 7,
+  description:
+    'Deal 2d6 typeless magical damage that ignores armour, resistance, and immunity. If the dice total is below 6, roll one additional d6.',
+  visual: { preset: 'beam', color: 0xff3b24, size: 8 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    let amount = rollDice(ctx, '2d6', 'Lightning Bolt');
+    if (amount < 6) amount += rollDice(ctx, '1d6', 'Lightning Bolt surge');
+    dealDamage(ctx, ctx.target, dmg(amount, 'typeless', 'physical'), {
+      canMiss: false,
+      trueDamage: true,
+    });
+  },
+};
+
+const redOrb: ColorAbility = {
+  id: 'ability:red-orb',
+  name: 'Static Orb',
+  color: 'red',
+  words: [],
+  actionType: 'bonus',
+  range: R(10),
+  targeting: 'point',
+  chargeCost: 8,
+  manaCost: 5,
+  description:
+    'Create a permanent range-3 slowing orb. Any entity that moves inside it is zapped for 1d3 typeless damage.',
+  visual: { preset: 'conjure', color: 0xff5a36, size: 48 },
+  cast(ctx) {
+    if (ctx.targetPoint) ctx.game.addRedOrb(ctx.targetPoint, ctx.caster);
+  },
+};
+
+const redGenerator: ColorAbility = {
+  id: 'ability:red-generator',
+  name: 'Generator',
+  color: 'red',
+  words: [],
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'self',
+  chargeCost: 8,
+  manaCost: 5,
+  description: 'Gain one additional color charge at the start of every turn until combat ends.',
+  visual: { preset: 'conjure', color: 0xffd447, size: 44 },
+  cast(ctx) {
+    ctx.caster.redGenerator = true;
+    ctx.log(`${ctx.caster.name} anchors a permanent red generator.`);
+  },
+};
+
+const redSummonHaste: ColorAbility = {
+  id: 'ability:red-summon-haste',
+  name: 'Overdrive Host',
+  color: 'red',
+  words: [],
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'self',
+  chargeCost: 8,
+  manaCost: 5,
+  description: 'All of your existing and future summons gain double movement until combat ends.',
+  visual: { preset: 'nova', color: 0xff7040, size: 54 },
+  cast(ctx) {
+    ctx.caster.redSummonHaste = true;
+    for (const summon of ctx.game.summonsOf(ctx.caster)) summon.summonMoveMultiplier = 2;
+    ctx.log(`${ctx.caster.name} drives every summon into red overdrive.`);
+  },
+};
+
 export const COLOR_ABILITIES: ColorAbility[] = [
   bane,
   necrosis,
@@ -232,6 +315,10 @@ export const COLOR_ABILITIES: ColorAbility[] = [
   wall,
   whiteBane,
   deathRealm,
+  lightningBolt,
+  redOrb,
+  redGenerator,
+  redSummonHaste,
 ];
 
 /**
@@ -261,6 +348,10 @@ const ABILITIES_BY_COLOR: Record<ColorName, ColorAbilitySet> = {
   white: {
     first: whiteBane,
     second: { objects: deathRealm, life: deathRealm, hexcraft: deathRealm },
+  },
+  red: {
+    first: lightningBolt,
+    second: { objects: redOrb, life: redSummonHaste, hexcraft: redGenerator },
   },
 };
 

@@ -164,7 +164,17 @@ export class Mage {
 
   // ---- Objects-class enchants / sabotage / conjured gear --------------------
   /** Active basic-attack enchant from an Objects class spell, if any. */
-  weaponEnchant?: 'mindShadow' | 'curseCorrode';
+  weaponEnchant?: 'mindShadow' | 'curseCorrode' | 'lightningEcho';
+  /** Specific held weapon carrying Lightning Echo; switching weapons does not transfer it. */
+  lightningEchoWeapon?: ItemId;
+  /** Red boon: whether this combat's first weapon attack bonus has been spent. */
+  redFirstWeaponAttackUsed = false;
+  /** Red Hexcraft primary ability: generate one extra color charge each turn. */
+  redGenerator = false;
+  /** Red Life primary ability: existing and future summons move twice as fast. */
+  redSummonHaste = false;
+  /** Per-summon movement multiplier stamped by its owner. */
+  summonMoveMultiplier = 1;
   /** Items sabotaged by Bind Curse (Objects): bound in place, damage & stats halved. */
   sabotagedItems = new Set<ItemId>();
   /** Weak-Bind bonus-action charges granted by a Veil Bind (Objects) mantle. */
@@ -441,13 +451,8 @@ export class Mage {
     return MAX_ABILITY_CASTS_PER_COMBAT - (this.abilityCastsUsed[abilityId] ?? 0);
   }
 
-  /**
-   * Reset the per-combat pools. Call when a fight begins. Colour-charges are a
-   * per-combat resource: they reset to their starting value here (and then
-   * regenerate each turn — see {@link regen}), so they never carry between
-   * fights. Mana is NOT reset here (it is attrition across the whole run).
-   */
-  resetCombatReactions(): void {
+  /** Reset per-combat limits, optionally initializing colour charges. */
+  resetCombatReactions(resetColorCharges = true): void {
     this.wordSpellReactionsUsed = 0;
     this.weaponReactionsUsed = 0;
     this.abilityCastsUsed = {};
@@ -455,7 +460,59 @@ export class Mage {
     this.focusUsed = false;
     this.cleaveUsed = false;
     this.focusNextSpell = false;
-    this.colorCharges = START_COLOR_CHARGES;
+    this.redFirstWeaponAttackUsed = false;
+    this.redGenerator = false;
+    this.redSummonHaste = false;
+    if (resetColorCharges) {
+      this.colorCharges = START_COLOR_CHARGES + (this.profile.redSecondaryTier ? 5 : 0);
+    }
+  }
+
+  /** Clear combat-scoped state without restoring persistent Swamprun resources. */
+  resetForNewCombat(): void {
+    this.statuses = [];
+    this.actions = { ...ACTIONS_PER_TURN };
+
+    this.reactionUsedRecently = false;
+    this.lastAbilityManaPaid = 0;
+    this.movedThisTurn = false;
+    this.dealtDamageThisTurn = false;
+    this.distMovedThisTurn = 0;
+    this.momentumStacks = 0;
+    this.anchorStacks = 0;
+    this.rageBonus = 0;
+    this.greedStacks = 0;
+    this.greedArmed = false;
+    this.spellcastActive = false;
+    this.thunderStacks = 0;
+    this.hasCastThisTurn = false;
+    this.focusNextSpell = false;
+    this.eldritchDefend = false;
+    this.blockPending = false;
+    this.reloadTurns = 0;
+    this.bastionShieldForm = false;
+    this.shieldBashUsed = false;
+    this.firstBlackSpellUsed = false;
+    this.manaMilledOnce = false;
+    this.wallAngle = 0;
+    this.weaponEnchant = undefined;
+    this.lightningEchoWeapon = undefined;
+    this.sabotagedItems.clear();
+    this.bindMantleCharges = 0;
+    this.conjuredBowFiredThisTurn = false;
+    this.blackBellCondense = false;
+    this.twistStampSeq = -1;
+    this.lastAction = null;
+    this.drainLinkTo = undefined;
+    this.drainLinkTurns = 0;
+    this.reaperMarkedBy = undefined;
+    this.reaperDeletedBy = undefined;
+    this.damageBySourceThisCycle.clear();
+    this.bannedItemIds.clear();
+    this.bannedAbilityIds.clear();
+    this.unarmedBanned = false;
+    this.resetCombatReactions(false);
+    this.resetDodges();
   }
 
   /** How many Leaps this mage has left this combat. */
@@ -519,6 +576,7 @@ export class Mage {
       const wallUncast = (this.abilityCastsUsed['ability:wall'] ?? 0) === 0;
       amount = 1 + (wallUncast ? 2 : 0);
     }
+    if (this.redGenerator) amount += 1;
     this.gainColorCharges(amount);
     this.reactionUsedRecently = false;
   }
@@ -622,7 +680,8 @@ export class Mage {
       this.intrinsicMoveUnits != null
         ? this.intrinsicMoveUnits * RANGE_UNIT
         : MOVE_RANGE * (1 + this.effectiveDex() / 100);
-    let px = Math.round(base * this.equipMoveMult() * this.thunderMoveMult());
+    let px = Math.round(base * this.equipMoveMult() * this.thunderMoveMult() * this.summonMoveMultiplier);
+    if (this.profile.redPrimaryTier) px += RANGE_UNIT;
     if (this.hasMomentumBoots()) px += this.momentumStacks * RANGE_UNIT;
     const slowed = px + this.modifier('moveRange');
     // Gaze Timez Bracelet: slow debuffs can never cut movement below the cap
@@ -735,11 +794,13 @@ export class Mage {
   effectiveInt(): number {
     // Blue boon (any blue in your identity) grants +2 Intellect.
     const blueBoon = this.profile.bluePrimaryTier ? 2 : 0;
+    const redPenalty = this.profile.redPrimaryTier ? 1 : 0;
     return (
       this.statInt +
       blueBoon +
       this.itemSum((d) => d.statMods?.int ?? 0) -
-      this.sabotageStatPenalty((d) => d.statMods?.int ?? 0)
+      this.sabotageStatPenalty((d) => d.statMods?.int ?? 0) -
+      redPenalty
     );
   }
 
@@ -1370,7 +1431,9 @@ export class Mage {
    */
   tickStatuses(): string[] {
     const log: string[] = [];
-    for (const s of this.statuses) s.duration -= 1;
+    for (const s of this.statuses) {
+      if (s.kind !== 'fire' && s.kind !== 'blueflare') s.duration -= 1;
+    }
     const expired = this.statuses.filter((s) => s.duration <= 0);
     for (const s of expired) log.push(`${s.name} fades from ${this.name}.`);
     this.statuses = this.statuses.filter((s) => s.duration > 0);

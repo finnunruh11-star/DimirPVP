@@ -1,7 +1,7 @@
 // =============================================================================
 //  SPELLS
 // -----------------------------------------------------------------------------
-//  Every 1- and 2-word combination is preset below. A spell maps a combination
+//  Every regular spell combination is preset below. A spell maps a combination
 //  of words to:
 //    - actionType : 'main' | 'bonus'
 //    - range      : pixels = abstract range × RANGE_UNIT (5 poor / 10 avg / 15 good)
@@ -13,17 +13,18 @@
 //    - visual     : a preset animation with your own colour / size / speed
 //    - cast(ctx)  : the effect, built from the helpers in effects/effects.ts
 //
-//  3-word combos (and any 2-word combo not listed here) are intentionally left
-//  unimplemented for now and simply cannot be cast.
+//  Combinations may also have optional class-specific overrides in classSpells.
 // =============================================================================
 
 import { dmg } from '../core/Damage';
 import { CONE_DEGREES, FIELD, MOVE_RANGE, RANGE_UNIT } from '../config/constants';
 import {
   applyAuraDot,
+  applyBlueflareStacks,
   applyControl,
   applyDebuff,
   applyDot,
+  applyFireStacks,
   applyForget,
   applyInvisibility,
   applyOrderJudgment,
@@ -54,6 +55,7 @@ import { registerSpell } from './registry';
 import type { Mage } from '../core/Mage';
 import type { EffectContext } from '../effects/effects';
 import type { DotStatus } from '../core/Status';
+import type { Vec2 } from '../core/utils';
 
 /** Convert an abstract range number (5 / 10 / 15) to pixels. */
 const R = (units: number): number => units * RANGE_UNIT;
@@ -70,6 +72,52 @@ function enemyNear(ctx: EffectContext, at: { x: number; y: number }, radius: num
     return da - db;
   });
   return foes[0];
+}
+
+interface TrailSegment {
+  from: Vec2;
+  to: Vec2;
+}
+
+/** Kept d20 plus the modifiers represented by assigned INT and remaining Luck. */
+function lightningPower(ctx: EffectContext): number {
+  const natural = ctx.spellRoll ?? 1;
+  const intellect = Math.max(0, ctx.caster.statInt - 1);
+  const luck = Math.max(0, ctx.caster.luck - 1);
+  const power = natural + intellect + luck;
+  ctx.log(`Lightning power: ${natural} + ${intellect} INT + ${luck} Luck = ${power}.`);
+  return power;
+}
+
+function pointSegmentDistance(point: Vec2, segment: TrailSegment): number {
+  const dx = segment.to.x - segment.from.x;
+  const dy = segment.to.y - segment.from.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq <= 0.001) return Math.hypot(point.x - segment.from.x, point.y - segment.from.y);
+  const t = Math.max(
+    0,
+    Math.min(1, ((point.x - segment.from.x) * dx + (point.y - segment.from.y) * dy) / lengthSq)
+  );
+  return Math.hypot(point.x - (segment.from.x + dx * t), point.y - (segment.from.y + dy * t));
+}
+
+/** First point beyond the tiny launch grace that touches any existing red trail. */
+function firstTrailCollision(from: Vec2, to: Vec2, trail: readonly TrailSegment[]): Vec2 | null {
+  if (trail.length === 0) return null;
+  const length = Math.hypot(to.x - from.x, to.y - from.y);
+  const startGrace = 16;
+  if (length <= startGrace) return null;
+  const steps = Math.ceil(length / 4);
+  for (let i = Math.floor((startGrace / length) * steps) + 1; i <= steps; i++) {
+    const t = i / steps;
+    const point = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+    if (trail.some((segment) => pointSegmentDistance(point, segment) <= 4)) return point;
+  }
+  return null;
+}
+
+function segmentHitsMage(segment: TrailSegment, mage: Mage): boolean {
+  return pointSegmentDistance(mage.pos, segment) <= mage.bodyRadius();
 }
 
 /**
@@ -943,8 +991,631 @@ registerSpell({
 });
 
 // ===========================================================================
-//  KAT EASTER-EGG SPELLS   (words: Corrode / Curse / Shadow / Drain)
+//  KAT EASTER-EGG SPELLS   (words: Corrode / Curse / Shadow / Drain / Pain)
 // ===========================================================================
+
+registerSpell({
+  name: 'Pain',
+  words: ['pain'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 7,
+  description: 'Deal 1d4 mental damage to one enemy (range 15).',
+  visual: { preset: 'beam', color: 0xe06b9f, size: 6, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d4', 'Pain'), 'shadow', 'sanity'));
+  },
+});
+
+registerSpell({
+  name: 'Corrode Pain',
+  words: ['corrode', 'pain'],
+  actionType: 'main',
+  range: R(10),
+  targeting: 'enemy',
+  dc: 11,
+  description: 'Deal 1d6 corrosive health damage and 1d4 mental damage to one enemy (range 10).',
+  visual: { preset: 'projectile', color: 0xc68b73, size: 10, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Corrode Pain'), 'corrosive', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d4', 'Corrode Pain'), 'shadow', 'sanity'));
+  },
+});
+
+registerSpell({
+  name: 'Shadow Pain',
+  words: ['shadow', 'pain'],
+  actionType: 'main',
+  range: R(15),
+  bonusRangeInOwnShadow: R(99),
+  targeting: 'enemy',
+  dc: 11,
+  description: 'Deal 2d3 mental damage (range 15). Shadow pools amplify the damage, and targets in your shadows can be hit from anywhere.',
+  visual: { preset: 'beam', color: 0xb66fd1, size: 7, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d3', 'Shadow Pain'), 'shadow', 'sanity'));
+  },
+});
+
+registerSpell({
+  name: 'Curse Pain',
+  words: ['curse', 'pain'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 11,
+  description: 'Inflict 1d4 mental damage at the start of each of the target\'s next 4 turns (range 15).',
+  visual: { preset: 'beam', color: 0xf07b8c, size: 6, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Pain Curse',
+      duration: 4,
+      damage: dmg(2, 'shadow', 'sanity'),
+      damageSpec: '1d4',
+    });
+  },
+});
+
+registerSpell({
+  name: 'Drain Pain',
+  words: ['drain', 'pain'],
+  actionType: 'main',
+  range: R(10),
+  targeting: 'enemy',
+  dc: 11,
+  description: 'Deal 1d6 corrosive health damage and 1d4 mental damage. Heal health for corrosive damage dealt and sanity for mental damage dealt.',
+  visual: { preset: 'projectile', color: 0x8fa88f, size: 11, speed: 1.4 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const healthDamage = dealDamage(
+      ctx,
+      ctx.target,
+      dmg(rollDice(ctx, '1d6', 'Drain Pain'), 'corrosive', 'physical')
+    );
+    if (healthDamage > 0 && ctx.caster.alive) heal(ctx, ctx.caster, healthDamage, 'hp');
+    const mentalDamage = dealDamage(
+      ctx,
+      ctx.target,
+      dmg(rollDice(ctx, '1d4', 'Drain Pain'), 'shadow', 'sanity')
+    );
+    if (mentalDamage > 0 && ctx.caster.alive) heal(ctx, ctx.caster, mentalDamage, 'sanity');
+  },
+});
+
+// ===========================================================================
+//  SNIFF EASTER-EGG SPELLS   (Pierce / Mind / Veil / Fire / Lightning)
+// ===========================================================================
+
+registerSpell({
+  name: 'Fire',
+  words: ['fire'],
+  actionType: 'bonus',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 7,
+  description: 'Apply 1 stack of Fire to one enemy (range 15).',
+  visual: { preset: 'projectile', color: 0xff5a36, size: 10, speed: 1.4 },
+  cast(ctx) {
+    if (ctx.target) applyFireStacks(ctx, ctx.target, 1);
+  },
+});
+
+registerSpell({
+  name: 'Lightning',
+  words: ['lightning'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 8,
+  description: 'Strike one enemy for 1d6 plus 1 damage per 6 Lightning power (range 15).',
+  visual: { preset: 'beam', color: 0xffe45c, size: 7, speed: 1.7 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const power = lightningPower(ctx);
+    const amount = rollDice(ctx, '1d6', 'Lightning') + Math.floor(power / 6);
+    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+  },
+});
+
+registerSpell({
+  name: 'Fire Mind',
+  words: ['fire', 'mind'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 11,
+  description: 'Apply 2 stacks of Blueflare, a spreading mental flame with slower decay (range 15).',
+  visual: { preset: 'beam', color: 0x56bfff, size: 8, speed: 1.3 },
+  cast(ctx) {
+    if (ctx.target) applyBlueflareStacks(ctx, ctx.target, 2);
+  },
+});
+
+registerSpell({
+  name: 'Fire Lightning',
+  words: ['fire', 'lightning'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 11,
+  description:
+    'Deal 1d6 plus 1 damage per 5 Lightning power and apply up to 3 Fire based on that power (range 15).',
+  visual: { preset: 'beam', color: 0xff9d36, size: 10, speed: 1.6 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const power = lightningPower(ctx);
+    const amount = rollDice(ctx, '1d6', 'Fire Lightning') + Math.floor(power / 5);
+    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    if (ctx.target.alive) applyFireStacks(ctx, ctx.target, Math.min(3, 1 + Math.floor(power / 10)));
+  },
+});
+
+registerSpell({
+  name: 'Fire Veil',
+  words: ['fire', 'veil'],
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'self',
+  dc: 10,
+  reaction: true,
+  description: 'Gain a half veil for 2 turns and apply 1 Fire to nearby enemies within range 2.',
+  visual: { preset: 'nova', color: 0xff6f52, size: R(2), speed: 1.4 },
+  cast(ctx) {
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+    for (const target of ctx.game.magesInRadius(ctx.caster.pos, R(2), ctx.caster)) {
+      if (target.team !== ctx.caster.team) applyFireStacks(ctx, target, 1);
+    }
+  },
+});
+
+registerSpell({
+  name: 'Lightning Mind',
+  words: ['lightning', 'mind'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 11,
+  description:
+    'Deal 1d6 plus 1 sanity damage per 6 Lightning power, then apply 1 Blueflare (range 15).',
+  visual: { preset: 'beam', color: 0x79bfff, size: 9, speed: 1.7 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const power = lightningPower(ctx);
+    const amount = rollDice(ctx, '1d6', 'Lightning Mind') + Math.floor(power / 6);
+    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'sanity'));
+    if (ctx.target.alive) applyBlueflareStacks(ctx, ctx.target, 1);
+  },
+});
+
+registerSpell({
+  name: 'Lightning Veil',
+  words: ['lightning', 'veil'],
+  actionType: 'bonus',
+  range: R(20),
+  targeting: 'point',
+  dc: 11,
+  description:
+    'Blink up to your Lightning power in range (critical doubles it), then gain a half veil for 1 turn per 10 power.',
+  visual: { preset: 'burst', color: 0xffef8a, size: 30, speed: 1.8 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const power = lightningPower(ctx);
+    const distance = R(Math.min(20, power * (ctx.crit ? 2 : 1)));
+    blinkstep(ctx, ctx.caster, { toPoint: ctx.targetPoint, distance });
+    applyInvisibility(ctx, ctx.caster, {
+      duration: Math.max(1, Math.ceil(power / 10)),
+      mode: 'partial',
+    });
+  },
+});
+
+registerSpell({
+  name: 'Fire Pierce',
+  words: ['fire', 'pierce'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 11,
+  description:
+    'At over 7.5 range, dash 6 and apply 2 Fire. At 6.5–7.5, dash 7, explode for 2d4 Fire in range 2, and apply 2 Fire. Below 6.5, dash to the target and deal 1d6 Fire.',
+  visual: { preset: 'projectile', color: 0xff6a3d, size: 11, speed: 1.5 },
+  cast(ctx) {
+    const target = ctx.target;
+    if (!target) return;
+    const units = Math.hypot(target.x - ctx.caster.x, target.y - ctx.caster.y) / RANGE_UNIT;
+    if (units > 7.5) {
+      dash(ctx, ctx.caster, { toPoint: target.pos, distance: R(6) });
+      applyFireStacks(ctx, target, 2);
+      return;
+    }
+    if (units >= 6.5) {
+      dash(ctx, ctx.caster, { toPoint: target.pos, distance: R(7) });
+      const explosion = rollDice(ctx, '2d4', 'Fire Pierce explosion');
+      for (const entity of ctx.game.magesInRadius(target.pos, R(2))) {
+        dealDamage(ctx, entity, dmg(explosion, 'fire', 'physical'), {
+          canMiss: false,
+          aoe: true,
+        });
+      }
+      applyFireStacks(ctx, target, 2);
+      return;
+    }
+    dash(ctx, ctx.caster, { toPoint: target.pos, distance: R(units) });
+    dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Fire Pierce'), 'fire', 'physical'), {
+      canMiss: false,
+    });
+  },
+});
+
+registerSpell({
+  name: 'Lightning Pierce',
+  words: ['lightning', 'pierce'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 12,
+  description:
+    'Use the modified cast roll as range (doubled on a critical). Teleport-dash to each random ally or enemy in range at most once and deal 2d6 Fire, losing 1 range each jump. Every jump has a 1/roll misfire chance that deals 2d4 Fire to you and ends the chain.',
+  visual: { preset: 'nova', color: 0xffe45c, size: 70, speed: 1.4 },
+  async cast(ctx) {
+    const power = lightningPower(ctx);
+    let range = R(power * (ctx.crit ? 2 : 1));
+    const visited = new Set<Mage>();
+    while (range >= R(1) && ctx.caster.alive) {
+      const candidates = ctx.game.mages.filter(
+        (entity) =>
+          entity !== ctx.caster &&
+          entity.alive &&
+          !visited.has(entity) &&
+          Math.hypot(entity.x - ctx.caster.x, entity.y - ctx.caster.y) <= range
+      );
+      if (candidates.length === 0) break;
+      if (ctx.rng.chance(1 / Math.max(1, power))) {
+        ctx.log(`${ctx.caster.name}'s Lightning Pierce misfires!`);
+        dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '2d4', 'Lightning misfire'), 'fire', 'physical'), {
+          canMiss: false,
+        });
+        break;
+      }
+      const target = ctx.rng.pick(candidates);
+      visited.add(target);
+      const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
+      blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
+      await bolt;
+      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Pierce'), 'fire', 'physical'), {
+        canMiss: false,
+      });
+      range -= R(1);
+    }
+  },
+});
+
+registerSpell({
+  name: 'Fire Lightning Mind',
+  words: ['fire', 'lightning', 'mind'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Deal roll-scaled Fire to health and sanity, then apply 2–4 Blueflare based on Lightning power (range 15).',
+  visual: { preset: 'beam', color: 0x6caeff, size: 13, speed: 1.6 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const power = lightningPower(ctx);
+    const bonus = Math.floor(power / 6);
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Lightning Mind') + bonus, 'fire', 'physical'));
+    if (!ctx.target.alive) return;
+    dealDamage(
+      ctx,
+      ctx.target,
+      dmg(rollDice(ctx, '1d6', 'Fire Lightning Mind sanity') + bonus, 'fire', 'sanity')
+    );
+    if (ctx.target.alive) {
+      applyBlueflareStacks(ctx, ctx.target, Math.min(4, 2 + Math.floor(power / 12)));
+    }
+  },
+});
+
+registerSpell({
+  name: 'Fire Lightning Veil',
+  words: ['fire', 'lightning', 'veil'],
+  actionType: 'main',
+  range: R(20),
+  targeting: 'point',
+  dc: 14,
+  description:
+    'Apply 2 Fire to enemies within range 2 of your departure, blink by Lightning power, repeat at arrival, and become invisible.',
+  visual: { preset: 'burst', color: 0xff8b45, size: R(2), speed: 1.7 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const power = lightningPower(ctx);
+    const origin = { ...ctx.caster.pos };
+    for (const target of ctx.game.magesInRadius(origin, R(2), ctx.caster)) {
+      if (target.team !== ctx.caster.team) applyFireStacks(ctx, target, 2);
+    }
+    blinkstep(ctx, ctx.caster, {
+      toPoint: ctx.targetPoint,
+      distance: R(Math.min(20, power * (ctx.crit ? 2 : 1))),
+    });
+    for (const target of ctx.game.magesInRadius(ctx.caster.pos, R(2), ctx.caster)) {
+      if (target.team !== ctx.caster.team) applyFireStacks(ctx, target, 2);
+    }
+    applyInvisibility(ctx, ctx.caster, {
+      duration: Math.max(1, Math.ceil(power / 12)),
+      mode: 'full',
+    });
+  },
+});
+
+registerSpell({
+  name: 'Fire Mind Pierce',
+  words: ['fire', 'mind', 'pierce'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Dash up to range 10 toward an enemy, deal 1d6 Fire to health and sanity, then apply 2 Blueflare.',
+  visual: { preset: 'projectile', color: 0xff6680, size: 13, speed: 1.7 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dash(ctx, ctx.caster, { toPoint: ctx.target.pos, distance: R(10) });
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Mind Pierce'), 'fire', 'physical'), {
+      canMiss: false,
+    });
+    if (!ctx.target.alive) return;
+    dealDamage(
+      ctx,
+      ctx.target,
+      dmg(rollDice(ctx, '1d6', 'Fire Mind Pierce sanity'), 'fire', 'sanity'),
+      { canMiss: false }
+    );
+    if (ctx.target.alive) applyBlueflareStacks(ctx, ctx.target, 2);
+  },
+});
+
+registerSpell({
+  name: 'Fire Mind Veil',
+  words: ['fire', 'mind', 'veil'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description: 'Apply 3 Blueflare to an enemy and become fully invisible for 2 turns (range 15).',
+  visual: { preset: 'beam', color: 0xb57eff, size: 11, speed: 1.5 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyBlueflareStacks(ctx, ctx.target, 3);
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+  },
+});
+
+registerSpell({
+  name: 'Fire Veil Pierce',
+  words: ['fire', 'veil', 'pierce'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Dash up to range 12 toward an enemy, deal 2d6 Fire, apply 2 Fire, and become fully invisible for 2 turns.',
+  visual: { preset: 'projectile', color: 0xff8060, size: 14, speed: 1.8 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dash(ctx, ctx.caster, { toPoint: ctx.target.pos, distance: R(12) });
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Fire Veil Pierce'), 'fire', 'physical'), {
+      canMiss: false,
+    });
+    if (ctx.target.alive) applyFireStacks(ctx, ctx.target, 2);
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+  },
+});
+
+registerSpell({
+  name: 'Lightning Mind Pierce',
+  words: ['lightning', 'mind', 'pierce'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 14,
+  description:
+    'Chain through random unvisited allies or enemies within Lightning-power range. Each jump deals 1d6 Pierce, 1d6 sanity, and applies 1 Blueflare; range falls by 2 each jump.',
+  visual: { preset: 'nova', color: 0x65b8ff, size: 76, speed: 1.6 },
+  async cast(ctx) {
+    const power = lightningPower(ctx);
+    let range = R(power * (ctx.crit ? 2 : 1));
+    const visited = new Set<Mage>();
+    while (range >= R(1) && ctx.caster.alive) {
+      const candidates = ctx.game.mages.filter(
+        (target) =>
+          target !== ctx.caster &&
+          target.alive &&
+          !visited.has(target) &&
+          Math.hypot(target.x - ctx.caster.x, target.y - ctx.caster.y) <= range
+      );
+      if (candidates.length === 0) break;
+      const target = ctx.rng.pick(candidates);
+      visited.add(target);
+      const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
+      blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
+      await bolt;
+      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce'), 'pierce', 'physical'), {
+        canMiss: false,
+      });
+      if (target.alive) {
+        dealDamage(
+          ctx,
+          target,
+          dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce sanity'), 'fire', 'sanity'),
+          { canMiss: false }
+        );
+      }
+      if (target.alive) applyBlueflareStacks(ctx, target, 1);
+      range -= R(2);
+    }
+  },
+});
+
+registerSpell({
+  name: 'Lightning Mind Veil',
+  words: ['lightning', 'mind', 'veil'],
+  actionType: 'main',
+  range: R(20),
+  targeting: 'point',
+  dc: 14,
+  description:
+    'Apply 1 Blueflare to enemies within range 3 of your departure, blink by Lightning power, repeat at arrival, and become invisible.',
+  visual: { preset: 'burst', color: 0x8fa7ff, size: R(3), speed: 1.7 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const power = lightningPower(ctx);
+    const origin = { ...ctx.caster.pos };
+    for (const target of ctx.game.magesInRadius(origin, R(3), ctx.caster)) {
+      if (target.team !== ctx.caster.team) applyBlueflareStacks(ctx, target, 1);
+    }
+    blinkstep(ctx, ctx.caster, {
+      toPoint: ctx.targetPoint,
+      distance: R(Math.min(20, power * (ctx.crit ? 2 : 1))),
+    });
+    for (const target of ctx.game.magesInRadius(ctx.caster.pos, R(3), ctx.caster)) {
+      if (target.team !== ctx.caster.team) applyBlueflareStacks(ctx, target, 1);
+    }
+    applyInvisibility(ctx, ctx.caster, {
+      duration: Math.max(1, Math.ceil(power / 8)),
+      mode: 'full',
+    });
+  },
+});
+
+registerSpell({
+  name: 'Lightning Veil Pierce',
+  words: ['lightning', 'veil', 'pierce'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 14,
+  description:
+    'A stronger Lightning Pierce: repeatedly chain into random allies or enemies with 5 additional range and no misfire, dealing 2d6 Fire each hit. The same mage can be hit any number of times. Then roll d6, dash that far, and become invisible for 6 minus the roll turns.',
+  visual: { preset: 'nova', color: 0xffc95c, size: 78, speed: 1.5 },
+  async cast(ctx) {
+    const power = lightningPower(ctx);
+    let range = R((power + 5) * (ctx.crit ? 2 : 1));
+    while (range >= R(1) && ctx.caster.alive) {
+      const candidates = ctx.game.mages.filter(
+        (entity) =>
+          entity !== ctx.caster &&
+          entity.alive &&
+          Math.hypot(entity.x - ctx.caster.x, entity.y - ctx.caster.y) <= range
+      );
+      if (candidates.length === 0) break;
+      const target = ctx.rng.pick(candidates);
+      const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
+      blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
+      await bolt;
+      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Veil Pierce'), 'fire', 'physical'), {
+        canMiss: false,
+      });
+      range -= R(1);
+    }
+    if (!ctx.caster.alive) return;
+    const finalRoll = rollDice(ctx, '1d6', 'Lightning Veil Pierce escape');
+    const dashRange = R(finalRoll * (ctx.crit ? 2 : 1));
+    const destination = ctx.requestPoint
+      ? await ctx.requestPoint({
+          maxRange: dashRange,
+          origin: ctx.caster.pos,
+          prompt: `Lightning Veil Pierce — dash ${finalRoll}${ctx.crit ? ' × 2' : ''}`,
+        })
+      : null;
+    if (destination) dash(ctx, ctx.caster, { toPoint: destination, distance: dashRange });
+    const invisibilityTurns = 6 - finalRoll;
+    if (invisibilityTurns > 0) {
+      applyInvisibility({ ...ctx, crit: false }, ctx.caster, {
+        duration: invisibilityTurns,
+        mode: 'full',
+      });
+    }
+  },
+});
+
+registerSpell({
+  name: 'Lightning Fire Pierce',
+  words: ['lightning', 'fire', 'pierce'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 15,
+  description:
+    'Dash roll/3 times, starting at roll/3 range and losing 1 range each dash (critical doubles the starting range and damage). Choose each direction, then roll d6 accuracy with up to 30° error. The animated lightning trail deals 4d6 Fire whenever crossed; touching your own earlier trail stops you there and deals 4d6 Fire to you.',
+  visual: { preset: 'nova', color: 0xff3d24, size: 80, speed: 1.5 },
+  async cast(ctx) {
+    const power = lightningPower(ctx);
+    const dashCount = Math.max(1, Math.floor(power / 3));
+    const dashDistance = R((power / 3) * (ctx.crit ? 2 : 1));
+    const trail: TrailSegment[] = [];
+    try {
+      for (let step = 0; step < dashCount && ctx.caster.alive; step++) {
+        const currentDashDistance = Math.max(R(1), dashDistance - R(step));
+        let chosen: Vec2 | null;
+        if (ctx.requestPoint) {
+          chosen = await ctx.requestPoint({
+              maxRange: currentDashDistance,
+              origin: ctx.caster.pos,
+              prompt: `Lightning Fire Pierce — choose dash ${step + 1}/${dashCount} (range ${Math.round(currentDashDistance / RANGE_UNIT)})`,
+            });
+        } else {
+          const fallbackAngle = ctx.rng.float() * Math.PI * 2;
+          chosen = {
+            x: ctx.caster.x + Math.cos(fallbackAngle) * currentDashDistance,
+            y: ctx.caster.y + Math.sin(fallbackAngle) * currentDashDistance,
+          };
+        }
+        if (!chosen) break;
+        const accuracy = rollDice(ctx, '1d6', 'Lightning dash accuracy');
+        const maxError = [30, 24, 18, 12, 6, 0][accuracy - 1] * (Math.PI / 180);
+        const aimedAngle = Math.atan2(chosen.y - ctx.caster.y, chosen.x - ctx.caster.x);
+        const angle = aimedAngle + (ctx.rng.float() * 2 - 1) * maxError;
+        const from = { ...ctx.caster.pos };
+        const intended = {
+          x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, from.x + Math.cos(angle) * currentDashDistance)),
+          y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, from.y + Math.sin(angle) * currentDashDistance)),
+        };
+        const collision = firstTrailCollision(from, intended, trail);
+        dash(ctx, ctx.caster, {
+          toPoint: collision ?? intended,
+          distance: collision
+            ? Math.hypot(collision.x - from.x, collision.y - from.y)
+            : currentDashDistance,
+        });
+        const segment = { from, to: { ...ctx.caster.pos } };
+        trail.push(segment);
+        ctx.vfx?.lightningTrail?.(trail);
+        for (const entity of ctx.game.mages) {
+          if (entity === ctx.caster || !entity.alive || !segmentHitsMage(segment, entity)) continue;
+          dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail'), 'fire', 'physical'), {
+            canMiss: false,
+          });
+        }
+        if (collision) {
+          ctx.log(`${ctx.caster.name} crosses the red trail and the spell collapses!`);
+          dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '4d6', 'Red trail collision'), 'fire', 'physical'), {
+            canMiss: false,
+          });
+          break;
+        }
+        await ctx.resolveImpacts?.();
+      }
+    } finally {
+      ctx.vfx?.clearLightningTrail?.();
+    }
+  },
+});
 
 registerSpell({
   name: 'Drain',

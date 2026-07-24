@@ -186,6 +186,33 @@ registerClassSpellVariants({
   },
 });
 
+registerClassSpellVariants({
+  words: ['lightning', 'mind', 'fire'],
+  variants: {
+    objects: {
+      name: 'Lightning Mind Fire',
+      actionType: 'main',
+      range: R(10),
+      targeting: 'any',
+      dc: 14,
+      description:
+        'Enchant the target’s active weapon with Lightning Echo. Each landed hit repeats half its dealt damage as Fire and one quarter as mental damage.',
+      visual: { preset: 'conjure', color: 0xff6a3d, size: 42, speed: 1.2 },
+      cast(ctx) {
+        const target = ctx.target ?? ctx.caster;
+        const weaponId = target.activeWeaponId();
+        if (!weaponId) {
+          ctx.log(`${target.name} has no active weapon to receive the Lightning Echo.`);
+          return;
+        }
+        target.weaponEnchant = 'lightningEcho';
+        target.lightningEchoWeapon = weaponId;
+        ctx.log(`${target.name}'s weapon takes on a crackling Lightning Echo.`);
+      },
+    },
+  },
+});
+
 // ---------------------------------------------------------------------------
 //  DRAIN MIND · LIFE — summon a thought-eater that steals charged words.
 // ---------------------------------------------------------------------------

@@ -45,6 +45,8 @@ export interface VfxSink {
   hit?(mage: Mage): void;
   /** Animate a gradual dash for `mover`, which has just jumped from `from`. */
   dash?(mover: Mage, from: Vec2): void;
+  /** Animate a lightning arc between two points and resolve after one loop. */
+  lightningBolt?(from: Vec2, to: Vec2): Promise<void>;
   /** Play a one-shot hit-effect overlay on `mage` (spell impact / DoT / vanish). */
   spellEffect?(mage: Mage, kind: 'generic' | 'poison' | 'dot' | 'vanish'): void;
   /**
@@ -52,6 +54,10 @@ export interface VfxSink {
    * opening toward `angle`, half-arc `halfAngle`, length `range` (px).
    */
   wedge?(apex: Vec2, angle: number, halfAngle: number, range: number): void;
+  /** Draw or replace the animated trail for Lightning Fire Pierce. */
+  lightningTrail?(segments: readonly { from: Vec2; to: Vec2 }[]): void;
+  /** Clear the temporary Lightning Fire Pierce trail. */
+  clearLightningTrail?(): void;
 }
 
 /** Options for an interactive point sub-target requested mid-resolution. */
@@ -118,6 +124,8 @@ export interface EffectContext {
    * {@link critScale}). Absent for effects that never roll (movement, ticks).
    */
   crit?: boolean;
+  /** Kept natural d20 from this spell's success check, before stat modifiers. */
+  spellRoll?: number;
   /**
    * Ask the player (or AI) to pick an extra point mid-resolution. Absent in
    * headless logic, so always call it as `await ctx.requestPoint?.(...)`.
@@ -863,6 +871,24 @@ export function applyStackingDot(
   });
   ctx.game.syncCurseCorrodeSlow(target);
   ctx.log(`${target.name} is afflicted with ${opts.name}.`);
+}
+
+/** Apply one or more stacks of the dedicated Fire status. */
+export function applyFireStacks(
+  ctx: EffectContext,
+  target: Mage,
+  count = 1
+): void {
+  ctx.game.applyFireStacks(target, count, ctx.caster);
+}
+
+/** Apply one or more stacks of Blueflare, Fire's slower-decaying mental counterpart. */
+export function applyBlueflareStacks(
+  ctx: EffectContext,
+  target: Mage,
+  count = 1
+): void {
+  ctx.game.applyBlueflareStacks(target, count, ctx.caster);
 }
 
 /**

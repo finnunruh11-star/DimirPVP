@@ -31,9 +31,9 @@ export const START_SANITY = 20;
 // Mana powers word-spells and color abilities; color-charges power only color
 // abilities. Mana does NOT regenerate — it is a game of attrition, so you start
 // full and refill only via items or event effects (e.g. Rejuvenate). Color
-// charges DO regenerate each turn (by your primary colour) but reset to zero at
-// the start of every combat, so they never carry between fights. See Mage.regen
-// / Mage.resetCombatReactions / GameState.beginTurn.
+// charges DO regenerate each turn (by your primary colour). Swamprun carries
+// both pools between waves; a new match initializes colour charges through
+// Mage.resetCombatReactions. See Mage.regen / GameState.beginTurn.
 export const MANA_CAP = 24;
 export const COLOR_CHARGE_CAP = 12;
 export const START_MANA = MANA_CAP;
@@ -120,7 +120,7 @@ export const VEIL = {
 
 
 // How many of the 8 words a player picks for their loadout.
-export const LOADOUT_SIZE = 4;
+export const LOADOUT_SIZE = 5;
 // Max number of words that may be combined into a single spell.
 export const MAX_SPELL_WORDS = 3;
 
