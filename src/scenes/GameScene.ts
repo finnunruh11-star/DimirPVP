@@ -447,7 +447,7 @@ export class GameScene extends Phaser.Scene {
   // Swamprun (offline PvE co-op survival). Enabled when mode is 'swamprun'.
   private swamprun = false;
   private expedition = false;
-  private expeditionSilver = 0;
+  private expeditionGold = 0;
   private expeditionLevel = 1;
   private expeditionXp = 0;
   private expeditionPendingLevels = 0;
@@ -915,7 +915,7 @@ export class GameScene extends Phaser.Scene {
     this.swamprunWave = 0;
     this.swamprunGold = 0;
     this.swamprunArrowsOwned.clear();
-    this.expeditionSilver = 0;
+    this.expeditionGold = 0;
     this.expeditionLevel = 1;
     this.expeditionXp = 0;
     this.expeditionPendingLevels = 0;
@@ -1113,16 +1113,16 @@ export class GameScene extends Phaser.Scene {
     gold = Math.round(gold * 2) / 2; // keep clean halves
     if (this.expedition) {
       const kills = this.swamprunWaveEnemies.filter((mage) => !this.swamprunWispCopies.has(mage)).length;
-      const grossSilver = Math.round(gold * 10);
+      const grossGold = Math.ceil(gold);
       const shareRate = Math.min(0.8, this.expeditionPermanentRecruits.size * 0.2);
-      const netSilver = Math.round(grossSilver * (1 - shareRate));
-      const shares = grossSilver - netSilver;
-      this.expeditionSilver += netSilver;
+      const netGold = Math.round(grossGold * (1 - shareRate));
+      const shares = grossGold - netGold;
+      this.expeditionGold += netGold;
       this.swamprunWaveEnemies = [];
       const drops = tally.length ? ` — salvage: ${tally.join(', ')}` : '';
-      const shareText = shares > 0 ? ` (${shares}s paid to permanent recruits)` : '';
+      const shareText = shares > 0 ? ` (${shares}g paid to permanent recruits)` : '';
       this.gs.log(
-        `Wave ${this.swamprunWave} cleared! ${kills} XP earned. Loot: ${netSilver}s${shareText}${drops}. Purse: ${this.expeditionSilver}s.`
+        `Wave ${this.swamprunWave} cleared! ${kills} XP earned. Loot: ${netGold}g${shareText}${drops}. Purse: ${this.expeditionGold}g.`
       );
       this.updateWaveHud();
       return;
@@ -1134,7 +1134,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   private expeditionXpToNext(): number {
-    return this.expeditionLevel + 2;
+    const l = this.expeditionLevel;
+    if (l === 1) return 3;
+    return Math.ceil(l * l * 1.5 + l);
   }
 
   private addExpeditionXp(amount: number): void {
@@ -1151,25 +1153,38 @@ export class GameScene extends Phaser.Scene {
       const resolvedLevel = this.expeditionLevel - this.expeditionPendingLevels + 1;
       this.expeditionPendingLevels -= 1;
       const player = this.expeditionLeader();
-      await this.promptExpeditionStats(player, resolvedLevel);
-      await this.promptExpeditionWord(player, resolvedLevel);
+      const isMilestone = resolvedLevel % 5 === 0;
+      const isWordLevel = resolvedLevel % 2 === 0;
+      if (isMilestone) {
+        // Milestone (5, 10, 15…): 2 stats + a word.
+        await this.promptExpeditionStats(player, resolvedLevel, 2);
+        await this.promptExpeditionWord(player, resolvedLevel);
+      } else if (isWordLevel) {
+        // Even level: word only.
+        await this.promptExpeditionWord(player, resolvedLevel);
+      } else {
+        // Odd non-milestone: 1 stat only.
+        await this.promptExpeditionStats(player, resolvedLevel, 1);
+      }
       await this.promptExpeditionColorIdentity(player);
       this.gs.log(`${player.name} reaches level ${resolvedLevel}.`);
     }
   }
 
-  private promptExpeditionStats(player: Mage, level: number): Promise<void> {
+  private promptExpeditionStats(player: Mage, level: number, maxStats: number): Promise<void> {
     const previousMode = this.mode;
     this.mode = 'shop';
     const panel = this.add.container(0, 0).setDepth(110);
     const selected = new Set<StatKey>();
+    const statBtns: Phaser.GameObjects.Text[] = [];
     const cx = GAME_WIDTH / 2;
     const cy = GAME_HEIGHT / 2;
+    const subtitle = maxStats === 1 ? 'Raise one stat by 1' : `Raise up to ${maxStats} different stats by 1`;
     this.addModalChrome(panel, {
       width: 850,
       height: 470,
       title: `LEVEL ${level} — TRAINING`,
-      subtitle: 'Raise one or two different stats by 1',
+      subtitle,
       accent: UI.gold,
     });
     return new Promise((resolve) => {
@@ -1177,14 +1192,40 @@ export class GameScene extends Phaser.Scene {
         const x = cx + (index % 3 - 1) * 230;
         const y = cy - 65 + Math.floor(index / 3) * 95;
         const label = STAT_DEFS.find((def) => def.key === stat)?.name ?? stat;
-        this.swampShopButton(panel, x, y, label, '#9fb7ce', true, () => {
-          if (selected.has(stat)) selected.delete(stat);
-          else if (selected.size < 2) selected.add(stat);
+        const def = STAT_DEFS.find((d) => d.key === stat);
+        const btn = this.add
+          .text(x, y, `${label}\n${def?.blurb ?? ''}`, {
+            fontFamily: 'Trebuchet MS',
+            fontSize: '14px',
+            fontStyle: 'bold',
+            color: '#9fb7ce',
+            backgroundColor: '#111b29',
+            padding: { x: 16, y: 10 },
+            fixedWidth: 200,
+            fixedHeight: 64,
+            align: 'center',
+            wordWrap: { width: 168 },
+          })
+          .setOrigin(0.5)
+          .setDepth(111)
+          .setInteractive({ useHandCursor: true });
+        btn.on('pointerdown', () => {
+          if (selected.has(stat)) {
+            selected.delete(stat);
+            btn.setBackgroundColor('#111b29').setColor('#9fb7ce');
+          } else if (selected.size < maxStats) {
+            selected.add(stat);
+            btn.setBackgroundColor('#315f55').setColor('#9fe6a0');
+          }
         });
+        btn.on('pointerover', () => { if (!selected.has(stat)) btn.setBackgroundColor('#203149'); });
+        btn.on('pointerout', () => { if (!selected.has(stat)) btn.setBackgroundColor('#111b29'); });
+        statBtns.push(btn);
       });
-      this.swampShopButton(panel, cx, cy + 155, 'Confirm training', '#ffcf6b', true, () => {
+      this.swampShopButton(panel, cx, cy + 165, 'Confirm training', '#ffcf6b', true, () => {
         if (selected.size === 0) return;
         for (const stat of selected) player.gainStat(stat, 1);
+        for (const b of statBtns) b.destroy();
         panel.destroy();
         this.mode = previousMode;
         resolve();
@@ -1357,7 +1398,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.swamprun) return;
     const alive = this.gs.mages.filter((m) => m.team === 2 && m.alive).length;
     const text = this.expedition
-      ? `Expedition ${this.expeditionRetreating ? 'return' : 'depth'} ${this.swamprunWave}    Foes: ${alive}    Level ${this.expeditionLevel} (${this.expeditionXp}/${this.expeditionXpToNext()} XP)    Silver: ${this.expeditionSilver}s`
+      ? `Expedition ${this.expeditionRetreating ? 'return' : 'depth'} ${this.swamprunWave}    Foes: ${alive}    Level ${this.expeditionLevel} (${this.expeditionXp}/${this.expeditionXpToNext()} XP)    Gold: ${this.expeditionGold}g`
       : `Wave ${this.swamprunWave}    Foes left: ${alive}    Gold: ${this.swamprunGold}g`;
     if (!this.swamprunHudText) {
       this.swamprunHudText = this.add
@@ -1386,7 +1427,7 @@ export class GameScene extends Phaser.Scene {
       width: 760,
       height: 390,
       title: `DEPTH ${this.expeditionRunDepth} CLEARED`,
-      subtitle: `Purse ${this.expeditionSilver}s  •  Continue deeper or begin the return journey`,
+      subtitle: `Purse ${this.expeditionGold}g  •  Continue deeper or begin the return journey`,
       accent: UI.gold,
     });
     panel.add(
@@ -1448,7 +1489,7 @@ export class GameScene extends Phaser.Scene {
       width: 1180,
       height: 640,
       title: 'SWAMP TOWN',
-      subtitle: `Purse ${this.expeditionSilver}s  •  Fixed prices, no offers  •  Every item costs 2x`,
+      subtitle: `Purse ${this.expeditionGold}g  •  Fixed prices, no offers  •  Every item costs 2x`,
       accent: UI.green,
     });
     const tabs: { id: ExpeditionTownTab; label: string }[] = [
@@ -1549,8 +1590,8 @@ export class GameScene extends Phaser.Scene {
 
   private expeditionItemPrice(id: ItemId): number {
     const def = getItem(id);
-    const base = def.cost > 0 ? def.cost : SWAMP_PRICE[def.rarity] * 10;
-    return Math.max(2, Math.round(base * 2));
+    const baseGold = def.cost > 0 ? Math.round(def.cost / 10) : SWAMP_PRICE[def.rarity];
+    return Math.max(1, Math.round(baseGold * 2));
   }
 
   private drawExpeditionItems(panel: Phaser.GameObjects.Container, cx: number, cy: number): void {
@@ -1567,9 +1608,9 @@ export class GameScene extends Phaser.Scene {
       const x = cx - 475 + col * 325;
       const y = cy - 125 + row * 160;
       const price = this.expeditionItemPrice(def.id);
-      const enabled = this.expeditionSilver >= price;
+      const enabled = this.expeditionGold >= price;
       const card = this.add
-        .text(x, y, `${def.name}  •  ${price}s\n[${def.rarity}]  ${def.weight}kg\n${def.blurb}`, {
+        .text(x, y, `${def.name}  •  ${price}g\n[${def.rarity}]  ${def.weight}kg\n${def.blurb}`, {
           fontFamily: 'Trebuchet MS',
           fontSize: '12px',
           color: enabled ? RARITY_COLOR[def.rarity] : '#667080',
@@ -1606,11 +1647,11 @@ export class GameScene extends Phaser.Scene {
 
   private buyExpeditionItem(id: ItemId, buyer: Mage): void {
     const price = this.expeditionItemPrice(id);
-    if (this.expeditionSilver < price) return;
-    this.expeditionSilver -= price;
+    if (this.expeditionGold < price) return;
+    this.expeditionGold -= price;
     this.gs.grantItem(buyer, id);
     if (buyer.expeditionCompanion) this.equipExpeditionRecruitItem(buyer, id);
-    this.expeditionTownMessage = `Bought ${getItem(id).name} for ${buyer.name} (${price}s).`;
+    this.expeditionTownMessage = `Bought ${getItem(id).name} for ${buyer.name} (${price}g).`;
     this.redrawExpeditionTown();
   }
 
@@ -1651,17 +1692,17 @@ export class GameScene extends Phaser.Scene {
 
   private drawExpeditionGuild(panel: Phaser.GameObjects.Container, cx: number, cy: number): void {
     const definitions: { kind: ExpeditionCompanionKind; name: string; price: number; role: string }[] = [
-      { kind: 'dwarf', name: 'Dwarf Vanguard', price: 30, role: 'Heavy armor; hammer vs bodies, lantern vs spirits.' },
-      { kind: 'elf', name: 'Elf Ranger', price: 35, role: 'Burning arrows and three 3d3 heals each combat.' },
-      { kind: 'human', name: 'Human Arcanist', price: 40, role: 'Backline Bind/Veil/Twist/Stop support and counters.' },
+      { kind: 'dwarf', name: 'Dwarf Vanguard', price: 3, role: 'Heavy armor; hammer vs bodies, lantern vs spirits.' },
+      { kind: 'elf', name: 'Elf Ranger', price: 4, role: 'Burning arrows and three 3d3 heals each combat.' },
+      { kind: 'human', name: 'Human Arcanist', price: 5, role: 'Backline Bind/Veil/Twist/Stop support and counters.' },
     ];
-    this.swampShopButton(panel, cx, cy - 155, 'Rest party  •  5s', '#8fdfc8', this.expeditionSilver >= 5, () => {
-      if (this.expeditionSilver < 5) return;
-      this.expeditionSilver -= 5;
+    this.swampShopButton(panel, cx, cy - 155, 'Rest party  •  1g', '#8fdfc8', this.expeditionGold >= 1, () => {
+      if (this.expeditionGold < 1) return;
+      this.expeditionGold -= 1;
       for (const mage of this.gs.mages) {
         if (mage.team === 1 && mage.alive) mage.swamprunRest(this.gs.rng);
       }
-      this.expeditionTownMessage = 'The party rests for 5s and restores half its resources.';
+      this.expeditionTownMessage = 'The party rests for 1g and restores half its resources.';
       this.redrawExpeditionTown();
     });
     definitions.forEach((def, index) => {
@@ -1670,7 +1711,7 @@ export class GameScene extends Phaser.Scene {
       const oneRun = this.expeditionRunRecruits.has(def.kind);
       panel.add(
         this.add
-          .text(x - 145, cy - 80, `${def.name}\n${def.role}\nOne run ${def.price}s  •  Forever ${def.price * 3}s\nPermanent: 20% loot share`, {
+          .text(x - 145, cy - 80, `${def.name}\n${def.role}\nOne run ${def.price}g  •  Forever ${def.price * 3}g\nPermanent: 20% loot share`, {
             fontSize: '13px',
             color: permanent ? '#9fe6a0' : TEXT.body,
             backgroundColor: '#111b29',
@@ -1686,7 +1727,7 @@ export class GameScene extends Phaser.Scene {
         cy + 75,
         permanent ? 'Permanent' : oneRun ? 'Hired' : 'One run',
         '#9fb7ce',
-        !permanent && !oneRun && this.expeditionSilver >= def.price,
+        !permanent && !oneRun && this.expeditionGold >= def.price,
         () => this.recruitExpeditionCompanion(def.kind, false, def.price)
       );
       this.swampShopButton(
@@ -1695,17 +1736,17 @@ export class GameScene extends Phaser.Scene {
         cy + 75,
         'Forever',
         '#ffcf6b',
-        !permanent && this.expeditionSilver >= def.price * 3,
+        !permanent && this.expeditionGold >= def.price * 3,
         () => this.recruitExpeditionCompanion(def.kind, true, def.price * 3)
       );
     });
   }
 
   private recruitExpeditionCompanion(kind: ExpeditionCompanionKind, permanent: boolean, price: number): void {
-    if (this.expeditionSilver < price || this.expeditionPermanentRecruits.has(kind)) return;
+    if (this.expeditionGold < price || this.expeditionPermanentRecruits.has(kind)) return;
     const existing = this.expeditionCompanions.get(kind);
     if (!permanent && (existing || this.expeditionRunRecruits.has(kind))) return;
-    this.expeditionSilver -= price;
+    this.expeditionGold -= price;
     const companion = existing ?? this.createExpeditionCompanion(kind);
     companion.expeditionPermanent = permanent;
     if (permanent) {
