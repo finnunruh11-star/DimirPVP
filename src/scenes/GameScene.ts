@@ -3890,11 +3890,12 @@ export class GameScene extends Phaser.Scene {
     });
 
     // Dev cheat toggles (also clickable on the on-field panel).
-    kb.addCapture('F1,F2,F3,F4,BACKTICK');
+    kb.addCapture('F1,F2,F3,F4,F5,BACKTICK');
     kb.on('keydown-F1', () => this.toggleDev('autoSuccess'));
     kb.on('keydown-F2', () => this.toggleDev('infiniteMove'));
     kb.on('keydown-F3', () => this.toggleDev('infiniteActions'));
     kb.on('keydown-F4', () => this.toggleDev('aiPassive'));
+    kb.on('keydown-F5', () => this.toggleDev('skipDice'));
     kb.on('keydown-BACKTICK', () => this.devPanel.setVisible(!this.devPanel.visible));
 
     // Right-click opens the action menu, so suppress the browser context menu.
@@ -6899,7 +6900,7 @@ export class GameScene extends Phaser.Scene {
     const py = FIELD.y + 6;
     this.devPanel = this.add.container(px, py).setDepth(60);
     const bg = this.add
-      .rectangle(0, 0, 170, 117, UI.panel, 0.9)
+      .rectangle(0, 0, 170, 138, UI.panel, 0.9)
       .setOrigin(0, 0)
       .setStrokeStyle(1, UI.border);
     const title = this.add.text(8, 5, 'DEV MODE  (` to hide)', {
@@ -6912,6 +6913,7 @@ export class GameScene extends Phaser.Scene {
       { key: 'infiniteMove', label: 'Infinite move', hot: 'F2' },
       { key: 'infiniteActions', label: 'Infinite actions', hot: 'F3' },
       { key: 'aiPassive', label: 'AI passive', hot: 'F4' },
+      { key: 'skipDice', label: 'Skip dice', hot: 'F5' },
     ];
     this.devToggles = defs.map((d, i) => {
       const text = this.add
@@ -8941,6 +8943,11 @@ export class GameScene extends Phaser.Scene {
   private async playPendingDice(): Promise<void> {
     const queued = this.pendingDice;
     this.pendingDice = [];
+    // Skip-dice option: drop the rolling popup entirely (results already apply).
+    if (Dev.skipDice) {
+      this.dicePanel.setVisible(false);
+      return;
+    }
     for (const roll of queued) await this.playOneDice(roll);
   }
 
