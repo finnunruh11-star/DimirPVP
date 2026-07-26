@@ -914,6 +914,22 @@ registerSpell({
 });
 
 registerSpell({
+  name: 'Stop',
+  words: ['stop'],
+  actionType: 'main',
+  range: R(30),
+  targeting: 'enemy',
+  reaction: true,
+  counters: true,
+  description:
+    'Companion-only command magic. As a reaction, unconditionally cancel any action or effect it answers. On turn, stop one enemy for its next action.',
+  visual: { preset: 'burst', color: 0x9ee7ff, size: 52, speed: 1.8 },
+  cast(ctx) {
+    if (ctx.target) applyStun(ctx, ctx.target, { duration: 1, type: 'full' });
+  },
+});
+
+registerSpell({
   name: 'Twist Mind',
   words: ['twist', 'mind'],
   actionType: 'main',

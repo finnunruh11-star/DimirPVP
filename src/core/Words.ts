@@ -17,7 +17,8 @@ export type WordId =
   | 'slash'
   | 'pain'
   | 'fire'
-  | 'lightning';
+  | 'lightning'
+  | 'stop';
 
 export interface WordDef {
   id: WordId;
@@ -144,6 +145,14 @@ export const WORDS: Record<WordId, WordDef> = {
     color: 0xffe45c,
     blurb: 'Gambles on the cast roll.',
   },
+  stop: {
+    id: 'stop',
+    label: 'Stop',
+    grantsReaction: true,
+    charges: 4,
+    color: 0x9ee7ff,
+    blurb: 'Companion counter that stops anything.',
+  },
   // --- Secret words (GEN easter-egg loadout only; hidden from the menu grid) ---
   order: {
     id: 'order',
@@ -212,6 +221,7 @@ export const WORD_KIND: Record<WordId, WordKind> = {
   pain: 'noun',
   fire: 'verb',
   lightning: 'modifier',
+  stop: 'other',
   // Not yet classified (secret/white words); never form class spells for now.
   reality: 'other',
   twist: 'other',

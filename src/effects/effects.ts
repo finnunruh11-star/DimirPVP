@@ -30,7 +30,7 @@ import { Dev } from '../config/dev';
 /**
  * The "base" physical damage types a physically-immune (incorporeal) creature
  * ignores. Elemental/exotic physical-class damage (shadow, corrosive, fire,
- * heat, ...) still lands — immunity is to plain blows only, not all health hits.
+ * ...) still lands — immunity is to plain blows only, not all health hits.
  */
 const BASE_PHYSICAL_TYPES = new Set<DamageType>(['pierce', 'shatter', 'slashing', 'generic']);
 

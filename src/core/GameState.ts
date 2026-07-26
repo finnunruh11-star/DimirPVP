@@ -219,14 +219,15 @@ export class GameState {
    * peers agree. This runs on the seeded RNG, keeping every client in lockstep.
    */
   private rollInitiative(): void {
-    const scored = this.mages.map((m, i) => {
+    const scored = this.mages.flatMap((m, i) => {
+      if (m.isSummon) return [];
       const roll = this.rng.roll('1d20').total;
       const total = roll + m.effectiveDex();
-      return { i, total, red: m.profile.redPrimaryTier ? 1 : 0, tie: this.rng.roll('1d1000').total };
+      return [{ i, total, red: m.profile.redPrimaryTier ? 1 : 0, tie: this.rng.roll('1d1000').total }];
     });
     scored.sort((a, b) => b.red - a.red || b.total - a.total || b.tie - a.tie);
     this.initiativeOrder = scored.map((s) => s.i);
-    this.initiativeRolls = [];
+    this.initiativeRolls = this.mages.map(() => 0);
     for (const s of scored) this.initiativeRolls[s.i] = s.total;
     this.turnPtr = 0;
     this.currentIndex = this.initiativeOrder[0] ?? 0;
@@ -2130,6 +2131,11 @@ export class GameState {
     }
   }
 
+  companionHeal(source: Mage, target: Mage): void {
+    const ctx = this.effectContext(source, target, null);
+    heal(ctx, target, rollDice(ctx, '3d3', 'Elven Heal'));
+  }
+
   private effectContext(
     source: Mage,
     target: Mage | null,
@@ -2979,14 +2985,31 @@ export class GameState {
           source.statuses = source.statuses.filter((s) => s.kind !== 'invisibility');
           game.log(`${source.name} is revealed by their attack.`);
         }
-        const dealt =
-          amount > 0
-            ? dealDamage(ctx, target, dmg(amount, type, dmgClass), {
-                ignoreResist: !!w?.ignoreResist,
-                ignoreArmor: !!w?.ignoreArmor,
-                noImpactFx: true,
-              })
-            : 0;
+        let dealt = 0;
+        if (amount > 0 && source.expeditionCompanion === 'elf' && w?.usesArrows) {
+          const pierceAmount = Math.ceil(amount / 2);
+          const fireAmount = Math.floor(amount / 2);
+          dealt += dealDamage(ctx, target, dmg(pierceAmount, 'pierce', dmgClass), {
+            ignoreResist: !!w.ignoreResist,
+            ignoreArmor: !!w.ignoreArmor,
+            noImpactFx: true,
+          });
+          if (fireAmount > 0) {
+            dealt += dealDamage(ctx, target, dmg(fireAmount, 'fire', dmgClass), {
+              ignoreResist: !!w.ignoreResist,
+              ignoreArmor: !!w.ignoreArmor,
+              noImpactFx: true,
+            });
+          }
+          if (dealt > 0 && target.alive) game.applyFireStacks(target, 1, source);
+          game.log(`${source.name}'s burning arrow splits ${pierceAmount} pierce / ${fireAmount} fire.`);
+        } else if (amount > 0) {
+          dealt = dealDamage(ctx, target, dmg(amount, type, dmgClass), {
+            ignoreResist: !!w?.ignoreResist,
+            ignoreArmor: !!w?.ignoreArmor,
+            noImpactFx: true,
+          });
+        }
         if (w && !source.redFirstWeaponAttackUsed) {
           source.redFirstWeaponAttackUsed = true;
           if (dealt > 0 && source.profile.redPrimaryTier && target.alive) {
@@ -3135,7 +3158,7 @@ export class GameState {
       description: `${source.name} casts ${spell.name}${targetName}. ${spell.description}`,
       isStillValid: (game) => {
         if (!source.alive) return false;
-        if (spell.targeting === 'enemy' || spell.targeting === 'ally') {
+        if (spell.targeting === 'enemy' || spell.targeting === 'ally' || spell.targeting === 'any') {
           return !!target && game.isValidSpellTarget(spell, source, target);
         }
         return true;

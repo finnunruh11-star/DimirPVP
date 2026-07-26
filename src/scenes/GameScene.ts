@@ -392,6 +392,9 @@ interface SwampShopSlot {
   sold: boolean;
 }
 
+type ExpeditionCompanionKind = 'dwarf' | 'elf' | 'human';
+type ExpeditionTownTab = 'potions' | 'armor' | 'weapons' | 'guild';
+
 /** Base gold price per rarity in the swamprun shop (before discounts). */
 const SWAMP_PRICE: Record<Rarity, number> = {
   consumeable: 1,
@@ -444,6 +447,19 @@ export class GameScene extends Phaser.Scene {
 
   // Swamprun (offline PvE co-op survival). Enabled when mode is 'swamprun'.
   private swamprun = false;
+  private expedition = false;
+  private expeditionSilver = 0;
+  private expeditionRunDepth = 0;
+  private expeditionRetreating = false;
+  private expeditionRetreatCursor = 0;
+  private expeditionTownPanel?: Phaser.GameObjects.Container;
+  private expeditionTownResolve: (() => void) | null = null;
+  private expeditionTownTab: ExpeditionTownTab = 'potions';
+  private expeditionTownPage = 0;
+  private expeditionTownMessage = '';
+  private expeditionPermanentRecruits = new Set<ExpeditionCompanionKind>();
+  private expeditionRunRecruits = new Set<ExpeditionCompanionKind>();
+  private expeditionCompanions = new Map<ExpeditionCompanionKind, Mage>();
   /** Highest wave reached so far (also the survival score). */
   private swamprunWave = 0;
   /** Shared party gold, earned by auto-selling each cleared wave's loot. */
@@ -629,6 +645,8 @@ export class GameScene extends Phaser.Scene {
   // itself and the player can just watch. Toggled via key [Y] or the button.
   private spectateAll = false;
   private spectateButton?: Phaser.GameObjects.Text;
+  private combatSpeed = 1;
+  private combatSpeedButton?: Phaser.GameObjects.Text;
   // A docked list of every living foe, so overlapping enemies can be targeted
   // by clicking their name instead of their (possibly hidden) body. Toggle [J].
   private showTargetList = true;
@@ -670,6 +688,15 @@ export class GameScene extends Phaser.Scene {
 
   create(config: MatchConfig): void {
     this.cameras.main.setBackgroundColor(COLORS.bg);
+    this.spectateAll = false;
+    this.autoPassReactions = false;
+    this.combatSpeed = 1;
+    this.time.timeScale = 1;
+    this.tweens.timeScale = 1;
+    this.anims.globalTimeScale = 1;
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.anims.globalTimeScale = 1;
+    });
 
     // Restrict the draft pool to the item sets chosen on the start screen.
     setActiveItemSets(config.itemSets ?? { original: true });
@@ -684,7 +711,8 @@ export class GameScene extends Phaser.Scene {
     this.localSeat = config.localSeat ?? this.localTeam - 1;
     this.opponentLeft = false;
     this.training = config.mode === 'training';
-    this.swamprun = config.mode === 'swamprun';
+    this.expedition = config.mode === 'expedition';
+    this.swamprun = config.mode === 'swamprun' || this.expedition;
 
     const onlineName = (team: number): string =>
       team === this.localTeam ? `Player ${team} (You)` : `Player ${team}`;
@@ -821,6 +849,11 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (this.swamprun) {
+      if (this.expedition) {
+        this.setupExpedition();
+        this.startTurn();
+        return;
+      }
       await this.runAssignmentPhase();
       if (this.opponentLeft) return;
       await this.runSwamprunStartDraft();
@@ -860,9 +893,37 @@ export class GameScene extends Phaser.Scene {
     this.spawnWave(1);
   }
 
+  private setupExpedition(): void {
+    this.swamprunInterludeActive = false;
+    this.swamprunWave = 0;
+    this.swamprunGold = 0;
+    this.swamprunArrowsOwned.clear();
+    this.expeditionSilver = 0;
+    this.expeditionRunDepth = 0;
+    this.expeditionRetreating = false;
+    this.expeditionRetreatCursor = 0;
+    this.expeditionTownPanel = undefined;
+    this.expeditionTownResolve = null;
+    this.expeditionTownTab = 'potions';
+    this.expeditionTownPage = 0;
+    this.expeditionTownMessage = '';
+    this.expeditionPermanentRecruits.clear();
+    this.expeditionRunRecruits.clear();
+    this.expeditionCompanions.clear();
+    const player = this.gs.mages[0];
+    player.assignFlatStats(3);
+    this.gs.grantItem(player, 'torch');
+    player.equipHand('torch');
+    this.gs.log('Expedition — enter the swamp, choose your depth, and make it back alive.');
+    this.spawnWave(1);
+  }
+
   /** Spawn the roster for the next wave and refresh the board. */
   private spawnWave(n: number): void {
     this.swamprunWave = n;
+    if (this.expedition && !this.expeditionRetreating) {
+      this.expeditionRunDepth = Math.max(this.expeditionRunDepth, n);
+    }
     this.swamprunWaveEnemies = [];
     this.swamprunWispCopies.clear();
     // Build a genuinely fresh combat around the surviving, persistent party.
@@ -892,10 +953,23 @@ export class GameScene extends Phaser.Scene {
    * every survivor's combat-scoped state before assembling the next wave.
    */
   private beginWaveCombat(n: number): void {
-    const party = this.gs.mages.filter((m) => m.team === 1 && m.alive && !m.isSummon);
-    const removed = this.gs.mages.filter((m) => !party.includes(m));
+    const oldRoster = [...this.gs.mages];
+    const survivors = oldRoster.filter((m) => m.team === 1 && m.alive && !m.isSummon);
+    const summonOwners = new Map<Mage, Mage>();
+    for (const summon of oldRoster) {
+      if (!summon.isSummon || summon.summonOwnerIndex == null) continue;
+      const owner = oldRoster[summon.summonOwnerIndex];
+      if (owner && survivors.includes(owner)) summonOwners.set(summon, owner);
+    }
+    const party = oldRoster.filter(
+      (m) => survivors.includes(m) || (m.team === 1 && m.alive && summonOwners.has(m))
+    );
+    const removed = oldRoster.filter((m) => !party.includes(m));
     for (const mage of removed) this.ais.delete(mage);
     this.gs.mages = party;
+    for (const [summon, owner] of summonOwners) {
+      if (party.includes(summon)) summon.summonOwnerIndex = party.indexOf(owner);
+    }
     this.resetPartyPositions(party);
     for (const m of party) {
       m.resetForNewCombat();
@@ -945,7 +1019,7 @@ export class GameScene extends Phaser.Scene {
   /** Spawn the next wave once the field is cleared (and the party still lives). */
   private swamprunWaveCleared(): boolean {
     if (!this.swamprun || this.swamprunInterludeActive) return false;
-    const partyAlive = this.gs.mages.some((m) => m.team === 1 && m.alive);
+    const partyAlive = this.gs.mages.some((m) => m.team === 1 && m.alive && !m.isSummon);
     const foesLeft = this.gs.mages.some((m) => m.team === 2 && m.alive);
     return partyAlive && !foesLeft;
   }
@@ -967,6 +1041,17 @@ export class GameScene extends Phaser.Scene {
         // the old battlefield is left behind.
         const owned = this.swamprunArrowsOwned.get(m);
         if (owned != null) m.arrows = owned;
+      }
+      if (this.expedition) {
+        if (this.expeditionRetreating) return this.advanceExpeditionRetreat();
+        const choice = await this.promptExpeditionWaveChoice();
+        if (choice === 'continue') {
+          this.spawnWave(this.swamprunWave + 1);
+          return true;
+        }
+        this.expeditionRetreating = true;
+        this.expeditionRetreatCursor = this.expeditionRunDepth;
+        return this.advanceExpeditionRetreat();
       }
       // A shop opens only every third cleared wave; other waves flow straight on.
       if (this.swamprunWave % 3 === 0) await this.runSwamprunShop();
@@ -1000,6 +1085,20 @@ export class GameScene extends Phaser.Scene {
       tally.push(...loot.drops);
     }
     gold = Math.round(gold * 2) / 2; // keep clean halves
+    if (this.expedition) {
+      const grossSilver = Math.round(gold * 10);
+      const shareRate = Math.min(0.8, this.expeditionPermanentRecruits.size * 0.2);
+      const netSilver = Math.round(grossSilver * (1 - shareRate));
+      const shares = grossSilver - netSilver;
+      this.expeditionSilver += netSilver;
+      this.swamprunWaveEnemies = [];
+      const drops = tally.length ? ` — salvage: ${tally.join(', ')}` : '';
+      const shareText = shares > 0 ? ` (${shares}s paid to permanent recruits)` : '';
+      this.gs.log(
+        `Wave ${this.swamprunWave} cleared! Loot: ${netSilver}s${shareText}${drops}. Purse: ${this.expeditionSilver}s.`
+      );
+      return;
+    }
     this.swamprunGold += gold;
     this.swamprunWaveEnemies = [];
     const drops = tally.length ? ` — salvage: ${tally.join(', ')}` : '';
@@ -1030,7 +1129,9 @@ export class GameScene extends Phaser.Scene {
   private updateWaveHud(): void {
     if (!this.swamprun) return;
     const alive = this.gs.mages.filter((m) => m.team === 2 && m.alive).length;
-    const text = `Wave ${this.swamprunWave}    Foes left: ${alive}    Gold: ${this.swamprunGold}g`;
+    const text = this.expedition
+      ? `Expedition ${this.expeditionRetreating ? 'return' : 'depth'} ${this.swamprunWave}    Foes: ${alive}    Silver: ${this.expeditionSilver}s`
+      : `Wave ${this.swamprunWave}    Foes left: ${alive}    Gold: ${this.swamprunGold}g`;
     if (!this.swamprunHudText) {
       this.swamprunHudText = this.add
         .text(FIELD.x + 12, FIELD.y + 10, text, {
@@ -1044,6 +1145,368 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.swamprunHudText.setText(text);
     }
+  }
+
+  private promptExpeditionWaveChoice(): Promise<'continue' | 'return'> {
+    const previousMode = this.mode;
+    this.mode = 'shop';
+    this.expeditionTownPanel?.destroy();
+    const panel = this.add.container(0, 0).setDepth(98);
+    this.expeditionTownPanel = panel;
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    this.addModalChrome(panel, {
+      width: 760,
+      height: 390,
+      title: `DEPTH ${this.expeditionRunDepth} CLEARED`,
+      subtitle: `Purse ${this.expeditionSilver}s  •  Continue deeper or begin the return journey`,
+      accent: UI.gold,
+    });
+    panel.add(
+      this.add
+        .text(
+          cx,
+          cy - 35,
+          'Returning checks every completed depth in reverse.\nEach step has a 5% chance to force that wave again.',
+          { fontSize: '17px', color: TEXT.body, align: 'center', lineSpacing: 7 }
+        )
+        .setOrigin(0.5)
+    );
+    return new Promise((resolve) => {
+      const finish = (choice: 'continue' | 'return'): void => {
+        panel.destroy();
+        if (this.expeditionTownPanel === panel) this.expeditionTownPanel = undefined;
+        this.mode = previousMode;
+        resolve(choice);
+      };
+      this.swampShopButton(panel, cx - 150, cy + 90, 'Continue deeper', '#ffcf6b', true, () => finish('continue'));
+      this.swampShopButton(panel, cx + 150, cy + 90, 'Return to town', '#8fdfc8', true, () => finish('return'));
+    });
+  }
+
+  private async advanceExpeditionRetreat(): Promise<boolean> {
+    while (this.expeditionRetreatCursor > 0) {
+      const wave = this.expeditionRetreatCursor--;
+      this.gs.log(`Return path: crossing depth ${wave}...`);
+      if (this.gs.rng.chance(0.05)) {
+        this.gs.log(`The path closes — wave ${wave} must be fought again!`);
+        this.spawnWave(wave);
+        return true;
+      }
+    }
+    await this.enterExpeditionTown();
+    return true;
+  }
+
+  private enterExpeditionTown(): Promise<void> {
+    this.prepareExpeditionTownParty();
+    this.mode = 'shop';
+    this.expeditionTownTab = 'potions';
+    this.expeditionTownPage = 0;
+    this.expeditionTownMessage = 'You escaped the swamp.';
+    this.redrawExpeditionTown();
+    return new Promise((resolve) => {
+      this.expeditionTownResolve = resolve;
+    });
+  }
+
+  private redrawExpeditionTown(): void {
+    this.expeditionTownPanel?.destroy();
+    const panel = this.add.container(0, 0).setDepth(98);
+    this.expeditionTownPanel = panel;
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    this.addModalChrome(panel, {
+      width: 1180,
+      height: 640,
+      title: 'SWAMP TOWN',
+      subtitle: `Purse ${this.expeditionSilver}s  •  Fixed prices, no offers  •  Every item costs 2x`,
+      accent: UI.green,
+    });
+    const tabs: { id: ExpeditionTownTab; label: string }[] = [
+      { id: 'potions', label: 'Potions' },
+      { id: 'armor', label: 'Armor' },
+      { id: 'weapons', label: 'Weapons' },
+      { id: 'guild', label: 'Guild' },
+    ];
+    tabs.forEach((tab, index) => {
+      this.swampShopButton(
+        panel,
+        cx + (index - 1.5) * 190,
+        cy - 245,
+        tab.label,
+        this.expeditionTownTab === tab.id ? '#ffcf6b' : '#9fb7ce',
+        true,
+        () => {
+          this.expeditionTownTab = tab.id;
+          this.expeditionTownPage = 0;
+          this.expeditionTownMessage = '';
+          this.redrawExpeditionTown();
+        }
+      );
+    });
+    if (this.expeditionTownMessage) {
+      panel.add(
+        this.add
+          .text(cx, cy - 195, this.expeditionTownMessage, {
+            fontSize: '14px',
+            color: '#9fe6a0',
+            align: 'center',
+          })
+          .setOrigin(0.5)
+      );
+    }
+    if (this.expeditionTownTab === 'guild') this.drawExpeditionGuild(panel, cx, cy);
+    else this.drawExpeditionItems(panel, cx, cy);
+
+    this.swampShopButton(panel, cx, cy + 280, 'Depart on another run', '#ffcf6b', true, () => {
+      panel.destroy();
+      this.expeditionTownPanel = undefined;
+      this.expeditionRetreating = false;
+      this.expeditionRunDepth = 0;
+      this.mode = 'busy';
+      this.spawnWave(1);
+      const done = this.expeditionTownResolve;
+      this.expeditionTownResolve = null;
+      done?.();
+    });
+  }
+
+  private expeditionLeader(): Mage {
+    return this.gs.mages.find((m) => m.team === 1 && !m.isAI && !m.expeditionCompanion) ?? this.gs.mages[0];
+  }
+
+  private expeditionCatalog(tab: Exclude<ExpeditionTownTab, 'guild'>): typeof ITEM_DEFS {
+    return ITEM_DEFS.filter((def) => {
+      if (def.set === 'conjured') return false;
+      if (tab === 'potions') return !!def.potion || !!def.ammo || def.id === 'torch';
+      if (tab === 'armor') return ['head', 'torso', 'boots', 'accessory'].includes(def.slot);
+      return def.slot === 'hand' && !def.lightSource;
+    }).sort((a, b) => rarityRank(a.rarity) - rarityRank(b.rarity) || a.name.localeCompare(b.name));
+  }
+
+  private expeditionItemPrice(id: ItemId): number {
+    const def = getItem(id);
+    const base = def.cost > 0 ? def.cost : SWAMP_PRICE[def.rarity] * 10;
+    return Math.max(2, Math.round(base * 2));
+  }
+
+  private drawExpeditionItems(panel: Phaser.GameObjects.Container, cx: number, cy: number): void {
+    if (this.expeditionTownTab === 'guild') return;
+    const catalog = this.expeditionCatalog(this.expeditionTownTab);
+    const pageSize = 6;
+    const pages = Math.max(1, Math.ceil(catalog.length / pageSize));
+    this.expeditionTownPage = Math.min(this.expeditionTownPage, pages - 1);
+    const shown = catalog.slice(this.expeditionTownPage * pageSize, (this.expeditionTownPage + 1) * pageSize);
+    shown.forEach((def, index) => {
+      const col = index % 3;
+      const row = Math.floor(index / 3);
+      const x = cx - 475 + col * 325;
+      const y = cy - 155 + row * 160;
+      const price = this.expeditionItemPrice(def.id);
+      const enabled = this.expeditionSilver >= price;
+      const card = this.add
+        .text(x, y, `${def.name}  •  ${price}s\n[${def.rarity}]  ${def.weight}kg\n${def.blurb}`, {
+          fontFamily: 'Trebuchet MS',
+          fontSize: '12px',
+          color: enabled ? RARITY_COLOR[def.rarity] : '#667080',
+          backgroundColor: enabled ? '#111b29' : '#0e151f',
+          padding: { x: 10, y: 8 },
+          fixedWidth: 300,
+          fixedHeight: 142,
+          wordWrap: { width: 280 },
+        });
+      if (enabled) {
+        card.setInteractive({ useHandCursor: true });
+        card.on('pointerdown', () => this.buyExpeditionItem(def.id));
+        card.on('pointerover', () => card.setBackgroundColor('#203149'));
+        card.on('pointerout', () => card.setBackgroundColor('#111b29'));
+      }
+      panel.add(card);
+    });
+    if (pages > 1) {
+      this.swampShopButton(panel, cx - 120, cy + 190, 'Previous', '#9fb7ce', this.expeditionTownPage > 0, () => {
+        this.expeditionTownPage -= 1;
+        this.redrawExpeditionTown();
+      });
+      panel.add(
+        this.add
+          .text(cx, cy + 190, `${this.expeditionTownPage + 1} / ${pages}`, { fontSize: '14px', color: TEXT.dim })
+          .setOrigin(0.5)
+      );
+      this.swampShopButton(panel, cx + 120, cy + 190, 'Next', '#9fb7ce', this.expeditionTownPage < pages - 1, () => {
+        this.expeditionTownPage += 1;
+        this.redrawExpeditionTown();
+      });
+    }
+  }
+
+  private buyExpeditionItem(id: ItemId): void {
+    const price = this.expeditionItemPrice(id);
+    if (this.expeditionSilver < price) return;
+    this.expeditionSilver -= price;
+    this.gs.grantItem(this.expeditionLeader(), id);
+    this.expeditionTownMessage = `Bought ${getItem(id).name} for ${price}s.`;
+    this.redrawExpeditionTown();
+  }
+
+  private drawExpeditionGuild(panel: Phaser.GameObjects.Container, cx: number, cy: number): void {
+    const definitions: { kind: ExpeditionCompanionKind; name: string; price: number; role: string }[] = [
+      { kind: 'dwarf', name: 'Dwarf Vanguard', price: 30, role: 'Heavy armor; hammer vs bodies, lantern vs spirits.' },
+      { kind: 'elf', name: 'Elf Ranger', price: 35, role: 'Burning arrows and three 3d3 heals each combat.' },
+      { kind: 'human', name: 'Human Arcanist', price: 40, role: 'Backline Bind/Veil/Twist/Stop support and counters.' },
+    ];
+    this.swampShopButton(panel, cx, cy - 155, 'Rest party  •  5s', '#8fdfc8', this.expeditionSilver >= 5, () => {
+      if (this.expeditionSilver < 5) return;
+      this.expeditionSilver -= 5;
+      for (const mage of this.gs.mages) {
+        if (mage.team === 1 && mage.alive) mage.swamprunRest(this.gs.rng);
+      }
+      this.expeditionTownMessage = 'The party rests for 5s and restores half its resources.';
+      this.redrawExpeditionTown();
+    });
+    definitions.forEach((def, index) => {
+      const x = cx + (index - 1) * 330;
+      const permanent = this.expeditionPermanentRecruits.has(def.kind);
+      const oneRun = this.expeditionRunRecruits.has(def.kind);
+      panel.add(
+        this.add
+          .text(x - 145, cy - 80, `${def.name}\n${def.role}\nOne run ${def.price}s  •  Forever ${def.price * 3}s\nPermanent: 20% loot share`, {
+            fontSize: '13px',
+            color: permanent ? '#9fe6a0' : TEXT.body,
+            backgroundColor: '#111b29',
+            padding: { x: 10, y: 9 },
+            fixedWidth: 290,
+            fixedHeight: 125,
+            wordWrap: { width: 270 },
+          })
+      );
+      this.swampShopButton(
+        panel,
+        x - 72,
+        cy + 75,
+        permanent ? 'Permanent' : oneRun ? 'Hired' : 'One run',
+        '#9fb7ce',
+        !permanent && !oneRun && this.expeditionSilver >= def.price,
+        () => this.recruitExpeditionCompanion(def.kind, false, def.price)
+      );
+      this.swampShopButton(
+        panel,
+        x + 72,
+        cy + 75,
+        'Forever',
+        '#ffcf6b',
+        !permanent && this.expeditionSilver >= def.price * 3,
+        () => this.recruitExpeditionCompanion(def.kind, true, def.price * 3)
+      );
+    });
+  }
+
+  private recruitExpeditionCompanion(kind: ExpeditionCompanionKind, permanent: boolean, price: number): void {
+    if (this.expeditionSilver < price || this.expeditionPermanentRecruits.has(kind)) return;
+    const existing = this.expeditionCompanions.get(kind);
+    if (!permanent && (existing || this.expeditionRunRecruits.has(kind))) return;
+    this.expeditionSilver -= price;
+    const companion = existing ?? this.createExpeditionCompanion(kind);
+    companion.expeditionPermanent = permanent;
+    if (permanent) {
+      this.expeditionPermanentRecruits.add(kind);
+      this.expeditionRunRecruits.delete(kind);
+    } else {
+      this.expeditionRunRecruits.add(kind);
+    }
+    this.expeditionTownMessage = `${companion.name} joins ${permanent ? 'forever' : 'for the next run'}.`;
+    this.redrawExpeditionTown();
+  }
+
+  private createExpeditionCompanion(kind: ExpeditionCompanionKind): Mage {
+    const names: Record<ExpeditionCompanionKind, string> = {
+      dwarf: 'Dwarf Vanguard',
+      elf: 'Elf Ranger',
+      human: 'Human Arcanist',
+    };
+    const loadout: WordId[] = kind === 'human' ? ['twist', 'stop', 'veil', 'bind'] : [];
+    const companion = new Mage({
+      name: names[kind],
+      isAI: true,
+      team: 1,
+      position: { ...this.expeditionLeader().pos },
+      loadout,
+      mageClass: kind === 'elf' ? 'life' : kind === 'human' ? 'hexcraft' : 'objects',
+    });
+    companion.expeditionCompanion = kind;
+    companion.assignFlatStats(3);
+    if (kind === 'dwarf') {
+      companion.statStrength = 7;
+      companion.statDex = 2;
+      companion.statInt = 1;
+      companion.maxHp += 4;
+      companion.hp = companion.maxHp;
+      companion.maxMana = Math.max(1, companion.maxMana - 2);
+      companion.mana = companion.maxMana;
+      companion.hands = ['warHammer'];
+      companion.bag = ['lantern'];
+      companion.head = 'ironCap';
+      companion.accessories = ['fightersGloves'];
+    } else if (kind === 'elf') {
+      companion.statStrength = 1;
+      companion.statDex = 7;
+      companion.statInt = 7;
+      companion.maxMana += 4;
+      companion.mana = companion.maxMana;
+      companion.hands = ['woodenBow'];
+      companion.arrows = 999;
+      companion.companionHealCharges = 3;
+    } else {
+      companion.statInt = 7;
+      companion.maxMana += 4;
+      companion.mana = companion.maxMana;
+      companion.maxLuck = 7;
+      companion.luck = 7;
+    }
+    companion.resetDodges();
+    companion.resetCombatReactions();
+    this.gs.addMage(companion);
+    this.ais.set(companion, new SimpleAI(this.gs, companion));
+    this.expeditionCompanions.set(kind, companion);
+    return companion;
+  }
+
+  private prepareExpeditionTownParty(): void {
+    const oldRoster = [...this.gs.mages];
+    for (const kind of this.expeditionRunRecruits) {
+      const companion = this.expeditionCompanions.get(kind);
+      if (companion) this.ais.delete(companion);
+      this.expeditionCompanions.delete(kind);
+    }
+    this.expeditionRunRecruits.clear();
+    const permanent = [...this.expeditionPermanentRecruits]
+      .map((kind) => this.expeditionCompanions.get(kind))
+      .filter((mage): mage is Mage => !!mage);
+    for (const mage of permanent) {
+      if (!mage.alive) {
+        mage.hp = 1;
+        mage.sanity = Math.max(1, mage.sanity);
+      }
+      this.ais.set(mage, new SimpleAI(this.gs, mage));
+    }
+    const nonSummons = oldRoster.filter(
+      (mage) =>
+        mage.team === 1 &&
+        !mage.isSummon &&
+        mage.alive &&
+        (!mage.expeditionCompanion || this.expeditionPermanentRecruits.has(mage.expeditionCompanion))
+    );
+    for (const mage of permanent) if (!nonSummons.includes(mage)) nonSummons.push(mage);
+    const ownerOf = new Map<Mage, Mage>();
+    for (const summon of oldRoster) {
+      if (!summon.isSummon || !summon.alive || summon.summonOwnerIndex == null) continue;
+      const owner = oldRoster[summon.summonOwnerIndex];
+      if (owner && nonSummons.includes(owner)) ownerOf.set(summon, owner);
+    }
+    const summons = oldRoster.filter((mage) => ownerOf.has(mage));
+    this.gs.mages = [...nonSummons, ...summons];
+    for (const [summon, owner] of ownerOf) summon.summonOwnerIndex = this.gs.mages.indexOf(owner);
   }
 
   // ===========================================================================
@@ -2571,6 +3034,26 @@ export class GameScene extends Phaser.Scene {
         me.spend(me.attackIsBonusAction() ? 'bonus' : 'main');
         await this.runStack(this.gs.makeMeleeItem(me, d.target));
         break;
+      case 'companion-heal':
+        me.spend('main');
+        me.companionHealCharges = Math.max(0, me.companionHealCharges - 1);
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Elven Heal',
+            description: `${me.name} heals ${d.target.name} within 10cm.`,
+            isStillValid: () => me.alive && d.target.alive,
+            resolve: (game) => game.companionHeal(me, d.target),
+          })
+        );
+        break;
+      case 'color-ability':
+        if (!this.canAffordAbility(me, d.ability) || me.abilityCastsLeft(d.ability.id) <= 0) break;
+        this.payForColorAbility(me, d.ability);
+        await this.runStack(
+          this.gs.makeSpellItem(me, d.ability, d.target ?? null, d.point ?? null)
+        );
+        break;
       case 'scarab':
         me.spend(me.attackIsBonusAction() ? 'bonus' : 'main');
         this.gs.attackScarab(me, d.scarab);
@@ -3777,7 +4260,7 @@ export class GameScene extends Phaser.Scene {
       if (Dev.aiPassive || reactor.trainingPassive) return null;
       // Prefer a counter-spell / colour ability if the AI wants one…
       const ai = this.aiFor(reactor);
-      const r = ai.chooseReaction(true) ?? null;
+      const r = ai.chooseReaction(top) ?? null;
       if (r) return { spell: r.spell, target: r.target, point: r.point };
       // …otherwise defend against an incoming attack: dodge first (fully shrugs
       // off the blow for a per-combat charge), then a bash, then a block.
@@ -3861,6 +4344,7 @@ export class GameScene extends Phaser.Scene {
     });
     kb.on('keydown-O', () => this.toggleAutoPass());
     kb.on('keydown-Y', () => this.toggleSpectate());
+    kb.on('keydown-PERIOD', () => this.toggleCombatSpeed());
     kb.on('keydown-J', () => {
       this.showTargetList = !this.showTargetList;
       this.refreshTargetList();
@@ -5834,6 +6318,23 @@ export class GameScene extends Phaser.Scene {
     this.spectateButton.setColor(on ? '#0c0c18' : TEXT.dim);
   }
 
+  private toggleCombatSpeed(): void {
+    this.combatSpeed = this.combatSpeed === 1 ? 4 : 1;
+    this.time.timeScale = this.combatSpeed;
+    this.tweens.timeScale = this.combatSpeed;
+    this.anims.globalTimeScale = this.combatSpeed;
+    this.refreshCombatSpeedButton();
+    this.flashHint(`Combat speed: ${this.combatSpeed}x  [.]`);
+  }
+
+  private refreshCombatSpeedButton(): void {
+    if (!this.combatSpeedButton) return;
+    const fast = this.combatSpeed > 1;
+    this.combatSpeedButton.setText(`Speed: ${this.combatSpeed}x  [.]`);
+    this.combatSpeedButton.setBackgroundColor(fast ? '#694f22' : '#1a2636');
+    this.combatSpeedButton.setColor(fast ? '#fff4cf' : TEXT.dim);
+  }
+
   /**
    * Rebuild the docked enemy target list. Each row targets that foe with the
    * current aiming action when clicked, so overlapping bodies can always be
@@ -6713,12 +7214,12 @@ export class GameScene extends Phaser.Scene {
     // Always-available toggle: auto-pass reaction windows.
     this.autoPassButton = this.add
       .text(470, HUD_Y + 179, '', {
-        fontSize: '12px',
+        fontSize: '11px',
         color: TEXT.dim,
         backgroundColor: '#1a2636',
         fontStyle: 'bold',
         align: 'center',
-        fixedWidth: 190,
+        fixedWidth: 126,
         padding: { x: 12, y: 6 },
       })
       .setDepth(46)
@@ -6728,19 +7229,34 @@ export class GameScene extends Phaser.Scene {
 
     // Always-available toggle: hand every seat to the AI and just watch.
     this.spectateButton = this.add
-      .text(675, HUD_Y + 179, '', {
-        fontSize: '12px',
+      .text(603, HUD_Y + 179, '', {
+        fontSize: '11px',
         color: TEXT.dim,
         backgroundColor: '#1a2636',
         fontStyle: 'bold',
         align: 'center',
-        fixedWidth: 190,
+        fixedWidth: 126,
         padding: { x: 12, y: 6 },
       })
       .setDepth(46)
       .setInteractive({ useHandCursor: true });
     this.spectateButton.on('pointerdown', () => this.toggleSpectate());
     this.refreshSpectateButton();
+
+    this.combatSpeedButton = this.add
+      .text(736, HUD_Y + 179, '', {
+        fontSize: '11px',
+        color: TEXT.dim,
+        backgroundColor: '#1a2636',
+        fontStyle: 'bold',
+        align: 'center',
+        fixedWidth: 129,
+        padding: { x: 8, y: 6 },
+      })
+      .setDepth(46)
+      .setInteractive({ useHandCursor: true });
+    this.combatSpeedButton.on('pointerdown', () => this.toggleCombatSpeed());
+    this.refreshCombatSpeedButton();
 
     // Docked, clickable list of every living foe (targets from anywhere).
     this.targetListPanel = this.add.container(0, 0).setDepth(48);

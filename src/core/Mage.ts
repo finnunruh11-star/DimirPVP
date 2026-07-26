@@ -197,6 +197,10 @@ export class Mage {
 
   /** Swamprun creature identity (undefined for player mages). */
   enemyKind?: string;
+  /** Guild companion role used by Expedition AI and loadout rules. */
+  expeditionCompanion?: 'dwarf' | 'elf' | 'human';
+  expeditionPermanent = false;
+  companionHealCharges = 0;
   /** Damage types this creature is intrinsically immune to (×0). */
   intrinsicImmuneTypes: DamageType[] = [];
   /** Damage types this creature intrinsically resists (×0.5 each). */
@@ -505,6 +509,7 @@ export class Mage {
     this.unarmedBanned = false;
     this.resetCombatReactions(false);
     this.resetDodges();
+    if (this.expeditionCompanion === 'elf') this.companionHealCharges = 3;
   }
 
   /** How many Leaps this mage has left this combat. */
@@ -1353,8 +1358,8 @@ export class Mage {
   resistMultiplier(type: DamageType): number {
     let immune = false;
     let mult = 1;
-    // Light-weak creatures are also weak to fire (fire subsumes the old heat
-    // type): a 'light' weakness counts as a 'fire' weakness too.
+    // Light-weak creatures are also weak to fire: a 'light' weakness counts as
+    // a 'fire' weakness too.
     const isWeakTo = (t: DamageType): boolean =>
       t === type || (type === 'fire' && t === 'light');
     // Intrinsic creature traits (Swamprun monsters) stack with any gear.

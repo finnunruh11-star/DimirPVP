@@ -6,8 +6,18 @@ import { Net, type NetRole, type NetMessage } from '../net/Net';
 import magePreviewUrl from '../Sprites/Idle/Idle1.png';
 
 const NAD_LOADOUT: WordId[] = ['mind', 'shatter', 'twist', 'reality'];
+const EASTER_WORD_ORDER: WordId[] = [
+  'twist',
+  'reality',
+  'drain',
+  'pain',
+  'order',
+  'slash',
+  'fire',
+  'lightning',
+];
 
-export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun';
+export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun' | 'expedition';
 
 /** Which toggleable item catalogues the draft draws from. */
 export interface ItemSetSelection {
@@ -89,6 +99,7 @@ export class MenuScene extends Phaser.Scene {
   private katActive = false;
   private genActive = false;
   private sniffActive = false;
+  private unlockedWords = new Set<WordId>();
   /** Enabled item sets for the draft (host decides in online play). */
   private itemSets: ItemSetSelection = { original: true, finns: false, dlc: false };
   /** The class the seat currently drafting has chosen. */
@@ -109,6 +120,7 @@ export class MenuScene extends Phaser.Scene {
   private modeOnlineBtn!: Phaser.GameObjects.Text;
   private modeTrainingBtn!: Phaser.GameObjects.Text;
   private modeSwamprunBtn!: Phaser.GameObjects.Text;
+  private modeExpeditionBtn!: Phaser.GameObjects.Text;
   private setOriginalBtn!: Phaser.GameObjects.Text;
   private setFinnsBtn!: Phaser.GameObjects.Text;
   private setDlcBtn!: Phaser.GameObjects.Text;
@@ -206,13 +218,13 @@ export class MenuScene extends Phaser.Scene {
     this.add.ellipse(1208, 444, 76, 20, 0x48b8d0, 0.12).setStrokeStyle(1, 0x48b8d0, 0.3);
     this.add.image(1208, 435, 'menu-mage-preview').setScale(2.8).setOrigin(0.5, 1);
 
-    // Word grid (4 x 2).
+    // Word grid. Secret cells stay hidden until their easter egg is entered.
     const cols = 4;
     const cw = 205;
     const ch = 92;
     const startX = 36 + cw / 2;
     const startY = 282;
-    WORD_ORDER.forEach((word, i) => {
+    [...WORD_ORDER, ...EASTER_WORD_ORDER].forEach((word, i) => {
       const x = startX + (i % cols) * cw;
       const y = startY + Math.floor(i / cols) * (ch + 16);
       const rect = this.add
@@ -258,6 +270,7 @@ export class MenuScene extends Phaser.Scene {
     this.modeOnlineBtn = this.makeButton(516, 126, 'ONLINE', () => this.setMode('online'), 172);
     this.modeTrainingBtn = this.makeButton(710, 126, 'TRAINING', () => this.setMode('training'), 172);
     this.modeSwamprunBtn = this.makeButton(904, 126, 'SWAMPRUN', () => this.setMode('swamprun'), 172);
+    this.modeExpeditionBtn = this.makeButton(1098, 126, 'EXPEDITION', () => this.setMode('expedition'), 172);
 
     this.rulesSectionText = this.add.text(36, 480, '', {
       fontFamily: 'Trebuchet MS',
@@ -320,6 +333,7 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private applyNadLoadout(): void {
+    this.unlockWords(NAD_LOADOUT);
     this.selected = [...NAD_LOADOUT];
     this.nadActive = true;
     this.katActive = false;
@@ -328,7 +342,9 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private applyKatLoadout(): void {
-    this.selected = ['corrode', 'curse', 'shadow', 'drain', 'pain'];
+    const loadout: WordId[] = ['corrode', 'curse', 'shadow', 'drain', 'pain'];
+    this.unlockWords(loadout);
+    this.selected = loadout;
     this.katActive = true;
     this.nadActive = false;
     this.genActive = false;
@@ -337,7 +353,9 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private applyGenLoadout(): void {
-    this.selected = ['order', 'curse', 'drain', 'slash'];
+    const loadout: WordId[] = ['order', 'curse', 'drain', 'slash'];
+    this.unlockWords(loadout);
+    this.selected = loadout;
     this.genActive = true;
     this.nadActive = false;
     this.katActive = false;
@@ -346,12 +364,20 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private applySniffLoadout(): void {
-    this.selected = ['pierce', 'mind', 'veil', 'fire', 'lightning'];
+    const loadout: WordId[] = ['pierce', 'mind', 'veil', 'fire', 'lightning'];
+    this.unlockWords(loadout);
+    this.selected = loadout;
     this.sniffActive = true;
     this.nadActive = false;
     this.katActive = false;
     this.genActive = false;
     this.refresh();
+  }
+
+  private unlockWords(words: readonly WordId[]): void {
+    for (const word of words) {
+      if (!WORD_ORDER.includes(word)) this.unlockedWords.add(word);
+    }
   }
 
   private cellText(word: WordId): string {
@@ -391,10 +417,15 @@ export class MenuScene extends Phaser.Scene {
     if (this.connecting) return;
     this.mode = mode;
     // Sensible default AI fill per mode: "vs AI" fills every seat but yours.
-    if (mode === 'ai') this.aiCount = this.seatCount - 1;
-    else this.aiCount = 0; // hotseat / online / training / swamprun start all-human
-    // Swamprun allows a solo run; every other mode needs at least two seats.
-    if (mode !== 'swamprun' && this.seatCount < 2) this.seatCount = 2;
+    if (mode === 'expedition') {
+      this.seatCount = 1;
+      this.aiCount = 0;
+    } else if (mode === 'ai') {
+      this.aiCount = this.seatCount - 1;
+    } else {
+      this.aiCount = 0;
+    }
+    if (mode !== 'swamprun' && mode !== 'expedition' && this.seatCount < 2) this.seatCount = 2;
     this.clampAiCount();
     this.resetDraft();
     this.refresh();
@@ -497,7 +528,7 @@ export class MenuScene extends Phaser.Scene {
 
   /** Team number for a seat under the current layout. */
   private teamOf(seat: number): number {
-    if (this.mode === 'swamprun') return 1; // co-op: the whole party is team 1
+    if (this.mode === 'swamprun' || this.mode === 'expedition') return 1;
     if (this.teamMode === 'ffa') return seat + 1;
     const half = Math.ceil(this.seatCount / 2);
     return this.seatTeams[seat] ?? (seat < half ? 1 : 2);
@@ -593,13 +624,37 @@ export class MenuScene extends Phaser.Scene {
       this.hintText.setText('Training: solo sandbox — spawn dummies, grant items, tweak HP/mana/stacks, reset the field.');
     } else if (this.mode === 'swamprun') {
       this.hintText.setText('Swamprun: co-op survival — endless waves of swamp horrors. Start Swamprun to play solo/with AI, or Host/Join for online co-op (set Players to 2+ humans).');
+    } else if (this.mode === 'expedition') {
+      this.hintText.setText('Expedition: delve without rests or shops, choose when to retreat, then spend your silver and recruit in town.');
     } else if (this.seatCount > 2) {
       this.hintText.setText(`${this.formatLabel()} — each player drafts their own words in turn.`);
     } else {
       this.hintText.setText('Click words to select. Bind / Veil / Mind grant a reaction.');
     }
 
+    const visibleCells = this.wordCells.filter(
+      (cell) => WORD_ORDER.includes(cell.word) || this.unlockedWords.has(cell.word)
+    );
+    const compact = visibleCells.length > WORD_ORDER.length;
+    const cellHeight = compact ? 58 : 92;
+    const rowGap = compact ? 8 : 16;
+    const startY = compact ? 252 : 282;
     for (const cell of this.wordCells) {
+      const visible = visibleCells.includes(cell);
+      cell.rect.setVisible(visible);
+      cell.label.setVisible(visible);
+      if (!visible) {
+        cell.rect.disableInteractive();
+        continue;
+      }
+      const index = visibleCells.indexOf(cell);
+      const x = 36 + 205 / 2 + (index % 4) * 205;
+      const y = startY + Math.floor(index / 4) * (cellHeight + rowGap);
+      cell.rect.setPosition(x, y).setSize(193, cellHeight).setInteractive({ useHandCursor: true });
+      cell.label
+        .setPosition(x, y)
+        .setFontSize(compact ? 11 : 14)
+        .setWordWrapWidth(177);
       const slot = this.selected.indexOf(cell.word);
       const on = slot >= 0;
       cell.rect.setFillStyle(on ? 0x26374a : 0x141b28);
@@ -621,17 +676,20 @@ export class MenuScene extends Phaser.Scene {
     const onlineOn = this.mode === 'online';
     const trainingOn = this.mode === 'training';
     const swamprunOn = this.mode === 'swamprun';
+    const expeditionOn = this.mode === 'expedition';
     this.modeAiBtn.setStyle({ backgroundColor: aiOn ? '#285b67' : '#182131' });
     this.modeHsBtn.setStyle({ backgroundColor: hsOn ? '#285b67' : '#182131' });
     this.modeOnlineBtn.setStyle({ backgroundColor: onlineOn ? '#285b67' : '#182131' });
     this.modeTrainingBtn.setStyle({ backgroundColor: trainingOn ? '#285b67' : '#182131' });
     this.modeSwamprunBtn.setStyle({ backgroundColor: swamprunOn ? '#285b67' : '#182131' });
+    this.modeExpeditionBtn.setStyle({ backgroundColor: expeditionOn ? '#285b67' : '#182131' });
     // Mode is only chosen on the first draft screen.
     this.modeAiBtn.setVisible(firstScreen);
     this.modeHsBtn.setVisible(firstScreen);
     this.modeOnlineBtn.setVisible(firstScreen);
     this.modeTrainingBtn.setVisible(firstScreen);
     this.modeSwamprunBtn.setVisible(firstScreen);
+    this.modeExpeditionBtn.setVisible(firstScreen);
 
     const networkRole = onlineOn ? this.onlineRole : swamprunOn ? this.swampRole : 'local';
     const rulesOwner = networkRole !== 'guest';
@@ -675,7 +733,7 @@ export class MenuScene extends Phaser.Scene {
 
     // Player-count / format controls: local teamfights & online room setup.
     // Swamprun is co-op survival, so it shows Players + AI but no team format.
-    const showSetup = firstScreen && this.mode !== 'training' && rulesOwner;
+    const showSetup = firstScreen && this.mode !== 'training' && this.mode !== 'expedition' && rulesOwner;
     this.playersBtn.setText(`Players: ${this.seatCount}`);
     this.playersBtn.setVisible(showSetup);
     this.formatBtn.setText(`Format: ${this.formatLabel()}`);
@@ -713,6 +771,7 @@ export class MenuScene extends Phaser.Scene {
           ? this.onlineRole === 'host' ? 'CREATE ONLINE ROOM' : 'JOIN ONLINE ROOM'
           : swamprunOn
             ? this.swampRole === 'local' ? 'START SWAMPRUN' : this.swampRole === 'host' ? 'HOST CO-OP ROOM' : 'JOIN CO-OP ROOM'
+            : expeditionOn ? 'START EXPEDITION'
             : this.mode === 'training' ? 'START TRAINING' : 'START DUEL'
     );
     this.startBtn.setColor(ready ? '#0a0e16' : '#4d4431');

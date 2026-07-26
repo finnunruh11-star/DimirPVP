@@ -26,6 +26,7 @@ export const WORD_COLOR: Record<WordId, WordColor> = {
   pain: 'black',
   fire: 'red',
   lightning: 'red',
+  stop: 'blue',
   mind: 'blue',
   bind: 'blue',
   veil: 'blue',
@@ -67,6 +68,7 @@ const WORD_POTENCY: Record<WordId, number> = {
   slash: 1,
   fire: 1,
   lightning: 1,
+  stop: 2,
   // Weak: cheap, low-impact words.
   veil: 0,
   mind: 0,

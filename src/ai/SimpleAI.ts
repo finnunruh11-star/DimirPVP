@@ -4,6 +4,8 @@ import type { Spell } from '../spells/Spell';
 import { allSpells } from '../spells/registry';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type { Scarab } from '../core/Scarab';
+import type { StackItem } from '../core/Stack';
+import { getColorAbilitiesFor, type ColorAbility } from '../spells/colorAbilities';
 import { MELEE_RANGE, RANGE_UNIT } from '../config/constants';
 import {
   LICH_SPELLS,
@@ -19,6 +21,8 @@ export type AIDecision =
   // Swat a harassing enemy scarab that is latched onto or beside us.
   | { type: 'scarab'; scarab: Scarab }
   | { type: 'spell'; spell: Spell; target?: Mage; point?: Vec2 }
+  | { type: 'companion-heal'; target: Mage }
+  | { type: 'color-ability'; ability: ColorAbility; target?: Mage; point?: Vec2 }
   // A bespoke Lich power: cast for free (no pay/DC) and always succeeds.
   | { type: 'power'; spell: Spell; target: Mage }
   // Ghast: telegraph a delayed shadow zone that erupts on its next turn.
@@ -64,6 +68,12 @@ export class SimpleAI {
     if (this.self.enemyKind === 'lich') return this.chooseLichAction();
     if (this.self.reaperKind) return this.chooseReaperAction();
     if (this.self.ghastKind) return this.chooseGhastAction();
+    if (this.self.expeditionCompanion === 'dwarf') return this.chooseDwarfAction();
+    if (this.self.expeditionCompanion === 'human') return this.chooseHumanAction();
+    if (this.self.expeditionCompanion === 'elf') {
+      const healTarget = this.elfHealTarget();
+      if (healTarget) return { type: 'companion-heal', target: healTarget };
+    }
 
     const enemy = this.chooseTarget();
     const acts = this.self.actions;
@@ -109,10 +119,10 @@ export class SimpleAI {
   }
 
   /** Decide whether to react to the item on top of the stack. */
-  chooseReaction(topSourceIsEnemy: boolean): AIReaction | null {
+  chooseReaction(top: StackItem): AIReaction | null {
     if (!this.self.hasReaction()) return null;
-    if (!topSourceIsEnemy) return null;
-    const enemy = this.game.opponentOf(this.self);
+    if (top.source.team === this.self.team) return null;
+    const enemy = top.source;
     const set = new Set(this.self.loadout);
     const forgotten = this.self.forgotten();
     // With a reaction word the AI may answer with ANY castable spell.
@@ -125,6 +135,14 @@ export class SimpleAI {
         (grants || s.reaction)
     );
     if (reactions.length === 0) return null;
+
+    if (this.self.expeditionCompanion === 'human') {
+      const threat = top.spell?.words.length ?? (top.kind === 'action' ? 2 : 1);
+      const stop = reactions.find((spell) => spell.words.length === 1 && spell.words[0] === 'stop');
+      if (stop && threat >= 2 && this.game.isValidSpellTarget(stop, this.self, enemy)) {
+        return { spell: stop, target: enemy };
+      }
+    }
 
     // Prefer a counter (e.g. Bind Pierce) when low, otherwise hide (Veil).
     const counter = reactions.find((s) => s.counters);
@@ -147,6 +165,104 @@ export class SimpleAI {
       return { spell: offensive[0], target: enemy };
     }
     return null;
+  }
+
+  private chooseDwarfAction(): AIDecision {
+    const target = this.chooseTarget();
+    if (!target) return { type: 'end' };
+    const wantsLantern = target.isEthereal();
+    if (wantsLantern && this.self.hands.includes('warHammer')) this.self.unequipHand('warHammer');
+    if (!wantsLantern && this.self.hands.includes('lantern')) this.self.unequipHand('lantern');
+    const wanted = wantsLantern ? 'lantern' : 'warHammer';
+    if (!this.self.hands.includes(wanted) && this.self.bag.includes(wanted)) this.self.equipHand(wanted);
+    if (this.self.actions.main > 0 && this.game.canMelee(this.self, target)) {
+      return { type: 'melee', target };
+    }
+    if (this.self.actions.move > 0) {
+      return { type: 'move', point: stepTowards(this.self.pos, target.pos, this.self.moveRange()) };
+    }
+    return { type: 'end' };
+  }
+
+  private elfHealTarget(): Mage | null {
+    if (this.self.actions.main <= 0 || this.self.companionHealCharges <= 0) return null;
+    const allies = this.game.mages
+      .filter(
+        (mage) =>
+          mage.team === this.self.team &&
+          mage.alive &&
+          mage.hp < mage.maxHp &&
+          dist(this.self.pos, mage.pos) <= 10 * RANGE_UNIT
+      )
+      .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp);
+    return allies[0] ?? null;
+  }
+
+  private chooseHumanAction(): AIDecision {
+    const visible = this.game.livingEnemiesOf(this.self).filter((mage) => !mage.isInvisible());
+    if (visible.length === 0) return { type: 'end' };
+    const strongest = [...visible].sort((a, b) => b.effectiveStr() - a.effectiveStr())[0];
+    if (!this.self.hasCastThisTurn && this.self.actions.bonus > 0) {
+      const abilities = getColorAbilitiesFor(this.self.profile.primary, this.self.mageClass).filter(
+        (ability) =>
+          this.self.abilityCastsLeft(ability.id) > 0 &&
+          this.canAffordColorAbility(ability)
+      );
+      const rejuvenate = abilities.find((ability) => ability.id === 'ability:rejuvenate');
+      const manaTarget = this.game.mages
+        .filter(
+          (mage) =>
+            mage.team === this.self.team &&
+            mage.alive &&
+            mage.mana < mage.maxMana * 0.4 &&
+            dist(this.self.pos, mage.pos) <= 15 * RANGE_UNIT
+        )
+        .sort((a, b) => a.mana / a.maxMana - b.mana / b.maxMana)[0];
+      if (rejuvenate && manaTarget) return { type: 'color-ability', ability: rejuvenate, target: manaTarget };
+      const wall = abilities.find((ability) => ability.id === 'ability:wall');
+      if (wall && dist(this.self.pos, strongest.pos) < 8 * RANGE_UNIT) {
+        return {
+          type: 'color-ability',
+          ability: wall,
+          point: stepTowards(this.self.pos, strongest.pos, wall.range),
+        };
+      }
+    }
+    if (!this.self.hasCastThisTurn && this.self.actions.main > 0) {
+      const bind = this.castableSpells('main')
+        .filter(
+          (spell) =>
+            spell.words.includes('bind') &&
+            spell.targeting === 'enemy' &&
+            this.game.isValidSpellTarget(spell, this.self, strongest)
+        )
+        .sort((a, b) => b.words.length - a.words.length)[0];
+      if (bind) return this.castDecision(bind, strongest);
+      const fallback = this.castableSpells('main').find(
+        (spell) => spell.targeting === 'enemy' && this.game.isValidSpellTarget(spell, this.self, strongest)
+      );
+      if (fallback) return this.castDecision(fallback, strongest);
+    }
+    const nearest = [...visible].sort((a, b) => dist(this.self.pos, a.pos) - dist(this.self.pos, b.pos))[0];
+    if (this.self.actions.move > 0 && dist(this.self.pos, nearest.pos) < 8 * RANGE_UNIT) {
+      const dx = this.self.x - nearest.x;
+      const dy = this.self.y - nearest.y;
+      const length = Math.max(1, Math.hypot(dx, dy));
+      const move = this.self.moveRange();
+      return {
+        type: 'move',
+        point: { x: this.self.x + (dx / length) * move, y: this.self.y + (dy / length) * move },
+      };
+    }
+    return { type: 'end' };
+  }
+
+  private canAffordColorAbility(ability: ColorAbility): boolean {
+    const manaCost = this.self.profile.blueSecondaryTier ? 0 : ability.manaCost;
+    if (!this.self.hasMana(manaCost)) return false;
+    const chargeCost = Math.max(0, ability.chargeCost - (this.self.profile.blueSecondaryTier ? 1 : 0));
+    if (this.self.hasColorCharges(chargeCost)) return true;
+    return this.self.profile.blackSecondaryTier && chargeCost - this.self.colorCharges <= 2;
   }
 
   private bestOffensiveSpell(action: 'main' | 'bonus', enemy: Mage): Spell | null {
