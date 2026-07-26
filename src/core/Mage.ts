@@ -695,7 +695,7 @@ export class Mage {
     const base =
       this.intrinsicMoveUnits != null
         ? this.intrinsicMoveUnits * RANGE_UNIT
-        : MOVE_RANGE * (1 + this.effectiveDex() / 100);
+        : (1 + this.effectiveDex()) * RANGE_UNIT;
     let px = Math.round(base * this.equipMoveMult() * this.thunderMoveMult() * this.summonMoveMultiplier);
     if (this.profile.redPrimaryTier) px += RANGE_UNIT;
     if (this.hasMomentumBoots()) px += this.momentumStacks * RANGE_UNIT;

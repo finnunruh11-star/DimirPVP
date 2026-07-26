@@ -70,10 +70,7 @@ export class SimpleAI {
     if (this.self.ghastKind) return this.chooseGhastAction();
     if (this.self.expeditionCompanion === 'dwarf') return this.chooseDwarfAction();
     if (this.self.expeditionCompanion === 'human') return this.chooseHumanAction();
-    if (this.self.expeditionCompanion === 'elf') {
-      const healTarget = this.elfHealTarget();
-      if (healTarget) return { type: 'companion-heal', target: healTarget };
-    }
+    if (this.self.expeditionCompanion === 'elf') return this.chooseElfAction();
 
     const enemy = this.chooseTarget();
     const acts = this.self.actions;
@@ -139,8 +136,12 @@ export class SimpleAI {
     if (this.self.expeditionCompanion === 'human') {
       const threat = top.spell?.words.length ?? (top.kind === 'action' ? 2 : 1);
       const stop = reactions.find((spell) => spell.words.length === 1 && spell.words[0] === 'stop');
-      if (stop && threat >= 2 && this.game.isValidSpellTarget(stop, this.self, enemy)) {
-        return { spell: stop, target: enemy };
+      if (stop && this.game.isValidSpellTarget(stop, this.self, enemy)) {
+        const sourceDangerous = !!(enemy.enemyKind === 'lich' || enemy.reaperKind || enemy.ghastKind);
+        // If a Lich/Reaper is alive, save Stop for it — only spend on minor
+        // foes when facing a 3+ word cast (very high threat).
+        const threshold = !sourceDangerous && this.lichAlive() ? 3 : 2;
+        if (threat >= threshold) return { spell: stop, target: enemy };
       }
     }
 
@@ -204,6 +205,47 @@ export class SimpleAI {
       )
       .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp);
     return allies[0] ?? null;
+  }
+
+  private chooseElfAction(): AIDecision {
+    // Priority 1: heal a wounded ally within range if charges remain.
+    const healTarget = this.elfHealTarget();
+    if (healTarget) return { type: 'companion-heal', target: healTarget };
+
+    const enemies = this.game.livingEnemiesOf(this.self).filter((m) => !m.isInvisible());
+    if (enemies.length === 0) return { type: 'end' };
+
+    // Prefer the Lich if alive; otherwise target the strongest visible foe.
+    const lichEnemy = enemies.find((m) => m.enemyKind === 'lich');
+    const target = lichEnemy ?? [...enemies].sort((a, b) => b.effectiveStr() - a.effectiveStr())[0];
+    const nearest = [...enemies].sort((a, b) => dist(this.self.pos, a.pos) - dist(this.self.pos, b.pos))[0];
+    const nearDist = dist(this.self.pos, nearest.pos);
+
+    // Preferred range band: bow auto-hits within 15 tiles; stay at 5–13 tiles.
+    const PREF_MIN = 5 * RANGE_UNIT;  // retreat if any foe is closer than this
+    const PREF_MAX = 13 * RANGE_UNIT; // advance if target is farther than this
+
+    // Priority 2: shoot if in weapon range.
+    if (this.self.actions.main > 0 && this.game.canMelee(this.self, target)) {
+      return { type: 'melee', target };
+    }
+
+    // Priority 3: reposition to maintain preferred range.
+    if (this.self.actions.move > 0) {
+      if (nearDist < PREF_MIN) {
+        // Too close — back away from the nearest enemy.
+        const dx = this.self.x - nearest.x;
+        const dy = this.self.y - nearest.y;
+        const len = Math.max(1, Math.hypot(dx, dy));
+        const move = this.self.moveRange();
+        return { type: 'move', point: { x: this.self.x + (dx / len) * move, y: this.self.y + (dy / len) * move } };
+      }
+      if (dist(this.self.pos, target.pos) > PREF_MAX) {
+        return { type: 'move', point: stepTowards(this.self.pos, target.pos, this.self.moveRange()) };
+      }
+    }
+
+    return { type: 'end' };
   }
 
   private chooseHumanAction(): AIDecision {
@@ -271,6 +313,13 @@ export class SimpleAI {
     const chargeCost = Math.max(0, ability.chargeCost - (this.self.profile.blueSecondaryTier ? 1 : 0));
     if (this.self.hasColorCharges(chargeCost)) return true;
     return this.self.profile.blackSecondaryTier && chargeCost - this.self.colorCharges <= 2;
+  }
+
+  /** True when any living enemy is a Lich or Reaper (dangerous boss units). */
+  private lichAlive(): boolean {
+    return this.game.mages.some(
+      (m) => m.team !== this.self.team && m.alive && (m.enemyKind === 'lich' || !!m.reaperKind)
+    );
   }
 
   private bestOffensiveSpell(action: 'main' | 'bonus', enemy: Mage): Spell | null {
