@@ -478,13 +478,7 @@ export class Mage {
     this.movedThisTurn = false;
     this.dealtDamageThisTurn = false;
     this.distMovedThisTurn = 0;
-    this.momentumStacks = 0;
-    this.anchorStacks = 0;
-    this.rageBonus = 0;
-    this.greedStacks = 0;
-    this.greedArmed = false;
-    this.spellcastActive = false;
-    this.thunderStacks = 0;
+    this.rageBonus = 0;    this.spellcastActive = false;
     this.hasCastThisTurn = false;
     this.focusNextSpell = false;
     this.eldritchDefend = false;
@@ -495,8 +489,6 @@ export class Mage {
     this.firstBlackSpellUsed = false;
     this.manaMilledOnce = false;
     this.wallAngle = 0;
-    this.weaponEnchant = undefined;
-    this.lightningEchoWeapon = undefined;
     this.sabotagedItems.clear();
     this.bindMantleCharges = 0;
     this.conjuredBowFiredThisTurn = false;
@@ -607,7 +599,7 @@ export class Mage {
    */
   swamprunRest(rng: Dice): void {
     const half = (v: number): number => {
-      const h = v / 2;
+      const h = v * 0.75;
       if (Number.isInteger(h)) return h;
       return rng.chance(0.5) ? Math.ceil(h) : Math.floor(h);
     };
