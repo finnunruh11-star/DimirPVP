@@ -1617,6 +1617,414 @@ registerSpell({
   },
 });
 
+
+// ===========================================================================
+//  ADDITIONAL FIRE / LIGHTNING COMBOS
+//  Cheat-code words Fire and Lightning paired with every standard word, plus
+//  the Fire/Lightning/Veil/Pierce/Bind three-word set (Bind standing in for
+//  Mind, since Mind's three-word slots with this set are already covered).
+// ===========================================================================
+
+registerSpell({
+  name: 'Fire Shatter',
+  words: ['fire', 'shatter'],
+  actionType: 'main',
+  range: R(5),
+  targeting: 'point',
+  dc: 12,
+  aoe: { kind: 'cone', radius: R(5), degrees: CONE_DEGREES },
+  description:
+    '1d6 shatter damage to everything in a 90° cone (range 5), and apply 1 Fire to each enemy hit.',
+  visual: { preset: 'burst', color: 0xff6a3d, size: 62, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const amount = rollDice(ctx, '1d6', 'Fire Shatter');
+    const hits = coneDamage(ctx, ctx.targetPoint, R(5), CONE_DEGREES, dmg(amount, 'shatter', 'physical'));
+    for (const h of hits) applyFireStacks(ctx, h, 1);
+  },
+});
+
+registerSpell({
+  name: 'Fire Corrode',
+  words: ['fire', 'corrode'],
+  actionType: 'bonus',
+  range: R(10),
+  targeting: 'point',
+  dc: 11,
+  aoe: { kind: 'circle', radius: R(1.6) },
+  description:
+    '1d6 corrosive damage to all enemies in a small area (radius 1.6, range 10), and apply 1 Fire to each hit.',
+  visual: { preset: 'burst', color: 0xd9a23b, size: 60, speed: 1 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const amount = rollDice(ctx, '1d6', 'Fire Corrode');
+    const hits = areaDamage(ctx, ctx.targetPoint, R(1.6), dmg(amount, 'corrosive', 'physical'));
+    for (const m of hits) applyFireStacks(ctx, m, 1);
+  },
+});
+
+registerSpell({
+  name: 'Fire Shadow',
+  words: ['fire', 'shadow'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'point',
+  dc: 11,
+  aoe: { kind: 'circle', radius: R(2) },
+  description:
+    'At a point (range 15), every enemy within range 2 takes 1d6 Fire and gains 1 Fire, then leave a shadow pool there for 5 turns.',
+  visual: { preset: 'burst', color: 0xd6602a, size: 58, speed: 1.1 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const amount = rollDice(ctx, '1d6', 'Fire Shadow');
+    const hits = areaDamage(ctx, ctx.targetPoint, R(2), dmg(amount, 'fire', 'physical'), { canMiss: false });
+    for (const m of hits) applyFireStacks(ctx, m, 1);
+    placeShadow(ctx, ctx.targetPoint, 5);
+  },
+});
+
+registerSpell({
+  name: 'Fire Curse',
+  words: ['fire', 'curse'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 11,
+  description:
+    'Curse one enemy (range 15): 1d3 fire damage each turn for 4 turns, and apply 2 Fire immediately.',
+  visual: { preset: 'beam', color: 0xff7a45, size: 6, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Fire Curse',
+      duration: 4,
+      damage: dmg(2, 'fire', 'physical'),
+      damageSpec: '1d3',
+    });
+    applyFireStacks(ctx, ctx.target, 2);
+  },
+});
+
+registerSpell({
+  name: 'Fire Bind',
+  words: ['fire', 'bind'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 12,
+  description:
+    '1d6 Fire damage to one enemy (range 15), root it (movement stun) for 3 turns, and apply 2 Fire.',
+  visual: { preset: 'projectile', color: 0xff5a36, size: 11, speed: 1.4 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Bind'), 'fire', 'physical'));
+    if (!ctx.target.alive) return;
+    applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
+    applyFireStacks(ctx, ctx.target, 2);
+  },
+});
+
+registerSpell({
+  name: 'Lightning Shatter',
+  words: ['lightning', 'shatter'],
+  actionType: 'main',
+  range: R(5),
+  targeting: 'point',
+  dc: 12,
+  aoe: { kind: 'cone', radius: R(5), degrees: CONE_DEGREES },
+  description:
+    '1d6 plus 1 damage per 6 Lightning power in a 90° cone (range 5); each enemy hit has a 25% chance to be fully stunned for 2 turns.',
+  visual: { preset: 'burst', color: 0xffe45c, size: 62, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const power = lightningPower(ctx);
+    const amount = rollDice(ctx, '1d6', 'Lightning Shatter') + Math.floor(power / 6);
+    const hits = coneDamage(ctx, ctx.targetPoint, R(5), CONE_DEGREES, dmg(amount, 'fire', 'physical'));
+    for (const h of hits) {
+      if (ctx.rng.chance(0.25)) applyStun(ctx, h, { duration: 2, type: 'full' });
+    }
+  },
+});
+
+registerSpell({
+  name: 'Lightning Corrode',
+  words: ['lightning', 'corrode'],
+  actionType: 'bonus',
+  range: R(10),
+  targeting: 'point',
+  dc: 12,
+  aoe: { kind: 'circle', radius: R(1.6) },
+  description:
+    '1d6 plus 1 damage per 8 Lightning power to all enemies in a small area (radius 1.6, range 10). Each hit has a 33% chance to take 1 corrosive damage per turn for 2 turns.',
+  visual: { preset: 'burst', color: 0xc7e85c, size: 60, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const power = lightningPower(ctx);
+    const amount = rollDice(ctx, '1d6', 'Lightning Corrode') + Math.floor(power / 8);
+    const hits = areaDamage(ctx, ctx.targetPoint, R(1.6), dmg(amount, 'fire', 'physical'));
+    for (const m of hits) {
+      if (ctx.rng.chance(0.33)) {
+        applyDot(ctx, m, { name: 'Corrosion', duration: 2, damage: dmg(1, 'corrosive', 'physical') });
+      }
+    }
+  },
+});
+
+registerSpell({
+  name: 'Lightning Shadow',
+  words: ['lightning', 'shadow'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 12,
+  description:
+    'Deal 1d6 plus 1 damage per 6 Lightning power to one enemy (range 15), then leave a shadow pool at its location for 5 turns.',
+  visual: { preset: 'beam', color: 0xd0e85c, size: 8, speed: 1.5 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const power = lightningPower(ctx);
+    const amount = rollDice(ctx, '1d6', 'Lightning Shadow') + Math.floor(power / 6);
+    const spot = { ...ctx.target.pos };
+    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    placeShadow(ctx, spot, 5);
+  },
+});
+
+registerSpell({
+  name: 'Lightning Curse',
+  words: ['lightning', 'curse'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 12,
+  description:
+    'Deal 1d6 plus 1 damage per 6 Lightning power to one enemy (range 15), then curse it for 1d3 fire damage each turn for 4 turns.',
+  visual: { preset: 'beam', color: 0xffc95c, size: 7, speed: 1.4 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const power = lightningPower(ctx);
+    const amount = rollDice(ctx, '1d6', 'Lightning Curse') + Math.floor(power / 6);
+    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    if (!ctx.target.alive) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Lightning Curse',
+      duration: 4,
+      damage: dmg(2, 'fire', 'physical'),
+      damageSpec: '1d3',
+    });
+  },
+});
+
+registerSpell({
+  name: 'Lightning Bind',
+  words: ['lightning', 'bind'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 12,
+  description:
+    'Deal 1d6 plus 1 damage per 6 Lightning power to one enemy (range 15) and root it (movement stun) for 3 turns.',
+  visual: { preset: 'beam', color: 0x6ad1ff, size: 7, speed: 1.4 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const power = lightningPower(ctx);
+    const amount = rollDice(ctx, '1d6', 'Lightning Bind') + Math.floor(power / 6);
+    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    if (ctx.target.alive) applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  THREE-WORD BIND VARIANTS
+//  The cheat set {Fire, Lightning, Veil, Mind, Pierce} already has all ten of
+//  its 3-word combinations implemented above. These swap Mind for the
+//  standard word Bind wherever Mind actually appeared in one of those ten,
+//  giving the remaining six combinations of {Fire, Lightning, Veil, Bind, Pierce}.
+// ---------------------------------------------------------------------------
+
+registerSpell({
+  name: 'Fire Lightning Bind',
+  words: ['fire', 'lightning', 'bind'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Deal 1d6 plus 1 damage per 5 Lightning power (range 15), apply up to 3 Fire based on that power, and root the target (movement stun) for 3 turns plus 1 per 10 power (max 6).',
+  visual: { preset: 'beam', color: 0xff9d36, size: 13, speed: 1.6 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const power = lightningPower(ctx);
+    const amount = rollDice(ctx, '1d6', 'Fire Lightning Bind') + Math.floor(power / 5);
+    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    if (!ctx.target.alive) return;
+    applyFireStacks(ctx, ctx.target, Math.min(3, 1 + Math.floor(power / 10)));
+    applyStun(ctx, ctx.target, { duration: Math.min(6, 3 + Math.floor(power / 10)), type: 'movement' });
+  },
+});
+
+registerSpell({
+  name: 'Lightning Veil Bind',
+  words: ['lightning', 'veil', 'bind'],
+  actionType: 'main',
+  range: R(20),
+  targeting: 'point',
+  dc: 14,
+  description:
+    'Root enemies within range 3 of your departure (movement stun), blink by Lightning power, repeat at arrival, then become invisible.',
+  visual: { preset: 'burst', color: 0x8fa7ff, size: R(3), speed: 1.7 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const power = lightningPower(ctx);
+    const origin = { ...ctx.caster.pos };
+    for (const target of ctx.game.magesInRadius(origin, R(3), ctx.caster)) {
+      if (target.team !== ctx.caster.team) applyStun(ctx, target, { duration: 2, type: 'movement' });
+    }
+    blinkstep(ctx, ctx.caster, {
+      toPoint: ctx.targetPoint,
+      distance: R(Math.min(20, power * (ctx.crit ? 2 : 1))),
+    });
+    for (const target of ctx.game.magesInRadius(ctx.caster.pos, R(3), ctx.caster)) {
+      if (target.team !== ctx.caster.team) applyStun(ctx, target, { duration: 2, type: 'movement' });
+    }
+    applyInvisibility(ctx, ctx.caster, {
+      duration: Math.max(1, Math.ceil(power / 8)),
+      mode: 'full',
+    });
+  },
+});
+
+registerSpell({
+  name: 'Lightning Bind Pierce',
+  words: ['lightning', 'bind', 'pierce'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 14,
+  description:
+    'Chain through random unvisited allies or enemies within Lightning-power range. Each jump deals 1d6 pierce damage and roots the target (movement stun) for 2 turns; range falls by 2 each jump.',
+  visual: { preset: 'nova', color: 0x8ad1ff, size: 76, speed: 1.6 },
+  async cast(ctx) {
+    const power = lightningPower(ctx);
+    let range = R(power * (ctx.crit ? 2 : 1));
+    const visited = new Set<Mage>();
+    while (range >= R(1) && ctx.caster.alive) {
+      const candidates = ctx.game.mages.filter(
+        (target) =>
+          target !== ctx.caster &&
+          target.alive &&
+          !visited.has(target) &&
+          Math.hypot(target.x - ctx.caster.x, target.y - ctx.caster.y) <= range
+      );
+      if (candidates.length === 0) break;
+      const target = ctx.rng.pick(candidates);
+      visited.add(target);
+      const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
+      blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
+      await bolt;
+      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Lightning Bind Pierce'), 'pierce', 'physical'), {
+        canMiss: false,
+      });
+      if (target.alive) applyStun(ctx, target, { duration: 2, type: 'movement' });
+      range -= R(2);
+    }
+  },
+});
+
+registerSpell({
+  name: 'Fire Veil Bind',
+  words: ['fire', 'veil', 'bind'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Root an enemy (movement stun) for 4 turns and apply 3 Fire, then become fully invisible for 2 turns (range 15).',
+  visual: { preset: 'beam', color: 0xff8060, size: 11, speed: 1.5 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyStun(ctx, ctx.target, { duration: 4, type: 'movement' });
+    applyFireStacks(ctx, ctx.target, 3);
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+  },
+});
+
+registerSpell({
+  name: 'Fire Bind Pierce',
+  words: ['fire', 'bind', 'pierce'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Dash up to range 10 toward an enemy, deal 1d6 Fire, root it (movement stun) for 3 turns, then apply 2 Fire.',
+  visual: { preset: 'projectile', color: 0xff6a55, size: 13, speed: 1.6 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dash(ctx, ctx.caster, { toPoint: ctx.target.pos, distance: R(10) });
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Bind Pierce'), 'fire', 'physical'), {
+      canMiss: false,
+    });
+    if (!ctx.target.alive) return;
+    applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
+    applyFireStacks(ctx, ctx.target, 2);
+  },
+});
+
+registerSpell({
+  name: 'Veil Bind Pierce',
+  words: ['veil', 'bind', 'pierce'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'any',
+  dc: 4,
+  description:
+    'Repeatedly roll a d6. On each new result, teleport to a point within range 4 (ignoring roots and barriers), then deal 1d3 pierce damage and root (movement stun, 1 turn) an enemy within range 5. Each teleport lets enemies react. The first time a number repeats, you turn fully invisible for 2 turns and the spell ends.',
+  visual: { preset: 'nova', color: 0x9ad1ff, size: 60, speed: 1.3 },
+  async cast(ctx) {
+    const seen = new Set<number>();
+    // A d6 can yield at most 6 distinct values, so a repeat is forced by the
+    // 7th roll — the loop is bounded and always terminates.
+    for (let i = 0; i < 6; i++) {
+      const roll = rollDice(ctx, '1d6', 'Veil Bind Pierce');
+      if (seen.has(roll)) {
+        applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+        ctx.log(`${ctx.caster.name} glimpses a familiar number and vanishes completely.`);
+        return;
+      }
+      seen.add(roll);
+      // Blink to a point within R(4), then strike an enemy within R(5) of it.
+      const point = ctx.requestPoint
+        ? await ctx.requestPoint({
+            maxRange: R(4),
+            origin: ctx.caster.pos,
+            prompt: `${ctx.caster.name}: blink to a point (R4) — roll ${roll}.`,
+          })
+        : ctx.caster.pos;
+      const center = point ?? ctx.caster.pos;
+      // A teleport, not a physical dash — unaffected by roots, shatter zones, etc.
+      blinkstep(ctx, ctx.caster, { toPoint: center, distance: R(4) });
+      // Each blink is its own step: opponents may react at this exact timing.
+      await ctx.reactionWindow?.('Veil Bind Pierce — blink', ctx.caster.pos);
+      if (!ctx.caster.alive) return;
+      const foe = ctx.requestEnemy
+        ? await ctx.requestEnemy({
+            range: R(5),
+            origin: ctx.caster.pos,
+            prompt: `${ctx.caster.name}: strike an enemy within R5 of the mark.`,
+          })
+        : enemyNear(ctx, ctx.caster.pos, R(5));
+      if (foe) {
+        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Bind Pierce'), 'pierce', 'physical'));
+        if (foe.alive) applyStun(ctx, foe, { duration: 1, type: 'movement' });
+        // Show the strike land (dice + hit animation) before the next d6 roll.
+        await ctx.resolveImpacts?.();
+      }
+    }
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+  },
+});
+
 registerSpell({
   name: 'Drain',
   words: ['drain'],
@@ -2584,4 +2992,3 @@ registerSpell({
     });
   },
 });
-
