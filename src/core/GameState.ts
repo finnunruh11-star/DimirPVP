@@ -1972,9 +1972,9 @@ export class GameState {
       if (dist(other.pos, m.pos) > blast) continue;
       const ctx = this.effectContext(m, other, null);
       const fire = this.rng.roll('1d20').total;
-      const heat = this.rng.roll('1d20').total;
+      const blaze = this.rng.roll('1d20').total;
       dealDamage(ctx, other, dmg(fire, 'fire', 'physical'), { canMiss: false });
-      dealDamage(ctx, other, dmg(heat, 'heat', 'physical'), { canMiss: false });
+      dealDamage(ctx, other, dmg(blaze, 'fire', 'physical'), { canMiss: false });
     }
     m.thunderStacks = 0;
     m.hp = 0;
@@ -1989,7 +1989,7 @@ export class GameState {
     const self = this.effectContext(source, source, null);
     const bite = this.rng.roll('1d6').total;
     this.log(`${source.name} charges the storm — spends ${cost} mana and takes ${bite} true damage.`);
-    dealDamage(self, source, dmg(bite, 'heat', 'physical'), { canMiss: false, trueDamage: true });
+    dealDamage(self, source, dmg(bite, 'fire', 'physical'), { canMiss: false, trueDamage: true });
     if (!source.alive) return;
     const gained = this.rng.roll('1d4').total;
     source.addThunderStacks(gained);
@@ -2080,15 +2080,14 @@ export class GameState {
     this.checkThunderDeath(source);
   }
 
-  /** One lightning bounce: (stacks)d3 x pct, split heat/light/typeless, armour-ignoring. */
+  /** One lightning bounce: (stacks)d3 x pct, armour-ignoring fire. */
   private dealThunderBolt(source: Mage, target: Mage, stacks: number, pct: number): void {
     const dice = this.rng.roll(`${stacks}d3`).total;
     const total = Math.ceil(dice * pct); // reduce dice by % but round favourably
     if (total <= 0) return;
     const ctx = this.effectContext(source, target, null);
-    // 34% heat / 33% light / 32% magical-typeless — mechanically identical (all
-    // unblocked by armour), so dealt as a single heat bolt for clarity.
-    dealDamage(ctx, target, dmg(total, 'heat', 'physical'), { canMiss: false, ignoreArmor: true });
+    // Dealt as a single armour-ignoring fire bolt for clarity.
+    dealDamage(ctx, target, dmg(total, 'fire', 'physical'), { canMiss: false, ignoreArmor: true });
     this.log(`Lightning strikes ${target.name} for ${total} (${Math.round(pct * 100)}%).`);
   }
 
@@ -3011,7 +3010,7 @@ export class GameState {
           const mentalEcho = Math.max(1, Math.round(dealt * 0.25));
           game.log(`${source.name}'s weapon releases a Lightning Echo.`);
           dealDamage(ctx, target, dmg(fireEcho, 'fire', 'physical'), { canMiss: false });
-          dealDamage(ctx, target, dmg(mentalEcho, 'heat', 'sanity'), { canMiss: false });
+          dealDamage(ctx, target, dmg(mentalEcho, 'fire', 'sanity'), { canMiss: false });
           if (target.alive) game.applyBlueflareStacks(target, 1, source);
         }
         // Curse Corrode enchant: every landed strike plants a fresh corrosion.

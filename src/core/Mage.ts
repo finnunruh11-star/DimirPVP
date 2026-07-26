@@ -1361,16 +1361,20 @@ export class Mage {
   resistMultiplier(type: DamageType): number {
     let immune = false;
     let mult = 1;
+    // Light-weak creatures are also weak to fire (fire subsumes the old heat
+    // type): a 'light' weakness counts as a 'fire' weakness too.
+    const isWeakTo = (t: DamageType): boolean =>
+      t === type || (type === 'fire' && t === 'light');
     // Intrinsic creature traits (Swamprun monsters) stack with any gear.
     if (this.intrinsicImmuneTypes.includes(type)) immune = true;
     for (const t of this.intrinsicResistTypes) if (t === type) mult *= 0.5;
-    for (const t of this.intrinsicWeakTypes) if (t === type) mult *= 2;
+    for (const t of this.intrinsicWeakTypes) if (isWeakTo(t)) mult *= 2;
     for (const id of this.equippedItems()) {
       const r = getItem(id).resist;
       if (!r) continue;
       if (r.immune?.includes(type)) immune = true;
       if (r.resist?.includes(type)) mult *= 0.5;
-      if (r.weak?.includes(type)) mult *= 2;
+      if (r.weak?.some(isWeakTo)) mult *= 2;
     }
     return immune ? 0 : mult;
   }

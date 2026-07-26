@@ -9,7 +9,6 @@ export type DamageType =
   | 'corrosive'
   | 'slashing'
   | 'fire'
-  | 'heat'
   | 'light'
   | 'typeless'
   | 'generic';

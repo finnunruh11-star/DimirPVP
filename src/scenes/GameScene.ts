@@ -129,6 +129,37 @@ const ANIM_SETS: AnimSet[] = [
   },
 ];
 
+// One-shot slash/impact effects (from the Pixel Art Slashes library) used to
+// dress up melee auto-attacks and the Cleave sweep, which otherwise had no
+// dedicated animation. Each folder is a sequence of individual frame PNGs, so
+// they load the same way as the mage animation sets above.
+const FX_FRAME_SETS: AnimSet[] = [
+  {
+    // A quick single swipe arc — plays on a basic weapon / unarmed strike.
+    key: 'fx-slash-arc',
+    frames: globFrames(
+      import.meta.glob('../../Pixel Art Animations - Slashes/128x128/Slash 1/color5/Frames/*.png', {
+        eager: true,
+        import: 'default',
+      })
+    ),
+    frameRate: 26,
+    repeat: 0,
+  },
+  {
+    // A broad crescent sweep — plays on the 180° Cleave.
+    key: 'fx-slash-sweep',
+    frames: globFrames(
+      import.meta.glob('../../Pixel Art Animations - Slashes/128x128/Slash 3/color5/frames/*.png', {
+        eager: true,
+        import: 'default',
+      })
+    ),
+    frameRate: 22,
+    repeat: 0,
+  },
+];
+
 const MOVE_DURATION = 1000;
 const DASH_DURATION = 333;
 
@@ -616,6 +647,9 @@ export class GameScene extends Phaser.Scene {
 
   preload(): void {
     for (const set of ANIM_SETS) {
+      set.frames.forEach((url, i) => this.load.image(`${set.key}-${i}`, url));
+    }
+    for (const set of FX_FRAME_SETS) {
       set.frames.forEach((url, i) => this.load.image(`${set.key}-${i}`, url));
     }
     // First frame of the scarab gif, used until the animated frames decode.
@@ -2954,6 +2988,14 @@ export class GameScene extends Phaser.Scene {
         me.spend('main');
         me.cleaveUsed = true;
         const aim = { x: cmd.x, y: cmd.y };
+        // A broad crescent sweep in front of the swinger dresses the 180° arc.
+        const reach = me.activeWeapon()?.rangePx ?? MELEE_RANGE;
+        const dir = Math.atan2(aim.y - me.pos.y, aim.x - me.pos.x);
+        const center = {
+          x: me.pos.x + Math.cos(dir) * reach * 0.55,
+          y: me.pos.y + Math.sin(dir) * reach * 0.55,
+        };
+        void this.vfxSlash('fx-slash-sweep', center, dir, reach * 2.6);
         await this.runStack(
           this.gs.makeActionItem({
             source: me,
@@ -7952,7 +7994,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buildMageAnimations(): void {
-    for (const set of ANIM_SETS) {
+    for (const set of [...ANIM_SETS, ...FX_FRAME_SETS]) {
       if (this.anims.exists(set.key)) continue;
       this.anims.create({
         key: set.key,
@@ -8627,7 +8669,14 @@ export class GameScene extends Phaser.Scene {
     const to: Vec2 | null = item.target ? item.target.pos : item.targetPoint ?? null;
 
     if (item.kind === 'melee') {
-      return this.vfxBurst(item.target?.pos ?? from, 0xffffff, 34, 1.6);
+      const at = item.target?.pos ?? from;
+      // A basic weapon / unarmed strike sweeps a quick slash arc across the
+      // struck foe, aimed along the attack direction.
+      if (this.anims.exists('fx-slash-arc')) {
+        const angle = Math.atan2(at.y - from.y, at.x - from.x);
+        return this.vfxSlash('fx-slash-arc', at, angle, MAGE_RADIUS * 4.2);
+      }
+      return this.vfxBurst(at, 0xffffff, 34, 1.6);
     }
 
     // Ground-targeted elemental spells paint their sprite sheet where they land
@@ -8833,6 +8882,31 @@ export class GameScene extends Phaser.Scene {
         }
       }
       spr.play(key);
+      spr.once('animationcomplete', () => {
+        spr.destroy();
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Play a one-shot slash animation (from the Pixel Art Slashes library) centred
+   * at `at`, rotated to `angle` (the sheets face right by default), and scaled so
+   * its width spans `sizePx`. Used to dress up melee strikes and the Cleave sweep.
+   */
+  private vfxSlash(animKey: string, at: Vec2, angle: number, sizePx: number): Promise<void> {
+    return new Promise((resolve) => {
+      const firstFrame = `${animKey}-0`;
+      if (!this.anims.exists(animKey) || !this.textures.exists(firstFrame)) {
+        resolve();
+        return;
+      }
+      const spr = this.add.sprite(at.x, at.y, firstFrame).setDepth(32);
+      const frameW = spr.width || 1;
+      spr.setOrigin(0.5, 0.5);
+      spr.setScale(sizePx / frameW);
+      spr.setRotation(angle);
+      spr.play(animKey);
       spr.once('animationcomplete', () => {
         spr.destroy();
         resolve();
