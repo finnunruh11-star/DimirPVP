@@ -582,7 +582,7 @@ export class MenuScene extends Phaser.Scene {
     const idx = this.selected.indexOf(word);
     if (idx >= 0) {
       this.selected.splice(idx, 1);
-    } else if (this.selected.length < LOADOUT_SIZE) {
+    } else if (this.selected.length < this.loadoutLimit()) {
       this.selected.push(word);
     }
     this.nadActive = wasNad && this.isNadSelection();
@@ -597,7 +597,11 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private loadoutReady(): boolean {
-    return this.selected.length === LOADOUT_SIZE || this.isNadSelection();
+    return this.selected.length === this.loadoutLimit() || (this.mode !== 'expedition' && this.isNadSelection());
+  }
+
+  private loadoutLimit(): number {
+    return this.mode === 'expedition' ? 3 : LOADOUT_SIZE;
   }
 
   private refresh(): void {
@@ -605,7 +609,7 @@ export class MenuScene extends Phaser.Scene {
     const humans = this.humanSeats();
     const draftingSeat = humans[this.draftIndex] ?? 0;
     const who = `Player ${draftingSeat + 1}`;
-    this.titleText.setText(`2 // BUILD ${who.toUpperCase()}  •  ${this.selected.length}/${LOADOUT_SIZE} WORDS`);
+    this.titleText.setText(`2 // BUILD ${who.toUpperCase()}  •  ${this.selected.length}/${this.loadoutLimit()} WORDS`);
     if (this.nadActive || this.isNadSelection()) {
       this.hintText.setText('✨ NAD unlocked: Mind · Shatter · Twist · Reality · optional fifth word');
     } else if (this.katActive) {

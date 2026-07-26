@@ -171,9 +171,17 @@ export class SimpleAI {
     const target = this.chooseTarget();
     if (!target) return { type: 'end' };
     const wantsLantern = target.isEthereal();
-    if (wantsLantern && this.self.hands.includes('warHammer')) this.self.unequipHand('warHammer');
+    if (wantsLantern) {
+      for (const id of [...this.self.hands]) {
+        if (id === 'warHammer' || id === 'runicMaul') this.self.unequipHand(id);
+      }
+    }
     if (!wantsLantern && this.self.hands.includes('lantern')) this.self.unequipHand('lantern');
-    const wanted = wantsLantern ? 'lantern' : 'warHammer';
+    const wanted = wantsLantern
+      ? 'lantern'
+      : this.self.hands.includes('runicMaul') || this.self.bag.includes('runicMaul')
+        ? 'runicMaul'
+        : 'warHammer';
     if (!this.self.hands.includes(wanted) && this.self.bag.includes(wanted)) this.self.equipHand(wanted);
     if (this.self.actions.main > 0 && this.game.canMelee(this.self, target)) {
       return { type: 'melee', target };

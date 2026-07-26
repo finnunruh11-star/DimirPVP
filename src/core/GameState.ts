@@ -128,6 +128,7 @@ export interface MutivargZone {
  */
 export class GameState {
   mages: Mage[];
+  onMageDefeated?: (target: Mage, source: Mage) => void;
   currentIndex = 0;
   round = 1;
   stack: StackItem[] = [];

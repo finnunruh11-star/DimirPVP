@@ -225,6 +225,7 @@ export function dealDamage(
     noImpactFx?: boolean;
   } = {}
 ): number {
+  const targetWasAlive = target.alive;
   const canMiss = opts.canMiss !== false;
   const isAoe = !!opts.aoe;
   const isTrue = !!opts.trueDamage;
@@ -388,6 +389,8 @@ export function dealDamage(
     if (target.maxSanity > 0) target.sanity = target.maxSanity;
     ctx.log(`${target.name} refuses death — its phylactery drags it back at half strength!`);
   }
+
+  if (targetWasAlive && !target.alive) ctx.game.onMageDefeated?.(target, ctx.caster);
 
   // A landed hit can shatter veils. The victim's veil may be torn off; the
   // attacker may reveal themselves by striking. DoT ticks (canMiss === false)

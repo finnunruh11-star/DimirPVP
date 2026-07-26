@@ -40,6 +40,7 @@ export const SLOT_CAPS: Record<ItemSlot, number> = {
 
 export type ItemId =
   | 'woodenBow'
+  | 'moonfireBow'
   | 'dwarfCrossbow'
   | 'mutivargRod'
   | 'bastionSword'
@@ -59,6 +60,7 @@ export type ItemId =
   | 'ironwallGreatshield'
   | 'lungingEdge'
   | 'warHammer'
+  | 'runicMaul'
   | 'arrow'
   | 'manaPotion'
   | 'healthPotion'
@@ -256,6 +258,8 @@ export interface ItemDef {
   blurb: string;
   /** Wands don't block spellcasting even though they fill a hand slot. */
   isWand?: boolean;
+  /** Expedition companion weapon specialization. */
+  weaponFamily?: 'bow' | 'hammer';
   weapon?: WeaponMod;
   armor?: ArmorMod;
   /** Damage-type resistances / immunities / weaknesses (multiplicative, post-armour). */
@@ -577,6 +581,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'epic',
     cost: g(0),
     weight: 12,
+    weaponFamily: 'hammer',
     blurb:
       '+50% Strength blunt (shatter) damage. Each hit knocks the target back 3 tiles. Fairly heavy.',
     weapon: {
@@ -594,6 +599,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 1,
+    weaponFamily: 'bow',
     blurb:
       'Dex attack +3 (pierce). Always hits within 15 tiles; 50% chance to hit from 16\u201320 tiles; cannot reach farther. Consumes an arrow per shot.',
     weapon: {
@@ -614,6 +620,42 @@ export const ITEM_DEFS: ItemDef[] = [
     weight: 1,
     blurb: 'Reduce all incoming mental (sanity) damage by 1.',
     mentalReduce: 1,
+  },
+  {
+    id: 'moonfireBow',
+    name: 'Moonfire Bow',
+    slot: 'hand',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 2,
+    blurb: 'Dex attack +5 with +50% damage. Accurate to 20 tiles and carries the Elf Ranger burning arrows.',
+    weaponFamily: 'bow',
+    weapon: {
+      rangePx: 24 * U,
+      kind: 'dex',
+      dexBonus: 5,
+      multiplier: 1.5,
+      usesArrows: true,
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 20 * U, maxRange: 24 * U, farChance: 0.75 },
+    },
+  },
+  {
+    id: 'runicMaul',
+    name: 'Runic Maul',
+    slot: 'hand',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 14,
+    blurb: 'Double Strength shatter damage and knock targets back 4 tiles.',
+    weaponFamily: 'hammer',
+    weapon: {
+      rangePx: MELEE_RANGE,
+      kind: 'strength',
+      multiplier: 2,
+      damageType: 'shatter',
+      knockbackUnits: 4,
+    },
   },
   {
     id: 'gazeTimezBracelet',

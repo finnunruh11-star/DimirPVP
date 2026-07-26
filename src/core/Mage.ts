@@ -19,7 +19,7 @@ import { Dev } from '../config/dev';
 import type { WordId } from './Words';
 import { WORDS } from './Words';
 import type { Dice } from './Dice';
-import type { ColorProfile } from './Colors';
+import type { ColorName, ColorProfile } from './Colors';
 import { computeColorProfile } from './Colors';
 import type { MageClass } from './Classes';
 import { DEFAULT_MAGE_CLASS } from './Classes';
@@ -61,6 +61,8 @@ export class Mage {
 
   /** Color identity derived from the loadout (primary / secondary tiers). */
   profile: ColorProfile;
+  preferredPrimaryColor: ColorName | null = null;
+  preferredSecondaryColor: ColorName | null = null;
 
   /**
    * Chosen class (Objects / Life / Hexcraft). Picks the second colour-ability
@@ -404,6 +406,23 @@ export class Mage {
     if (this.reaperDeletedBy) return false;
     if (this.unkillable) return true;
     return this.hp > 0 && this.sanity > 0;
+  }
+
+  /** Replace known words and immediately rebuild identity and word charges. */
+  setLoadout(
+    words: readonly WordId[],
+    preferredPrimary: ColorName | null = this.preferredPrimaryColor,
+    preferredSecondary: ColorName | null = this.preferredSecondaryColor
+  ): void {
+    this.loadout = [...words];
+    this.preferredPrimaryColor = preferredPrimary;
+    this.preferredSecondaryColor = preferredSecondary;
+    this.profile = computeColorProfile(this.loadout, preferredPrimary, preferredSecondary);
+    const bonusCharge = this.profile.bluePrimaryTier ? 1 : 0;
+    this.charges = {};
+    for (const word of this.loadout) {
+      this.charges[word] = WORDS[word].charges + bonusCharge;
+    }
   }
 
   /** True if this mage's loadout grants a reaction at all. */

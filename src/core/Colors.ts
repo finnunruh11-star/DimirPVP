@@ -119,7 +119,11 @@ export interface ColorProfile {
 }
 
 /** Work out a mage's color identity from its loadout. */
-export function computeColorProfile(loadout: WordId[]): ColorProfile {
+export function computeColorProfile(
+  loadout: WordId[],
+  preferredPrimary?: ColorName | null,
+  preferredSecondary?: ColorName | null
+): ColorProfile {
   const counts: Record<ColorName, number> = { black: 0, blue: 0, white: 0, red: 0 };
   for (const w of loadout) {
     const c = WORD_COLOR[w];
@@ -139,6 +143,25 @@ export function computeColorProfile(loadout: WordId[]): ColorProfile {
   const ranked = (['black', 'blue', 'white', 'red'] as ColorName[])
     .filter((c) => counts[c] > 0)
     .sort((a, b) => counts[b] - counts[a] || firstSeen[a] - firstSeen[b]);
+
+  if (
+    preferredPrimary &&
+    ranked.length > 1 &&
+    counts[preferredPrimary] === counts[ranked[0]]
+  ) {
+    ranked.splice(ranked.indexOf(preferredPrimary), 1);
+    ranked.unshift(preferredPrimary);
+  }
+
+  if (
+    preferredSecondary &&
+    preferredSecondary !== ranked[0] &&
+    ranked.length > 1 &&
+    counts[preferredSecondary] === counts[ranked[1]]
+  ) {
+    ranked.splice(ranked.indexOf(preferredSecondary), 1);
+    ranked.splice(1, 0, preferredSecondary);
+  }
 
   const primary: ColorName | null = ranked[0] ?? null;
   // A single-colour mage counts that colour as BOTH primary and secondary, so
