@@ -13,6 +13,8 @@ export const Dev = {
   infiniteActions: false,
   /** The AI takes no turn actions and declines every reaction (it just passes). */
   aiPassive: false,
+  /** Skip the rolling-dice popup entirely (results still apply instantly). */
+  skipDice: false,
 };
 
 export type DevToggle = keyof typeof Dev;
