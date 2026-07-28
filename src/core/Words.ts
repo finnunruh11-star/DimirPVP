@@ -192,52 +192,47 @@ export function comboKey(words: WordId[]): string {
 }
 
 // =============================================================================
-//  WORD GRAMMAR  (nouns / verbs / modifiers)
+//  WORD GRAMMAR  (nouns / verbs)
 // -----------------------------------------------------------------------------
 //  Words carry a grammatical kind used by the class system. A "class spell" is a
-//  word-combo made of ONLY nouns or ONLY verbs (and no modifier); such spells
+//  word-combo made of ONLY nouns or ONLY verbs; such spells
 //  align their effect toward the caster's class. See {@link isClassSpell} and
 //  the {@link MageClass} system (core/Classes.ts).
-//
-//  There are no modifier words yet — the 'modifier' kind and its disqualifying
-//  rule are wired ahead of that change. Words not yet slotted as noun/verb are
-//  'other' and never form a class spell.
 // =============================================================================
 
 export type WordKind = 'noun' | 'verb' | 'modifier' | 'other';
 
 export const WORD_KIND: Record<WordId, WordKind> = {
-  // Nouns — a thing.
-  shadow: 'noun',
-  mind: 'noun',
   // Verbs — an action.
-  pierce: 'verb',
-  shatter: 'verb',
-  bind: 'verb',
   curse: 'verb',
   corrode: 'verb',
-  veil: 'verb',
   drain: 'verb',
+  pierce: 'verb',
+  veil: 'verb',
+  bind: 'verb',
+  shatter: 'verb',
+  twist: 'verb',
+  slash: 'verb',
+  // Nouns — a thing.
+  lightning: 'noun',
+  mind: 'noun',
+  fire: 'noun',
   pain: 'noun',
-  fire: 'verb',
-  lightning: 'modifier',
+  shadow: 'noun',
+  reality: 'noun',
+  order: 'noun',
+  // Stop is not part of either class-spell category.
   stop: 'other',
-  // Not yet classified (secret/white words); never form class spells for now.
-  reality: 'other',
-  twist: 'other',
-  order: 'other',
-  slash: 'other',
 };
 
 /**
  * Whether a word-combo is a "class spell": every word shares one grammatical
- * kind — all nouns or all verbs — and none is a modifier. Such spells resolve
+ * kind — all nouns or all verbs. Such spells resolve
  * their effect toward the caster's class. Mixed noun/verb combos (e.g. Shadow
  * Bind) are ordinary spells.
  */
 export function isClassSpell(words: WordId[]): boolean {
   if (words.length === 0) return false;
-  if (words.some((w) => WORD_KIND[w] === 'modifier')) return false;
   const allNouns = words.every((w) => WORD_KIND[w] === 'noun');
   const allVerbs = words.every((w) => WORD_KIND[w] === 'verb');
   return allNouns || allVerbs;

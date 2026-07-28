@@ -18,6 +18,7 @@ const EASTER_WORD_ORDER: WordId[] = [
 ];
 
 export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun' | 'expedition';
+export type SwampPrepMode = 'quick' | 'custom' | 'creative';
 
 /** Which toggleable item catalogues the draft draws from. */
 export interface ItemSetSelection {
@@ -40,6 +41,8 @@ export interface SeatConfig {
 export interface MatchConfig {
   mode: MatchMode;
   loadouts: [WordId[], WordId[]];
+  /** Swamprun pre-combat character preparation. */
+  swampPrepMode?: SwampPrepMode;
   /**
    * Classes for the classic two-mage layout (parallel to {@link loadouts}).
    * N-player matches carry the class per seat in {@link seats} instead.
@@ -82,6 +85,7 @@ export class MenuScene extends Phaser.Scene {
   private mode: MatchMode = 'ai';
   private onlineRole: NetRole = 'host';
   private swampRole: 'local' | NetRole = 'local';
+  private swampPrepMode: SwampPrepMode = 'custom';
   private selected: WordId[] = [];
   /** Local N-player match setup. */
   private seatCount = 2;
@@ -127,6 +131,7 @@ export class MenuScene extends Phaser.Scene {
   private playersBtn!: Phaser.GameObjects.Text;
   private formatBtn!: Phaser.GameObjects.Text;
   private aiFillBtn!: Phaser.GameObjects.Text;
+  private swampPrepBtn!: Phaser.GameObjects.Text;
   /** One team-toggle button per seat (teams mode with 3+ combatants). */
   private seatBtns: Phaser.GameObjects.Text[] = [];
   private startBtn!: Phaser.GameObjects.Text;
@@ -294,6 +299,14 @@ export class MenuScene extends Phaser.Scene {
     this.playersBtn = this.makeButton(176, 563, '', () => this.cyclePlayers(), 245);
     this.formatBtn = this.makeButton(431, 563, '', () => this.toggleFormat(), 245);
     this.aiFillBtn = this.makeButton(686, 563, '', () => this.cycleAiFill(), 245);
+    this.swampPrepBtn = this.makeButton(431, 563, '', () => {
+      this.swampPrepMode = this.swampPrepMode === 'quick'
+        ? 'custom'
+        : this.swampPrepMode === 'custom'
+          ? 'creative'
+          : 'quick';
+      this.refresh();
+    }, 245);
 
     // Per-seat team pickers (teams mode with 3+ combatants) — build mixed sides
     // such as player + AI vs player + AI. Compact so the row fits under the modes.
@@ -744,6 +757,14 @@ export class MenuScene extends Phaser.Scene {
     this.formatBtn.setVisible(showSetup && this.mode !== 'swamprun');
     this.aiFillBtn.setText(`AI: ${this.aiCount}`);
     this.aiFillBtn.setVisible(showSetup);
+    const prepLabel: Record<SwampPrepMode, string> = {
+      quick: 'Prep: Quick start',
+      custom: 'Prep: Rolled stats + gear',
+      creative: 'Prep: Creative',
+    };
+    this.swampPrepBtn.setText(prepLabel[this.swampPrepMode]);
+    this.swampPrepBtn.setStyle({ backgroundColor: this.swampPrepMode === 'quick' ? '#182131' : '#24543f' });
+    this.swampPrepBtn.setVisible(showSetup && this.mode === 'swamprun');
 
     // Per-seat team pickers: only for teams mode with 3+ combatants, where the
     // split is actually a choice (e.g. player + AI vs player + AI).
@@ -823,6 +844,7 @@ export class MenuScene extends Phaser.Scene {
     const config: MatchConfig = {
       mode: this.mode,
       loadouts: [seats[0].loadout, seats[1]?.loadout ?? seats[0].loadout],
+      swampPrepMode: this.mode === 'swamprun' ? this.swampPrepMode : undefined,
       classes: [seats[0].mageClass ?? DEFAULT_MAGE_CLASS, seats[1]?.mageClass ?? DEFAULT_MAGE_CLASS],
       seats,
       itemSets: { ...this.itemSets },
@@ -936,10 +958,18 @@ export class MenuScene extends Phaser.Scene {
           });
         }
         const seed = (Math.floor(Math.random() * 0x7fffffff) + 1) | 0;
-        net.send({ k: 'start', mode: this.mode, seed, seats, itemSets: this.itemSets });
+        net.send({
+          k: 'start',
+          mode: this.mode,
+          seed,
+          seats,
+          itemSets: this.itemSets,
+          swampPrepMode: this.mode === 'swamprun' ? this.swampPrepMode : undefined,
+        });
         config = {
           mode: this.mode,
           loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],
+          swampPrepMode: this.mode === 'swamprun' ? this.swampPrepMode : undefined,
           seats,
           net,
           localTeam: seats[0].team,
@@ -962,6 +992,11 @@ export class MenuScene extends Phaser.Scene {
         config = {
           mode: startMode,
           loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],
+          swampPrepMode: startMode === 'swamprun'
+            ? startMsg.swampPrepMode === 'quick' || startMsg.swampPrepMode === 'creative'
+              ? startMsg.swampPrepMode
+              : 'custom'
+            : undefined,
           seats,
           net,
           localTeam: seats[mySeat]?.team ?? 2,

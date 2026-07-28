@@ -1,5 +1,5 @@
 import type { WordId } from '../core/Words';
-import { comboKey, WORDS } from '../core/Words';
+import { comboKey, isClassSpell, WORDS } from '../core/Words';
 import type { Spell } from './Spell';
 import type { ItemSet } from '../core/Items';
 import type { MageClass } from '../core/Classes';
@@ -48,7 +48,11 @@ function spellActive(s: Spell): boolean {
 
 export function registerSpell(spell: Omit<Spell, 'id'> & { id?: string }): Spell {
   const id = spell.id ?? comboKey(spell.words);
-  const full: Spell = { ...spell, id } as Spell;
+  const full: Spell = {
+    ...spell,
+    dc: isClassSpell(spell.words) ? classSpellDc(spell.words, spell.dc) : spell.dc,
+    id,
+  } as Spell;
   registry.set(comboKey(spell.words), full);
   return full;
 }
@@ -56,6 +60,24 @@ export function registerSpell(spell: Omit<Spell, 'id'> & { id?: string }): Spell
 /** Per-class body for one class-spell combo: everything a {@link Spell} has bar
  *  the shared `words`/`id` (those are derived from the combo + class). */
 export type ClassSpellVariant = Omit<Spell, 'id' | 'words'>;
+
+/** Class spells are deliberately easier to resolve than ordinary combinations. */
+function classSpellDc(words: WordId[], dc: number | undefined): number | undefined {
+  if (dc == null) return undefined;
+  if (words.length === 2) return 5;
+  if (words.length === 3) return Math.max(9, Math.min(13, dc - 2));
+  return dc;
+}
+
+function buildClassSpell(words: WordId[], cls: MageClass, variant: ClassSpellVariant): Spell {
+  const key = comboKey(words);
+  return {
+    ...variant,
+    dc: classSpellDc(words, variant.dc),
+    words,
+    id: `${key}@${cls}`,
+  } as Spell;
+}
 
 /**
  * Register a class spell: one word combination whose resolved definition depends
@@ -71,7 +93,7 @@ export function registerClassSpell(def: {
   const built = {} as Record<MageClass, Spell>;
   for (const cls of MAGE_CLASSES) {
     const v = def.variants[cls];
-    built[cls] = { ...v, words: def.words, id: `${key}@${cls}` } as Spell;
+    built[cls] = buildClassSpell(def.words, cls, v);
   }
   classRegistry.set(key, built);
   return built;
@@ -91,15 +113,15 @@ export function registerClassSpellVariants(def: {
   const built = classRegistry.get(key) ?? {};
   for (const cls of MAGE_CLASSES) {
     const variant = def.variants[cls];
-    if (variant) built[cls] = { ...variant, words: def.words, id: `${key}@${cls}` } as Spell;
+    if (variant) built[cls] = buildClassSpell(def.words, cls, variant);
   }
   classRegistry.set(key, built);
   return built;
 }
 
-/** True if the given combo is a class spell (resolves per caster class). */
+/** True if every word belongs to the same noun/verb class-spell category. */
 export function isClassSpellCombo(words: WordId[]): boolean {
-  return classRegistry.has(comboKey(words));
+  return isClassSpell(words);
 }
 
 /**

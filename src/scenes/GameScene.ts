@@ -63,11 +63,11 @@ import {
 import type { StackItem } from '../core/Stack';
 import { barrierContains } from '../core/Barrier';
 import type { Spell, SpellVisual } from '../spells/Spell';
-import { allSpells, getSpell, spellById, setActiveSpellSets } from '../spells/registry';
+import { allSpells, getSpell, isClassSpellCombo, spellById, setActiveSpellSets } from '../spells/registry';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type { SubTargetPointOpts, SubTargetEnemyOpts } from '../effects/effects';
 import { SimpleAI, type AIDecision } from '../ai/SimpleAI';
-import type { MatchConfig, SeatConfig } from './MenuScene';
+import type { MatchConfig, SeatConfig, SwampPrepMode } from './MenuScene';
 import type { Net, NetMessage } from '../net/Net';
 import { applyEnemyTraits, waveComposition, ENEMY_DEFS, rollLoot, type EnemyKind } from '../pve/swamprun';
 
@@ -391,6 +391,11 @@ interface SwampShopSlot {
   sold: boolean;
 }
 
+interface CreativePrepResult {
+  stats: Record<StatKey, number>;
+  items: ItemId[];
+}
+
 type ExpeditionCompanionKind = 'dwarf' | 'elf' | 'human';
 type ExpeditionTownTab = 'potions' | 'armor' | 'weapons' | 'guild';
 
@@ -446,6 +451,7 @@ export class GameScene extends Phaser.Scene {
 
   // Swamprun (offline PvE co-op survival). Enabled when mode is 'swamprun'.
   private swamprun = false;
+  private swampPrepMode: SwampPrepMode = 'custom';
   private expedition = false;
   private expeditionGold = 0;
   private expeditionLevel = 1;
@@ -502,6 +508,14 @@ export class GameScene extends Phaser.Scene {
   private swampShopConfirmSlot: number | null = null;
   /** True while running the one-pick, no-consumable start-of-run draft. */
   private swampStartDraftActive = false;
+  private creativePrepPanel?: Phaser.GameObjects.Container;
+  private creativePrepMage?: Mage;
+  private creativePrepStats: Record<StatKey, number> = {
+    strength: 4, dex: 4, int: 4, mana: 4, hp: 4, luck: 4,
+  };
+  private creativePrepItems: ItemId[] = [];
+  private creativePrepPage = 0;
+  private creativePrepResolve: ((result: CreativePrepResult) => void) | null = null;
 
   // Human spell-building state (indices into the current mage's loadout).
   private selectedIdx: number[] = [];
@@ -717,6 +731,7 @@ export class GameScene extends Phaser.Scene {
     this.training = config.mode === 'training';
     this.expedition = config.mode === 'expedition';
     this.swamprun = config.mode === 'swamprun' || this.expedition;
+    this.swampPrepMode = config.swampPrepMode ?? 'custom';
 
     const onlineName = (team: number): string =>
       team === this.localTeam ? `Player ${team} (You)` : `Player ${team}`;
@@ -873,10 +888,18 @@ export class GameScene extends Phaser.Scene {
         this.startTurn();
         return;
       }
-      await this.runAssignmentPhase();
-      if (this.opponentLeft) return;
-      await this.runSwamprunStartDraft();
-      if (this.opponentLeft) return;
+      if (this.swampPrepMode === 'custom') {
+        await this.runAssignmentPhase();
+        if (this.opponentLeft) return;
+        await this.runSwamprunStartDraft();
+        if (this.opponentLeft) return;
+      } else if (this.swampPrepMode === 'creative') {
+        await this.runCreativePrep();
+        if (this.opponentLeft) return;
+      } else {
+        for (const mage of this.gs.mages) mage.assignFlatStats(4);
+        this.gs.log('Quick start — all stats are 4 and the party enters without starting gear.');
+      }
       this.setupSwamprun();
       this.startTurn();
       return;
@@ -1974,6 +1997,167 @@ export class GameScene extends Phaser.Scene {
       this.hideShopOverlay();
     }
     this.logEquipSummary();
+  }
+
+  /** Unrestricted Swamprun setup: direct stats and any number of catalogue items. */
+  private async runCreativePrep(): Promise<void> {
+    this.mode = 'shop';
+    if (this.online && this.net) {
+      for (const mage of this.gs.mages) if (mage.isAI) mage.assignFlatStats(4);
+      const humanCount = this.gs.mages.filter((mage) => !mage.isAI).length;
+      const mySeat = this.localSeat;
+      const mine = await this.promptCreativePrep(this.mageBySeat(mySeat));
+      if (this.opponentLeft) return;
+      this.net.send({ k: 'creative', seat: mySeat, stats: mine.stats, items: mine.items });
+      const results = new Map<number, CreativePrepResult>([[mySeat, mine]]);
+      while (results.size < humanCount && !this.opponentLeft && this.net) {
+        const msg = await this.net.recv();
+        if (msg.k === 'bye') break;
+        if (msg.k !== 'creative' || typeof msg.seat !== 'number') continue;
+        results.set(msg.seat, this.sanitizeCreativePrep(msg.stats, msg.items));
+      }
+      if (this.opponentLeft) return;
+      for (const [seat, result] of results) this.applyCreativePrep(this.mageBySeat(seat), result);
+    } else {
+      for (const mage of this.gs.mages) {
+        if (mage.isAI) mage.assignFlatStats(4);
+        else this.applyCreativePrep(mage, await this.promptCreativePrep(mage));
+      }
+    }
+    this.hideCreativePrep();
+    this.logStatSummary();
+    this.logEquipSummary();
+  }
+
+  private sanitizeCreativePrep(stats: unknown, items: unknown): CreativePrepResult {
+    const source = typeof stats === 'object' && stats ? stats as Record<string, unknown> : {};
+    const cleanStats = {} as Record<StatKey, number>;
+    for (const key of STAT_ORDER) {
+      const value = Number(source[key]);
+      cleanStats[key] = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 4;
+    }
+    return { stats: cleanStats, items: asItemIds(items) };
+  }
+
+  private applyCreativePrep(mage: Mage, result: CreativePrepResult): void {
+    const dice = STAT_ORDER.map((key) => ({ spec: 'creative', value: result.stats[key] }));
+    mage.applyStatAllocation(dice, defaultAssignment());
+    mage.hands = [];
+    mage.bag = [];
+    mage.head = null;
+    mage.torso = null;
+    mage.boots = null;
+    mage.accessories = [];
+    mage.utility = [];
+    mage.arrows = 0;
+    for (const id of result.items) this.gs.grantItem(mage, id);
+    mage.hp = mage.maxHp;
+    mage.sanity = mage.maxSanity;
+  }
+
+  private promptCreativePrep(mage: Mage): Promise<CreativePrepResult> {
+    this.creativePrepMage = mage;
+    this.creativePrepStats = { strength: 4, dex: 4, int: 4, mana: 4, hp: 4, luck: 4 };
+    this.creativePrepItems = [];
+    this.creativePrepPage = 0;
+    this.redrawCreativePrep();
+    return new Promise((resolve) => { this.creativePrepResolve = resolve; });
+  }
+
+  private hideCreativePrep(): void {
+    this.creativePrepPanel?.destroy();
+    this.creativePrepPanel = undefined;
+    this.creativePrepMage = undefined;
+    this.creativePrepResolve = null;
+  }
+
+  private redrawCreativePrep(): void {
+    this.creativePrepPanel?.destroy();
+    const mage = this.creativePrepMage;
+    if (!mage) return;
+    const panel = this.add.container(0, 0).setDepth(98);
+    this.creativePrepPanel = panel;
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    this.addModalChrome(panel, {
+      width: 1190,
+      height: 660,
+      title: `${mage.name.toUpperCase()}  //  CREATIVE PREP`,
+      subtitle: 'Set any non-negative stat value. Add any item repeatedly; cost, rarity, quantity, and carry limits are ignored.',
+      accent: UI.cyan,
+    });
+
+    panel.add(this.add.text(105, 105, 'STATS', { fontSize: '12px', color: TEXT.warn, fontStyle: 'bold' }));
+    STAT_DEFS.forEach((def, index) => {
+      const y = 145 + index * 67;
+      panel.add(this.add.text(105, y - 12, def.name, { fontSize: '15px', color: TEXT.body, fontStyle: 'bold' }));
+      panel.add(this.add.text(105, y + 10, def.blurb, { fontSize: '11px', color: TEXT.dim, wordWrap: { width: 260 } }));
+      const adjust = (amount: number): void => {
+        this.creativePrepStats[def.key] = Math.max(0, this.creativePrepStats[def.key] + amount);
+        this.redrawCreativePrep();
+      };
+      this.swampShopButton(panel, 395, y, '-10', '#ff9a9a', true, () => adjust(-10));
+      this.swampShopButton(panel, 452, y, '-1', '#ffcf6b', true, () => adjust(-1));
+      panel.add(this.add.text(510, y, String(this.creativePrepStats[def.key]), {
+        fontSize: '19px', color: '#ffffff', backgroundColor: '#172231', fixedWidth: 62, align: 'center', padding: { y: 7 },
+      }).setOrigin(0.5));
+      this.swampShopButton(panel, 568, y, '+1', '#8fdfc8', true, () => adjust(1));
+      this.swampShopButton(panel, 625, y, '+10', '#7cfc9a', true, () => adjust(10));
+    });
+
+    panel.add(this.add.text(680, 105, 'ITEM CATALOG  //  CLICK TO ADD', {
+      fontSize: '12px', color: TEXT.warn, fontStyle: 'bold',
+    }));
+    const pageSize = 12;
+    const pages = Math.max(1, Math.ceil(ITEM_DEFS.length / pageSize));
+    this.creativePrepPage = Math.min(this.creativePrepPage, pages - 1);
+    const visible = ITEM_DEFS.slice(this.creativePrepPage * pageSize, (this.creativePrepPage + 1) * pageSize);
+    visible.forEach((def, index) => {
+      const col = index % 3;
+      const row = Math.floor(index / 3);
+      const x = 680 + col * 178;
+      const y = 135 + row * 88;
+      const count = this.creativePrepItems.filter((id) => id === def.id).length;
+      const card = this.add.text(x, y, `${def.name}${count ? `  x${count}` : ''}\n${def.slot} • ${def.rarity}`, {
+        fontSize: '12px', color: RARITY_COLOR[def.rarity], backgroundColor: '#111b29',
+        fixedWidth: 164, fixedHeight: 72, wordWrap: { width: 148 }, padding: { x: 8, y: 8 },
+      }).setInteractive({ useHandCursor: true });
+      card.on('pointerdown', () => {
+        this.creativePrepItems.push(def.id);
+        this.redrawCreativePrep();
+      });
+      panel.add(card);
+    });
+    this.swampShopButton(panel, 720, 510, 'Previous', '#9fb7ce', this.creativePrepPage > 0, () => {
+      this.creativePrepPage -= 1;
+      this.redrawCreativePrep();
+    });
+    panel.add(this.add.text(850, 510, `${this.creativePrepPage + 1} / ${pages}`, { fontSize: '14px', color: TEXT.dim }).setOrigin(0.5));
+    this.swampShopButton(panel, 980, 510, 'Next', '#9fb7ce', this.creativePrepPage < pages - 1, () => {
+      this.creativePrepPage += 1;
+      this.redrawCreativePrep();
+    });
+
+    const last = this.creativePrepItems[this.creativePrepItems.length - 1];
+    panel.add(this.add.text(680, 555, `Selected: ${this.creativePrepItems.length} item(s)${last ? `  •  Last: ${getItem(last).name}` : ''}`, {
+      fontSize: '13px', color: TEXT.body, wordWrap: { width: 500 },
+    }));
+    this.swampShopButton(panel, 760, 610, 'Undo last', '#ffcf6b', !!last, () => {
+      this.creativePrepItems.pop();
+      this.redrawCreativePrep();
+    });
+    this.swampShopButton(panel, 900, 610, 'Clear items', '#ff9a9a', this.creativePrepItems.length > 0, () => {
+      this.creativePrepItems = [];
+      this.redrawCreativePrep();
+    });
+    this.swampShopButton(panel, 1080, 610, 'Enter the swamp', '#7cfc9a', true, () => {
+      const resolve = this.creativePrepResolve;
+      const result = { stats: { ...this.creativePrepStats }, items: [...this.creativePrepItems] };
+      this.creativePrepResolve = null;
+      this.creativePrepPanel?.destroy();
+      this.creativePrepPanel = undefined;
+      resolve?.(result);
+    });
   }
 
   /** Deterministic AI starting pick: one non-consumable item. */
@@ -4374,24 +4558,26 @@ export class GameScene extends Phaser.Scene {
   /** Roll 1d20 against a spell's DC, queue the die for display, and log it. */
   private rollSpellSuccess(spell: Spell, source: Mage): { ok: boolean; crit: boolean; roll: number } {
     // Blue primary tier and assigned Intellect both lower a spell's difficulty.
-    // A flat +3 raises the baseline difficulty of every spell, and the easier
-    // spells (base DC 14 or lower) take a further +2 so INT can't trivialise them.
+    // Ordinary spells receive the standard difficulty surcharge. Class spells
+    // use their lower registry-normalized DC directly.
     const baseDc = spell.dc ?? 0;
-    const easyBump = baseDc <= 14 ? 2 : 0;
-    const dc = baseDc + easyBump + 3 - (source.profile.bluePrimaryTier ? 2 : 0) - source.dcReduction();
+    const ordinarySurcharge = isClassSpellCombo(spell.words) ? 0 : 3 + (baseDc <= 14 ? 2 : 0);
+    const dc = baseDc + ordinarySurcharge - (source.profile.bluePrimaryTier ? 2 : 0) - source.dcReduction();
     // Focus grants advantage on this one cast: roll the DC twice, keep the best.
     const focused = source.focusNextSpell;
-    const r = this.gs.rng.roll('1d20');
-    let best = r;
+    const first = this.gs.rng.roll('1d20');
+    let best = first;
+    let naturalRolls = first.rolls;
     if (focused) {
-      const r2 = this.gs.rng.roll('1d20');
-      if (r2.total > best.total) best = r2;
+      const second = this.gs.rng.roll('1d20');
+      naturalRolls = [...first.rolls, ...second.rolls];
+      if (second.total > best.total) best = second;
       source.focusNextSpell = false;
     }
     this.pendingDice.push({
-      spec: '1d20',
+      spec: focused ? '2d20 (keep higher)' : '1d20',
       total: best.total,
-      rolls: best.rolls,
+      rolls: naturalRolls,
       label: `${spell.name} — success?${focused ? ' (focus)' : ''}`,
     });
     let ok = Dev.autoSuccess || best.total >= dc;
@@ -4408,8 +4594,11 @@ export class GameScene extends Phaser.Scene {
     // area / duration) is doubled during resolution. Spells flagged noCrit
     // (Life / Hexcraft class variants) succeed on a 20 but never double.
     const crit = ok && best.rolls.includes(20) && !spell.noCrit;
+    const rollText = focused
+      ? `2d20=[${naturalRolls.join(', ')}], kept ${best.total}`
+      : `1d20=${best.total}`;
     this.gs.log(
-      `${source.name}'s ${spell.name}: 1d20=${best.total} vs DC ${dc} — ${ok ? 'success!' : 'fizzles.'}${luckNote}${crit ? ' CRITICAL — natural 20!' : ''}`
+      `${source.name}'s ${spell.name}: ${rollText} vs DC ${dc} — ${ok ? 'success!' : 'fizzles.'}${luckNote}${crit ? ' CRITICAL — natural 20!' : ''}`
     );
     // A failed spell can still pay out through gear (Soul Battery / Locket / Tantrum).
     if (!ok) {
@@ -4736,14 +4925,18 @@ export class GameScene extends Phaser.Scene {
       this.cancelAiming();
     });
 
-    // Dev cheat toggles (also clickable on the on-field panel).
-    kb.addCapture('F1,F2,F3,F4,F5,BACKTICK');
-    kb.on('keydown-F1', () => this.toggleDev('autoSuccess'));
-    kb.on('keydown-F2', () => this.toggleDev('infiniteMove'));
-    kb.on('keydown-F3', () => this.toggleDev('infiniteActions'));
-    kb.on('keydown-F4', () => this.toggleDev('aiPassive'));
-    kb.on('keydown-F5', () => this.toggleDev('skipDice'));
-    kb.on('keydown-BACKTICK', () => this.devPanel.setVisible(!this.devPanel.visible));
+    // Dev cheat toggles (available only after opening the panel with #).
+    kb.addCapture('F1,F2,F3,F4,F5');
+    kb.on('keydown-F1', () => { if (this.devPanel.visible) this.toggleDev('autoSuccess'); });
+    kb.on('keydown-F2', () => { if (this.devPanel.visible) this.toggleDev('infiniteMove'); });
+    kb.on('keydown-F3', () => { if (this.devPanel.visible) this.toggleDev('infiniteActions'); });
+    kb.on('keydown-F4', () => { if (this.devPanel.visible) this.toggleDev('aiPassive'); });
+    kb.on('keydown-F5', () => { if (this.devPanel.visible) this.toggleDev('skipDice'); });
+    kb.on('keydown', (event: KeyboardEvent) => {
+      if (event.key !== '#') return;
+      if (this.mode === 'assign' || this.mode === 'shop' || this.mode === 'over') return;
+      this.devPanel.setVisible(!this.devPanel.visible);
+    });
 
     // Right-click opens the action menu, so suppress the browser context menu.
     this.input.mouse?.disableContextMenu();
@@ -7783,12 +7976,12 @@ export class GameScene extends Phaser.Scene {
   private buildDevPanel(): void {
     const px = FIELD.x + FIELD.w - 178;
     const py = FIELD.y + 6;
-    this.devPanel = this.add.container(px, py).setDepth(60);
+    this.devPanel = this.add.container(px, py).setDepth(60).setVisible(false);
     const bg = this.add
       .rectangle(0, 0, 170, 138, UI.panel, 0.9)
       .setOrigin(0, 0)
       .setStrokeStyle(1, UI.border);
-    const title = this.add.text(8, 5, 'DEV MODE  (` to hide)', {
+    const title = this.add.text(8, 5, 'DEV MODE  (# to hide)', {
       fontSize: '12px',
       color: TEXT.warn,
       fontStyle: 'bold',

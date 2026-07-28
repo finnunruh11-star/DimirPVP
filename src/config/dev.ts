@@ -1,8 +1,8 @@
 /**
  * Developer / testing toggles. These are NOT part of normal gameplay — they are
- * a cheat panel (top-right of the field, or F1–F3) used to make manual testing
- * faster. The object is a module singleton so the toggles persist across scene
- * restarts within a session.
+ * a cheat panel opened with # during combat and used to make manual testing
+ * faster. Its F-key shortcuts work while the panel is open. The object is a
+ * module singleton so the toggles persist across scene restarts within a session.
  */
 export const Dev = {
   /** Spells auto-pass their DC roll and attacks never miss (veil dodge ignored). */
