@@ -447,7 +447,7 @@ export class MenuScene extends Phaser.Scene {
   private setSessionRole(role: 'local' | NetRole): void {
     if (this.connecting) return;
     if (this.mode === 'online' && role !== 'local') this.onlineRole = role;
-    if (this.mode === 'swamprun') this.swampRole = role;
+    if (this.mode === 'swamprun' || this.mode === 'expedition') this.swampRole = role;
     this.statusText.setText('');
     this.refresh();
   }
@@ -457,7 +457,7 @@ export class MenuScene extends Phaser.Scene {
       void this.startOnline(this.onlineRole);
       return;
     }
-    if (this.mode === 'swamprun' && this.swampRole !== 'local') {
+    if ((this.mode === 'swamprun' || this.mode === 'expedition') && this.swampRole !== 'local') {
       void this.startOnline(this.swampRole);
       return;
     }
@@ -476,7 +476,7 @@ export class MenuScene extends Phaser.Scene {
   /** Cycle the local combatant count. Swamprun allows 1; others start at 2. */
   private cyclePlayers(): void {
     if (this.connecting) return;
-    const min = this.mode === 'swamprun' ? 1 : 2;
+    const min = this.mode === 'swamprun' || this.mode === 'expedition' ? 1 : 2;
     this.seatCount = this.seatCount >= 4 ? min : this.seatCount + 1;
     // Keep "vs AI" meaning 1 human vs the rest as the table resizes.
     if (this.mode === 'ai') this.aiCount = this.seatCount - 1;
@@ -708,10 +708,10 @@ export class MenuScene extends Phaser.Scene {
     this.modeSwamprunBtn.setVisible(firstScreen);
     this.modeExpeditionBtn.setVisible(firstScreen);
 
-    const networkRole = onlineOn ? this.onlineRole : swamprunOn ? this.swampRole : 'local';
+    const networkRole = onlineOn ? this.onlineRole : swamprunOn || expeditionOn ? this.swampRole : 'local';
     const rulesOwner = networkRole !== 'guest';
-    const showRole = firstScreen && (onlineOn || swamprunOn);
-    this.localBtn.setVisible(showRole && swamprunOn);
+    const showRole = firstScreen && (onlineOn || swamprunOn || expeditionOn);
+    this.localBtn.setVisible(showRole && (swamprunOn || expeditionOn));
     this.hostBtn.setVisible(showRole);
     this.joinBtn.setVisible(showRole);
     if (onlineOn) {
@@ -750,13 +750,13 @@ export class MenuScene extends Phaser.Scene {
 
     // Player-count / format controls: local teamfights & online room setup.
     // Swamprun is co-op survival, so it shows Players + AI but no team format.
-    const showSetup = firstScreen && this.mode !== 'training' && this.mode !== 'expedition' && rulesOwner;
+    const showSetup = firstScreen && this.mode !== 'training' && rulesOwner;
     this.playersBtn.setText(`Players: ${this.seatCount}`);
     this.playersBtn.setVisible(showSetup);
     this.formatBtn.setText(`Format: ${this.formatLabel()}`);
-    this.formatBtn.setVisible(showSetup && this.mode !== 'swamprun');
+    this.formatBtn.setVisible(showSetup && this.mode !== 'swamprun' && this.mode !== 'expedition');
     this.aiFillBtn.setText(`AI: ${this.aiCount}`);
-    this.aiFillBtn.setVisible(showSetup);
+    this.aiFillBtn.setVisible(showSetup && this.mode !== 'expedition');
     const prepLabel: Record<SwampPrepMode, string> = {
       quick: 'Prep: Quick start',
       custom: 'Prep: Rolled stats + gear',
@@ -796,7 +796,8 @@ export class MenuScene extends Phaser.Scene {
           ? this.onlineRole === 'host' ? 'CREATE ONLINE ROOM' : 'JOIN ONLINE ROOM'
           : swamprunOn
             ? this.swampRole === 'local' ? 'START SWAMPRUN' : this.swampRole === 'host' ? 'HOST CO-OP ROOM' : 'JOIN CO-OP ROOM'
-            : expeditionOn ? 'START EXPEDITION'
+            : expeditionOn
+              ? this.swampRole === 'local' ? 'START EXPEDITION' : this.swampRole === 'host' ? 'HOST CAMPAIGN' : 'JOIN CAMPAIGN'
             : this.mode === 'training' ? 'START TRAINING' : 'START DUEL'
     );
     this.startBtn.setColor(ready ? '#0a0e16' : '#4d4431');
@@ -885,7 +886,7 @@ export class MenuScene extends Phaser.Scene {
     }
     if (role === 'host' && this.humanCount() < 2) {
       this.statusText.setText(
-        this.mode === 'swamprun'
+        this.mode === 'swamprun' || this.mode === 'expedition'
           ? 'Online co-op needs at least 2 human seats — raise Players.'
           : 'Online needs at least 2 human seats — lower the AI count.'
       );
@@ -988,7 +989,9 @@ export class MenuScene extends Phaser.Scene {
         const seed = Number(startMsg.seed) | 0;
         const itemSets = this.sanitizeItemSets(startMsg.itemSets);
         // The host tells us which mode we're joining (PvP duel or co-op swamprun).
-        const startMode: MatchMode = startMsg.mode === 'swamprun' ? 'swamprun' : 'online';
+        const startMode: MatchMode = startMsg.mode === 'swamprun' || startMsg.mode === 'expedition'
+          ? startMsg.mode
+          : 'online';
         config = {
           mode: startMode,
           loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],

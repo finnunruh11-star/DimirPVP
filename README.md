@@ -12,6 +12,9 @@ npm run dev      # opens http://localhost:5173
 npm run build    # type-check + production bundle into dist/
 ```
 
+For online, LAN, Creative Swamprun, and Campaign hosting instructions, see
+[MULTIPLAYER.md](MULTIPLAYER.md).
+
 ## How to play
 
 1. **Menu**: pick 4 words, choose **Vs AI** or **Hotseat (2P)**, confirm. In hotseat
