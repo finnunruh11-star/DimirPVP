@@ -112,7 +112,7 @@ export interface ColorProfile {
   whitePrimaryTier: boolean;
   /** White is your secondary colour: colour spells heal caster + nearest ally. */
   whiteSecondaryTier: boolean;
-  /** Red boon active: +1 range movement, first initiative/weapon-hit bonus, -1 Int. */
+  /** Red boon active: +1 movement, first initiative/weapon hit, -1 Int and word charge. */
   redPrimaryTier: boolean;
   /** Red is secondary: begin combat with 5 additional color charges. */
   redSecondaryTier: boolean;

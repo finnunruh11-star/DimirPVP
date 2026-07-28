@@ -284,16 +284,24 @@ const ALL_KINDS: EnemyKind[] = ['zombie', 'wisp', 'skeleton', 'specter', 'defend
 
 /** Hard cap on simultaneous spawns from a single wave (keeps the board sane). */
 const MAX_PER_WAVE = 12;
+const EXTRA_MEMBER_BUDGET_SCALE = 0.75;
+
+/** Multiplayer pressure: each extra party member adds 75% of a solo wave. */
+export function swamprunPartyScale(partySize: number): number {
+  return 1 + Math.max(0, Math.floor(partySize) - 1) * EXTRA_MEMBER_BUDGET_SCALE;
+}
 
 /**
  * Roll the roster for a given wave number. Budget grows each wave and is spent
  * greedily on unlocked creatures, biased toward tougher foes as waves climb.
  */
-export function waveComposition(wave: number, rng: Dice): EnemyKind[] {
+export function waveComposition(wave: number, rng: Dice, partySize = 1): EnemyKind[] {
   const unlocked = ALL_KINDS.filter((k) => wave >= UNLOCK[k]);
-  let budget = 3 + wave * 2;
+  const extraMembers = Math.max(0, Math.floor(partySize) - 1);
+  const spawnCap = MAX_PER_WAVE + extraMembers * 4;
+  let budget = Math.round((3 + wave * 2) * swamprunPartyScale(partySize));
   const out: EnemyKind[] = [];
-  while (out.length < MAX_PER_WAVE) {
+  while (out.length < spawnCap) {
     const affordable = unlocked.filter((k) => COST[k] <= budget);
     if (affordable.length === 0) break;
     // Weight tougher creatures more heavily as the run wears on.

@@ -18,6 +18,8 @@ export type StatusKind =
   | 'orderJudgment'
   | 'bindCurseAura'
   | 'veilCorrodePierce'
+  | 'twistRune'
+  | 'fireVeilAura'
   | 'fire'
   | 'blueflare';
 export type StunType = 'main' | 'movement' | 'full';
@@ -78,6 +80,14 @@ export interface DotStatus extends BaseStatus {
   sourceTeam?: number;
   /** Index (in GameState.mages) of the mage healed for this DoT's damage each tick. */
   lifestealToIndex?: number;
+  /** Resource restored by lifesteal; existing DoTs default to HP. */
+  lifestealPool?: 'hp' | 'sanity';
+  /** Optional enemy-only damage splashed around the bearer on each tick. */
+  splash?: {
+    radius: number;
+    damage: DamageInstance;
+    damageSpec: string;
+  };
   /** Extra dice rolled on a tick when the bearer dealt no damage on its last turn. */
   bonusNoDamageSpec?: string;
   /** Owner's team: when the bearer damages this team in a cycle, the DoT extends +2. */
@@ -202,6 +212,21 @@ export interface VeilCorrodePierceStatus extends BaseStatus {
   kind: 'veilCorrodePierce';
 }
 
+/** Hexcraft Shatter Twist: orbit nearby entities when the bearer starts a turn. */
+export interface TwistRuneStatus extends BaseStatus {
+  kind: 'twistRune';
+  ownerIndex: number;
+  radius: number;
+  clockwise: boolean;
+}
+
+/** Fire Veil: kindle nearby enemies at turn start while the bearer remains veiled. */
+export interface FireVeilAuraStatus extends BaseStatus {
+  kind: 'fireVeilAura';
+  radius: number;
+  ownerIndex: number;
+}
+
 export type Status =
   | InvisibilityStatus
   | StunStatus
@@ -216,6 +241,8 @@ export type Status =
   | OrderJudgmentStatus
   | BindCurseAuraStatus
   | VeilCorrodePierceStatus
+  | TwistRuneStatus
+  | FireVeilAuraStatus
   | FireStatus
   | BlueflareStatus;
 

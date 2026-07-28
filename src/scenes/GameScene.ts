@@ -794,6 +794,8 @@ export class GameScene extends Phaser.Scene {
       wedge: (apex, angle, halfAngle, range) => this.vfxWedge(apex, angle, halfAngle, range),
       lightningTrail: (segments) => this.setLightningTrail(segments),
       clearLightningTrail: () => this.clearLightningTrail(),
+      quarterTurn: (clockwise) => this.vfxQuarterTurn(clockwise),
+      twistRune: (pivot, radius, clockwise) => this.vfxTwistRune(pivot, radius, clockwise),
     };
     this.gs.subTargeter = {
       requestPoint: (source, opts) => this.requestSubtargetPoint(source, opts),
@@ -953,7 +955,8 @@ export class GameScene extends Phaser.Scene {
     this.expeditionXpEnemies.clear();
     // Build a genuinely fresh combat around the surviving, persistent party.
     this.beginWaveCombat(n);
-    const kinds = waveComposition(n, this.gs.rng);
+    const partySize = this.expedition ? 1 : this.swamprunPartySize();
+    const kinds = waveComposition(n, this.gs.rng, partySize);
     this.gs.log(`— Wave ${n} — ${kinds.length} foe${kinds.length === 1 ? '' : 's'} emerge from the mire! —`);
     for (const kind of kinds) this.spawnEnemy(kind);
     // Boss wave: every fifth wave a Lich rises to command the undead.
@@ -1049,6 +1052,10 @@ export class GameScene extends Phaser.Scene {
     return partyAlive && !foesLeft;
   }
 
+  private swamprunPartySize(): number {
+    return this.gs.mages.filter((mage) => mage.team === 1 && mage.alive && !mage.isSummon).length;
+  }
+
   /**
    * Between-wave interlude: auto-sell the fallen wave's loot for gold, patch the
    * survivors up, let them shop, then unleash the next wave. Clearing a wave
@@ -1127,10 +1134,13 @@ export class GameScene extends Phaser.Scene {
       this.updateWaveHud();
       return;
     }
+    const supplyGold = Math.max(0, this.swamprunPartySize() - 1);
+    gold += supplyGold;
     this.swamprunGold += gold;
     this.swamprunWaveEnemies = [];
     const drops = tally.length ? ` — salvage: ${tally.join(', ')}` : '';
-    this.gs.log(`Wave ${this.swamprunWave} cleared! Sold loot for ${gold}g${drops}. Party gold: ${this.swamprunGold}g.`);
+    const supplyText = supplyGold > 0 ? ` (${supplyGold}g party supplies)` : '';
+    this.gs.log(`Wave ${this.swamprunWave} cleared! Sold loot for ${gold}g${supplyText}${drops}. Party gold: ${this.swamprunGold}g.`);
   }
 
   private expeditionXpToNext(): number {
@@ -3262,6 +3272,7 @@ export class GameScene extends Phaser.Scene {
       (s) =>
         s.words.every((w) => me.loadout.includes(w)) &&
         me.hasCharges(s.words) &&
+        this.gs.canCastSpellNow(s) &&
         (s.actionType === 'main' ? me.actions.main > 0 : me.actions.bonus > 0)
     );
     if (options.length === 0) return null;
@@ -4328,6 +4339,17 @@ export class GameScene extends Phaser.Scene {
     //    A spell may await interactive sub-targeting here, so resolve is async.
     this.pendingDice = [];
     await item.resolve(this.gs);
+    if (item.spell?.nullifiesStack && this.gs.stack.length > 0) {
+      const nullified = this.gs.nullifyStack();
+      for (const older of nullified) {
+        if (older.kind === 'spell') this.setCharging(older.source, false);
+      }
+      this.gs.log(
+        `${item.label} nullifies ${nullified.length} stack item${nullified.length === 1 ? '' : 's'}: ${nullified
+          .map((older) => older.label)
+          .join(', ')}.`
+      );
+    }
     // The crit flag only applies to the cast that rolled it; clear it now so
     // later ticks / effects (which build their own context) are never doubled.
     this.gs.critThisCast = false;
@@ -4407,6 +4429,7 @@ export class GameScene extends Phaser.Scene {
     return pool.filter((s) => {
       if (!reactor.hasCharges(s.words)) return false;
       if (!reactor.hasMana(wordSpellMana(s.words, reactor.profile))) return false;
+      if (!this.gs.canCastSpellNow(s)) return false;
       if (forgotten.length && s.words.some((w) => forgotten.includes(w))) return false;
       if (s.targeting === 'enemy' || s.targeting === 'ally') {
         const tgt = s.targeting === 'ally' ? reactor : this.gs.opponentOf(reactor);
@@ -4849,6 +4872,10 @@ export class GameScene extends Phaser.Scene {
       this.flashHint('Not enough mana.');
       return;
     }
+    if (!this.gs.canCastSpellNow(spell)) {
+      this.flashHint(`${spell.name} requires at least ${spell.minStackDepth} other stack items.`);
+      return;
+    }
     if ((spell.actionType === 'main' ? me.actions.main : me.actions.bonus) <= 0) {
       this.flashHint(`No ${spell.actionType} action left.`);
       return;
@@ -5192,6 +5219,7 @@ export class GameScene extends Phaser.Scene {
       !!spell &&
       me.hasCharges(spell.words) &&
       me.hasMana(wordSpellMana(spell.words, me.profile)) &&
+      this.gs.canCastSpellNow(spell) &&
       (spell.actionType === 'main' ? me.actions.main : me.actions.bonus) > 0;
     entries.push({
       id: 'cast',
@@ -7058,6 +7086,7 @@ export class GameScene extends Phaser.Scene {
       if (!s.words.every((w) => caster.loadout.includes(w))) return false;
       if (!caster.hasCharges(s.words)) return false;
       if (!caster.hasMana(wordSpellMana(s.words, caster.profile))) return false;
+      if (!this.gs.canCastSpellNow(s)) return false;
       if (forgotten.length && s.words.some((w) => forgotten.includes(w))) return false;
       if (s.targeting === 'enemy') {
         return this.gs.isValidSpellTarget(s, caster, this.gs.opponentOf(caster));
@@ -8143,8 +8172,7 @@ export class GameScene extends Phaser.Scene {
       m.reactedThisCycle = false;
       m.resetCombatReactions();
       m.resetDodges();
-      const bonus = m.profile.bluePrimaryTier ? 1 : 0;
-      for (const w of m.loadout) m.charges[w] = WORDS[w].charges + bonus;
+      for (const w of m.loadout) m.charges[w] = m.maxWordCharges(w);
       const rec = this.mageAnims.get(m);
       if (rec) {
         rec.posLocked = false;
@@ -9702,6 +9730,46 @@ export class GameScene extends Phaser.Scene {
 
   private vfxNova(at: Vec2, v: SpellVisual): Promise<void> {
     return this.vfxBurst(at, v.color, v.size ?? 55, v.speed ?? 1);
+  }
+
+  private vfxQuarterTurn(clockwise: boolean): void {
+    const camera = this.cameras.main;
+    this.tweens.add({
+      targets: camera,
+      rotation: clockwise ? Math.PI / 2 : -Math.PI / 2,
+      duration: 240 / this.combatSpeed,
+      yoyo: true,
+      hold: 80 / this.combatSpeed,
+      ease: 'Cubic.InOut',
+    });
+  }
+
+  private vfxTwistRune(pivot: Vec2, radius: number, clockwise: boolean): void {
+    const ring = this.add.circle(pivot.x, pivot.y, radius, 0xb8c878, 0.08).setDepth(30);
+    ring.setStrokeStyle(4, 0xdfffa8, 0.9);
+    const marker = this.add.circle(pivot.x + radius, pivot.y, 7, 0xffffff, 1).setDepth(31);
+    const progress = { angle: 0 };
+    this.tweens.add({
+      targets: progress,
+      angle: clockwise ? -Math.PI / 2 : Math.PI / 2,
+      duration: 420 / this.combatSpeed,
+      ease: 'Cubic.Out',
+      onUpdate: () => {
+        marker.setPosition(
+          pivot.x + Math.cos(progress.angle) * radius,
+          pivot.y + Math.sin(progress.angle) * radius
+        );
+      },
+      onComplete: () => marker.destroy(),
+    });
+    this.tweens.add({
+      targets: ring,
+      scale: { from: 0.25, to: 1 },
+      alpha: { from: 0.9, to: 0 },
+      duration: 460 / this.combatSpeed,
+      ease: 'Cubic.Out',
+      onComplete: () => ring.destroy(),
+    });
   }
 
   /**

@@ -56,6 +56,7 @@ export class SimpleAI {
         s.actionType === action &&
         s.words.every((w) => set.has(w)) &&
         !s.words.some((w) => forgotten.includes(w)) &&
+        this.game.canCastSpellNow(s) &&
         this.self.hasCharges(s.words)
     );
   }
@@ -129,6 +130,7 @@ export class SimpleAI {
         this.self.hasCharges(s.words) &&
         s.words.every((w) => set.has(w)) &&
         !s.words.some((w) => forgotten.includes(w)) &&
+        this.game.canCastSpellNow(s) &&
         (grants || s.reaction)
     );
     if (reactions.length === 0) return null;
@@ -324,6 +326,8 @@ export class SimpleAI {
 
   private bestOffensiveSpell(action: 'main' | 'bonus', enemy: Mage): Spell | null {
     const options = this.castableSpells(action).filter((s) => {
+      if (this.isWeaponEnchant(s)) return this.bestEnchantTarget(s) !== null;
+      if (this.isIndiscriminateStorm(s) && !this.stormIsWorthRisk()) return false;
       if (s.targeting === 'enemy') return this.game.isValidSpellTarget(s, this.self, enemy);
       if (s.targeting === 'point') return true;
       if (s.targeting === 'self' || s.targeting === 'ally' || s.targeting === 'any') {
@@ -333,13 +337,20 @@ export class SimpleAI {
       return true;
     });
     if (options.length === 0) return null;
-    // Prefer more words (bigger combos) for variety, then random.
-    options.sort((a, b) => b.words.length - a.words.length);
-    const top = options.filter((s) => s.words.length === options[0].words.length);
+    const score = (spell: Spell): number =>
+      spell.words.length + (spell.words.includes('order') && spell.words.includes('drain')
+        ? Math.max(0, this.game.livingEnemiesOf(this.self).length - 1)
+        : 0);
+    options.sort((a, b) => score(b) - score(a));
+    const top = options.filter((spell) => score(spell) === score(options[0]));
     return this.game.rng.pick(top);
   }
 
   private castDecision(spell: Spell, enemy: Mage): AIDecision {
+    if (this.isWeaponEnchant(spell)) {
+      const target = this.bestEnchantTarget(spell);
+      if (target) return { type: 'spell', spell, target };
+    }
     if (spell.targeting === 'enemy') return { type: 'spell', spell, target: enemy };
     if (spell.targeting === 'self' || spell.targeting === 'ally' || spell.targeting === 'any')
       return { type: 'spell', spell, target: this.self };
@@ -351,6 +362,42 @@ export class SimpleAI {
       return { type: 'spell', spell, point };
     }
     return { type: 'spell', spell };
+  }
+
+  private isWeaponEnchant(spell: Spell): boolean {
+    return spell.name === 'Fire Mind' || spell.name === 'Lightning Mind' || spell.name === 'Lightning Mind Fire';
+  }
+
+  private bestEnchantTarget(spell: Spell): Mage | null {
+    const allies = this.game.mages.filter(
+      (mage) =>
+        mage.team === this.self.team &&
+        mage.alive &&
+        mage.activeWeaponId() != null &&
+        this.game.isValidSpellTarget(spell, this.self, mage)
+    );
+    allies.sort((a, b) => {
+      const aWeapon = a.activeWeapon();
+      const bWeapon = b.activeWeapon();
+      const aScore = (aWeapon?.multiplier ?? 1) + (aWeapon?.toHit ? 1 : 0);
+      const bScore = (bWeapon?.multiplier ?? 1) + (bWeapon?.toHit ? 1 : 0);
+      return bScore - aScore;
+    });
+    return allies[0] ?? null;
+  }
+
+  private isIndiscriminateStorm(spell: Spell): boolean {
+    return spell.name === 'Lightning Veil' || spell.name === 'Fire Lightning Veil' || spell.name === 'Lightning Mind Veil';
+  }
+
+  private stormIsWorthRisk(): boolean {
+    if (this.self.hp <= this.self.maxHp * 0.5) return true;
+    const nearby = this.game.mages.filter(
+      (mage) => mage !== this.self && mage.alive && dist(mage.pos, this.self.pos) <= 6 * RANGE_UNIT
+    );
+    const allies = nearby.filter((mage) => mage.team === this.self.team).length;
+    const enemies = nearby.length - allies;
+    return enemies >= allies;
   }
 
   // ---------------------------------------------------------------------------

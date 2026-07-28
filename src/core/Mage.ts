@@ -166,9 +166,15 @@ export class Mage {
 
   // ---- Objects-class enchants / sabotage / conjured gear --------------------
   /** Active basic-attack enchant from an Objects class spell, if any. */
-  weaponEnchant?: 'mindShadow' | 'curseCorrode' | 'lightningEcho';
+  weaponEnchant?: 'mindShadow' | 'curseCorrode' | 'lightningEcho' | 'fireMind' | 'lightningMind';
   /** Specific held weapon carrying Lightning Echo; switching weapons does not transfer it. */
   lightningEchoWeapon?: ItemId;
+  lightningEchoPower = 0;
+  lightningEchoCritical = false;
+  enchantedWeapon?: ItemId;
+  lightningMindPower = 0;
+  lightningMindCritical = false;
+  lightningMindSurged = false;
   /** Red boon: whether this combat's first weapon attack bonus has been spent. */
   redFirstWeaponAttackUsed = false;
   /** Red Hexcraft primary ability: generate one extra color charge each turn. */
@@ -389,9 +395,7 @@ export class Mage {
     this.loadout = [...opts.loadout];
     this.profile = computeColorProfile(this.loadout);
     this.mageClass = opts.mageClass ?? DEFAULT_MAGE_CLASS;
-    // Blue primary tier grants every word one extra charge.
-    const bonusCharge = this.profile.bluePrimaryTier ? 1 : 0;
-    for (const w of this.loadout) this.charges[w] = WORDS[w].charges + bonusCharge;
+    for (const w of this.loadout) this.charges[w] = this.maxWordCharges(w);
     this.maxMana = MANA_CAP;
     this.mana = START_MANA;
     this.maxColorCharges = COLOR_CHARGE_CAP;
@@ -418,10 +422,9 @@ export class Mage {
     this.preferredPrimaryColor = preferredPrimary;
     this.preferredSecondaryColor = preferredSecondary;
     this.profile = computeColorProfile(this.loadout, preferredPrimary, preferredSecondary);
-    const bonusCharge = this.profile.bluePrimaryTier ? 1 : 0;
     this.charges = {};
     for (const word of this.loadout) {
-      this.charges[word] = WORDS[word].charges + bonusCharge;
+      this.charges[word] = this.maxWordCharges(word);
     }
   }
 
@@ -599,6 +602,13 @@ export class Mage {
 
   // ---- Charges --------------------------------------------------------------
 
+  /** Normal charge capacity: Blue grants one per word and Red removes one. */
+  maxWordCharges(word: WordId): number {
+    const blueBonus = this.profile.bluePrimaryTier ? 1 : 0;
+    const redPenalty = this.profile.redPrimaryTier ? 1 : 0;
+    return Math.max(1, WORDS[word].charges + blueBonus - redPenalty);
+  }
+
   hasCharges(words: WordId[]): boolean {
     return words.every((w) => (this.charges[w] ?? 0) > 0);
   }
@@ -630,9 +640,8 @@ export class Mage {
     this.gainMana(half(this.maxMana));
     this.hp = Math.min(this.maxHp, this.hp + half(this.maxHp));
     if (this.maxSanity > 0) this.sanity = Math.min(this.maxSanity, this.sanity + half(this.maxSanity));
-    const bonusCharge = this.profile.bluePrimaryTier ? 1 : 0;
     for (const w of this.loadout) {
-      const max = WORDS[w].charges + bonusCharge;
+      const max = this.maxWordCharges(w);
       const cur = this.charges[w] ?? 0;
       this.charges[w] = Math.min(max, cur + half(max));
     }

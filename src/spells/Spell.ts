@@ -78,6 +78,11 @@ export interface Spell {
    */
   counters?: boolean;
 
+  /** Minimum number of other items that must already be on the stack to cast. */
+  minStackDepth?: number;
+  /** On successful resolution, remove every older item still on the stack. */
+  nullifiesStack?: boolean;
+
   /** Optional visual played when the spell resolves. */
   visual?: SpellVisual;
 

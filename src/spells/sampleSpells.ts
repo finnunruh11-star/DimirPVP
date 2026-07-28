@@ -17,6 +17,7 @@
 // =============================================================================
 
 import { dmg } from '../core/Damage';
+import { addOrExtendStatus } from '../core/Status';
 import { CONE_DEGREES, FIELD, MOVE_RANGE, RANGE_UNIT } from '../config/constants';
 import {
   applyAuraDot,
@@ -87,6 +88,16 @@ function lightningPower(ctx: EffectContext): number {
   const power = natural + intellect + luck;
   ctx.log(`Lightning power: ${natural} + ${intellect} INT + ${luck} Luck = ${power}.`);
   return power;
+}
+
+type LightningGamble = 'overload' | 'unstable' | 'stable' | 'surge';
+
+function lightningGamble(ctx: EffectContext): LightningGamble {
+  const roll = rollDice(ctx, '1d6', 'Lightning gamble');
+  const result: LightningGamble =
+    roll === 1 ? 'overload' : roll === 2 ? 'unstable' : roll === 6 ? 'surge' : 'stable';
+  ctx.log(`Lightning gamble: ${result}.`);
+  return result;
 }
 
 function pointSegmentDistance(point: Vec2, segment: TrailSegment): number {
@@ -896,6 +907,22 @@ registerSpell({
 // ===========================================================================
 
 registerSpell({
+  name: 'Reality',
+  words: ['reality'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 7,
+  reaction: true,
+  minStackDepth: 2,
+  nullifiesStack: true,
+  description:
+    'May only be cast while at least two other items are on the stack. On success, nullify every other item on the stack.',
+  visual: { preset: 'nova', color: 0xff5599, size: 80, speed: 1.2 },
+  cast() {},
+});
+
+registerSpell({
   name: 'Twist',
   words: ['twist'],
   actionType: 'main',
@@ -943,6 +970,102 @@ registerSpell({
     if (!ctx.target) return;
     dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '3d3', 'Mind Twist'), 'shadow', 'sanity'));
     applyForget(ctx, ctx.target, { count: 2, duration: 3 });
+  },
+});
+
+registerSpell({
+  name: 'Twist Reality',
+  words: ['twist', 'reality'],
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'point',
+  dc: 12,
+  reaction: true,
+  counters: true,
+  description:
+    'Turn every living entity 90 degrees around the battlefield centre while all terrain remains fixed. Aim right of centre for clockwise or left for counterclockwise. As a reaction, also cancel the answered action.',
+  visual: { preset: 'nova', color: 0x88d8b8, size: 120, speed: 0.8 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const centreX = FIELD.x + FIELD.w / 2;
+    ctx.game.turnBattlefield(ctx.targetPoint.x >= centreX);
+  },
+});
+
+registerSpell({
+  name: 'Mind Shatter Twist',
+  words: ['mind', 'shatter', 'twist'],
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 14,
+  reaction: true,
+  counters: true,
+  description:
+    'Deal 2d6 sanity damage, fully stun for 1 turn, and make the target forget 2 actions for 3 turns (range 20). As a reaction, cancel the answered action.',
+  visual: { preset: 'beam', color: 0xb58bd8, size: 9, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(
+      ctx,
+      ctx.target,
+      dmg(rollDice(ctx, '2d6', 'Mind Shatter Twist'), 'shadow', 'sanity')
+    );
+    applyStun(ctx, ctx.target, { duration: 2, type: 'full' });
+    applyForget(ctx, ctx.target, { count: 2, duration: 3 });
+  },
+});
+
+registerSpell({
+  name: 'Mind Twist Reality',
+  words: ['mind', 'twist', 'reality'],
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'enemy',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    'From anywhere on the field, deal 4d3 sanity damage and make the target forget 3 actions for 4 turns. As a reaction, cancel the answered action.',
+  visual: { preset: 'beam', color: 0xd078c8, size: 10, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '4d3', 'Mind Twist Reality'), 'shadow', 'sanity'));
+    applyForget(ctx, ctx.target, { count: 3, duration: 4 });
+  },
+});
+
+registerSpell({
+  name: 'Shatter Twist Reality',
+  words: ['shatter', 'twist', 'reality'],
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'enemy',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  aoe: { kind: 'circle', radius: R(2) },
+  description:
+    'Cancel the answered action, then deal 3d6 shatter damage to enemies within range 2 of its source anywhere on the field. Fully stun the primary target for 1 turn and slow the others for 2 turns.',
+  visual: { preset: 'burst', color: 0xe09878, size: 76, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const hits = areaDamage(
+      ctx,
+      ctx.target.pos,
+      R(2),
+      dmg(rollDice(ctx, '3d6', 'Shatter Twist Reality'), 'shatter', 'physical')
+    );
+    for (const hit of hits) {
+      if (hit === ctx.target) applyStun(ctx, hit, { duration: 2, type: 'full' });
+      else {
+        applyDebuff(ctx, hit, {
+          name: 'Reality Fracture',
+          duration: 2,
+          mods: { moveRange: -Math.round(MOVE_RANGE * 0.5) },
+        });
+      }
+    }
   },
 });
 
@@ -1103,6 +1226,317 @@ registerSpell({
   },
 });
 
+registerSpell({
+  name: 'Corrode Drain',
+  words: ['corrode', 'drain'],
+  actionType: 'bonus',
+  range: R(10),
+  targeting: 'point',
+  dc: 11,
+  aoe: { kind: 'circle', radius: R(2) },
+  description:
+    'Deal 1d6 corrosive damage to enemies in a range-2 area aimed within range 10, healing for all damage dealt. Each target has a 25% chance to be slowed by 30% for 2 turns.',
+  visual: { preset: 'burst', color: 0x70c880, size: 64, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const foes = ctx.game
+      .magesInRadius(ctx.targetPoint, R(2), ctx.caster)
+      .filter((mage) => mage.team !== ctx.caster.team);
+    for (const foe of foes) {
+      drainDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Corrode Drain'), 'corrosive', 'physical'), {
+        aoe: true,
+      });
+      if (ctx.rng.chance(0.25)) {
+        applyDebuff(ctx, foe, {
+          name: 'Dissolved Footing',
+          duration: 2,
+          mods: { moveRange: -Math.round(MOVE_RANGE * 0.3) },
+        });
+      }
+    }
+  },
+});
+
+registerSpell({
+  name: 'Umbral Rot',
+  words: ['corrode', 'curse', 'shadow'],
+  actionType: 'main',
+  range: R(15),
+  bonusRangeInOwnShadow: R(99),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Deal 1d6 corrosive damage, then curse the target for 1d6 shadow damage each turn and +2 damage taken for 5 turns. Targets in your shadows can be reached globally.',
+  visual: { preset: 'projectile', color: 0x6f9b68, size: 12, speed: 1.1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Umbral Rot'), 'corrosive', 'physical'));
+    applyDot(ctx, ctx.target, {
+      name: 'Umbral Rot',
+      key: 'dot:umbral-rot',
+      duration: 5,
+      damage: dmg(0, 'shadow', 'physical'),
+      damageSpec: '1d6',
+    });
+    applyDebuff(ctx, ctx.target, {
+      name: 'Umbral Rot',
+      key: 'debuff:umbral-rot',
+      duration: 5,
+      mods: { damageTaken: 2 },
+    });
+  },
+});
+
+registerSpell({
+  name: 'Ruined Mind',
+  words: ['corrode', 'curse', 'pain'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Destroy the target mind with 1d6 corrosive sanity damage each turn for 4 turns. It takes +2 damage during the curse, and each tick has a 25% chance to fully stun it.',
+  visual: { preset: 'beam', color: 0xb97878, size: 8, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Ruined Mind',
+      key: 'dot:ruined-mind',
+      duration: 4,
+      damage: dmg(0, 'corrosive', 'sanity'),
+      damageSpec: '1d6',
+      stunChance: 0.25,
+      stunType: 'full',
+    });
+    applyDebuff(ctx, ctx.target, {
+      name: 'Ruined Mind',
+      key: 'debuff:ruined-mind',
+      duration: 4,
+      mods: { damageTaken: 2 },
+    });
+  },
+});
+
+registerSpell({
+  name: 'Umbral Dissolution',
+  words: ['corrode', 'shadow', 'drain'],
+  actionType: 'main',
+  range: R(10),
+  bonusRangeInOwnShadow: R(99),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Drain 2d6 corrosive and 2d6 shadow damage, then slow the target by 50% for 2 turns. Targets in your shadows can be reached globally.',
+  visual: { preset: 'projectile', color: 0x579b80, size: 13, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    drainDamage(
+      ctx,
+      ctx.target,
+      dmg(rollDice(ctx, '2d6', 'Umbral Dissolution'), 'corrosive', 'physical')
+    );
+    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Umbral Dissolution'), 'shadow', 'physical'));
+    applyDebuff(ctx, ctx.target, {
+      name: 'Dissolved',
+      duration: 2,
+      mods: { moveRange: -Math.round(MOVE_RANGE * 0.5) },
+    });
+  },
+});
+
+registerSpell({
+  name: 'Dark Breakdown',
+  words: ['corrode', 'shadow', 'pain'],
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'circle', radius: R(2) },
+  description:
+    'Enemies in a range-2 area take 1d6 corrosive health damage and 3d3 shadow sanity damage. Each has independent 33% chances to be fully stunned and slowed by 30%.',
+  visual: { preset: 'burst', color: 0x9d668f, size: 68, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const foes = ctx.game
+      .magesInRadius(ctx.targetPoint, R(2), ctx.caster)
+      .filter((mage) => mage.team !== ctx.caster.team);
+    for (const foe of foes) {
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Dark Breakdown'), 'corrosive', 'physical'), {
+        aoe: true,
+      });
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '3d3', 'Dark Breakdown'), 'shadow', 'sanity'), {
+        aoe: true,
+      });
+      if (ctx.rng.chance(0.33)) applyStun(ctx, foe, { duration: 2, type: 'full' });
+      if (ctx.rng.chance(0.33)) {
+        applyDebuff(ctx, foe, {
+          name: 'Dark Breakdown',
+          key: 'debuff:dark-breakdown',
+          duration: 2,
+          mods: { moveRange: -Math.round(MOVE_RANGE * 0.3) },
+        });
+      }
+    }
+  },
+});
+
+registerSpell({
+  name: 'Agony Leech',
+  words: ['corrode', 'drain', 'pain'],
+  actionType: 'main',
+  range: R(10),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'circle', radius: R(2) },
+  description:
+    'Enemies in a range-2 area take 2d6 corrosive health damage and 2d4 corrosive sanity damage. Heal the matching resource for all damage dealt; each target has a 25% slow chance.',
+  visual: { preset: 'burst', color: 0x8c9b78, size: 70, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const foes = ctx.game
+      .magesInRadius(ctx.targetPoint, R(2), ctx.caster)
+      .filter((mage) => mage.team !== ctx.caster.team);
+    for (const foe of foes) {
+      drainDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Agony Leech'), 'corrosive', 'physical'), {
+        aoe: true,
+      });
+      const sanityDamage = dealDamage(
+        ctx,
+        foe,
+        dmg(rollDice(ctx, '2d4', 'Agony Leech'), 'corrosive', 'sanity'),
+        { aoe: true }
+      );
+      if (sanityDamage > 0 && ctx.caster.alive) heal(ctx, ctx.caster, sanityDamage, 'sanity');
+      if (ctx.rng.chance(0.25)) {
+        applyDebuff(ctx, foe, {
+          name: 'Agony Leech',
+          key: 'debuff:agony-leech',
+          duration: 2,
+          mods: { moveRange: -Math.round(MOVE_RANGE * 0.3) },
+        });
+      }
+    }
+  },
+});
+
+registerSpell({
+  name: 'Umbral Hunger',
+  words: ['curse', 'shadow', 'drain'],
+  actionType: 'main',
+  range: R(15),
+  bonusRangeInOwnShadow: R(99),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Curse the target for 2d4 shadow damage each turn for 5 turns, healing your health for all damage. It takes +2 damage, and targets in your shadows can be reached globally.',
+  visual: { preset: 'beam', color: 0x675788, size: 8, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Umbral Hunger',
+      key: 'dot:umbral-hunger',
+      duration: 5,
+      damage: dmg(0, 'shadow', 'physical'),
+      damageSpec: '2d4',
+      lifestealToIndex: ctx.game.mages.indexOf(ctx.caster),
+    });
+    applyDebuff(ctx, ctx.target, {
+      name: 'Umbral Hunger',
+      key: 'debuff:umbral-hunger',
+      duration: 5,
+      mods: { damageTaken: 2 },
+    });
+  },
+});
+
+registerSpell({
+  name: 'Nightmare Curse',
+  words: ['curse', 'shadow', 'pain'],
+  actionType: 'main',
+  range: R(15),
+  bonusRangeInOwnShadow: R(99),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Curse the target for 2d4 shadow sanity damage each turn for 5 turns and +2 damage taken. Each tick splashes 1d3 sanity damage to other nearby enemies.',
+  visual: { preset: 'beam', color: 0xa14f88, size: 8, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Nightmare Curse',
+      key: 'dot:nightmare-curse',
+      duration: 5,
+      damage: dmg(0, 'shadow', 'sanity'),
+      damageSpec: '2d4',
+      sourceTeam: ctx.caster.team,
+      splash: {
+        radius: R(2),
+        damage: dmg(0, 'shadow', 'sanity'),
+        damageSpec: '1d3',
+      },
+    });
+    applyDebuff(ctx, ctx.target, {
+      name: 'Nightmare Curse',
+      key: 'debuff:nightmare-curse',
+      duration: 5,
+      mods: { damageTaken: 2 },
+    });
+  },
+});
+
+registerSpell({
+  name: 'Agony Harvest',
+  words: ['curse', 'drain', 'pain'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Curse the target for 1d6 shadow sanity damage each turn for 5 turns, restoring your sanity for all damage. It also takes +2 damage for the curse duration.',
+  visual: { preset: 'beam', color: 0xb06f87, size: 8, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Agony Harvest',
+      key: 'dot:agony-harvest',
+      duration: 5,
+      damage: dmg(0, 'shadow', 'sanity'),
+      damageSpec: '1d6',
+      lifestealToIndex: ctx.game.mages.indexOf(ctx.caster),
+      lifestealPool: 'sanity',
+    });
+    applyDebuff(ctx, ctx.target, {
+      name: 'Agony Harvest',
+      key: 'debuff:agony-harvest',
+      duration: 5,
+      mods: { damageTaken: 2 },
+    });
+  },
+});
+
+registerSpell({
+  name: 'Dark Feast',
+  words: ['shadow', 'drain', 'pain'],
+  actionType: 'main',
+  range: R(15),
+  bonusRangeInOwnShadow: R(99),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Drain 1d6 corrosive health and 3d4 shadow sanity, restoring the matching resource. Targets in your shadows can be reached globally.',
+  visual: { preset: 'projectile', color: 0x796088, size: 13, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Dark Feast'), 'corrosive', 'physical'));
+    const sanityDamage = dealDamage(
+      ctx,
+      ctx.target,
+      dmg(rollDice(ctx, '3d4', 'Dark Feast'), 'shadow', 'sanity')
+    );
+    if (sanityDamage > 0 && ctx.caster.alive) heal(ctx, ctx.caster, sanityDamage, 'sanity');
+  },
+});
+
 // ===========================================================================
 //  SNIFF EASTER-EGG SPELLS   (Pierce / Mind / Veil / Fire / Lightning)
 // ===========================================================================
@@ -1128,13 +1562,24 @@ registerSpell({
   range: R(15),
   targeting: 'enemy',
   dc: 8,
-  description: 'Strike one enemy for 1d6 plus 1 damage per 6 Lightning power (range 15).',
+  description: 'Strike for 1d6 plus power scaling. An overload mirrors the hit into you; a surge arcs it into a random nearby unit. A natural 20 magnifies either outcome.',
   visual: { preset: 'beam', color: 0xffe45c, size: 7, speed: 1.7 },
   cast(ctx) {
     if (!ctx.target) return;
     const power = lightningPower(ctx);
+    const gamble = lightningGamble(ctx);
     const amount = rollDice(ctx, '1d6', 'Lightning') + Math.floor(power / 6);
     dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    if (gamble === 'overload' && ctx.caster.alive) {
+      dealDamage(ctx, ctx.caster, dmg(amount, 'fire', 'physical'), { canMiss: false });
+    } else if (gamble === 'surge') {
+      const candidates = ctx.game.magesInRadius(ctx.target.pos, R(Math.min(12, 3 + Math.floor(power / 3))), ctx.target);
+      if (candidates.length > 0) {
+        const arcTarget = ctx.rng.pick(candidates);
+        ctx.vfx?.lightningBolt?.(ctx.target.pos, arcTarget.pos);
+        dealDamage(ctx, arcTarget, dmg(amount, 'fire', 'physical'), { canMiss: false });
+      }
+    }
   },
 });
 
@@ -1142,13 +1587,21 @@ registerSpell({
   name: 'Fire Mind',
   words: ['fire', 'mind'],
   actionType: 'main',
-  range: R(15),
-  targeting: 'enemy',
+  range: R(10),
+  targeting: 'any',
   dc: 11,
-  description: 'Apply 2 stacks of Blueflare, a spreading mental flame with slower decay (range 15).',
-  visual: { preset: 'beam', color: 0x56bfff, size: 8, speed: 1.3 },
+  description: 'Enchant the target’s active weapon. Every landed hit applies 1 Blueflare.',
+  visual: { preset: 'conjure', color: 0x56bfff, size: 38, speed: 1.3 },
   cast(ctx) {
-    if (ctx.target) applyBlueflareStacks(ctx, ctx.target, 2);
+    const target = ctx.target ?? ctx.caster;
+    const weaponId = target.activeWeaponId();
+    if (!weaponId) {
+      ctx.log(`${target.name} has no active weapon to enchant.`);
+      return;
+    }
+    target.weaponEnchant = 'fireMind';
+    target.enchantedWeapon = weaponId;
+    ctx.log(`${target.name}'s weapon begins burning with thought-fire.`);
   },
 });
 
@@ -1160,14 +1613,55 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    'Deal 1d6 plus 1 damage per 5 Lightning power and apply up to 3 Fire based on that power (range 15).',
+    'Strike an enemy, then gamble through up to one random nearby unit per 5 Lightning power. Every arc deals 1d6 Fire and applies Fire; allies and caster are valid later jumps. A natural 20 overloads every living unit for 20d6 and 20 Fire.',
   visual: { preset: 'beam', color: 0xff9d36, size: 10, speed: 1.6 },
-  cast(ctx) {
+  async cast(ctx) {
     if (!ctx.target) return;
     const power = lightningPower(ctx);
-    const amount = rollDice(ctx, '1d6', 'Fire Lightning') + Math.floor(power / 5);
-    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
-    if (ctx.target.alive) applyFireStacks(ctx, ctx.target, Math.min(3, 1 + Math.floor(power / 10)));
+    if (ctx.crit) {
+      for (const target of ctx.game.mages.filter((mage) => mage.alive)) {
+        await ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
+        dealDamage(ctx, target, dmg(rollDice(ctx, '20d6', 'Fire Lightning overload'), 'fire', 'physical'), {
+          canMiss: false,
+        });
+        if (target.alive) applyFireStacks(ctx, target, 20);
+      }
+      return;
+    }
+    let current = ctx.target;
+    let from = ctx.caster.pos;
+    const visited = new Set<Mage>();
+    const jumps = Math.max(1, Math.ceil(power / 5)) * (ctx.crit ? 2 : 1);
+    const jumpRange = R(ctx.crit ? 12 : 6);
+    for (let jump = 0; jump < jumps && current.alive; jump++) {
+      const gamble = lightningGamble(ctx);
+      const overload = gamble === 'overload';
+      if (overload) current = ctx.caster;
+      await ctx.vfx?.lightningBolt?.(from, current.pos);
+      const amount = rollDice(ctx, '1d6', 'Fire Lightning arc') + Math.floor(power / 6);
+      dealDamage(ctx, current, dmg(amount, 'fire', 'physical'), { canMiss: false });
+      if (current.alive) applyFireStacks(ctx, current, 1 + Math.floor(power / 10));
+      visited.add(current);
+      if (overload || !ctx.caster.alive) break;
+      const candidates = ctx.game.mages.filter(
+        (mage) =>
+          mage !== current &&
+          mage.alive &&
+          (ctx.crit || !visited.has(mage)) &&
+          Math.hypot(mage.x - current.x, mage.y - current.y) <= jumpRange
+      );
+      if (gamble === 'surge' && candidates.length > 0) {
+        const fork = ctx.rng.pick(candidates);
+        await ctx.vfx?.lightningBolt?.(current.pos, fork.pos);
+        dealDamage(ctx, fork, dmg(amount, 'fire', 'physical'), { canMiss: false });
+        if (fork.alive) applyFireStacks(ctx, fork, 1 + Math.floor(power / 10));
+        visited.add(fork);
+      }
+      const next = candidates.filter((candidate) => ctx.crit || !visited.has(candidate));
+      if (next.length === 0) break;
+      from = current.pos;
+      current = ctx.rng.pick(next);
+    }
   },
 });
 
@@ -1179,13 +1673,25 @@ registerSpell({
   targeting: 'self',
   dc: 10,
   reaction: true,
-  description: 'Gain a half veil for 2 turns and apply 1 Fire to nearby enemies within range 2.',
+  description: 'Gain a weaker half veil for 2 turns. At each turn start while still veiled, nearby enemies within range 2 gain 1 Fire.',
   visual: { preset: 'nova', color: 0xff6f52, size: R(2), speed: 1.4 },
   cast(ctx) {
     applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
     for (const target of ctx.game.magesInRadius(ctx.caster.pos, R(2), ctx.caster)) {
       if (target.team !== ctx.caster.team) applyFireStacks(ctx, target, 1);
     }
+    addOrExtendStatus(
+      ctx.caster.statuses,
+      {
+        key: 'aura:fire-veil',
+        name: 'Cinder Veil',
+        kind: 'fireVeilAura',
+        duration: 3,
+        radius: R(2),
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+      },
+      false
+    );
   },
 });
 
@@ -1193,18 +1699,39 @@ registerSpell({
   name: 'Lightning Mind',
   words: ['lightning', 'mind'],
   actionType: 'main',
-  range: R(15),
-  targeting: 'enemy',
+  range: 0,
+  targeting: 'self',
   dc: 11,
   description:
-    'Deal 1d6 plus 1 sanity damage per 6 Lightning power, then apply 1 Blueflare (range 15).',
-  visual: { preset: 'beam', color: 0x79bfff, size: 9, speed: 1.7 },
+    'Enchant your active weapon. Each hit arcs half its dealt damage as sanity. The conductor may overload you, surge to two targets, or on a natural 20 arc to everything nearby.',
+  visual: { preset: 'conjure', color: 0x79bfff, size: 46, speed: 1.7 },
   cast(ctx) {
-    if (!ctx.target) return;
+    const target = ctx.target ?? ctx.caster;
+    const weaponId = target.activeWeaponId();
+    if (!weaponId) {
+      ctx.log(`${target.name} has no active weapon to enchant.`);
+      return;
+    }
     const power = lightningPower(ctx);
-    const amount = rollDice(ctx, '1d6', 'Lightning Mind') + Math.floor(power / 6);
-    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'sanity'));
-    if (ctx.target.alive) applyBlueflareStacks(ctx, ctx.target, 1);
+    const gamble = lightningGamble(ctx);
+    if (gamble === 'overload') {
+      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Synaptic overload'), 'fire', 'sanity'), {
+        canMiss: false,
+      });
+      if (!ctx.crit) {
+        ctx.log(`The conductor grounds into ${target.name} before it can bind.`);
+        return;
+      }
+      ctx.log(`The critical conductor grounds into ${target.name} and binds anyway.`);
+    }
+    target.weaponEnchant = 'lightningMind';
+    target.enchantedWeapon = weaponId;
+    target.lightningMindPower = power;
+    target.lightningMindCritical = !!ctx.crit;
+    target.lightningMindSurged = gamble === 'surge';
+    ctx.log(
+      `${target.name}'s weapon holds a ${power}-power mindstorm${ctx.crit ? ' that will arc to everything nearby' : ''}.`
+    );
   },
 });
 
@@ -1212,21 +1739,54 @@ registerSpell({
   name: 'Lightning Veil',
   words: ['lightning', 'veil'],
   actionType: 'bonus',
-  range: R(20),
-  targeting: 'point',
+  range: 0,
+  targeting: 'self',
   dc: 11,
   description:
-    'Blink up to your Lightning power in range (critical doubles it), then gain a half veil for 1 turn per 10 power.',
-  visual: { preset: 'burst', color: 0xffef8a, size: 30, speed: 1.8 },
-  cast(ctx) {
-    if (!ctx.targetPoint) return;
+    'Arc to every ally and enemy within range 6 for 1d3 Fire and turn each hit invisible. Lightning power sets veil duration. A natural 20 hits every other living unit for 20d3 and veils them for 20 turns.',
+  visual: { preset: 'nova', color: 0xffef8a, size: R(6), speed: 1.8 },
+  async cast(ctx) {
     const power = lightningPower(ctx);
-    const distance = R(Math.min(20, power * (ctx.crit ? 2 : 1)));
-    blinkstep(ctx, ctx.caster, { toPoint: ctx.targetPoint, distance });
-    applyInvisibility(ctx, ctx.caster, {
-      duration: Math.max(1, Math.ceil(power / 10)),
-      mode: 'partial',
-    });
+    const targets = ctx.crit
+      ? ctx.game.mages.filter((mage) => mage !== ctx.caster && mage.alive)
+      : ctx.game.magesInRadius(ctx.caster.pos, R(6), ctx.caster);
+    for (const target of targets) {
+      await ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
+      dealDamage(
+        ctx,
+        target,
+        dmg(rollDice(ctx, ctx.crit ? '20d3' : '1d3', 'Lightning Veil'), 'fire', 'physical'),
+        { canMiss: false }
+      );
+      if (target.alive) {
+        applyInvisibility(ctx, target, {
+          duration: ctx.crit ? 20 : Math.max(1, Math.ceil(power / 10)),
+          mode: 'full',
+        });
+      }
+    }
+    const repeatPool = ctx.crit
+      ? ctx.game.mages.filter((mage) => mage.alive)
+      : ctx.game.mages.filter(
+          (mage) => mage.alive && Math.hypot(mage.x - ctx.caster.x, mage.y - ctx.caster.y) <= R(6)
+        );
+    const repeats = Math.floor(power / 8) * (ctx.crit ? 2 : 1);
+    for (let repeat = 0; repeat < repeats && repeatPool.length > 0; repeat++) {
+      const target = ctx.rng.pick(repeatPool);
+      await ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
+      dealDamage(
+        ctx,
+        target,
+        dmg(rollDice(ctx, ctx.crit ? '20d3' : '1d3', 'Lightning Veil repeat'), 'fire', 'physical'),
+        { canMiss: false }
+      );
+      if (target.alive) {
+        applyInvisibility(ctx, target, {
+          duration: ctx.crit ? 20 : Math.max(1, Math.ceil(power / 10)),
+          mode: 'full',
+        });
+      }
+    }
   },
 });
 
@@ -1293,7 +1853,7 @@ registerSpell({
       if (candidates.length === 0) break;
       if (ctx.rng.chance(1 / Math.max(1, power))) {
         ctx.log(`${ctx.caster.name}'s Lightning Pierce misfires!`);
-        dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '2d4', 'Lightning misfire'), 'fire', 'physical'), {
+        dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, ctx.crit ? '4d4' : '2d4', 'Lightning misfire'), 'fire', 'physical'), {
           canMiss: false,
         });
         break;
@@ -1303,7 +1863,7 @@ registerSpell({
       const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
       blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
       await bolt;
-      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Pierce'), 'fire', 'physical'), {
+      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Pierce') + Math.floor(power / 8), 'fire', 'physical'), {
         canMiss: false,
       });
       range -= R(1);
@@ -1324,16 +1884,34 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     const power = lightningPower(ctx);
+    const gamble = lightningGamble(ctx);
     const bonus = Math.floor(power / 6);
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Lightning Mind') + bonus, 'fire', 'physical'));
+    const physicalAmount = rollDice(ctx, '1d6', 'Fire Lightning Mind') + bonus;
+    dealDamage(ctx, ctx.target, dmg(physicalAmount, 'fire', 'physical'));
+    if (gamble === 'overload' && ctx.caster.alive) {
+      dealDamage(ctx, ctx.caster, dmg(physicalAmount, 'fire', 'physical'), { canMiss: false });
+    }
     if (!ctx.target.alive) return;
+    const sanityAmount = rollDice(ctx, '1d6', 'Fire Lightning Mind sanity') + bonus;
     dealDamage(
       ctx,
       ctx.target,
-      dmg(rollDice(ctx, '1d6', 'Fire Lightning Mind sanity') + bonus, 'fire', 'sanity')
+      dmg(sanityAmount, 'fire', 'sanity')
     );
     if (ctx.target.alive) {
       applyBlueflareStacks(ctx, ctx.target, Math.min(4, 2 + Math.floor(power / 12)));
+    }
+    if (gamble === 'surge') {
+      const candidates = ctx.game.magesInRadius(
+        ctx.target.pos,
+        R(Math.min(12, 3 + Math.floor(power / 3))),
+        ctx.target
+      );
+      if (candidates.length > 0) {
+        const arcTarget = ctx.rng.pick(candidates);
+        ctx.vfx?.lightningBolt?.(ctx.target.pos, arcTarget.pos);
+        dealDamage(ctx, arcTarget, dmg(sanityAmount, 'fire', 'sanity'), { canMiss: false });
+      }
     }
   },
 });
@@ -1346,24 +1924,41 @@ registerSpell({
   targeting: 'point',
   dc: 14,
   description:
-    'Apply 2 Fire to enemies within range 2 of your departure, blink by Lightning power, repeat at arrival, and become invisible.',
-  visual: { preset: 'burst', color: 0xff8b45, size: R(2), speed: 1.7 },
-  cast(ctx) {
+    'Detonate indiscriminate wildfire storms at departure and arrival, then vanish. Power expands their radius and damage. A natural 20 makes both storms battlefield-wide, self-inclusive 20d6 catastrophes with 20 Fire and a 20-turn veil.',
+  visual: { preset: 'nova', color: 0xff8b45, size: R(6), speed: 1.7 },
+  async cast(ctx) {
     if (!ctx.targetPoint) return;
     const power = lightningPower(ctx);
     const origin = { ...ctx.caster.pos };
-    for (const target of ctx.game.magesInRadius(origin, R(2), ctx.caster)) {
-      if (target.team !== ctx.caster.team) applyFireStacks(ctx, target, 2);
-    }
+    const storm = async (centre: { x: number; y: number }) => {
+      const targets = ctx.crit
+        ? ctx.game.mages.filter((mage) => mage.alive)
+        : ctx.game.magesInRadius(centre, R(2 + Math.floor(power / 5)), ctx.caster);
+      for (const target of targets) {
+        await ctx.vfx?.lightningBolt?.(centre, target.pos);
+        dealDamage(
+          ctx,
+          target,
+          dmg(
+            ctx.crit
+              ? rollDice(ctx, '20d6', 'Fire Lightning Veil catastrophe')
+              : rollDice(ctx, '2d6', 'Fire Lightning Veil') + Math.floor(power / 4),
+            'fire',
+            'physical'
+          ),
+          { canMiss: false, aoe: true }
+        );
+        if (target.alive) applyFireStacks(ctx, target, ctx.crit ? 20 : 2 + Math.floor(power / 10));
+      }
+    };
+    await storm(origin);
     blinkstep(ctx, ctx.caster, {
       toPoint: ctx.targetPoint,
       distance: R(Math.min(20, power * (ctx.crit ? 2 : 1))),
     });
-    for (const target of ctx.game.magesInRadius(ctx.caster.pos, R(2), ctx.caster)) {
-      if (target.team !== ctx.caster.team) applyFireStacks(ctx, target, 2);
-    }
+    await storm(ctx.caster.pos);
     applyInvisibility(ctx, ctx.caster, {
-      duration: Math.max(1, Math.ceil(power / 12)),
+      duration: ctx.crit ? 20 : Math.max(1, Math.ceil(power / 8)),
       mode: 'full',
     });
   },
@@ -1420,16 +2015,30 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Dash up to range 12 toward an enemy, deal 2d6 Fire, apply 2 Fire, and become fully invisible for 2 turns.',
-  visual: { preset: 'projectile', color: 0xff8060, size: 14, speed: 1.8 },
+    'Breach up to range 15 into an enemy and erupt for 4d6 Fire against every enemy within range 3, applying 4 Fire. Vanish for 3 turns and kindle a Cinder Veil around yourself.',
+  visual: { preset: 'burst', color: 0xff8060, size: R(3), speed: 1.8 },
   cast(ctx) {
     if (!ctx.target) return;
-    dash(ctx, ctx.caster, { toPoint: ctx.target.pos, distance: R(12) });
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Fire Veil Pierce'), 'fire', 'physical'), {
-      canMiss: false,
-    });
-    if (ctx.target.alive) applyFireStacks(ctx, ctx.target, 2);
-    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+    dash(ctx, ctx.caster, { toPoint: ctx.target.pos, distance: R(15) });
+    const blast = rollDice(ctx, '4d6', 'Fire Veil Pierce breach');
+    for (const target of ctx.game.magesInRadius(ctx.caster.pos, R(3), ctx.caster)) {
+      if (target.team === ctx.caster.team) continue;
+      dealDamage(ctx, target, dmg(blast, 'fire', 'physical'), { canMiss: false, aoe: true });
+      if (target.alive) applyFireStacks(ctx, target, 4);
+    }
+    applyInvisibility(ctx, ctx.caster, { duration: 3, mode: 'full' });
+    addOrExtendStatus(
+      ctx.caster.statuses,
+      {
+        key: 'aura:fire-veil',
+        name: 'Cinder Veil',
+        kind: 'fireVeilAura',
+        duration: 4,
+        radius: R(3),
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+      },
+      false
+    );
   },
 });
 
@@ -1456,23 +2065,46 @@ registerSpell({
           Math.hypot(target.x - ctx.caster.x, target.y - ctx.caster.y) <= range
       );
       if (candidates.length === 0) break;
+      if (ctx.rng.chance(1 / Math.max(1, power))) {
+        ctx.log(`${ctx.caster.name}'s neural current folds back into its source!`);
+        dealDamage(
+          ctx,
+          ctx.caster,
+          dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce backlash') + Math.floor(power / 8), 'fire', 'sanity'),
+          { canMiss: false }
+        );
+        break;
+      }
       const target = ctx.rng.pick(candidates);
       visited.add(target);
       const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
       blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
       await bolt;
-      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce'), 'pierce', 'physical'), {
+      const bonus = Math.floor(power / 8);
+      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce') + bonus, 'pierce', 'physical'), {
         canMiss: false,
       });
       if (target.alive) {
         dealDamage(
           ctx,
           target,
-          dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce sanity'), 'fire', 'sanity'),
+          dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce sanity') + bonus, 'fire', 'sanity'),
           { canMiss: false }
         );
       }
       if (target.alive) applyBlueflareStacks(ctx, target, 1);
+      if (ctx.crit) {
+        const forkCandidates = candidates.filter((candidate) => candidate !== target);
+        if (forkCandidates.length > 0) {
+          const fork = ctx.rng.pick(forkCandidates);
+          await ctx.vfx?.lightningBolt?.(target.pos, fork.pos);
+          dealDamage(ctx, fork, dmg(rollDice(ctx, '1d6', 'Neural fork') + bonus, 'fire', 'sanity'), {
+            canMiss: false,
+          });
+          if (fork.alive) applyBlueflareStacks(ctx, fork, 1);
+          visited.add(fork);
+        }
+      }
       range -= R(2);
     }
   },
@@ -1486,24 +2118,41 @@ registerSpell({
   targeting: 'point',
   dc: 14,
   description:
-    'Apply 1 Blueflare to enemies within range 3 of your departure, blink by Lightning power, repeat at arrival, and become invisible.',
-  visual: { preset: 'burst', color: 0x8fa7ff, size: R(3), speed: 1.7 },
-  cast(ctx) {
+    'Tear open indiscriminate sanity storms at departure and arrival, then vanish. Power expands and intensifies both storms. A natural 20 strikes every living unit, including caster, for 20d6 sanity and 20 Blueflare at both sites.',
+  visual: { preset: 'nova', color: 0x8fa7ff, size: R(6), speed: 1.7 },
+  async cast(ctx) {
     if (!ctx.targetPoint) return;
     const power = lightningPower(ctx);
     const origin = { ...ctx.caster.pos };
-    for (const target of ctx.game.magesInRadius(origin, R(3), ctx.caster)) {
-      if (target.team !== ctx.caster.team) applyBlueflareStacks(ctx, target, 1);
-    }
+    const storm = async (centre: { x: number; y: number }) => {
+      const targets = ctx.crit
+        ? ctx.game.mages.filter((mage) => mage.alive)
+        : ctx.game.magesInRadius(centre, R(3 + Math.floor(power / 5)), ctx.caster);
+      for (const target of targets) {
+        await ctx.vfx?.lightningBolt?.(centre, target.pos);
+        dealDamage(
+          ctx,
+          target,
+          dmg(
+            ctx.crit
+              ? rollDice(ctx, '20d6', 'Lightning Mind Veil catastrophe')
+              : rollDice(ctx, '2d6', 'Lightning Mind Veil') + Math.floor(power / 4),
+            'fire',
+            'sanity'
+          ),
+          { canMiss: false, aoe: true }
+        );
+        if (target.alive) applyBlueflareStacks(ctx, target, ctx.crit ? 20 : 2 + Math.floor(power / 10));
+      }
+    };
+    await storm(origin);
     blinkstep(ctx, ctx.caster, {
       toPoint: ctx.targetPoint,
       distance: R(Math.min(20, power * (ctx.crit ? 2 : 1))),
     });
-    for (const target of ctx.game.magesInRadius(ctx.caster.pos, R(3), ctx.caster)) {
-      if (target.team !== ctx.caster.team) applyBlueflareStacks(ctx, target, 1);
-    }
+    await storm(ctx.caster.pos);
     applyInvisibility(ctx, ctx.caster, {
-      duration: Math.max(1, Math.ceil(power / 8)),
+      duration: ctx.crit ? 20 : Math.max(1, Math.ceil(power / 6)),
       mode: 'full',
     });
   },
@@ -1525,7 +2174,6 @@ registerSpell({
     while (range >= R(1) && ctx.caster.alive) {
       const candidates = ctx.game.mages.filter(
         (entity) =>
-          entity !== ctx.caster &&
           entity.alive &&
           Math.hypot(entity.x - ctx.caster.x, entity.y - ctx.caster.y) <= range
       );
@@ -1534,7 +2182,7 @@ registerSpell({
       const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
       blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
       await bolt;
-      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Veil Pierce'), 'fire', 'physical'), {
+      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Veil Pierce') + Math.floor(power / 8), 'fire', 'physical'), {
         canMiss: false,
       });
       range -= R(1);
@@ -1614,13 +2262,13 @@ registerSpell({
         ctx.vfx?.lightningTrail?.(trail);
         for (const entity of ctx.game.mages) {
           if (entity === ctx.caster || !entity.alive || !segmentHitsMage(segment, entity)) continue;
-          dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail'), 'fire', 'physical'), {
+          dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail') + Math.floor(power / 5), 'fire', 'physical'), {
             canMiss: false,
           });
         }
         if (collision) {
           ctx.log(`${ctx.caster.name} crosses the red trail and the spell collapses!`);
-          dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '4d6', 'Red trail collision'), 'fire', 'physical'), {
+          dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '4d6', 'Red trail collision') + Math.floor(power / 5), 'fire', 'physical'), {
             canMiss: false,
           });
           break;
@@ -2284,28 +2932,17 @@ registerSpell({
 });
 
 registerSpell({
-  name: 'Order Drain',
+  name: "Order's Due",
   words: ['drain', 'order'],
   actionType: 'main',
   range: 0,
   targeting: 'none',
   dc: 11,
   description:
-    'Every current enemy takes 1d6 corrosive damage each turn for 4 turns.',
+    'For 4 rounds, whenever an enemy explicitly targets you or an ally, it first takes 1d6 corrosive damage and you heal for the damage dealt.',
   visual: { preset: 'nova', color: 0x9ad67a, size: 46, speed: 1.1 },
   cast(ctx) {
-    // The true effect (mirror the caster's last action; punish deviating foes and
-    // lifesteal 100%) is not modelled; every current enemy takes a 4-turn DoT.
-    const foes = ctx.game.mages.filter((m) => m.alive && m.team !== ctx.caster.team);
-    for (const m of foes) {
-      applyDot(ctx, m, {
-        name: "Order's Judgement",
-        key: 'dot:order',
-        duration: 4,
-        damage: dmg(0, 'corrosive', 'physical'),
-        damageSpec: '1d6',
-      });
-    }
+    ctx.game.addOrderDrainCurse(ctx.caster, 4);
   },
 });
 

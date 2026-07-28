@@ -58,6 +58,10 @@ export interface VfxSink {
   lightningTrail?(segments: readonly { from: Vec2; to: Vec2 }[]): void;
   /** Clear the temporary Lightning Fire Pierce trail. */
   clearLightningTrail?(): void;
+  /** Cue a logical full-field quarter-turn without owning any movement state. */
+  quarterTurn?(clockwise: boolean): void;
+  /** Pulse the active Twist Rune and show its orbit direction. */
+  twistRune?(pivot: Vec2, radius: number, clockwise: boolean): void;
 }
 
 /** Options for an interactive point sub-target requested mid-resolution. */
@@ -783,6 +787,16 @@ export function applyDot(
     stunType?: StunType;
     /** Index (in game.mages) of the mage healed for this DoT's damage each tick. */
     lifestealToIndex?: number;
+    /** Resource restored by lifesteal; defaults to HP. */
+    lifestealPool?: 'hp' | 'sanity';
+    /** Enemy-only damage splashed around the bearer on each tick. */
+    splash?: {
+      radius: number;
+      damage: DamageInstance;
+      damageSpec: string;
+    };
+    /** Team of the DoT's source, used to exclude allies from splash. */
+    sourceTeam?: number;
     /** Extra dice rolled on a tick when the bearer dealt no damage last turn. */
     bonusNoDamageSpec?: string;
     /** Owner's team: bearer damaging this team in a cycle extends the DoT +2. */
@@ -808,6 +822,9 @@ export function applyDot(
       stunChance: opts.stunChance,
       stunType: opts.stunType,
       lifestealToIndex: opts.lifestealToIndex,
+      lifestealPool: opts.lifestealPool,
+      splash: opts.splash,
+      sourceTeam: opts.sourceTeam,
       bonusNoDamageSpec: opts.bonusNoDamageSpec,
       extendOwnerTeam: opts.extendOwnerTeam,
     },

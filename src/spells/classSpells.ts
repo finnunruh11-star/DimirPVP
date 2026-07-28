@@ -45,6 +45,39 @@ import { registerClassSpell, registerClassSpellVariants } from './registry';
 const R = (units: number): number => units * RANGE_UNIT;
 const HEXCRAFT_FIELD_DURATION = 8;
 
+registerClassSpellVariants({
+  words: ['shatter', 'twist'],
+  variants: {
+    hexcraft: {
+      name: 'Twist Rune',
+      actionType: 'main',
+      range: R(15),
+      targeting: 'any',
+      dc: 12,
+      noCrit: true,
+      description:
+        'Enchant an entity for 4 turns. At the start of its turn, everything else within range 3 is twisted 90 degrees around it and takes 1d3 shatter damage. Anything slammed into the field border or a spectral wall takes another 2d6.',
+      visual: { preset: 'conjure', color: 0xb8c878, size: 54, speed: 1.1 },
+      cast(ctx) {
+        const target = ctx.target ?? ctx.caster;
+        addOrExtendStatus(
+          target.statuses,
+          {
+            key: 'hex:twist-rune',
+            name: 'Twist Rune',
+            kind: 'twistRune',
+            duration: 4,
+            ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+            radius: R(3),
+            clockwise: ctx.rng.chance(0.5),
+          },
+          false
+        );
+      },
+    },
+  },
+});
+
 /** Nearest living enemy of the caster within `radius` of `at`, if any. */
 function nearestEnemy(ctx: EffectContext, at: { x: number; y: number }, radius: number): Mage | null {
   const foes = ctx.game
@@ -58,6 +91,13 @@ function nearestEnemy(ctx: EffectContext, at: { x: number; y: number }, radius: 
 /** Roll 1d20 as a summon's vigour (scales its stats). */
 function summonVigor(ctx: EffectContext): number {
   return rollDice(ctx, '1d20', 'Summon vigor');
+}
+
+function classLightningPower(ctx: EffectContext): number {
+  const natural = ctx.spellRoll ?? 1;
+  const power = natural + Math.max(0, ctx.caster.statInt - 1) + Math.max(0, ctx.caster.luck - 1);
+  ctx.log(`Lightning power: ${power}.`);
+  return power;
 }
 
 // ===========================================================================
@@ -207,6 +247,8 @@ registerClassSpellVariants({
         }
         target.weaponEnchant = 'lightningEcho';
         target.lightningEchoWeapon = weaponId;
+        target.lightningEchoPower = classLightningPower(ctx);
+        target.lightningEchoCritical = !!ctx.crit;
         ctx.log(`${target.name}'s weapon takes on a crackling Lightning Echo.`);
       },
     },

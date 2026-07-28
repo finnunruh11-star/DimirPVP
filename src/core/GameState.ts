@@ -36,10 +36,12 @@ import {
   type BindCurseAuraStatus,
   type ControlStatus,
   type DotStatus,
+  type FireVeilAuraStatus,
   type FireStatus,
   type BlueflareStatus,
   type OrderJudgmentStatus,
   type ShadowTrailStatus,
+  type TwistRuneStatus,
   type Status,
 } from './Status';
 
@@ -121,6 +123,13 @@ export interface MutivargZone {
   turnsLeft: number;
 }
 
+export interface OrderDrainCurse {
+  ownerIndex: number;
+  ownerTeam: number;
+  roundsLeft: number;
+  triggeredItemIds: number[];
+}
+
 /**
  * The pure (Phaser-free) game model: two mages, whose turn it is, the round
  * counter, the reaction stack, dice and a rolling log. The Phaser scene drives
@@ -174,6 +183,9 @@ export class GameState {
 
   /** Timed global Hexcraft laws (Mind Shadow / Curse Corrode). */
   hexcraftGlobals: HexcraftGlobalEffect[] = [];
+
+  /** GEN Order Drain laws that punish enemies for explicitly targeting its team. */
+  orderDrainCurses: OrderDrainCurse[] = [];
 
   /** Persistent Veil Bind linking circles. */
   veilBindZones: VeilBindZone[] = [];
@@ -569,12 +581,14 @@ export class GameState {
     this.turnSeq += 1;
     // Keep latched scarabs glued to whoever they bit before anything else runs.
     this.updateAttachedScarabs();
+    this.applyTwistRunes(m);
     // Ground hazards and shadow-curse auras strike before the mage's own turn.
     this.applyTotemAuras(m);
     this.applyOwnedSummonAuras(m);
     this.applyAuraDots(m);
     this.applyBindCurseAuras(m);
     this.applyLightAuras(m);
+    this.applyFireVeilAuras(m);
     this.applyFireDamage(m);
     this.applyBlueflareDamage(m);
     this.applyDotDamage(m);
@@ -610,6 +624,147 @@ export class GameState {
       m.conjuredBowFiredThisTurn = false;
       const ctx = this.effectContext(m, m, null);
       applyInvisibility(ctx, m, { duration: 1, mode: 'partial' });
+    }
+  }
+
+  private applyFireVeilAuras(bearer: Mage): void {
+    if (!bearer.alive || !bearer.isInvisible()) return;
+    const auras = bearer.statuses.filter(
+      (status) => status.kind === 'fireVeilAura'
+    ) as FireVeilAuraStatus[];
+    for (const aura of auras) {
+      const owner = this.mages[aura.ownerIndex];
+      if (!owner?.alive) continue;
+      for (const target of this.magesInRadius(bearer.pos, aura.radius, bearer)) {
+        if (target.team !== bearer.team) this.applyFireStacks(target, 1, owner);
+      }
+    }
+  }
+
+  quarterTurnDestination(
+    from: Vec2,
+    pivot: Vec2,
+    clockwise: boolean
+  ): { dest: Vec2; wallSlam: boolean } {
+    const dx = from.x - pivot.x;
+    const dy = from.y - pivot.y;
+    const radius = Math.hypot(dx, dy);
+    if (radius < 1) return { dest: { ...from }, wallSlam: false };
+    const startAngle = Math.atan2(dy, dx);
+    const turn = clockwise ? -Math.PI / 2 : Math.PI / 2;
+    const steps = Math.max(2, Math.ceil((radius * Math.PI) / 16));
+    let last = { ...from };
+    for (let step = 1; step <= steps; step++) {
+      const angle = startAngle + (turn * step) / steps;
+      const point = {
+        x: pivot.x + Math.cos(angle) * radius,
+        y: pivot.y + Math.sin(angle) * radius,
+      };
+      const outside =
+        point.x < FIELD.x ||
+        point.x > FIELD.x + FIELD.w ||
+        point.y < FIELD.y ||
+        point.y > FIELD.y + FIELD.h;
+      if (outside || this.isInBarrier(point)) return { dest: last, wallSlam: true };
+      last = point;
+    }
+    return { dest: last, wallSlam: false };
+  }
+
+  turnBattlefield(clockwise: boolean): void {
+    this.vfxSink?.quarterTurn?.(clockwise);
+    const pivot = { x: FIELD.x + FIELD.w / 2, y: FIELD.y + FIELD.h / 2 };
+    for (const mage of this.mages) {
+      if (!mage.alive) continue;
+      const turn = this.quarterTurnDestination(mage.pos, pivot, clockwise);
+      mage.x = turn.dest.x;
+      mage.y = turn.dest.y;
+    }
+    for (const scarab of [...this.scarabs].sort((a, b) => a.id - b.id)) {
+      if (!scarabAlive(scarab) || !scarabFlying(scarab)) continue;
+      const turn = this.quarterTurnDestination(
+        { x: scarab.x, y: scarab.y },
+        pivot,
+        clockwise
+      );
+      scarab.x = turn.dest.x;
+      scarab.y = turn.dest.y;
+    }
+    this.updateAttachedScarabs();
+    this.log(`The battlefield turns 90 degrees ${clockwise ? 'clockwise' : 'counterclockwise'}!`);
+  }
+
+  addOrderDrainCurse(owner: Mage, rounds = 4): void {
+    const ownerIndex = this.mages.indexOf(owner);
+    const existing = this.orderDrainCurses.find((curse) => curse.ownerIndex === ownerIndex);
+    if (existing) {
+      existing.roundsLeft = Math.max(existing.roundsLeft, rounds);
+      existing.triggeredItemIds = [];
+    } else {
+      this.orderDrainCurses.push({
+        ownerIndex,
+        ownerTeam: owner.team,
+        roundsLeft: rounds,
+        triggeredItemIds: [],
+      });
+    }
+    this.log(`${owner.name} places every enemy under Order's Due for ${rounds} rounds.`);
+  }
+
+  private tickOrderDrainCurses(): void {
+    for (const curse of this.orderDrainCurses) {
+      curse.roundsLeft -= 1;
+      curse.triggeredItemIds = [];
+    }
+    this.orderDrainCurses = this.orderDrainCurses.filter((curse) => curse.roundsLeft > 0);
+  }
+
+  private applyTwistRunes(bearer: Mage): void {
+    const runes = bearer.statuses.filter((status) => status.kind === 'twistRune') as TwistRuneStatus[];
+    for (const rune of runes) {
+      const owner = this.mages[rune.ownerIndex];
+      if (!owner) continue;
+      this.vfxSink?.twistRune?.(bearer.pos, rune.radius, rune.clockwise);
+      const targets = this.mages.filter(
+        (mage) => mage !== bearer && mage.alive && dist(mage.pos, bearer.pos) <= rune.radius
+      );
+      for (const target of targets) {
+        const turn = this.quarterTurnDestination(target.pos, bearer.pos, rune.clockwise);
+        target.x = turn.dest.x;
+        target.y = turn.dest.y;
+        const ctx = this.effectContext(owner, target, target.pos);
+        dealDamage(ctx, target, dmg(this.rng.roll('1d3').total, 'shatter', 'physical'), {
+          canMiss: false,
+        });
+        if (turn.wallSlam && target.alive) {
+          dealDamage(ctx, target, dmg(this.rng.roll('2d6').total, 'shatter', 'physical'), {
+            canMiss: false,
+          });
+          this.log(`${target.name} is slammed into a wall by ${rune.name}!`);
+        }
+      }
+      const flying = this.scarabs
+        .filter(
+          (scarab) =>
+            scarabAlive(scarab) &&
+            scarabFlying(scarab) &&
+            dist({ x: scarab.x, y: scarab.y }, bearer.pos) <= rune.radius
+        )
+        .sort((a, b) => a.id - b.id);
+      for (const scarab of flying) {
+        const turn = this.quarterTurnDestination(
+          { x: scarab.x, y: scarab.y },
+          bearer.pos,
+          rune.clockwise
+        );
+        scarab.x = turn.dest.x;
+        scarab.y = turn.dest.y;
+        scarab.hp -= this.rng.roll('1d3').total;
+        if (turn.wallSlam && scarabAlive(scarab)) scarab.hp -= this.rng.roll('2d6').total;
+      }
+      this.scarabs = this.scarabs.filter(scarabAlive);
+      this.updateAttachedScarabs();
+      this.log(`${rune.name} twists everything around ${bearer.name}.`);
     }
   }
 
@@ -679,6 +834,7 @@ export class GameState {
         this.tickTotems();
         this.tickBarriers();
         this.tickGlobalEscalations();
+        this.tickOrderDrainCurses();
         this.tickNeedlepointDomains();
         this.tickHexcraftGlobals();
         this.tickVeilBindZones();
@@ -1568,7 +1724,7 @@ export class GameState {
       if (s.lifestealToIndex !== undefined && total > 0) {
         const owner = this.mages[s.lifestealToIndex];
         if (owner && owner.alive && owner !== m) {
-          heal(this.effectContext(owner, m, null), owner, total);
+          heal(this.effectContext(owner, m, null), owner, total, s.lifestealPool ?? 'hp');
         }
       }
       if (total > 0) {
@@ -1576,6 +1732,25 @@ export class GameState {
         this.vfxSink?.spellEffect?.(m, 'dot');
       }
       this.log(`${m.name} suffers ${total} ${s.damage.type} from ${s.name}.`);
+      if (s.splash && s.sourceTeam !== undefined) {
+        for (const victim of this.mages) {
+          if (victim === m || !victim.alive || victim.team === s.sourceTeam) continue;
+          if (dist(victim.pos, m.pos) > s.splash.radius) continue;
+          const splash =
+            this.rng.roll(s.splash.damageSpec).total +
+            this.hexcraftDamageBonus(s.splash.damage.type, s.splash.damage.damageClass);
+          if (s.splash.damage.damageClass === 'sanity') {
+            victim.sanity = Math.max(0, victim.sanity - splash);
+          } else {
+            victim.hp = Math.max(0, victim.hp - splash);
+          }
+          if (splash > 0) {
+            this.vfxSink?.hit?.(victim);
+            this.vfxSink?.spellEffect?.(victim, 'dot');
+          }
+          this.log(`${s.name} splashes ${victim.name} for ${splash} ${s.splash.damage.type}.`);
+        }
+      }
       if (this.hasHexcraftGlobal('curseCorrode') && m.alive) {
         const corrosive = this.rng.roll('1d3').total;
         m.hp = Math.max(0, m.hp - corrosive);
@@ -2096,7 +2271,30 @@ export class GameState {
   // ---- Stack ----------------------------------------------------------------
 
   pushStack(item: StackItem): void {
+    for (const curse of this.orderDrainCurses) {
+      if (curse.triggeredItemIds.includes(item.id)) continue;
+      if (item.source.team === curse.ownerTeam || item.target?.team !== curse.ownerTeam) continue;
+      curse.triggeredItemIds.push(item.id);
+      const owner = this.mages[curse.ownerIndex];
+      if (!owner?.alive || !item.source.alive) continue;
+      const dealt = dealDamage(
+        this.effectContext(owner, item.source, null),
+        item.source,
+        dmg(this.rng.roll('1d6').total, 'corrosive', 'physical'),
+        { canMiss: false }
+      );
+      if (dealt > 0 && owner.alive) heal(this.effectContext(owner, owner, null), owner, dealt);
+      this.log(`${item.source.name} targets ${item.target.name} and pays ${owner.name}'s due.`);
+    }
     this.stack.push(item);
+  }
+
+  canCastSpellNow(spell: Spell): boolean {
+    return this.stack.length >= (spell.minStackDepth ?? 0);
+  }
+
+  nullifyStack(): StackItem[] {
+    return this.stack.splice(0, this.stack.length);
   }
 
   removeStackItem(id: number): void {
@@ -2696,6 +2894,7 @@ export class GameState {
     this.scarabs = [];
     this.barriers = [];
     this.globalEscalations = [];
+    this.orderDrainCurses = [];
     this.needlepointDomains = [];
     this.hexcraftGlobals = [];
     this.veilBindZones = [];
@@ -3025,6 +3224,44 @@ export class GameState {
           }
         }
         if (dealt > 0) game.resolveVeilCorrodePierce(source, target, veilCorrodePiercePower);
+        if (enchant === 'fireMind' && activeId === source.enchantedWeapon && dealt > 0 && target.alive) {
+          game.applyBlueflareStacks(target, 1, source);
+          game.log(`${source.name}'s enchanted weapon kindles Blueflare on ${target.name}.`);
+        }
+        if (enchant === 'lightningMind' && activeId === source.enchantedWeapon && dealt > 0) {
+          const arcDamage = Math.max(1, Math.floor(dealt / 2));
+          const arcRange = RANGE_UNIT * Math.min(12, 3 + Math.floor(source.lightningMindPower / 3));
+          const candidates = game.mages.filter(
+            (mage) =>
+              mage !== target &&
+              mage.alive &&
+              dist(mage.pos, target.pos) <= arcRange
+          );
+          let struck: Mage[];
+          if (source.lightningMindCritical) {
+            struck = candidates;
+          } else if (source.lightningMindSurged && candidates.length > 0) {
+            const first = game.rng.pick(candidates);
+            const remaining = candidates.filter((candidate) => candidate !== first);
+            struck = remaining.length > 0 ? [first, game.rng.pick(remaining)] : [first];
+          } else {
+            struck = candidates.length > 0 ? [game.rng.pick(candidates)] : [];
+          }
+          for (const arcTarget of struck) {
+            game.vfxSink?.lightningBolt?.(target.pos, arcTarget.pos);
+            dealDamage(
+              game.effectContext(source, arcTarget, null),
+              arcTarget,
+              dmg(arcDamage, 'fire', 'sanity'),
+              { canMiss: false }
+            );
+          }
+          if (struck.length > 0) {
+            game.log(
+              `${source.name}'s weapon arcs ${arcDamage} sanity damage to ${struck.map((mage) => mage.name).join(', ')}.`
+            );
+          }
+        }
         if (
           enchant === 'lightningEcho' &&
           activeId === source.lightningEchoWeapon &&
@@ -3036,6 +3273,20 @@ export class GameState {
           dealDamage(ctx, target, dmg(fireEcho, 'fire', 'physical'), { canMiss: false });
           dealDamage(ctx, target, dmg(mentalEcho, 'fire', 'sanity'), { canMiss: false });
           if (target.alive) game.applyBlueflareStacks(target, 1, source);
+          if (source.lightningEchoCritical) {
+            const echoRange = RANGE_UNIT * Math.min(12, 3 + Math.floor(source.lightningEchoPower / 3));
+            for (const echoTarget of game.mages.filter(
+              (mage) => mage !== target && mage.alive && dist(mage.pos, target.pos) <= echoRange
+            )) {
+              game.vfxSink?.lightningBolt?.(target.pos, echoTarget.pos);
+              dealDamage(
+                game.effectContext(source, echoTarget, null),
+                echoTarget,
+                dmg(fireEcho + Math.floor(source.lightningEchoPower / 8), 'fire', 'physical'),
+                { canMiss: false }
+              );
+            }
+          }
         }
         // Curse Corrode enchant: every landed strike plants a fresh corrosion.
         if (enchant === 'curseCorrode' && dealt > 0 && target.alive) {
@@ -3159,6 +3410,7 @@ export class GameState {
       description: `${source.name} casts ${spell.name}${targetName}. ${spell.description}`,
       isStillValid: (game) => {
         if (!source.alive) return false;
+        if (!game.canCastSpellNow(spell)) return false;
         if (spell.targeting === 'enemy' || spell.targeting === 'ally' || spell.targeting === 'any') {
           return !!target && game.isValidSpellTarget(spell, source, target);
         }
