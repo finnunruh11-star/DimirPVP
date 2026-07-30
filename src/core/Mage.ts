@@ -193,6 +193,10 @@ export class Mage {
   conjuredBowFiredThisTurn = false;
   /** Black Bell attack mode: false = Toll (long wound), true = Condense (cash out afflictions). */
   blackBellCondense = false;
+  /** Whether the held Edgelord Lantern currently projects its dark light. */
+  edgelordLanternActive = false;
+  /** Allows the otherwise untouched-turn throw immediately after deactivating. */
+  edgelordLanternJustDeactivated = false;
 
   /** Training sandbox: this mage cannot die (HP/sanity never drop it below alive). */
   unkillable = false;
@@ -205,6 +209,21 @@ export class Mage {
 
   /** Swamprun creature identity (undefined for player mages). */
   enemyKind?: string;
+  /** Mine Run state for level-scaled creatures and their per-combat resources. */
+  mine?: {
+    kind: string;
+    level: number;
+    role?: 'tank' | 'healer' | 'dps';
+    cooldowns: Record<string, number>;
+    golemState?: 'dormant' | 'waking' | 'awake';
+    stones?: number;
+    stonesRound?: number;
+    charges?: number;
+  };
+  /** Airborne creatures cannot be hit by ordinary close-range attacks. */
+  intrinsicAirborne = false;
+  /** Initiative bracket independent of a player mage's colour identity. */
+  intrinsicInitiativePriority = 0;
   /** Guild companion role used by Expedition AI and loadout rules. */
   expeditionCompanion?: 'dwarf' | 'elf' | 'human';
   expeditionPermanent = false;
@@ -289,6 +308,8 @@ export class Mage {
   reaperChanneling = false;
   /** Removed from the field by a Reaper's clap; restored if that Reaper dies. */
   reaperDeletedBy?: Mage;
+  /** Exiled inside this bearer mage's Edgelord Lantern. */
+  edgelordCapturedBy?: Mage;
 
   /** Item ids permanently disabled for this mage by a Needle of Serenity. */
   bannedItemIds = new Set<ItemId>();
@@ -406,10 +427,15 @@ export class Mage {
     return { x: this.x, y: this.y };
   }
 
-  get alive(): boolean {
-    if (this.reaperDeletedBy) return false;
+  /** Whether this mage's raw vitals remain above zero, even while exiled. */
+  get vitalsAlive(): boolean {
     if (this.unkillable) return true;
     return this.hp > 0 && this.sanity > 0;
+  }
+
+  get alive(): boolean {
+    if (this.reaperDeletedBy || this.edgelordCapturedBy) return false;
+    return this.vitalsAlive;
   }
 
   /** Replace known words and immediately rebuild identity and word charges. */
@@ -494,9 +520,11 @@ export class Mage {
     }
   }
 
-  /** Clear combat-scoped state without restoring persistent Swamprun resources. */
-  resetForNewCombat(): void {
-    this.statuses = [];
+  /** Clear combat-scoped state without restoring persistent run resources. */
+  resetForNewCombat(options: { preserveLanternState?: boolean } = {}): void {
+    this.statuses = options.preserveLanternState
+      ? this.statuses.filter((status) => status.kind === 'soulRend')
+      : [];
     this.actions = { ...ACTIONS_PER_TURN };
 
     this.reactionUsedRecently = false;
@@ -519,12 +547,17 @@ export class Mage {
     this.bindMantleCharges = 0;
     this.conjuredBowFiredThisTurn = false;
     this.blackBellCondense = false;
+    if (!options.preserveLanternState) {
+      this.edgelordLanternActive = false;
+      this.edgelordLanternJustDeactivated = false;
+    }
     this.twistStampSeq = -1;
     this.lastAction = null;
     this.drainLinkTo = undefined;
     this.drainLinkTurns = 0;
     this.reaperMarkedBy = undefined;
     this.reaperDeletedBy = undefined;
+    if (!options.preserveLanternState) this.edgelordCapturedBy = undefined;
     this.damageBySourceThisCycle.clear();
     this.bannedItemIds.clear();
     this.bannedAbilityIds.clear();
@@ -706,6 +739,7 @@ export class Mage {
         ? this.intrinsicMoveUnits * RANGE_UNIT
         : (1 + this.effectiveDex()) * RANGE_UNIT;
     let px = Math.round(base * this.equipMoveMult() * this.thunderMoveMult() * this.summonMoveMultiplier);
+    if (this.hasEdgelordLantern() && !this.edgelordLanternActive) px = Math.round(px * 0.67);
     if (this.profile.redPrimaryTier) px += RANGE_UNIT;
     if (this.hasMomentumBoots()) px += this.momentumStacks * RANGE_UNIT;
     const slowed = px + this.modifier('moveRange');
@@ -1198,8 +1232,8 @@ export class Mage {
   unequipHand(id: ItemId): boolean {
     const i = this.hands.indexOf(id);
     if (i < 0) return false;
-    // Bind Curse (Objects): a sabotaged item is bound in place and cannot be removed.
-    if (this.sabotagedItems.has(id)) return false;
+    // Cursed or sabotaged items are bound in place and cannot be removed.
+    if (this.sabotagedItems.has(id) || getItem(id).permanentlyBinding) return false;
     this.hands.splice(i, 1);
     // A conjured bow (Veil Corrode Pierce, Objects) dissipates when unequipped.
     if (getItem(id).conjuredVeilBow) {
@@ -1219,9 +1253,17 @@ export class Mage {
     return true;
   }
 
-  /** Is this creature intrinsically weak to radiant light? */
+  /** Is this creature or its equipped gear weak to radiant light? */
   isLightWeak(): boolean {
-    return this.intrinsicWeakTypes.includes('light');
+    return (
+      this.intrinsicWeakTypes.includes('light') ||
+      this.equippedItems().some((id) => getItem(id).resist?.weak?.includes('light'))
+    );
+  }
+
+  /** Whether the cursed Edgelord Lantern is bound in this mage's hand. */
+  hasEdgelordLantern(): boolean {
+    return this.hands.some((id) => !!getItem(id).edgelordLantern);
   }
 
   /** Is this creature an ethereal (wisp / specter / ghast / reaper / lich)? */
@@ -1437,6 +1479,7 @@ export class Mage {
     this.dealtDamageThisTurn = false;
     this.actions = { ...ACTIONS_PER_TURN };
     this.hasCastThisTurn = false;
+    this.edgelordLanternJustDeactivated = false;
     // A Focus buff expires if its empowered word spell was never cast.
     this.focusNextSpell = false;
     // Eldritch Truth's shroud lasts only until the start of the wielder's next turn.
@@ -1461,7 +1504,12 @@ export class Mage {
   tickStatuses(): string[] {
     const log: string[] = [];
     for (const s of this.statuses) {
-      if (s.kind !== 'fire' && s.kind !== 'blueflare') s.duration -= 1;
+      if (
+        s.kind !== 'fire' &&
+        s.kind !== 'sentinelFire' &&
+        s.kind !== 'blueflare' &&
+        s.kind !== 'soulRend'
+      ) s.duration -= 1;
     }
     const expired = this.statuses.filter((s) => s.duration <= 0);
     for (const s of expired) log.push(`${s.name} fades from ${this.name}.`);

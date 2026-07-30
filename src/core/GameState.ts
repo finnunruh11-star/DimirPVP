@@ -7,8 +7,8 @@ import { dealDamage, heal, applyDot, applyDebuff, applyInvisibility, applyStun, 
 import { dmg } from './Damage';
 import type { DamageType, DamageClass } from './Damage';
 import type { ItemId, ItemDef } from './Items';
-import { getItem, SLOT_CAPS } from './Items';
-import { dist, stepTowards, type Vec2 } from './utils';
+import { getItem, isRangedWeapon, SLOT_CAPS } from './Items';
+import { dist, segmentCircleFirstIntersection, stepTowards, type Vec2 } from './utils';
 import {
   CONE_DEGREES,
   CLEAVE_DEGREES,
@@ -38,7 +38,10 @@ import {
   type DotStatus,
   type FireVeilAuraStatus,
   type FireStatus,
+  type InvisibilityStatus,
+  type SentinelFireStatus,
   type BlueflareStatus,
+  type SoulRendStatus,
   type OrderJudgmentStatus,
   type ShadowTrailStatus,
   type TwistRuneStatus,
@@ -123,6 +126,17 @@ export interface MutivargZone {
   turnsLeft: number;
 }
 
+/** Black Dragonborn breath hazard. It slows but never blocks movement. */
+export interface CorrosionPool {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+  ownerIndex: number;
+  ownerTeam: number;
+  roundsLeft: number;
+}
+
 export interface OrderDrainCurse {
   ownerIndex: number;
   ownerTeam: number;
@@ -196,6 +210,9 @@ export class GameState {
   /** Active Mutivarg's Rod slow-circles. */
   mutivargZones: MutivargZone[] = [];
 
+  /** Active Black Dragonborn corrosion pools (one per owner). */
+  corrosionPools: CorrosionPool[] = [];
+
   /** Alive summon (scarab) count per team at last regen, to score deaths since. */
   private prevScarabAlive: Record<number, number> = {};
 
@@ -236,9 +253,10 @@ export class GameState {
       if (m.isSummon) return [];
       const roll = this.rng.roll('1d20').total;
       const total = roll + m.effectiveDex();
-      return [{ i, total, red: m.profile.redPrimaryTier ? 1 : 0, tie: this.rng.roll('1d1000').total }];
+      const priority = Math.max(m.profile.redPrimaryTier ? 1 : 0, m.intrinsicInitiativePriority);
+      return [{ i, total, priority, tie: this.rng.roll('1d1000').total }];
     });
-    scored.sort((a, b) => b.red - a.red || b.total - a.total || b.tie - a.tie);
+    scored.sort((a, b) => b.priority - a.priority || b.total - a.total || b.tie - a.tie);
     this.initiativeOrder = scored.map((s) => s.i);
     this.initiativeRolls = this.mages.map(() => 0);
     for (const s of scored) this.initiativeRolls[s.i] = s.total;
@@ -260,8 +278,10 @@ export class GameState {
   }
 
   /** Reset turn/field state and roll initiative for a newly assembled combat roster. */
-  startNewCombat(): void {
+  startNewCombat(options: { preserveScarabs?: boolean } = {}): void {
+    const scarabs = options.preserveScarabs ? this.scarabs.filter(scarabAlive) : [];
     this.clearFieldObjects();
+    this.scarabs = scarabs;
     this.round = 1;
     this.turnSeq = 0;
     this.critThisCast = false;
@@ -343,7 +363,9 @@ export class GameState {
   /** Distinct teams that still have at least one living mage. */
   teamsAlive(): number[] {
     const teams = new Set<number>();
-    for (const m of this.mages) if (m.alive && !m.isSummon) teams.add(m.team);
+    for (const m of this.mages) {
+      if ((m.alive || (m.edgelordCapturedBy && m.vitalsAlive)) && !m.isSummon) teams.add(m.team);
+    }
     return [...teams];
   }
 
@@ -559,7 +581,12 @@ export class GameState {
     // Co-op survival: the run is lost only once every party member has fallen.
     // Clearing a wave (no foes left) is NOT a game over — the next wave spawns.
     if (this.coopSurvivalTeam != null) {
-      return !this.mages.some((m) => m.alive && !m.isSummon && m.team === this.coopSurvivalTeam);
+      return !this.mages.some(
+        (m) =>
+          (m.alive || (m.edgelordCapturedBy && m.vitalsAlive)) &&
+          !m.isSummon &&
+          m.team === this.coopSurvivalTeam
+      );
     }
     return this.teamsAlive().length <= 1;
   }
@@ -590,10 +617,15 @@ export class GameState {
     this.applyLightAuras(m);
     this.applyFireVeilAuras(m);
     this.applyFireDamage(m);
+    this.applySentinelFireDamage(m);
     this.applyBlueflareDamage(m);
+    this.applySoulRendDamage(m);
     this.applyDotDamage(m);
     this.applyMutivargZones(m);
+    this.applyCorrosionPools(m);
     this.applyThunderBlessing(m);
+    this.applyMineTurnResources(m);
+    this.applyEdgelordLanternUpkeep(m);
     this.tickScarabs(m);
     this.tickOrderJudgments(m);
     const ticks = m.tickStatuses();
@@ -627,8 +659,24 @@ export class GameState {
     }
   }
 
+  /** Advance Mine-only cooldowns and per-turn resources on the owner's turn. */
+  private applyMineTurnResources(m: Mage): void {
+    if (!m.alive || !m.mine) return;
+    for (const key of Object.keys(m.mine.cooldowns)) {
+      m.mine.cooldowns[key] = Math.max(0, m.mine.cooldowns[key] - 1);
+    }
+    if (m.mine.kind === 'elite-kobold') {
+      m.mine.charges = Math.min(12, (m.mine.charges ?? 0) + 1);
+    }
+    if (m.mine.kind === 'earth-elemental' && m.mine.stonesRound !== this.round) {
+      const tierBonus = (m.mine.level >= 6 ? 1 : 0) + (m.mine.level >= 12 ? 1 : 0);
+      m.mine.stones = (m.mine.stones ?? 0) + this.rng.roll('1d3').total + tierBonus;
+      m.mine.stonesRound = this.round;
+    }
+  }
+
   private applyFireVeilAuras(bearer: Mage): void {
-    if (!bearer.alive || !bearer.isInvisible()) return;
+    if (!bearer.alive || !this.effectiveInvisibility(bearer)) return;
     const auras = bearer.statuses.filter(
       (status) => status.kind === 'fireVeilAura'
     ) as FireVeilAuraStatus[];
@@ -645,15 +693,16 @@ export class GameState {
     from: Vec2,
     pivot: Vec2,
     clockwise: boolean
-  ): { dest: Vec2; wallSlam: boolean } {
+  ): { dest: Vec2; wallSlam: boolean; path: Vec2[] } {
     const dx = from.x - pivot.x;
     const dy = from.y - pivot.y;
     const radius = Math.hypot(dx, dy);
-    if (radius < 1) return { dest: { ...from }, wallSlam: false };
+    if (radius < 1) return { dest: { ...from }, wallSlam: false, path: [] as Vec2[] };
     const startAngle = Math.atan2(dy, dx);
     const turn = clockwise ? -Math.PI / 2 : Math.PI / 2;
     const steps = Math.max(2, Math.ceil((radius * Math.PI) / 16));
     let last = { ...from };
+    const path: Vec2[] = [];
     for (let step = 1; step <= steps; step++) {
       const angle = startAngle + (turn * step) / steps;
       const point = {
@@ -665,10 +714,11 @@ export class GameState {
         point.x > FIELD.x + FIELD.w ||
         point.y < FIELD.y ||
         point.y > FIELD.y + FIELD.h;
-      if (outside || this.isInBarrier(point)) return { dest: last, wallSlam: true };
+      if (outside || this.isInBarrier(point)) return { dest: last, wallSlam: true, path };
       last = point;
+      path.push(point);
     }
-    return { dest: last, wallSlam: false };
+    return { dest: last, wallSlam: false, path };
   }
 
   turnBattlefield(clockwise: boolean): void {
@@ -676,9 +726,11 @@ export class GameState {
     const pivot = { x: FIELD.x + FIELD.w / 2, y: FIELD.y + FIELD.h / 2 };
     for (const mage of this.mages) {
       if (!mage.alive) continue;
-      const turn = this.quarterTurnDestination(mage.pos, pivot, clockwise);
+      const origin = mage.pos;
+      const turn = this.quarterTurnDestination(origin, pivot, clockwise);
       mage.x = turn.dest.x;
       mage.y = turn.dest.y;
+      this.notifyMageRelocation(mage, origin, turn.dest, true, turn.path);
     }
     for (const scarab of [...this.scarabs].sort((a, b) => a.id - b.id)) {
       if (!scarabAlive(scarab) || !scarabFlying(scarab)) continue;
@@ -729,9 +781,12 @@ export class GameState {
         (mage) => mage !== bearer && mage.alive && dist(mage.pos, bearer.pos) <= rune.radius
       );
       for (const target of targets) {
-        const turn = this.quarterTurnDestination(target.pos, bearer.pos, rune.clockwise);
+        const origin = target.pos;
+        const turn = this.quarterTurnDestination(origin, bearer.pos, rune.clockwise);
         target.x = turn.dest.x;
         target.y = turn.dest.y;
+        this.notifyMageRelocation(target, origin, turn.dest, true, turn.path);
+        if (!target.alive) continue;
         const ctx = this.effectContext(owner, target, target.pos);
         dealDamage(ctx, target, dmg(this.rng.roll('1d3').total, 'shatter', 'physical'), {
           canMiss: false,
@@ -838,6 +893,7 @@ export class GameState {
         this.tickNeedlepointDomains();
         this.tickHexcraftGlobals();
         this.tickVeilBindZones();
+        this.tickCorrosionPools();
         this.startRound();
       }
       const idx = this.initiativeOrder[this.turnPtr];
@@ -1083,7 +1139,7 @@ export class GameState {
 
   /** Remaining turns of any active stealth effect that an attack can consume. */
   stealthDuration(mage: Mage): number {
-    const invisibility = mage.getInvisibility();
+    const invisibility = this.effectiveInvisibility(mage);
     const shadowVeil = mage.statuses.find((status) => status.kind === 'shadowVeil');
     return Math.max(
       invisibility?.duration ?? 0,
@@ -1525,16 +1581,199 @@ export class GameState {
     }
   }
 
+  /** Defeat one combatant and fire the canonical callback/VFX exactly once. */
+  defeatMage(target: Mage, source: Mage, message: string): boolean {
+    if (!target.alive || target.unkillable) return false;
+    target.hp = 0;
+    this.log(message);
+    this.vfxSink?.hit?.(target);
+    this.vfxSink?.spellEffect?.(target, 'generic');
+    this.onMageDefeated?.(target, source);
+    return true;
+  }
+
+  /** Defeat a Pftlhb on genuine illumination without creating artificial damage. */
+  defeatPftlhbByIllumination(target: Mage, source: Mage): boolean {
+    if (!target.alive || target.mine?.kind !== 'pftlhb') return false;
+    return this.defeatMage(
+      target,
+      source,
+      `${target.name}'s eye catches the light and the creature collapses.`
+    );
+  }
+
+  /** Check newly active held or bagged light immediately against nearby Pftlhb. */
+  notifyLightActivation(source: Mage): void {
+    const radius = this.effectiveLightRadius(source);
+    if (!source.alive || radius <= 0) return;
+    for (const target of this.mages) {
+      if (
+        target.alive &&
+        target.team !== source.team &&
+        target.mine?.kind === 'pftlhb' &&
+        !this.isInEdgelordDarkLight(target.pos) &&
+        dist(source.pos, target.pos) <= radius + target.bodyRadius()
+      ) {
+        this.defeatPftlhbByIllumination(target, source);
+      }
+    }
+  }
+
   /**
-   * Light auras: at the start of a light-weak creature's turn, if it stands in
-   * any enemy's held torch / lantern glow, it is seared for 1d3 light damage.
+   * Notify the model after a relocation. Physical travel checks every supplied
+   * path segment; teleportation checks only the destination.
+   */
+  notifyMageRelocation(
+    mover: Mage,
+    origin: Vec2,
+    destination: Vec2,
+    physicalTravel: boolean,
+    path?: readonly Vec2[]
+  ): void {
+    const points: Vec2[] = physicalTravel
+      ? [origin, ...(path?.length ? path : [destination])]
+      : [destination];
+    const firstContact = (center: Vec2, radius: number): Vec2 | null => {
+      if (points.length === 1) return dist(points[0], center) <= radius ? { ...points[0] } : null;
+      for (let i = 1; i < points.length; i++) {
+        const start = points[i - 1];
+        const end = points[i];
+        const t = segmentCircleFirstIntersection(start, end, center, radius);
+        if (t == null) continue;
+        return { x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t };
+      }
+      return null;
+    };
+
+    if (mover.alive && mover.mine?.kind === 'pftlhb') {
+      for (let segment = 1; segment < Math.max(2, points.length); segment++) {
+        const start = points.length === 1 ? points[0] : points[segment - 1];
+        const end = points.length === 1 ? points[0] : points[segment];
+        let first = Infinity;
+        let source: Mage | null = null;
+        for (const candidate of this.mages) {
+          const radius = this.effectiveLightRadius(candidate);
+          if (!candidate.alive || candidate.team === mover.team || radius <= 0) continue;
+          const t = points.length === 1
+            ? (dist(end, candidate.pos) <= radius + mover.bodyRadius() ? 0 : null)
+            : segmentCircleFirstIntersection(start, end, candidate.pos, radius + mover.bodyRadius());
+          if (t != null && t < first) {
+            first = t;
+            source = candidate;
+          }
+        }
+        if (source) {
+          mover.x = start.x + (end.x - start.x) * first;
+          mover.y = start.y + (end.y - start.y) * first;
+          this.defeatPftlhbByIllumination(mover, source);
+          break;
+        }
+      }
+    }
+
+    this.applyCorrosionPoolSlow(mover);
+
+    const lightRadius = this.effectiveLightRadius(mover);
+    if (!mover.alive || lightRadius <= 0) return;
+    for (const target of this.mages) {
+      if (
+        !target.alive ||
+        target.team === mover.team ||
+        target.mine?.kind !== 'pftlhb' ||
+        this.isInEdgelordDarkLight(target.pos)
+      ) continue;
+      if (firstContact(target.pos, lightRadius + target.bodyRadius())) {
+        this.defeatPftlhbByIllumination(target, mover);
+      }
+    }
+  }
+
+  /** Place or replace one Black Dragonborn's non-blocking corrosion pool. */
+  addCorrosionPool(at: Vec2, owner: Mage, radius: number, rounds: number): CorrosionPool {
+    const ownerIndex = this.mages.indexOf(owner);
+    this.corrosionPools = this.corrosionPools.filter((pool) => pool.ownerIndex !== ownerIndex);
+    const pool: CorrosionPool = {
+      id: this.nextId++,
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y)),
+      radius,
+      ownerIndex,
+      ownerTeam: owner.team,
+      roundsLeft: Math.max(1, rounds),
+    };
+    this.corrosionPools.push(pool);
+    this.log(`${owner.name} leaves a pool of biting corrosion.`);
+    for (const target of this.mages) this.applyCorrosionPoolSlow(target);
+    return pool;
+  }
+
+  /** Apply or refresh the shared 50% movement penalty after relocation. */
+  private applyCorrosionPoolSlow(mover: Mage): void {
+    if (!mover.alive) return;
+    const inside = this.corrosionPools.some(
+      (pool) =>
+        pool.ownerTeam !== mover.team &&
+        dist(mover.pos, { x: pool.x, y: pool.y }) <= pool.radius
+    );
+    if (!inside) return;
+    addOrExtendStatus(
+      mover.statuses,
+      {
+        key: 'debuff:corrosion-pool-slow',
+        name: 'Corrosion Mire',
+        kind: 'debuff',
+        duration: 2,
+        mods: { moveRange: -Math.round(MOVE_RANGE * 0.5) },
+      },
+      false
+    );
+  }
+
+  /** Each hostile pool damages independently at the affected unit's turn start. */
+  private applyCorrosionPools(m: Mage): void {
+    if (!m.alive) return;
+    for (const pool of this.corrosionPools) {
+      if (
+        !m.alive ||
+        pool.ownerTeam === m.team ||
+        dist(m.pos, { x: pool.x, y: pool.y }) > pool.radius
+      ) continue;
+      const owner = this.mages[pool.ownerIndex] ?? m;
+      const dealt = dealDamage(
+        this.effectContext(owner, m, null),
+        m,
+        dmg(this.rng.roll('3d3').total, 'corrosive', 'physical'),
+        { canMiss: false, aoe: true, noImpactFx: true }
+      );
+      if (dealt > 0) this.vfxSink?.spellEffect?.(m, 'poison');
+      this.applyCorrosionPoolSlow(m);
+      this.log(`${m.name} is eaten by the corrosion pool.`);
+    }
+  }
+
+  private tickCorrosionPools(): void {
+    for (const pool of this.corrosionPools) pool.roundsLeft -= 1;
+    const expired = this.corrosionPools.some((pool) => pool.roundsLeft <= 0);
+    this.corrosionPools = this.corrosionPools.filter((pool) => pool.roundsLeft > 0);
+    if (expired) this.log('A corrosion pool seeps into the stone.');
+  }
+
+  /**
+   * Light auras: at the start of a vulnerable creature's turn, held torch /
+   * lantern glow sears it. Pftlhb uses its separate fatal illumination rule.
    */
   private applyLightAuras(m: Mage): void {
-    if (!m.alive || !m.isLightWeak()) return;
-    const lit = this.mages.some(
-      (e) => e.alive && e.team !== m.team && e.lightRadius() > 0 && dist(e.pos, m.pos) <= e.lightRadius()
+    if (!m.alive || this.isInEdgelordDarkLight(m.pos)) return;
+    const light = this.mages.find(
+      (e) =>
+        e.alive &&
+        e.team !== m.team &&
+        this.effectiveLightRadius(e) > 0 &&
+        dist(e.pos, m.pos) <= this.effectiveLightRadius(e) + (m.mine?.kind === 'pftlhb' ? m.bodyRadius() : 0)
     );
-    if (!lit) return;
+    if (!light) return;
+    if (this.defeatPftlhbByIllumination(m, light)) return;
+    if (!m.isLightWeak()) return;
     const ctx = this.effectContext(m, m, null);
     const amount = this.rng.roll('1d3').total;
     const dealt = dealDamage(ctx, m, dmg(amount, 'light', 'physical'), {
@@ -1578,6 +1817,7 @@ export class GameState {
   /** Apply Fire stacks, resolving every stack above six as an immediate detonation. */
   applyFireStacks(target: Mage, count: number, owner: Mage): void {
     if (!target.alive || count <= 0) return;
+    if (this.defeatPftlhbByIllumination(target, owner)) return;
     if (target.debuffImmune) {
       this.log(`${target.name} is beyond affliction — Fire finds no purchase.`);
       return;
@@ -1614,6 +1854,83 @@ export class GameState {
       for (const other of nearbyEnemies) this.applyFireStacks(other, 1, owner);
     }
     this.log(`${target.name} has ${fire.stacks} Fire stack${fire.stacks === 1 ? '' : 's'}.`);
+  }
+
+  /** Resolve Sentinel Fire's low/high threshold damage, spread, and decay. */
+  private applySentinelFireDamage(m: Mage): void {
+    if (!m.alive) return;
+    const fire = m.statuses.find((s) => s.kind === 'sentinelFire') as SentinelFireStatus | undefined;
+    if (!fire || fire.stacks <= 0) return;
+    const owner = this.mages[fire.ownerIndex] ?? m;
+    const highFire = fire.stacks >= 5;
+    const spec = highFire ? '1d6' : '1d3';
+    this.log(`${m.name}'s Sentinel Fire flares at ${fire.stacks} stacks.`);
+    dealDamage(
+      this.effectContext(owner, m, null),
+      m,
+      dmg(this.rng.roll(spec).total, 'fire', 'physical'),
+      { canMiss: false, noImpactFx: true }
+    );
+    this.vfxSink?.spellEffect?.(m, 'dot');
+    if (highFire) {
+      for (const other of this.mages) {
+        if (other !== m && other.alive && dist(other.pos, m.pos) <= 2 * RANGE_UNIT) {
+          this.applySentinelFireStacks(other, 1, owner);
+        }
+      }
+    }
+    fire.stacks -= highFire ? 2 : 1;
+    if (fire.stacks <= 0) {
+      m.statuses = m.statuses.filter((status) => status !== fire);
+      this.log(`Sentinel Fire burns out on ${m.name}.`);
+    }
+  }
+
+  /** Add Sentinel Fire, detonating immediately whenever the tenth stack lands. */
+  applySentinelFireStacks(target: Mage, count: number, owner: Mage): void {
+    if (!target.alive || count <= 0) return;
+    if (this.defeatPftlhbByIllumination(target, owner)) return;
+    if (target.debuffImmune) {
+      this.log(`${target.name} is beyond affliction — Sentinel Fire finds no purchase.`);
+      return;
+    }
+    let fire = target.statuses.find((s) => s.kind === 'sentinelFire') as
+      | SentinelFireStatus
+      | undefined;
+    if (!fire) {
+      fire = {
+        key: 'sentinel-fire',
+        name: 'Sentinel Fire',
+        kind: 'sentinelFire',
+        duration: Infinity,
+        stacks: 0,
+        ownerIndex: this.mages.indexOf(owner),
+      };
+      target.statuses.push(fire);
+    }
+    fire.ownerIndex = this.mages.indexOf(owner);
+    for (let i = 0; i < count; i++) {
+      fire.stacks += 1;
+      if (fire.stacks < 10) continue;
+      this.log(`${target.name}'s Sentinel Fire erupts!`);
+      dealDamage(
+        this.effectContext(owner, target, null),
+        target,
+        dmg(this.rng.roll('3d6').total, 'fire', 'physical'),
+        { canMiss: false }
+      );
+      for (const other of this.mages) {
+        if (other === target || !other.alive || dist(other.pos, target.pos) > 2 * RANGE_UNIT) continue;
+        dealDamage(
+          this.effectContext(owner, other, null),
+          other,
+          dmg(this.rng.roll('2d6').total, 'fire', 'physical'),
+          { canMiss: false, aoe: true }
+        );
+      }
+      fire.stacks = 5;
+    }
+    this.log(`${target.name} has ${fire.stacks} Sentinel Fire stack${fire.stacks === 1 ? '' : 's'}.`);
   }
 
   /** Blueflare mirrors Fire at half mental damage, with easier spread and slower decay. */
@@ -1687,6 +2004,260 @@ export class GameState {
       }
     }
     this.log(`${target.name} has ${flare.stacks} Blueflare stack${flare.stacks === 1 ? '' : 's'}.`);
+  }
+
+  /** Add permanent Soul Rend stacks; each stack deals 1 true HP and mill per bearer turn. */
+  applySoulRend(target: Mage, count: number, owner: Mage): void {
+    if (!target.alive || count <= 0) return;
+    let rend = target.statuses.find((status) => status.kind === 'soulRend') as
+      | SoulRendStatus
+      | undefined;
+    if (!rend) {
+      rend = {
+        key: 'soulRend',
+        name: 'Soul Rend',
+        kind: 'soulRend',
+        duration: Infinity,
+        stacks: 0,
+        ownerIndex: this.mages.indexOf(owner),
+      };
+      target.statuses.push(rend);
+    }
+    rend.stacks += count;
+    rend.ownerIndex = this.mages.indexOf(owner);
+    this.log(`${target.name} bears ${rend.stacks} Soul Rend stack${rend.stacks === 1 ? '' : 's'}.`);
+  }
+
+  private applySoulRendDamage(target: Mage): void {
+    if (!target.alive) return;
+    const rend = target.statuses.find((status) => status.kind === 'soulRend') as
+      | SoulRendStatus
+      | undefined;
+    if (!rend || rend.stacks <= 0) return;
+    const owner = this.mages[rend.ownerIndex] ?? target;
+    const wasAlive = target.alive;
+    target.hp = Math.max(target.unkillable ? 1 : 0, target.hp - rend.stacks);
+    if (!target.sanityImmune) {
+      target.sanity = Math.max(target.unkillable ? 1 : 0, target.sanity - rend.stacks);
+    }
+    this.log(`${target.name}'s Soul Rend tears away ${rend.stacks} health and mill.`);
+    this.vfxSink?.spellEffect?.(target, 'dot');
+    if (wasAlive && !target.alive) this.onMageDefeated?.(target, owner);
+  }
+
+  /** Captives still living inside `bearer`'s lantern. */
+  edgelordCaptives(bearer: Mage): Mage[] {
+    return this.mages.filter((mage) => mage.edgelordCapturedBy === bearer && mage.vitalsAlive);
+  }
+
+  /** Whether a point lies inside any active Edgelord dark light. */
+  isInEdgelordDarkLight(point: Vec2): boolean {
+    return this.mages.some(
+      (mage) =>
+        mage.alive &&
+        mage.hasEdgelordLantern() &&
+        mage.edgelordLanternActive &&
+        dist(mage.pos, point) <= 15 * RANGE_UNIT
+    );
+  }
+
+  /** Ordinary light is erased wherever an active Edgelord dark light overlaps it. */
+  effectiveLightRadius(source: Mage): number {
+    const radius = source.lightRadius();
+    return radius > 0 && !this.isInEdgelordDarkLight(source.pos) ? radius : 0;
+  }
+
+  /** Ordinary veil is suppressed inside dark light; Shadow Veil is handled separately. */
+  effectiveInvisibility(target: Mage): InvisibilityStatus | undefined {
+    return this.isInEdgelordDarkLight(target.pos) ? undefined : target.getInvisibility();
+  }
+
+  private pullTowardLantern(
+    target: Mage,
+    bearer: Mage,
+    distance: number
+  ): { from: Vec2; to: Vec2 } | null {
+    if (!target.alive || target === bearer) return null;
+    const origin = target.pos;
+    const destination = stepTowards(origin, bearer.pos, distance);
+    target.x = destination.x;
+    target.y = destination.y;
+    this.notifyMageRelocation(target, origin, destination, false);
+    return { from: origin, to: destination };
+  }
+
+  private async pullEdgelordUnits(bearer: Mage): Promise<void> {
+    const targets = this.mages.filter(
+      (mage) => mage.alive && mage !== bearer && dist(mage.pos, bearer.pos) <= 15 * RANGE_UNIT
+    );
+    const motions = targets.flatMap((target) => {
+      const motion = this.pullTowardLantern(target, bearer, 6 * RANGE_UNIT);
+      return motion ? [{ target, ...motion }] : [];
+    });
+    this.updateAttachedScarabs();
+    if (targets.length > 0) {
+      this.log(`${bearer.name}'s Edgelord Lantern pulls ${targets.length} unit${targets.length === 1 ? '' : 's'} inward.`);
+    }
+    await Promise.all(
+      motions.map(({ target, from, to }) =>
+        this.vfxSink?.pull?.(target, from, to) ?? Promise.resolve()
+      )
+    );
+  }
+
+  /** Shake the bound lantern. Returns false when activation requirements are not met. */
+  async shakeEdgelordLantern(bearer: Mage): Promise<boolean> {
+    if (!bearer.alive || !bearer.hasEdgelordLantern()) return false;
+    if (!bearer.edgelordLanternActive) {
+      if (this.edgelordCaptives(bearer).length > 0 || bearer.mana < 4) return false;
+      bearer.spendMana(4);
+      bearer.edgelordLanternActive = true;
+      bearer.edgelordLanternJustDeactivated = false;
+      const afflicted = this.mages.filter(
+        (mage) => mage.alive && dist(mage.pos, bearer.pos) <= 15 * RANGE_UNIT
+      );
+      for (const mage of afflicted) this.applySoulRend(mage, 3, bearer);
+      this.log(`${bearer.name} awakens the Edgelord Lantern for 4 mana.`);
+      return true;
+    }
+
+    await this.pullEdgelordUnits(bearer);
+    const captured: Mage[] = [];
+    for (const target of this.mages) {
+      if (!target.alive || target === bearer || dist(target.pos, bearer.pos) > 6 * RANGE_UNIT) continue;
+      const marked = target.statuses.some(
+        (status) => status.kind === 'soulRend' || status.name === 'REAP' || status.name === 'Soul Chain'
+      );
+      const lowHp = target.hp < 15 || target.hp < target.maxHp * 0.34;
+      const lowMill = !target.sanityImmune && (target.sanity < 8 || target.sanity < target.maxSanity * 0.34);
+      if (!marked || (!lowHp && !lowMill)) continue;
+      target.edgelordCapturedBy = bearer;
+      captured.push(target);
+    }
+    bearer.edgelordLanternActive = false;
+    bearer.edgelordLanternJustDeactivated = true;
+    if (captured.length > 0) {
+      this.log(`${bearer.name}'s lantern devours ${captured.map((mage) => mage.name).join(', ')}.`);
+    } else {
+      this.log(`${bearer.name} seals the Edgelord Lantern, but it catches nothing.`);
+    }
+    return true;
+  }
+
+  private releaseEdgelordCaptives(bearer: Mage): Mage[] {
+    const released = this.mages.filter((mage) => mage.edgelordCapturedBy === bearer && mage.vitalsAlive);
+    for (let index = 0; index < released.length; index++) {
+      const mage = released[index];
+      mage.edgelordCapturedBy = undefined;
+      const angle = (Math.PI * 2 * index) / Math.max(1, released.length);
+      mage.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, bearer.x + Math.cos(angle) * RANGE_UNIT));
+      mage.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, bearer.y + Math.sin(angle) * RANGE_UNIT));
+    }
+    if (released.length > 0) {
+      this.log(`${bearer.name}'s death releases ${released.map((mage) => mage.name).join(', ')}.`);
+    }
+    return released;
+  }
+
+  /** Pay for and damage all captives at the start of the bearer's turn. */
+  private applyEdgelordLanternUpkeep(bearer: Mage): void {
+    const captives = this.edgelordCaptives(bearer);
+    if (captives.length === 0) return;
+    if (!bearer.alive || bearer.mana < 2) {
+      if (bearer.alive && !bearer.unkillable) {
+        bearer.hp = 0;
+        bearer.sanity = 0;
+        this.log(`${bearer.name} cannot feed the Edgelord Lantern and dies.`);
+        this.onMageDefeated?.(bearer, bearer);
+      }
+      this.releaseEdgelordCaptives(bearer);
+      return;
+    }
+    bearer.spendMana(2);
+    this.log(`${bearer.name} feeds 2 mana to the Edgelord Lantern.`);
+    for (const captive of captives) {
+      const wasAlive = captive.vitalsAlive;
+      captive.hp = Math.max(captive.unkillable ? 1 : 0, captive.hp - 10);
+      if (!captive.sanityImmune) {
+        captive.sanity = Math.max(captive.unkillable ? 1 : 0, captive.sanity - 5);
+      }
+      this.log(`${captive.name} suffers 10 true damage and 5 true mill inside the lantern.`);
+      if (wasAlive && !captive.vitalsAlive) {
+        captive.edgelordCapturedBy = undefined;
+        this.log(`${captive.name} dies inside the Edgelord Lantern and disappears.`);
+        this.onMageDefeated?.(captive, bearer);
+      }
+    }
+  }
+
+  /** Release living prisoners immediately after their bearer dies. */
+  restoreEdgelordCaptives(): Mage[] {
+    const released: Mage[] = [];
+    for (const bearer of this.mages) {
+      if (!bearer.vitalsAlive) released.push(...this.releaseEdgelordCaptives(bearer));
+    }
+    return released;
+  }
+
+  /** Active dark light lets ordinary walking ignore all solid collision. */
+  edgelordCanPhaseWalk(source: Mage): boolean {
+    return source.hasEdgelordLantern() && source.edgelordLanternActive;
+  }
+
+  /** Before any weapon attack, pull and damage every unit in the dark light. */
+  async triggerEdgelordWeaponPulse(source: Mage): Promise<void> {
+    if (!source.alive || !source.hasEdgelordLantern() || !source.edgelordLanternActive) return;
+    await this.pullEdgelordUnits(source);
+    const targets = this.mages.filter(
+      (mage) => mage.alive && dist(mage.pos, source.pos) <= 15 * RANGE_UNIT
+    );
+    for (const target of targets) {
+      dealDamage(this.effectContext(source, target, null), target, dmg(2, 'shadow', 'physical'), {
+        canMiss: false,
+        aoe: true,
+        noImpactFx: true,
+      });
+    }
+    this.log(`${source.name}'s dark light lashes every unit inside it.`);
+  }
+
+  /** Throw the loaded dormant lantern at a point and return it to its bearer. */
+  throwEdgelordLantern(bearer: Mage, point: Vec2): boolean {
+    if (
+      !bearer.alive ||
+      !bearer.hasEdgelordLantern() ||
+      bearer.edgelordLanternActive ||
+      this.edgelordCaptives(bearer).length === 0 ||
+      dist(bearer.pos, point) > Math.max(0, bearer.effectiveStr()) * RANGE_UNIT
+    ) return false;
+    const impact = this.rng.roll('1d20').total;
+    const mill = this.rng.roll('1d10').total;
+    const targets = this.magesInRadius(point, 5 * RANGE_UNIT);
+    for (const target of targets) {
+      const ctx = this.effectContext(bearer, target, point);
+      dealDamage(ctx, target, dmg(Math.ceil(impact * 0.51), 'shadow', 'physical'), {
+        canMiss: false,
+        aoe: true,
+        noImpactFx: true,
+      });
+      if (target.alive) {
+        dealDamage(ctx, target, dmg(Math.floor(impact * 0.49), 'shatter', 'physical'), {
+          canMiss: false,
+          aoe: true,
+          noImpactFx: true,
+        });
+      }
+      if (target.alive) {
+        dealDamage(ctx, target, dmg(mill, 'shadow', 'sanity'), {
+          canMiss: false,
+          aoe: true,
+          noImpactFx: true,
+        });
+      }
+    }
+    this.log(`${bearer.name} throws the Edgelord Lantern; it erupts and returns on its own.`);
+    this.restoreEdgelordCaptives();
+    return true;
   }
 
   /**
@@ -1898,6 +2469,7 @@ export class GameState {
    */
   knockbackMage(source: Mage, target: Mage, units: number): void {
     if (!target.alive) return;
+    const origin = target.pos;
     const dx = target.x - source.x;
     const dy = target.y - source.y;
     const len = Math.hypot(dx, dy) || 1;
@@ -1912,6 +2484,7 @@ export class GameState {
     const dest = this.clampToMages(target, target.pos, mut.dest);
     target.x = dest.x;
     target.y = dest.y;
+    this.notifyMageRelocation(target, origin, dest, true);
     this.updateAttachedScarabs();
     this.dropTrailShadows(target);
     this.log(`${target.name} is knocked back!`);
@@ -1932,6 +2505,7 @@ export class GameState {
         })
       : null;
     if (!picked) return;
+    const origin = source.pos;
     const fieldDest = {
       x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, picked.x)),
       y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, picked.y)),
@@ -1942,6 +2516,7 @@ export class GameState {
     const step = Math.hypot(dest.x - source.x, dest.y - source.y);
     source.x = dest.x;
     source.y = dest.y;
+    this.notifyMageRelocation(source, origin, dest, true);
     source.movedThisTurn = true;
     source.distMovedThisTurn += step;
     this.updateAttachedScarabs();
@@ -2007,7 +2582,7 @@ export class GameState {
   isUntargetable(m: Mage, from?: Mage): boolean {
     // Second Ring of Lareneg: untouchable to hostiles during turn cycles 3 & 4.
     if (from && from.team !== m.team && this.isLaranegUntouchable(m)) return true;
-    const inv = m.getInvisibility();
+    const inv = this.effectiveInvisibility(m);
     if (inv?.mode === 'full') {
       if (!from) return true;
       return dist(from.pos, m.pos) > VEIL.full.targetableDist * RANGE_UNIT;
@@ -2271,6 +2846,16 @@ export class GameState {
   // ---- Stack ----------------------------------------------------------------
 
   pushStack(item: StackItem): void {
+    const declaredTarget = item.target;
+    if (
+      declaredTarget?.alive &&
+      declaredTarget.team !== item.source.team &&
+      declaredTarget.mine?.kind === 'golem' &&
+      declaredTarget.mine.golemState === 'dormant'
+    ) {
+      declaredTarget.mine.golemState = 'waking';
+      this.log(`${declaredTarget.name}'s runes kindle as it is targeted.`);
+    }
     for (const curse of this.orderDrainCurses) {
       if (curse.triggeredItemIds.includes(item.id)) continue;
       if (item.source.team === curse.ownerTeam || item.target?.team !== curse.ownerTeam) continue;
@@ -2335,7 +2920,7 @@ export class GameState {
     heal(ctx, target, rollDice(ctx, '3d3', 'Elven Heal'));
   }
 
-  private effectContext(
+  effectContext(
     source: Mage,
     target: Mage | null,
     targetPoint: Vec2 | null,
@@ -2416,6 +3001,7 @@ export class GameState {
     if (source.outOfAmmo()) return false;
     // A crossbow that has just fired cannot shoot again until it reloads.
     if (weapon?.toHit && source.reloadTurns > 0) return false;
+    if (target.intrinsicAirborne && !isRangedWeapon(weapon)) return false;
     const reach = weapon ? weapon.rangePx : source.intrinsicMeleeReach ?? MELEE_RANGE;
     const min = weapon?.minRangePx ?? source.intrinsicMeleeMin ?? 0;
     const d = dist(source.pos, target.pos);
@@ -2450,6 +3036,10 @@ export class GameState {
       this.log(`${source.name}'s greatshield is bound in sword form — it cannot be dropped.`);
       return false;
     }
+    if (getItem(itemId).permanentlyBinding) {
+      this.log(`${getItem(itemId).name} is permanently bound to ${source.name}.`);
+      return false;
+    }
     source.hands.splice(i, 1);
     // Snuffing a torch by dropping it uses it up (the burn timer clears).
     if (getItem(itemId).torchCombats != null && !source.hands.some((h) => getItem(h).torchCombats != null))
@@ -2482,6 +3072,7 @@ export class GameState {
     }
     this.droppedItems.splice(idx, 1);
     source.hands.push(drop.itemId);
+    this.notifyLightActivation(source);
     this.log(`${source.name} picks up ${def.name}.`);
     return true;
   }
@@ -2581,18 +3172,28 @@ export class GameState {
     // stuck; the player is still walled off by enemy bodies and vice versa.
     const others = this.mages.filter((m) => m !== source && m.alive && m.team !== source.team);
     if (others.length === 0) return to;
-    const total = dist(from, to);
-    if (total < 1) return to;
-    const steps = Math.max(2, Math.ceil(total / 6));
-    let last: Vec2 = { ...from };
-    for (let i = 1; i <= steps; i++) {
-      const p = stepTowards(from, to, (total * i) / steps);
-      // Each body blocks by the sum of the two radii, so bulky Swamprun
-      // creatures (e.g. the Defender) occupy a wider no-pass zone.
-      if (others.some((m) => dist(p, m.pos) < source.bodyRadius() + m.bodyRadius())) return last;
-      last = p;
+    let firstContact = 1;
+    for (const other of others) {
+      const radius = source.bodyRadius() + other.bodyRadius();
+      const offsetX = from.x - other.x;
+      const offsetY = from.y - other.y;
+      const travelX = to.x - from.x;
+      const travelY = to.y - from.y;
+      const startsTouching = offsetX * offsetX + offsetY * offsetY <= radius * radius + 0.01;
+      const movesOutward = offsetX * travelX + offsetY * travelY >= 0;
+      if (startsTouching && movesOutward) continue;
+      const contact = segmentCircleFirstIntersection(
+        from,
+        to,
+        other.pos,
+        radius
+      );
+      if (contact != null && contact < firstContact) firstContact = contact;
     }
-    return to;
+    return {
+      x: from.x + (to.x - from.x) * firstContact,
+      y: from.y + (to.y - from.y) * firstContact,
+    };
   }
 
   // ---- Mutivarg's Rod & weapon abilities ------------------------------------
@@ -2831,6 +3432,7 @@ export class GameState {
         break;
     }
     this.applyGrantedVitals(mage, def);
+    this.notifyLightActivation(mage);
   }
 
   /** Apply a single freshly-granted item's one-time HP / sanity changes. */
@@ -2901,6 +3503,7 @@ export class GameState {
     this.redOrbs = [];
     this.droppedItems = [];
     this.mutivargZones = [];
+    this.corrosionPools = [];
     this.extraTurnQueue = [];
     this.stack = [];
     this.mindSwapTurns = 0;
@@ -2914,6 +3517,7 @@ export class GameState {
    * Mutivarg zones and the other body. Used by the Leap bonus action.
    */
   leapMove(source: Mage, dest: Vec2): void {
+    const origin = source.pos;
     const fieldDest = {
       x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x)),
       y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y)),
@@ -2923,6 +3527,7 @@ export class GameState {
     const final = this.clampToMages(source, source.pos, mut.dest);
     source.x = final.x;
     source.y = final.y;
+    this.notifyMageRelocation(source, origin, final, true);
     source.movedThisTurn = true;
     this.updateAttachedScarabs();
     this.dropTrailShadows(source);
@@ -2932,7 +3537,9 @@ export class GameState {
    * Resolve the Cleave main action: a 180° sweep at melee reach that deals
    * double a normal strength swing's damage to every enemy caught in the arc.
    */
-  resolveCleave(source: Mage, aim: Vec2): void {
+  async resolveCleave(source: Mage, aim: Vec2): Promise<void> {
+    await this.triggerEdgelordWeaponPulse(source);
+    if (!source.alive) return;
     const w = source.activeWeapon();
     const reach = w ? w.rangePx : MELEE_RANGE;
     const rollBase = this.rng.roll('1d6').total + source.effectiveStr() * 0.5;
@@ -2942,7 +3549,7 @@ export class GameState {
     const perHit = (Math.round(rollBase * (w?.multiplier ?? 1)) + flat) * 2;
     const type: DamageType = w?.damageType ?? 'shatter';
     const targets = this.magesInCone(source.pos, aim, reach, CLEAVE_DEGREES, source).filter(
-      (m) => m.team !== source.team
+      (m) => m.team !== source.team && !m.intrinsicAirborne
     );
     if (targets.length === 0) {
       this.log(`${source.name} cleaves the air — nothing in reach.`);
@@ -2966,13 +3573,14 @@ export class GameState {
       y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, destination.y)),
     };
     // A reality-break barrier halts a runner at its edge and roots them.
-    const clamp = this.clampToBarriers(source.pos, fieldDest);
+    const phased = this.edgelordCanPhaseWalk(source);
+    const clamp = phased ? { dest: fieldDest, blocked: false } : this.clampToBarriers(source.pos, fieldDest);
     // A Mutivarg crushing field is a wall — you cannot dash through it.
-    const mut = this.clampToMutivargZones(source, source.pos, clamp.dest);
+    const mut = phased ? { dest: clamp.dest } : this.clampToMutivargZones(source, source.pos, clamp.dest);
     // A Reaper leashes its prey: you cannot flee further than allowed.
     const leash = this.clampToReaperLeash(source, source.pos, mut.dest);
     // Stop short of running into the other mage's body.
-    const dest = this.clampToMages(source, source.pos, leash);
+    const dest = phased ? leash : this.clampToMages(source, source.pos, leash);
     return {
       id: this.nextId++,
       kind: 'move',
@@ -2982,9 +3590,11 @@ export class GameState {
       targetPoint: dest,
       isStillValid: () => source.alive,
       resolve: (game) => {
+        const origin = source.pos;
         const step = Math.hypot(dest.x - source.x, dest.y - source.y);
         source.x = dest.x;
         source.y = dest.y;
+        game.notifyMageRelocation(source, origin, dest, true);
         source.movedThisTurn = true;
         source.distMovedThisTurn += step;
         game.updateAttachedScarabs();
@@ -3012,6 +3622,10 @@ export class GameState {
     source: Mage;
     label: string;
     description?: string;
+    target?: Mage;
+    targetPoint?: Vec2;
+    hostileAttack?: boolean;
+    actionVisual?: StackItem['actionVisual'];
     needleBan?: NeedleBan;
     isStillValid?: (game: GameState) => boolean;
     resolve: (game: GameState) => void | Promise<void>;
@@ -3020,8 +3634,12 @@ export class GameState {
       id: this.nextId++,
       kind: 'action',
       source: opts.source,
+      target: opts.target,
+      targetPoint: opts.targetPoint,
       label: opts.label,
       description: opts.description ?? opts.label,
+      hostileAttack: opts.hostileAttack,
+      actionVisual: opts.actionVisual,
       needleBan: opts.needleBan,
       isStillValid: opts.isStillValid ?? (() => opts.source.alive),
       resolve: opts.resolve,
@@ -3051,6 +3669,10 @@ export class GameState {
         : `${source.name} attacks ${target.name}.`,
       isStillValid: (game) => game.canMelee(source, target),
       resolve: async (game) => {
+        if (source.activeWeapon()) {
+          await game.triggerEdgelordWeaponPulse(source);
+          if (!source.alive || !target.alive) return;
+        }
         // Swamprun creatures strike with an intrinsic (weaponless) attack that
         // carries its own damage type / class (e.g. the Specter's mental jab).
         const im = source.intrinsicMelee;
@@ -3118,7 +3740,7 @@ export class GameState {
             }
           }
           // Assassin's Cloak: Dex strikes hit harder while veiled.
-          if (!missed && source.isInvisible() && source.veiledDaggerBonus() > 0) {
+          if (!missed && game.effectiveInvisibility(source) && source.veiledDaggerBonus() > 0) {
             total = Math.round(total * (1 + source.veiledDaggerBonus()));
           }
           amount = total;
@@ -3329,7 +3951,9 @@ export class GameState {
           // Sweep: the same swing also strikes any other foe in the 180° arc.
           const swept = game
             .magesInCone(source.pos, target.pos, MELEE_RANGE, CLEAVE_DEGREES, source)
-            .filter((m) => m !== target && m.team !== source.team && m.alive);
+            .filter(
+              (m) => m !== target && m.team !== source.team && m.alive && !m.intrinsicAirborne
+            );
           for (const foe of swept) {
             if (amount > 0) {
               const sctx = game.effectContext(source, foe, null);

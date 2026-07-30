@@ -31,6 +31,10 @@ export interface StackItem {
   targetPoint?: Vec2;
   /** A second aimed point, chosen up-front for two-point spells (Reality Shatter). */
   targetPoint2?: Vec2;
+  /** An action-kind item that is an attack and should allow physical reactions. */
+  hostileAttack?: boolean;
+  /** Optional generic visual cue for a resolving action-kind item. */
+  actionVisual?: 'fire' | 'shatter' | 'shadow' | 'lightning' | 'lightningImpact' | 'heal' | 'corrosive' | 'wake';
 
   /** For `action` items: what a Needle of Serenity would ban if it stifles this. */
   needleBan?: NeedleBan;

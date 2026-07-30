@@ -14,6 +14,8 @@ import {
   type LichWord,
   type LichSpell,
 } from '../pve/lichPowers';
+import { chooseMineAction } from '../pve/mineAI';
+import type { MineActionChoice } from '../pve/mineActions';
 
 export type AIDecision =
   | { type: 'move'; point: Vec2 }
@@ -33,6 +35,7 @@ export type AIDecision =
   | { type: 'reaper-mark'; target: Mage }
   // Reaper: channel for the turn; the clap resolves at the start of its next.
   | { type: 'reaper-channel' }
+  | { type: 'mine-action'; choice: MineActionChoice }
   | { type: 'end' };
 
 export interface AIReaction {
@@ -63,6 +66,10 @@ export class SimpleAI {
 
   /** Pick the next action for the AI's turn, or end the turn. */
   chooseAction(): AIDecision {
+    if (this.self.mine) {
+      const mine = chooseMineAction(this.game, this.self);
+      if (mine) return mine;
+    }
     // The Lich runs its own smart routine (bespoke powers, stays put to unlock
     // its end-step, secures kills). Every other undead falls through to the
     // shared logic below — but plays optimally while a Lich commands them.
@@ -185,7 +192,9 @@ export class SimpleAI {
       : this.self.hands.includes('runicMaul') || this.self.bag.includes('runicMaul')
         ? 'runicMaul'
         : 'warHammer';
-    if (!this.self.hands.includes(wanted) && this.self.bag.includes(wanted)) this.self.equipHand(wanted);
+    if (!this.self.hands.includes(wanted) && this.self.bag.includes(wanted) && this.self.equipHand(wanted)) {
+      this.game.notifyLightActivation(this.self);
+    }
     if (this.self.actions.main > 0 && this.game.canMelee(this.self, target)) {
       return { type: 'melee', target };
     }
@@ -214,7 +223,9 @@ export class SimpleAI {
     const healTarget = this.elfHealTarget();
     if (healTarget) return { type: 'companion-heal', target: healTarget };
 
-    const enemies = this.game.livingEnemiesOf(this.self).filter((m) => !m.isInvisible());
+    const enemies = this.game.livingEnemiesOf(this.self).filter(
+      (mage) => !this.game.isUntargetable(mage, this.self)
+    );
     if (enemies.length === 0) return { type: 'end' };
 
     // Prefer the Lich if alive; otherwise target the strongest visible foe.
@@ -251,7 +262,9 @@ export class SimpleAI {
   }
 
   private chooseHumanAction(): AIDecision {
-    const visible = this.game.livingEnemiesOf(this.self).filter((mage) => !mage.isInvisible());
+    const visible = this.game.livingEnemiesOf(this.self).filter(
+      (mage) => !this.game.isUntargetable(mage, this.self)
+    );
     if (visible.length === 0) return { type: 'end' };
     const strongest = [...visible].sort((a, b) => b.effectiveStr() - a.effectiveStr())[0];
     if (!this.self.hasCastThisTurn && this.self.actions.bonus > 0) {
@@ -329,7 +342,7 @@ export class SimpleAI {
       if (this.isWeaponEnchant(s)) return this.bestEnchantTarget(s) !== null;
       if (this.isIndiscriminateStorm(s) && !this.stormIsWorthRisk()) return false;
       if (s.targeting === 'enemy') return this.game.isValidSpellTarget(s, this.self, enemy);
-      if (s.targeting === 'point') return true;
+      if (s.targeting === 'point') return this.pointSpellCanReach(s, enemy);
       if (s.targeting === 'self' || s.targeting === 'ally' || s.targeting === 'any') {
         // Only self-cast defensively when hurt.
         return this.self.hp <= this.self.maxHp * 0.5;
@@ -344,6 +357,15 @@ export class SimpleAI {
     options.sort((a, b) => score(b) - score(a));
     const top = options.filter((spell) => score(spell) === score(options[0]));
     return this.game.rng.pick(top);
+  }
+
+  /** Whether aiming this point spell straight at `enemy` can place its footprint over them. */
+  private pointSpellCanReach(spell: Spell, enemy: Mage): boolean {
+    if (!spell.aoe) return true;
+    const distance = dist(this.self.pos, enemy.pos);
+    if (spell.aoe.kind === 'cone') return distance <= spell.aoe.radius + 0.5;
+    const aimDistance = Math.max(spell.minRange ?? 0, Math.min(spell.range, distance));
+    return Math.abs(distance - aimDistance) <= spell.aoe.radius + 0.5;
   }
 
   private castDecision(spell: Spell, enemy: Mage): AIDecision {
@@ -412,7 +434,7 @@ export class SimpleAI {
       return this.bestKillTarget();
     }
     const foe = this.game.opponentOf(this.self);
-    if (foe && !foe.isInvisible()) return foe;
+    if (foe && !this.game.isUntargetable(foe, this.self)) return foe;
     // The obvious opponent is hidden — fall back to any other foe we can see.
     return this.bestKillTarget();
   }
@@ -420,7 +442,9 @@ export class SimpleAI {
   /** Living foe with the lowest remaining vitality (focus fire), else nearest. */
   private bestKillTarget(): Mage | null {
     // A veiled foe cannot be seen, so it is never a valid target.
-    const foes = this.game.livingEnemiesOf(this.self).filter((m) => !m.isInvisible());
+    const foes = this.game.livingEnemiesOf(this.self).filter(
+      (mage) => !this.game.isUntargetable(mage, this.self)
+    );
     if (foes.length === 0) return null;
     const vitality = (m: Mage): number => m.hp + (m.sanityImmune ? 0 : m.sanity);
     let best = foes[0];

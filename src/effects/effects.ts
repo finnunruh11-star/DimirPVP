@@ -45,10 +45,14 @@ export interface VfxSink {
   hit?(mage: Mage): void;
   /** Animate a gradual dash for `mover`, which has just jumped from `from`. */
   dash?(mover: Mage, from: Vec2): void;
+  /** Glide one logically-repositioned unit inward and resolve when it arrives. */
+  pull?(mover: Mage, from: Vec2, to: Vec2): Promise<void>;
   /** Animate a lightning arc between two points and resolve after one loop. */
   lightningBolt?(from: Vec2, to: Vec2): Promise<void>;
   /** Play a one-shot hit-effect overlay on `mage` (spell impact / DoT / vanish). */
   spellEffect?(mage: Mage, kind: 'generic' | 'poison' | 'dot' | 'vanish'): void;
+  /** Play a compact shatter-sheet burst at an exact impact point. */
+  shatterBurst?(at: Vec2, size: number): void;
   /**
    * Paint the shatter cone stretched to fill a reality wedge: apex at `apex`,
    * opening toward `angle`, half-arc `halfAngle`, length `range` (px).
@@ -265,7 +269,7 @@ export function dealDamage(
   // Veil dodge: only targeted (non-area) attacks can be slipped. Area effects
   // always connect. True damage never misses.
   if (canMiss && !isAoe && !isTrue && !Dev.autoSuccess) {
-    const inv = target.getInvisibility();
+    const inv = ctx.game.effectiveInvisibility(target);
     if (inv) {
       const units = dist(ctx.caster.pos, target.pos) / RANGE_UNIT;
       const dodge = veilDodgeChance(inv.mode, units);
@@ -359,6 +363,14 @@ export function dealDamage(
     target.damageBySourceThisCycle.set(ctx.caster, used + amount);
   }
 
+  if (
+    amount > 0 &&
+    (damage.type === 'light' || damage.type === 'fire') &&
+    ctx.game.defeatPftlhbByIllumination(target, ctx.caster)
+  ) {
+    return 0;
+  }
+
   const floorVital = target.unkillable ? 1 : 0;
   if (damage.damageClass === 'sanity') {
     target.sanity = Math.max(floorVital, target.sanity - amount);
@@ -394,7 +406,10 @@ export function dealDamage(
     ctx.log(`${target.name} refuses death — its phylactery drags it back at half strength!`);
   }
 
-  if (targetWasAlive && !target.alive) ctx.game.onMageDefeated?.(target, ctx.caster);
+  if (targetWasAlive && !target.alive) {
+    ctx.game.onMageDefeated?.(target, ctx.caster);
+    ctx.game.restoreEdgelordCaptives();
+  }
 
   // A landed hit can shatter veils. The victim's veil may be torn off; the
   // attacker may reveal themselves by striking. DoT ticks (canMiss === false)
@@ -679,6 +694,7 @@ export function dash(
   const bc = ctx.game.clampToBarriers(from, fieldDest);
   mover.x = bc.dest.x;
   mover.y = bc.dest.y;
+  ctx.game.notifyMageRelocation(mover, from, bc.dest, true);
   ctx.vfx?.dash?.(mover, from);
   ctx.game.triggerNeedlepointDomains(mover);
   if (bc.blocked) {
@@ -715,6 +731,7 @@ export function blinkstep(
   // Clamp only to the field edge — barriers and crushing fields never stop a blink.
   mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x));
   mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y));
+  ctx.game.notifyMageRelocation(mover, from, mover.pos, false);
   ctx.vfx?.dash?.(mover, from);
   ctx.game.triggerNeedlepointDomains(mover);
   ctx.log(`${mover.name} blinksteps ${Math.round(opts.distance)} away.`);
@@ -726,8 +743,10 @@ export function blinkstep(
  * redraw. Clamped to the playfield edge. Used for shadow-to-shadow teleports.
  */
 export function teleport(ctx: EffectContext, mover: Mage, at: Vec2): void {
+  const from = mover.pos;
   mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x));
   mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y));
+  ctx.game.notifyMageRelocation(mover, from, mover.pos, false);
   ctx.game.triggerNeedlepointDomains(mover);
   ctx.log(`${mover.name} slips through the shadows.`);
 }
@@ -996,12 +1015,18 @@ export function coneDamage(
   range: number,
   degrees: number,
   damage: DamageInstance,
-  opts: { canMiss?: boolean } = {}
+  opts: { canMiss?: boolean; strictRange?: boolean } = {}
 ): Mage[] {
-  const hits = ctx.game
+  const { strictRange = false, ...damageOpts } = opts;
+  let hits = ctx.game
     .magesInCone(ctx.caster.pos, toward, range, degrees, ctx.caster)
     .filter((m) => m.team !== ctx.caster.team);
-  for (const m of hits) dealDamage(ctx, m, { ...damage }, { ...opts, aoe: true, noImpactFx: true });
+  if (strictRange) {
+    hits = hits.filter((m) => dist(ctx.caster.pos, m.pos) <= range + 0.5);
+  }
+  for (const m of hits) {
+    dealDamage(ctx, m, { ...damage }, { ...damageOpts, aoe: true, noImpactFx: true });
+  }
   return hits;
 }
 

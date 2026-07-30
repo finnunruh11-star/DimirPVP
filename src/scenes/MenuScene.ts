@@ -17,8 +17,16 @@ const EASTER_WORD_ORDER: WordId[] = [
   'lightning',
 ];
 
-export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun' | 'expedition';
+export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun' | 'expedition' | 'minerun';
 export type SwampPrepMode = 'quick' | 'custom' | 'creative';
+
+function isPveRunMode(mode: MatchMode): boolean {
+  return mode === 'swamprun' || mode === 'expedition' || mode === 'minerun';
+}
+
+function usesSwampPrep(mode: MatchMode): boolean {
+  return mode === 'swamprun' || mode === 'minerun';
+}
 
 /** Which toggleable item catalogues the draft draws from. */
 export interface ItemSetSelection {
@@ -83,6 +91,7 @@ function defaultRelayUrl(): string {
 /** Loadout / mode selection before the duel begins. */
 export class MenuScene extends Phaser.Scene {
   private mode: MatchMode = 'ai';
+  private pveMenuOpen = false;
   private onlineRole: NetRole = 'host';
   private swampRole: 'local' | NetRole = 'local';
   private swampPrepMode: SwampPrepMode = 'custom';
@@ -123,8 +132,11 @@ export class MenuScene extends Phaser.Scene {
   private modeHsBtn!: Phaser.GameObjects.Text;
   private modeOnlineBtn!: Phaser.GameObjects.Text;
   private modeTrainingBtn!: Phaser.GameObjects.Text;
+  private modePveBtn!: Phaser.GameObjects.Text;
+  private modeBackBtn!: Phaser.GameObjects.Text;
   private modeSwamprunBtn!: Phaser.GameObjects.Text;
   private modeExpeditionBtn!: Phaser.GameObjects.Text;
+  private modeMinerunBtn!: Phaser.GameObjects.Text;
   private setOriginalBtn!: Phaser.GameObjects.Text;
   private setFinnsBtn!: Phaser.GameObjects.Text;
   private setDlcBtn!: Phaser.GameObjects.Text;
@@ -270,12 +282,15 @@ export class MenuScene extends Phaser.Scene {
     });
 
     // Mode buttons.
-    this.modeAiBtn = this.makeButton(128, 126, 'VS AI', () => this.setMode('ai'), 172);
-    this.modeHsBtn = this.makeButton(322, 126, 'HOTSEAT', () => this.setMode('hotseat'), 172);
-    this.modeOnlineBtn = this.makeButton(516, 126, 'ONLINE', () => this.setMode('online'), 172);
-    this.modeTrainingBtn = this.makeButton(710, 126, 'TRAINING', () => this.setMode('training'), 172);
-    this.modeSwamprunBtn = this.makeButton(904, 126, 'SWAMPRUN', () => this.setMode('swamprun'), 172);
-    this.modeExpeditionBtn = this.makeButton(1098, 126, 'EXPEDITION', () => this.setMode('expedition'), 172);
+    this.modeAiBtn = this.makeButton(128, 126, 'VS AI', () => this.setMode('ai'), 220);
+    this.modeHsBtn = this.makeButton(384, 126, 'HOTSEAT', () => this.setMode('hotseat'), 220);
+    this.modeOnlineBtn = this.makeButton(640, 126, 'ONLINE', () => this.setMode('online'), 220);
+    this.modeTrainingBtn = this.makeButton(896, 126, 'TRAINING', () => this.setMode('training'), 220);
+    this.modePveBtn = this.makeButton(1152, 126, 'PVE', () => this.openPveMenu(), 220);
+    this.modeBackBtn = this.makeButton(256, 126, 'BACK', () => this.closePveMenu(), 220);
+    this.modeSwamprunBtn = this.makeButton(512, 126, 'SWAMPRUN', () => this.setMode('swamprun'), 220);
+    this.modeExpeditionBtn = this.makeButton(768, 126, 'EXPEDITION', () => this.setMode('expedition'), 220);
+    this.modeMinerunBtn = this.makeButton(1024, 126, 'MINE RUN', () => this.setMode('minerun'), 220);
 
     this.rulesSectionText = this.add.text(36, 480, '', {
       fontFamily: 'Trebuchet MS',
@@ -429,6 +444,7 @@ export class MenuScene extends Phaser.Scene {
   private setMode(mode: MatchMode): void {
     if (this.connecting) return;
     this.mode = mode;
+    this.pveMenuOpen = false;
     // Sensible default AI fill per mode: "vs AI" fills every seat but yours.
     if (mode === 'expedition') {
       this.seatCount = 1;
@@ -438,16 +454,28 @@ export class MenuScene extends Phaser.Scene {
     } else {
       this.aiCount = 0;
     }
-    if (mode !== 'swamprun' && mode !== 'expedition' && this.seatCount < 2) this.seatCount = 2;
+    if (!isPveRunMode(mode) && this.seatCount < 2) this.seatCount = 2;
     this.clampAiCount();
     this.resetDraft();
+    this.refresh();
+  }
+
+  private openPveMenu(): void {
+    if (this.connecting) return;
+    this.pveMenuOpen = true;
+    this.refresh();
+  }
+
+  private closePveMenu(): void {
+    if (this.connecting) return;
+    this.pveMenuOpen = false;
     this.refresh();
   }
 
   private setSessionRole(role: 'local' | NetRole): void {
     if (this.connecting) return;
     if (this.mode === 'online' && role !== 'local') this.onlineRole = role;
-    if (this.mode === 'swamprun' || this.mode === 'expedition') this.swampRole = role;
+    if (isPveRunMode(this.mode)) this.swampRole = role;
     this.statusText.setText('');
     this.refresh();
   }
@@ -457,7 +485,7 @@ export class MenuScene extends Phaser.Scene {
       void this.startOnline(this.onlineRole);
       return;
     }
-    if ((this.mode === 'swamprun' || this.mode === 'expedition') && this.swampRole !== 'local') {
+    if (isPveRunMode(this.mode) && this.swampRole !== 'local') {
       void this.startOnline(this.swampRole);
       return;
     }
@@ -476,7 +504,7 @@ export class MenuScene extends Phaser.Scene {
   /** Cycle the local combatant count. Swamprun allows 1; others start at 2. */
   private cyclePlayers(): void {
     if (this.connecting) return;
-    const min = this.mode === 'swamprun' || this.mode === 'expedition' ? 1 : 2;
+    const min = isPveRunMode(this.mode) ? 1 : 2;
     this.seatCount = this.seatCount >= 4 ? min : this.seatCount + 1;
     // Keep "vs AI" meaning 1 human vs the rest as the table resizes.
     if (this.mode === 'ai') this.aiCount = this.seatCount - 1;
@@ -541,7 +569,7 @@ export class MenuScene extends Phaser.Scene {
 
   /** Team number for a seat under the current layout. */
   private teamOf(seat: number): number {
-    if (this.mode === 'swamprun' || this.mode === 'expedition') return 1;
+    if (isPveRunMode(this.mode)) return 1;
     if (this.teamMode === 'ffa') return seat + 1;
     const half = Math.ceil(this.seatCount / 2);
     return this.seatTeams[seat] ?? (seat < half ? 1 : 2);
@@ -643,6 +671,8 @@ export class MenuScene extends Phaser.Scene {
       this.hintText.setText('Swamprun: co-op survival — endless waves of swamp horrors. Start Swamprun to play solo/with AI, or Host/Join for online co-op (set Players to 2+ humans).');
     } else if (this.mode === 'expedition') {
       this.hintText.setText('Expedition: delve without rests or shops, choose when to retreat, then spend your silver and recruit in town.');
+    } else if (this.mode === 'minerun') {
+      this.hintText.setText('Mine Run: chart a seeded maze, click routes on the discovered map, and choose which hostile rooms to enter.');
     } else if (this.seatCount > 2) {
       this.hintText.setText(`${this.formatLabel()} — each player drafts their own words in turn.`);
     } else {
@@ -694,24 +724,33 @@ export class MenuScene extends Phaser.Scene {
     const trainingOn = this.mode === 'training';
     const swamprunOn = this.mode === 'swamprun';
     const expeditionOn = this.mode === 'expedition';
+    const minerunOn = this.mode === 'minerun';
+    const pveOn = swamprunOn || expeditionOn || minerunOn;
     this.modeAiBtn.setStyle({ backgroundColor: aiOn ? '#285b67' : '#182131' });
     this.modeHsBtn.setStyle({ backgroundColor: hsOn ? '#285b67' : '#182131' });
     this.modeOnlineBtn.setStyle({ backgroundColor: onlineOn ? '#285b67' : '#182131' });
     this.modeTrainingBtn.setStyle({ backgroundColor: trainingOn ? '#285b67' : '#182131' });
+    this.modePveBtn.setStyle({ backgroundColor: pveOn ? '#285b67' : '#182131' });
     this.modeSwamprunBtn.setStyle({ backgroundColor: swamprunOn ? '#285b67' : '#182131' });
     this.modeExpeditionBtn.setStyle({ backgroundColor: expeditionOn ? '#285b67' : '#182131' });
+    this.modeMinerunBtn.setStyle({ backgroundColor: minerunOn ? '#285b67' : '#182131' });
     // Mode is only chosen on the first draft screen.
-    this.modeAiBtn.setVisible(firstScreen);
-    this.modeHsBtn.setVisible(firstScreen);
-    this.modeOnlineBtn.setVisible(firstScreen);
-    this.modeTrainingBtn.setVisible(firstScreen);
-    this.modeSwamprunBtn.setVisible(firstScreen);
-    this.modeExpeditionBtn.setVisible(firstScreen);
+    const showTopModes = firstScreen && !this.pveMenuOpen;
+    const showPveModes = firstScreen && this.pveMenuOpen;
+    this.modeAiBtn.setVisible(showTopModes);
+    this.modeHsBtn.setVisible(showTopModes);
+    this.modeOnlineBtn.setVisible(showTopModes);
+    this.modeTrainingBtn.setVisible(showTopModes);
+    this.modePveBtn.setVisible(showTopModes);
+    this.modeBackBtn.setVisible(showPveModes);
+    this.modeSwamprunBtn.setVisible(showPveModes);
+    this.modeExpeditionBtn.setVisible(showPveModes);
+    this.modeMinerunBtn.setVisible(showPveModes);
 
-    const networkRole = onlineOn ? this.onlineRole : swamprunOn || expeditionOn ? this.swampRole : 'local';
+    const networkRole = onlineOn ? this.onlineRole : pveOn ? this.swampRole : 'local';
     const rulesOwner = networkRole !== 'guest';
-    const showRole = firstScreen && (onlineOn || swamprunOn || expeditionOn);
-    this.localBtn.setVisible(showRole && (swamprunOn || expeditionOn));
+    const showRole = firstScreen && (onlineOn || pveOn) && !this.pveMenuOpen;
+    this.localBtn.setVisible(showRole && pveOn);
     this.hostBtn.setVisible(showRole);
     this.joinBtn.setVisible(showRole);
     if (onlineOn) {
@@ -754,7 +793,7 @@ export class MenuScene extends Phaser.Scene {
     this.playersBtn.setText(`Players: ${this.seatCount}`);
     this.playersBtn.setVisible(showSetup);
     this.formatBtn.setText(`Format: ${this.formatLabel()}`);
-    this.formatBtn.setVisible(showSetup && this.mode !== 'swamprun' && this.mode !== 'expedition');
+    this.formatBtn.setVisible(showSetup && !isPveRunMode(this.mode));
     this.aiFillBtn.setText(`AI: ${this.aiCount}`);
     this.aiFillBtn.setVisible(showSetup && this.mode !== 'expedition');
     const prepLabel: Record<SwampPrepMode, string> = {
@@ -764,12 +803,12 @@ export class MenuScene extends Phaser.Scene {
     };
     this.swampPrepBtn.setText(prepLabel[this.swampPrepMode]);
     this.swampPrepBtn.setStyle({ backgroundColor: this.swampPrepMode === 'quick' ? '#182131' : '#24543f' });
-    this.swampPrepBtn.setVisible(showSetup && this.mode === 'swamprun');
+    this.swampPrepBtn.setVisible(showSetup && usesSwampPrep(this.mode));
 
     // Per-seat team pickers: only for teams mode with 3+ combatants, where the
     // split is actually a choice (e.g. player + AI vs player + AI).
     const showSeatTeams =
-      showSetup && this.mode !== 'swamprun' && this.teamMode === 'teams' && this.seatCount >= 3;
+      showSetup && !isPveRunMode(this.mode) && this.teamMode === 'teams' && this.seatCount >= 3;
     const spacing = 190;
     for (let s = 0; s < this.seatBtns.length; s++) {
       const btn = this.seatBtns[s];
@@ -798,6 +837,8 @@ export class MenuScene extends Phaser.Scene {
             ? this.swampRole === 'local' ? 'START SWAMPRUN' : this.swampRole === 'host' ? 'HOST CO-OP ROOM' : 'JOIN CO-OP ROOM'
             : expeditionOn
               ? this.swampRole === 'local' ? 'START EXPEDITION' : this.swampRole === 'host' ? 'HOST CAMPAIGN' : 'JOIN CAMPAIGN'
+              : minerunOn
+                ? this.swampRole === 'local' ? 'START MINE RUN' : this.swampRole === 'host' ? 'HOST CO-OP ROOM' : 'JOIN CO-OP ROOM'
             : this.mode === 'training' ? 'START TRAINING' : 'START DUEL'
     );
     this.startBtn.setColor(ready ? '#0a0e16' : '#4d4431');
@@ -845,7 +886,7 @@ export class MenuScene extends Phaser.Scene {
     const config: MatchConfig = {
       mode: this.mode,
       loadouts: [seats[0].loadout, seats[1]?.loadout ?? seats[0].loadout],
-      swampPrepMode: this.mode === 'swamprun' ? this.swampPrepMode : undefined,
+      swampPrepMode: usesSwampPrep(this.mode) ? this.swampPrepMode : undefined,
       classes: [seats[0].mageClass ?? DEFAULT_MAGE_CLASS, seats[1]?.mageClass ?? DEFAULT_MAGE_CLASS],
       seats,
       itemSets: { ...this.itemSets },
@@ -886,7 +927,7 @@ export class MenuScene extends Phaser.Scene {
     }
     if (role === 'host' && this.humanCount() < 2) {
       this.statusText.setText(
-        this.mode === 'swamprun' || this.mode === 'expedition'
+        isPveRunMode(this.mode)
           ? 'Online co-op needs at least 2 human seats — raise Players.'
           : 'Online needs at least 2 human seats — lower the AI count.'
       );
@@ -965,12 +1006,12 @@ export class MenuScene extends Phaser.Scene {
           seed,
           seats,
           itemSets: this.itemSets,
-          swampPrepMode: this.mode === 'swamprun' ? this.swampPrepMode : undefined,
+          swampPrepMode: usesSwampPrep(this.mode) ? this.swampPrepMode : undefined,
         });
         config = {
           mode: this.mode,
           loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],
-          swampPrepMode: this.mode === 'swamprun' ? this.swampPrepMode : undefined,
+          swampPrepMode: usesSwampPrep(this.mode) ? this.swampPrepMode : undefined,
           seats,
           net,
           localTeam: seats[0].team,
@@ -989,13 +1030,13 @@ export class MenuScene extends Phaser.Scene {
         const seed = Number(startMsg.seed) | 0;
         const itemSets = this.sanitizeItemSets(startMsg.itemSets);
         // The host tells us which mode we're joining (PvP duel or co-op swamprun).
-        const startMode: MatchMode = startMsg.mode === 'swamprun' || startMsg.mode === 'expedition'
+        const startMode: MatchMode = startMsg.mode === 'swamprun' || startMsg.mode === 'expedition' || startMsg.mode === 'minerun'
           ? startMsg.mode
           : 'online';
         config = {
           mode: startMode,
           loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],
-          swampPrepMode: startMode === 'swamprun'
+          swampPrepMode: usesSwampPrep(startMode)
             ? startMsg.swampPrepMode === 'quick' || startMsg.swampPrepMode === 'creative'
               ? startMsg.swampPrepMode
               : 'custom'

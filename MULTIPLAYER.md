@@ -64,7 +64,8 @@ The tunnel address changes whenever `cloudflared` restarts. Do not expose port `
 ## Start a match
 
 1. Every player opens the same host or tunnel URL.
-2. Select **Online**, **Swamprun**, or **Expedition**.
+2. Select **Online**, or open **PvE** and choose **Swamprun**, **Expedition**, or
+	**Mine Run**.
 3. The first player selects **Host** and sets the player count to the number of human players.
 4. Other players select **Join**.
 5. Everyone enters the exact same room code and relay URL when prompted.
@@ -77,6 +78,32 @@ For a page served by `npm run relay`, accept the prefilled relay URL. When using
 - **Online:** standard competitive multiplayer.
 - **Swamprun:** cooperative survival. In Creative prep, each player configures their own stats and items; the game waits for every player and applies all setups identically on every client.
 - **Expedition / Campaign:** cooperative campaign. Each player chooses upgrades, receives their own gold, buys their own items, can donate 1g at a time, and pays for their own rest. Two-player rewards are 80% per player, three-player rewards are 60%, and four-player rewards are 40%. The host controls continue/retreat decisions, recruitment, and departure.
+- **Mine Run:** cooperative maze exploration using Swamprun's preparation and
+    shared gold. The complete discovered maze is shown during navigation; the
+    party leader clicks one of the one-to-four highlighted routes connected to the
+    current location. Tunnel, room-entry, treasure/ore, and shared-pickaxe choices
+    are relayed as `mine-choice` before all clients apply the same seeded result.
+    The map's Inventory button and `I` key open a read-only view of that client's
+    local explorer; inspecting it sends no message and does not interrupt the
+    leader's pending route choice.
+    The party starts with one shared 2-durability pickaxe. Passage traps are
+    predetermined when their routes are generated, shared by both directions,
+    and consumed on their first crossing; active-light spotting and the resulting
+    evasion roll are also seeded identically on every client.
+    Room contents remain hidden until entry, except for an audible enemy warning.
+    Hostile rooms start fresh combats only when entered, then return the party to
+    the map when cleared. Entered rooms without ore or a shop are crossed without
+    another prompt or relay choice. Supply rooms retain the normal synchronized
+    per-player Swamprun shop flow. Room icons and vignettes reveal only entered
+    room kinds. Held-weapon sprites, Earth Elemental pebble orbits, and Rockling
+    shatter bursts are derived from synchronized state and consume no seeded RNG
+    or additional network messages.
+
+PvE maze passages, room contents, traps, mining rolls, enemy rosters, level rolls,
+roles, equipment, AI choices, action rolls, hazards, and loot all use the shared
+match seed. Every browser simulates them locally in the same order; only human
+decisions travel through the relay. All players should run the same build so that
+lockstep data and rules match.
 
 ## Troubleshooting
 

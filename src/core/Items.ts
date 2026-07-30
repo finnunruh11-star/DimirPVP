@@ -66,6 +66,7 @@ export type ItemId =
   | 'healthPotion'
   | 'torch'
   | 'lantern'
+  | 'edgelordLantern'
   // ---- Finn's Additions ----
   | 'bloodCharm'
   | 'bloodRing'
@@ -90,7 +91,14 @@ export type ItemId =
   | 'wordVial'
   // ---- Conjured (never drafted; created by Objects class spells) ----
   | 'conjuredVeilBow'
-  | 'conjuredBlackBell';
+  | 'conjuredBlackBell'
+  // ---- Mine creatures (never offered to players) ----
+  | 'crudeSpear'
+  | 'stoneSpear'
+  | 'ironSpear'
+  | 'primitiveClub'
+  | 'stoneAxe'
+  | 'ironAxe';
 
 /**
  * Rarity tiers, ordered from most common to rarest. The shop draft rolls a
@@ -197,6 +205,16 @@ export interface WeaponMod {
     bonusBelow?: number;
     reloadTurns: number;
   };
+}
+
+/** True when a basic weapon strike can reach an airborne target. */
+export function isRangedWeapon(weapon: WeaponMod | null | undefined): boolean {
+  return !!(
+    weapon?.usesArrows ||
+    weapon?.rangeAccuracy ||
+    weapon?.toHit ||
+    weapon?.oneShotSpec
+  );
 }
 
 /**
@@ -357,12 +375,20 @@ export interface ItemDef {
   lightInBag?: boolean;
   /** Exclude this item from every draft/shop outside Swamprun. */
   swamprunOnly?: boolean;
+  /** Creature equipment that is never offered or accepted as player gear. */
+  enemyOnly?: boolean;
   /** Torch: number of combats a lit torch burns for before it is used up. */
   torchCombats?: number;
   /** A conjured Veil Corrode Pierce bow (Objects): veils its holder; special firing rider. */
   conjuredVeilBow?: boolean;
   /** Shadow Shatter Curse (Objects): low-damage hammer with Toll / Condense modes. */
   conjuredBlackBell?: boolean;
+  /** Cursed, permanently-bound lantern with a toggleable dark-light prison. */
+  edgelordLantern?: boolean;
+  /** Item carries a curse whose drawbacks remain part of its identity. */
+  cursed?: boolean;
+  /** Once equipped, this item cannot be stowed or dropped. */
+  permanentlyBinding?: boolean;
 }
 
 const U = RANGE_UNIT;
@@ -493,14 +519,14 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 22,
     blurb:
-      'A colossal slab of iron. Counts as a shield: +2 physical & +1 magic armour, block reaction removes 60% of a physical/magical blow, enables shield-bash. Strikes at 30% Strength (shatter). Weighs a tremendous amount.',
+      'A colossal slab of iron. Counts as a shield: +2 physical & +2 magic armour, block reaction removes 60% of a physical/magical blow, enables shield-bash. Strikes at 30% Strength (shatter). Weighs a tremendous amount.',
     weapon: {
       rangePx: MELEE_RANGE,
       kind: 'strength',
       multiplier: 0.3,
       damageType: 'shatter',
     },
-    shield: { blockPct: 0.6, armorFlat: 2, magicFlat: 1, bashMult: 0.5 },
+    shield: { blockPct: 0.6, armorFlat: 2, magicFlat: 2, bashMult: 0.5 },
   },
   {
     id: 'lungingEdge',
@@ -856,6 +882,21 @@ export const ITEM_DEFS: ItemDef[] = [
     lightInBag: true,
     swamprunOnly: true,
   },
+  {
+    id: 'edgelordLantern',
+    name: 'Edgelord Lantern',
+    slot: 'hand',
+    set: 'finns',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 0,
+    blurb:
+      'Cursed and permanently binding. Shake as a bonus action to alternate between its dormant prison and a 15cm dark light. Activating costs 4 mana and gives every unit in range 3 Soul Rend. Deactivating pulls nearby units inward and captures afflicted, critically wounded creatures within 6cm. Captives suffer 10 true HP and 5 true mill each turn for 2 mana; failing that payment kills the bearer and releases them. Dormant: -33% movement, and a loaded lantern can be thrown for 1d20 dark/cold plus 1d10 mill in a 5cm blast within Strength cm by spending the entire turn. Active: ordinary movement passes through solid objects, darkness reveals all but Shadow Veil, and each weapon attack pulls units inward before dealing 2 dark damage to all in the light, including the bearer.',
+    resist: { weak: ['light'] },
+    edgelordLantern: true,
+    cursed: true,
+    permanentlyBinding: true,
+  },
 
   // ===========================================================================
   //  FINN'S ADDITIONS  (set: 'finns')
@@ -1026,6 +1067,72 @@ export const ITEM_DEFS: ItemDef[] = [
     blurb: '+50% Dex-attack damage while you are veiled (invisible).',
     veiledDaggerBonus: 0.5,
   },
+  {
+    id: 'crudeSpear',
+    name: 'Crude Spear',
+    slot: 'hand',
+    rarity: 'common',
+    cost: 0,
+    weight: 1,
+    blurb: 'A chipped Mine creature spear.',
+    enemyOnly: true,
+    weapon: { rangePx: MELEE_RANGE * 1.2, kind: 'dex', dexBonus: -2, damageType: 'pierce' },
+  },
+  {
+    id: 'stoneSpear',
+    name: 'Stone Spear',
+    slot: 'hand',
+    rarity: 'common',
+    cost: 0,
+    weight: 2,
+    blurb: 'A balanced spear tipped with mine stone.',
+    enemyOnly: true,
+    weapon: { rangePx: MELEE_RANGE * 1.25, kind: 'dex', damageType: 'pierce' },
+  },
+  {
+    id: 'ironSpear',
+    name: 'Iron Spear',
+    slot: 'hand',
+    rarity: 'common',
+    cost: 0,
+    weight: 2,
+    blurb: 'A Mine-forged iron spear.',
+    enemyOnly: true,
+    weapon: { rangePx: MELEE_RANGE * 1.3, kind: 'dex', dexBonus: 2, damageType: 'pierce' },
+  },
+  {
+    id: 'primitiveClub',
+    name: 'Primitive Club',
+    slot: 'hand',
+    rarity: 'common',
+    cost: 0,
+    weight: 3,
+    blurb: 'A heavy Dragonborn club.',
+    enemyOnly: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 0.8, damageType: 'shatter' },
+  },
+  {
+    id: 'stoneAxe',
+    name: 'Stone Axe',
+    slot: 'hand',
+    rarity: 'common',
+    cost: 0,
+    weight: 3,
+    blurb: 'A broad stone-edged Dragonborn axe.',
+    enemyOnly: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', damageType: 'slashing' },
+  },
+  {
+    id: 'ironAxe',
+    name: 'Iron Axe',
+    slot: 'hand',
+    rarity: 'common',
+    cost: 0,
+    weight: 4,
+    blurb: 'A brutal Mine-forged Dragonborn axe.',
+    enemyOnly: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.3, damageType: 'slashing' },
+  },
 ];
 
 const ITEM_BY_ID: Record<ItemId, ItemDef> = ITEM_DEFS.reduce((acc, def) => {
@@ -1077,7 +1184,7 @@ export function sanitizeCart(items: ItemId[], strength: number, budget = Infinit
   let weight = 0;
   for (const id of items) {
     const def = ITEM_BY_ID[id];
-    if (!def) continue;
+    if (!def || def.enemyOnly) continue;
     if (spent + def.cost > budget) continue;
     if (!hasBag && weight + def.weight > cap) continue;
     // Hand items are never dropped for exceeding the slot cap: they all go into
@@ -1125,6 +1232,7 @@ export function itemsOfRarity(rarity: Rarity, includeSwamprunOnly = false): Item
     (d) =>
       d.rarity === rarity &&
       ACTIVE_ITEM_SETS.has(d.set ?? 'original') &&
+      !d.enemyOnly &&
       (includeSwamprunOnly || !d.swamprunOnly)
   );
 }

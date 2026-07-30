@@ -1,8 +1,9 @@
-# PVP Dimir — Mage Duel
+# PVP Dimir — Tactical Mage Combat
 
-A turn-based duel between two mages built with **Phaser 3 + TypeScript + Vite**.
-Each mage picks **4 of 8 words** and combines **1–3 of them** into spells. Actions
-resolve on an **MTG-style reaction stack**.
+A turn-based tactical spell-combat game built with **Phaser 3 + TypeScript + Vite**.
+Mages build a loadout of up to **5 words** and combine **1–3 of them** into spells.
+Actions resolve on an **MTG-style reaction stack** in competitive matches and
+cooperative PvE runs.
 
 ## Run it
 
@@ -17,12 +18,13 @@ For online, LAN, Creative Swamprun, and Campaign hosting instructions, see
 
 ## How to play
 
-1. **Menu**: pick 4 words, choose **Vs AI** or **Hotseat (2P)**, confirm. In hotseat
-   each player picks their own 4 words.
+1. **Menu**: choose a competitive mode, Training, or **PvE**. PvE opens the
+  **Swamprun**, **Expedition**, and **Mine Run** choices. Each human then builds
+  their own word loadout.
 2. **Your turn** gives you **1 move, 1 main, 2 bonus** actions (and **1 reaction** per
    round if your loadout has Bind / Veil / Mind).
 3. **Keys**:
-   - `1`–`4` — toggle the loadout words into your current selection (max 3).
+  - `1`–`5` — toggle the loadout words into your current selection (max 3).
    - `Enter` — cast the selected combination (if a spell exists for it).
    - `M` — move (click within the range circle).
    - `A` — melee attack (click an enemy in range).
@@ -34,6 +36,55 @@ For online, LAN, Creative Swamprun, and Campaign hosting instructions, see
    inspect). Before anything resolves, the opponent may **react** if eligible. Items
    resolve last-in-first-out and **fizzle** if their target is gone, dead or unseen on
    resolution.
+
+## PvE runs
+
+- **Swamprun** is endless co-op survival against escalating swamp creatures and
+  milestone bosses.
+- **Expedition** adds depth choices, retreating, XP, personal gold, a town, and
+  recruitable companions.
+- **Mine Run** is a seeded maze of tunnels, junctions, and hidden rooms. Choose
+  among one to four paths at each junction or room exit; rooms have a slight
+  chance to gain one extra path, still capped at four. Navigation uses the
+  complete discovered map: traveled tunnels remain visible, unexplored paths
+  appear as dashed branches, the party's location is highlighted, and connected
+  routes are selected directly on the map. The map's **Inventory** button or `I`
+  opens a read-only view of the local explorer's gear, supplies, and statuses.
+  A room's contents stay concealed at its threshold, although waiting enemies can
+  be heard; enter to reveal it or turn around through the tunnel just used. Once
+  entered, empty, opened-treasure, and cleared-combat rooms can be crossed without
+  another prompt. Ore and supply rooms remain interactive when revisited.
+
+Mine rooms may be empty or hold enemies, treasure, ore, or a supply shop.
+Hostile rooms start a fresh optional combat and return the party to exploration
+when cleared. Eight percent of generated passages contain a predetermined trap,
+which is spent after its first crossing from either direction. A party member
+normally has a 10% chance to evade it; active light has a 20% chance to reveal it
+first and raise that chance to 65%. The party starts with one shared pickaxe at
+2 durability. Shared gold buys new 10-durability pickaxes for 3g; ore veins use
+cumulative d20 mining progress, can collapse after repeated failed strikes, and
+wear a pickaxe on a natural 1 or 2. Supply rooms also carry the complete
+Swamprun shop stock.
+
+Mine creatures have intrinsic combat rules in addition to ordinary equipment:
+Rocklings launch toward a target but deal damage and break apart only if they
+make physical body contact. Sentinels reveal Tank, Healer, or DPS roles;
+Golems must wake after being targeted; Cavern Bats are airborne; Earth Elementals
+stockpile stones; Dragonborn use breath attacks; and Pftlhb collapse on genuine
+torch, lantern, light, or fire exposure. Fire-aligned creatures resist fire and
+light but are weak to shadow. Scaled creatures resist slashing and are weak to
+pierce.
+
+Mine visuals mirror those rules directly. Earth Elementals orbit one visible
+pebble per stored stone, successful Rockling impacts play a compact shatter,
+and armed players and enemies carry a wooden pixel-art sprite matching their
+weapon family. Map rooms use a concealed-door icon until entry, then reveal a
+distinct icon and illustrated vignette for quiet, hostile, treasure, ore, and
+supply rooms. The current room's vignette remains visible beside the map even
+when that room needs no interaction prompt.
+
+All PvE runs support local parties and seeded online co-op. See
+[MULTIPLAYER.md](MULTIPLAYER.md) for relay setup.
 
 ## Project layout
 
@@ -50,6 +101,12 @@ src/
     Stack.ts            StackItem shape.
     utils.ts            Vec2 maths.
   effects/effects.ts    >>> SPELL EFFECT INFRASTRUCTURE (build spells from these).
+  pve/
+    swamprun.ts         Swamp roster, wave composition, and loot.
+    minerun.ts          Mine roster, scaling, affinities, equipment, and loot.
+    mineMaze.ts         Seeded maze, rooms, traps, ore, and pickaxe rules.
+    mineActions.ts      Stack-based Mine creature actions.
+    mineAI.ts           Deterministic Mine action selection.
   spells/
     Spell.ts            Spell type.
     registry.ts         registerSpell / getSpell (keyed by word combo).

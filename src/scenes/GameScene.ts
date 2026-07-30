@@ -28,6 +28,7 @@ import vanishSheetUrl from '../Sprites/Spell/Vanish.png';
 import shatterSheetUrl from '../Sprites/Spell/Shatter.png';
 import disruptSheetUrl from '../Sprites/Spell/Disrupt.png';
 import lightningSheetUrl from '../Sprites/Spell/Lightning.png';
+import edgelordImpactSheetUrl from '../../spritesheet/Lightning/lightning_burst_003/lightning_burst_003_large_violet/spritesheet.png';
 import { scarabAlive, type ScarabState } from '../core/Scarab';
 import { Dev, type DevToggle } from '../config/dev';
 import { WORD_ORDER, WORDS, type WordId } from '../core/Words';
@@ -68,8 +69,46 @@ import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type { SubTargetPointOpts, SubTargetEnemyOpts } from '../effects/effects';
 import { SimpleAI, type AIDecision } from '../ai/SimpleAI';
 import type { MatchConfig, SeatConfig, SwampPrepMode } from './MenuScene';
+import {
+  MINE_ROOM_VISUAL_LABEL,
+  buildMineRoomTextures,
+  mineRoomIconTextureKey,
+  mineRoomTextureKey,
+  type MineRoomVisualKind,
+} from './mineVisualTextures';
 import type { Net, NetMessage } from '../net/Net';
 import { applyEnemyTraits, waveComposition, ENEMY_DEFS, rollLoot, type EnemyKind } from '../pve/swamprun';
+import {
+  applyMineEnemyTraits,
+  isMineEnemyKind,
+  mineEnemyLevel,
+  mineEnemyVisual,
+  mineWaveComposition,
+  rollMineEnemyWeapon,
+  rollMineLoot,
+  type MineSpawnSpec,
+} from '../pve/minerun';
+import { canUseMineAction, commitMineAction, makeMineActionItem } from '../pve/mineActions';
+import {
+  MINE_DIRECTIONS,
+  MINE_DIRECTION_LABEL,
+  MINE_DIRECTION_VECTOR,
+  MINE_ORE_DEFS,
+  MINE_OPPOSITE_DIRECTION,
+  createMineMaze,
+  currentMineNode,
+  mineRoomNeedsInteraction,
+  resolveMineOre,
+  revealMineOre,
+  rollMineTrapAvoidance,
+  travelMineMaze,
+  type MineDirection,
+  type MineMazeNode,
+  type MineMazeState,
+  type MineOreResult,
+  type MineRoomState,
+  type MineTrapDamage,
+} from '../pve/mineMaze';
 
 // Pixel-art mage animations. Frames live under src/Sprites/<Action>/; Vite's
 // glob import resolves each PNG to a hashed URL the Phaser loader can read.
@@ -161,16 +200,22 @@ const FX_FRAME_SETS: AnimSet[] = [
 
 const MOVE_DURATION = 1000;
 const DASH_DURATION = 333;
+const EDGELORD_PULL_DURATION = 550;
+type HeldWeaponKind = 'sword' | 'dagger' | 'spear' | 'axe' | 'hammer' | 'club' | 'bow' | 'staff' | 'shield' | 'lantern';
 
 /** Per-mage sprite + animation-state machine. */
 interface MageAnim {
   sprite: Phaser.GameObjects.Sprite;
+  held?: Phaser.GameObjects.Image;
+  heldVisualKey?: string;
   /** A special animation currently owning the sprite (else idle/charge rests). */
-  lock: 'move' | 'dash' | 'attack' | 'hit' | null;
-  /** A sprite-position tween (dash) owns the position; don't snap to logical. */
+  lock: 'move' | 'dash' | 'pull' | 'attack' | 'hit' | null;
+  /** A sprite-position tween owns the position; don't snap to logical. */
   posLocked: boolean;
   /** The attack-charge loop is the current resting animation. */
   charging: boolean;
+  /** Last applied Mine tint/scale state; changes when a Golem wakes. */
+  mineVisualKey?: string;
 }
 
 /** Per-scarab sprite plus its smoothed position and individual gait. */
@@ -202,6 +247,7 @@ type InputMode =
   | 'aiming-move'
   | 'aiming-leap'
   | 'aiming-cleave'
+  | 'aiming-edgelord-throw'
   | 'aiming-wall'
   | 'subtarget-point'
   | 'subtarget-enemy'
@@ -311,6 +357,8 @@ type TurnCommand =
   | { t: 'item-equip'; itemId: string }
   | { t: 'item-unequip'; itemId: string }
   | { t: 'item-throw'; itemId: string; target: number }
+  | { t: 'edgelord-shake' }
+  | { t: 'edgelord-throw'; x: number; y: number }
   | { t: 'eldritch'; choice: 'attack' | 'defend' | 'restore'; target?: number }
   | { t: 'thunder-charge' }
   | { t: 'thunder-discharge'; target: number }
@@ -391,6 +439,15 @@ interface SwampShopSlot {
   sold: boolean;
 }
 
+interface MinePromptChoice {
+  id: string;
+  label: string;
+  enabled?: boolean;
+  color?: string;
+}
+
+type MinePromptVisual = MineRoomState | 'hidden';
+
 interface CreativePrepResult {
   stats: Record<StatKey, number>;
   items: ItemId[];
@@ -415,6 +472,8 @@ const SWAMP_PRICE: Record<Rarity, number> = {
 const SWAMP_STAT_BASE = 2;
 /** Cost of a party rest at the shop. */
 const SWAMP_REST_COST = 6;
+/** Fixed shared-tool price at every Mine supply room. */
+const MINE_PICKAXE_COST = 3;
 
 export class GameScene extends Phaser.Scene {
   private gs!: GameState;
@@ -451,6 +510,20 @@ export class GameScene extends Phaser.Scene {
 
   // Swamprun (offline PvE co-op survival). Enabled when mode is 'swamprun'.
   private swamprun = false;
+  /** Mine Run reuses survival progression while supplying a separate roster. */
+  private mineRun = false;
+  private mineMaze?: MineMazeState;
+  private mineExploring = false;
+  private mineInCombat = false;
+  private mineRunEnded = false;
+  private mineActiveRoomId: number | null = null;
+  private minePanel?: Phaser.GameObjects.Container;
+  private mineMapVisible = false;
+  private mineChoiceResolve: ((choice: string) => void) | null = null;
+  private mineCombatResolve: (() => void) | null = null;
+  /** Shared tools; each entry is one pickaxe's remaining durability out of 10. */
+  private minePickaxes: number[] = [];
+  private mineChestCursor = 0;
   private swampPrepMode: SwampPrepMode = 'custom';
   private expedition = false;
   private expeditionGold = new Map<Mage, number>();
@@ -550,6 +623,7 @@ export class GameScene extends Phaser.Scene {
   private gfxStatic!: Phaser.GameObjects.Graphics;
   private gfx!: Phaser.GameObjects.Graphics;
   private gfxFx!: Phaser.GameObjects.Graphics;
+  private gfxMine!: Phaser.GameObjects.Graphics;
   private gfxScarab!: Phaser.GameObjects.Graphics;
   private lightningTrailSprites: Phaser.GameObjects.Sprite[] = [];
   private hoverGfx!: Phaser.GameObjects.Graphics;
@@ -703,6 +777,7 @@ export class GameScene extends Phaser.Scene {
     this.load.spritesheet('fx-shatter', shatterSheetUrl, { frameWidth: 64, frameHeight: 64 });
     this.load.spritesheet('fx-disrupt', disruptSheetUrl, { frameWidth: 128, frameHeight: 128 });
     this.load.spritesheet('fx-lightning', lightningSheetUrl, { frameWidth: 256, frameHeight: 128 });
+    this.load.spritesheet('fx-edgelord-impact', edgelordImpactSheetUrl, { frameWidth: 96, frameHeight: 96 });
   }
 
   create(config: MatchConfig): void {
@@ -731,7 +806,8 @@ export class GameScene extends Phaser.Scene {
     this.opponentLeft = false;
     this.training = config.mode === 'training';
     this.expedition = config.mode === 'expedition';
-    this.swamprun = config.mode === 'swamprun' || this.expedition;
+    this.mineRun = config.mode === 'minerun';
+    this.swamprun = config.mode === 'swamprun' || this.expedition || this.mineRun;
     this.swampPrepMode = config.swampPrepMode ?? 'custom';
 
     const onlineName = (team: number): string =>
@@ -805,8 +881,10 @@ export class GameScene extends Phaser.Scene {
       diceRoll: (spec, total, rolls, label) => this.pendingDice.push({ spec, total, rolls, label }),
       hit: (m) => this.playHit(m),
       dash: (mover, from) => this.animateDash(mover, from),
+      pull: (mover, from, to) => this.animateEdgelordPull(mover, from, to),
       lightningBolt: (from, to) => this.vfxLightningBolt(from, to),
       spellEffect: (m, kind) => this.pendingEffects.push({ mage: m, kind }),
+      shatterBurst: (at, size) => void this.vfxSpriteAt('fx-shatter', at, { lengthPx: size }),
       wedge: (apex, angle, halfAngle, range) => this.vfxWedge(apex, angle, halfAngle, range),
       lightningTrail: (segments) => this.setLightningTrail(segments),
       clearLightningTrail: () => this.clearLightningTrail(),
@@ -822,6 +900,8 @@ export class GameScene extends Phaser.Scene {
     for (const m of this.gs.mages) if (m.isAI) this.ais.set(m, new SimpleAI(this.gs, m));
 
     this.buildMageAnimations();
+    this.buildHeldWeaponTextures();
+    buildMineRoomTextures(this);
     this.buildStaticGraphics();
     this.buildHud();
     this.buildDicePanel();
@@ -901,6 +981,10 @@ export class GameScene extends Phaser.Scene {
         for (const mage of this.gs.mages) mage.assignFlatStats(4);
         this.gs.log('Quick start — all stats are 4 and the party enters without starting gear.');
       }
+      if (this.mineRun) {
+        await this.setupMineExploration();
+        return;
+      }
       this.setupSwamprun();
       this.startTurn();
       return;
@@ -932,8 +1016,759 @@ export class GameScene extends Phaser.Scene {
   private setupSwamprun(): void {
     this.swamprunWave = 0;
     this.swamprunGold = 0;
-    this.gs.log('Swamprun — the swamp stirs. Survive as long as you can.');
+    this.gs.log(
+      this.mineRun
+        ? 'Mine Run — stone shifts in the dark. Survive as long as you can.'
+        : 'Swamprun — the swamp stirs. Survive as long as you can.'
+    );
     this.spawnWave(1);
+  }
+
+  /** Enter the maze before any combat exists; enemy rooms start fights on demand. */
+  private async setupMineExploration(): Promise<void> {
+    this.swamprunWave = 0;
+    this.swamprunGold = 0;
+    this.swamprunWaveEnemies = [];
+    this.swamprunWispCopies.clear();
+    this.swamprunArrowsOwned.clear();
+    this.mineMaze = createMineMaze(this.gs.rng);
+    this.mineExploring = true;
+    this.mineInCombat = false;
+    this.mineRunEnded = false;
+    this.mineActiveRoomId = null;
+    this.minePickaxes = [2];
+    this.mineChestCursor = 0;
+    this.mode = 'shop';
+    this.gs.log('Mine Run — the party enters a branching tunnel with one worn pickaxe (2 durability).');
+    this.updateWaveHud();
+    this.redraw();
+    await this.runMineExploration();
+  }
+
+  private async runMineExploration(): Promise<void> {
+    while (
+      !this.mineRunEnded &&
+      !this.opponentLeft &&
+      this.mineMaze &&
+      this.gs.mages.some((mage) => mage.team === 1 && mage.alive && !mage.isSummon)
+    ) {
+      const node = currentMineNode(this.mineMaze);
+      const direction = await this.promptMineDirection(node);
+      if (!direction || this.mineRunEnded || this.opponentLeft) return;
+      await this.travelMineTunnel(direction);
+    }
+  }
+
+  /** Traverse a passage and handle the arrival before asking for another route. */
+  private async travelMineTunnel(direction: MineDirection): Promise<void> {
+    if (!this.mineMaze || this.mineRunEnded) return;
+    this.hideMinePanel();
+    this.gs.log(`The party follows the ${MINE_DIRECTION_LABEL[direction].toLowerCase()} tunnel.`);
+    const result = travelMineMaze(this.mineMaze, direction, this.gs.rng);
+    this.updateWaveHud();
+    if (result.trap) await this.resolveMineTrap(result.trap);
+    if (this.mineRunEnded || this.opponentLeft) return;
+    if (
+      result.node.kind === 'room' &&
+      result.node.room &&
+      mineRoomNeedsInteraction(result.node.room)
+    ) {
+      await this.handleMineRoomArrival(result.node, result.node.room);
+    }
+  }
+
+  /** Resolve one passage's predetermined trap, including light-assisted warning and evasion. */
+  private async resolveMineTrap(spec: MineTrapDamage): Promise<void> {
+    const party = this.gs.mages.filter(
+      (mage) => mage.team === 1 && mage.alive && !mage.isSummon
+    );
+    if (party.length === 0) return;
+    const target = this.gs.rng.pick(party);
+    const hasActiveLight = party.some((mage) => mage.lightRadius() > 0);
+    const { spotted, dodgeChance, dodged } = rollMineTrapAvoidance(hasActiveLight, this.gs.rng);
+    if (spotted) {
+      this.gs.log(`The party's light reveals a ${spec} tunnel trap before it springs.`);
+      await this.promptMineChoice(
+        'TRAP SPOTTED',
+        `Active light reveals the mechanism  •  ${Math.round(dodgeChance * 100)}% evade chance`,
+        `${target.name} sees the danger in time and prepares to cross the trapped passage.`,
+        [{ id: 'dodge', label: 'Attempt to evade', color: '#9fe6a0' }]
+      );
+      if (this.mineRunEnded || this.opponentLeft) return;
+    }
+    if (dodged) {
+      this.gs.log(`${target.name} evades the ${spec} tunnel trap. The mechanism is spent.`);
+      await this.promptMineChoice(
+        spotted ? 'TRAP EVADED' : 'LAST-SECOND DODGE',
+        `${Math.round(dodgeChance * 100)}% evade chance succeeded.`,
+        `${target.name} escapes unharmed. This passage's trap cannot trigger again.`,
+        [{ id: 'continue', label: 'Keep moving', color: '#9fe6a0' }]
+      );
+      return;
+    }
+    const amount = this.gs.rng.roll(spec).total;
+    const hpBefore = target.hp;
+    if (amount >= hpBefore) {
+      this.gs.defeatMage(
+        target,
+        target,
+        `${target.name} triggers a tunnel trap (${spec} = ${amount}) and falls.`
+      );
+    } else {
+      target.hp -= amount;
+      this.gs.log(`${target.name} triggers a tunnel trap: ${spec} rolls ${amount} damage.`);
+      this.gs.vfxSink?.hit?.(target);
+    }
+    this.flushHits();
+    this.redraw();
+    if (this.gs.isOver) {
+      this.endGame();
+      return;
+    }
+    await this.promptMineChoice(
+      spotted ? 'TRAP SPRINGS' : 'TUNNEL TRAP',
+      `${Math.round(dodgeChance * 100)}% evade chance failed  •  ${spec} rolled ${amount} damage.`,
+      `${target.name} has ${target.hp}/${target.maxHp} HP remaining. The spent mechanism cannot trigger again.`,
+      [{ id: 'continue', label: 'Keep moving', color: '#ffcf7a' }]
+    );
+  }
+
+  /** Rooms stay opaque at the threshold; only hostile presence is disclosed. */
+  private async handleMineRoomArrival(node: MineMazeNode, room: MineRoomState): Promise<void> {
+    const known = room.entered;
+    const enemiesInside = room.kind === 'enemies' && !room.resolved;
+    const knownName = room.kind === 'ore' && room.oreKind
+      ? `${MINE_ORE_DEFS[room.oreKind].name} deposit`
+      : MINE_ROOM_VISUAL_LABEL[room.kind].toLowerCase();
+    const warning = known
+      ? `The charted ${knownName} lies beyond this threshold.`
+      : enemiesInside
+        ? 'You hear movement inside. Enemies are waiting in this room.'
+        : 'No enemies can be heard. Whatever else is inside remains hidden.';
+    const choices: MinePromptChoice[] = [
+      { id: 'enter', label: room.entered ? 'Enter again' : 'Enter room', color: '#9fe6a0' },
+    ];
+    if (this.mineMaze?.arrivedVia) {
+      choices.push({ id: 'turn', label: 'Turn around', color: '#ffcf7a' });
+    }
+    const choice = await this.promptMineChoice(
+      `ROOM THRESHOLD  //  STEP ${this.mineMaze?.steps ?? 0}`,
+      warning,
+      known
+        ? 'Enter the known room again, or retrace the tunnel you just used.'
+        : 'The doorway blocks your view. Enter to reveal the room, or retrace the tunnel you just used.',
+      choices,
+      known ? room : 'hidden'
+    );
+    if (choice === 'turn' && this.mineMaze?.arrivedVia) {
+      await this.travelMineTunnel(MINE_OPPOSITE_DIRECTION[this.mineMaze.arrivedVia]);
+      return;
+    }
+    if (choice !== 'enter') return;
+    room.entered = true;
+    await this.resolveMineRoom(node, room);
+  }
+
+  private async resolveMineRoom(node: MineMazeNode, room: MineRoomState): Promise<void> {
+    if (room.kind === 'enemies' && !room.resolved) {
+      await this.startMineRoomCombat(node);
+      return;
+    }
+    if (room.resolved) {
+      const description = room.kind === 'enemies'
+        ? 'Only the remains of the defeated encounter are left.'
+        : room.kind === 'treasure'
+          ? 'The opened chest is empty.'
+          : room.kind === 'ore'
+            ? 'The ore deposit has been exhausted.'
+            : 'The room has already been searched.';
+      await this.promptMineChoice(
+        'SEARCHED ROOM',
+        description,
+        'Nothing else demands attention. The party returns to the exits.',
+        [{ id: 'continue', label: 'Choose a path', color: '#9fe6a0' }],
+        room
+      );
+      return;
+    }
+    if (room.kind === 'empty') {
+      room.resolved = true;
+      this.gs.log('The party searches the empty chamber and continues through it.');
+      return;
+    }
+    if (room.kind === 'treasure') {
+      await this.resolveMineTreasure(room);
+      return;
+    }
+    if (room.kind === 'ore') {
+      await this.resolveMineOreRoom(room);
+      return;
+    }
+    await this.runMineRoomShop(room);
+  }
+
+  private async resolveMineTreasure(room: MineRoomState): Promise<void> {
+    const gold = this.gs.rng.roll('1d6+2').total;
+    this.swamprunGold += gold;
+    const recipients = this.gs.mages.filter(
+      (mage) => mage.team === 1 && mage.alive && !mage.isSummon
+    );
+    let itemText = 'No usable item remained inside.';
+    if (recipients.length > 0) {
+      const recipient = recipients[this.mineChestCursor % recipients.length];
+      this.mineChestCursor += 1;
+      const rarity = rollRarity(() => this.gs.rng.float(), recipient.maxLuck, true);
+      const item = draftChoices(rarity, () => this.gs.rng.float(), 1, true)[0];
+      if (item) {
+        this.gs.grantItem(recipient, item);
+        itemText = `${recipient.name} receives ${getItem(item).name} (${rarity}).`;
+      }
+    }
+    room.resolved = true;
+    this.gs.log(`The party opens a mine chest: ${gold}g. ${itemText}`);
+    this.updateWaveHud();
+    await this.promptMineChoice(
+      'TREASURE CHEST',
+      `Recovered ${gold}g for the party.`,
+      itemText,
+      [{ id: 'continue', label: 'Leave the chest', color: '#ffd978' }],
+      room
+    );
+  }
+
+  private async resolveMineOreRoom(room: MineRoomState): Promise<void> {
+    const oreKind = room.oreKind ?? 'coal';
+    const ore = MINE_ORE_DEFS[oreKind];
+    const amount = revealMineOre(room, this.gs.rng);
+    const choice = await this.promptMineChoice(
+      `${ore.name.toUpperCase()} DEPOSIT`,
+      `d3 reveals ${amount} vein${amount === 1 ? '' : 's'}  •  Mining value ${ore.miningValue}  •  Collapse after ${ore.failCount} failed strikes`,
+      this.minePickaxes.length
+        ? `Pickaxe durability: ${this.minePickaxes.join(', ')}. Each vein receives repeated d20 strikes until its total reaches ${ore.miningValue}. A natural 1 or 2 costs one durability.`
+        : 'The party has no pickaxe. This deposit can be left intact and mined after finding a shop.',
+      [
+        { id: 'mine', label: 'Mine the deposit', color: '#ffd978', enabled: this.minePickaxes.length > 0 },
+        { id: 'leave', label: 'Leave it intact', color: '#9fdcff' },
+      ],
+      room
+    );
+    if (choice !== 'mine') return;
+
+    const result = resolveMineOre(oreKind, amount, this.minePickaxes, this.gs.rng);
+    this.minePickaxes = result.pickaxes;
+    this.swamprunGold += result.gold;
+    const remaining = Math.max(0, amount - result.extracted - result.collapsed);
+    room.oreAmount = remaining;
+    room.resolved = remaining === 0;
+    const summary = this.mineOreRollSummary(result);
+    this.gs.log(
+      `${ore.name} mining: ${result.extracted} extracted, ${result.collapsed} collapsed, ${remaining} left; +${result.gold}g. Pickaxes: ${this.minePickaxes.join(', ') || 'none'}.`
+    );
+    this.updateWaveHud();
+    await this.promptMineChoice(
+      `${ore.name.toUpperCase()} MINING RESULT`,
+      `${result.extracted} extracted  •  ${result.collapsed} collapsed  •  ${remaining} left  •  +${result.gold}g`,
+      `${summary}\n\nPickaxe durability: ${this.minePickaxes.join(', ') || 'none'}.`,
+      [{ id: 'continue', label: remaining > 0 ? 'Leave remaining ore' : 'Leave the deposit', color: '#9fe6a0' }],
+      room
+    );
+  }
+
+  private mineOreRollSummary(result: MineOreResult): string {
+    const byVein = new Map<number, MineOreResult['rolls']>();
+    for (const record of result.rolls) {
+      const entries = byVein.get(record.vein) ?? [];
+      entries.push(record);
+      byVein.set(record.vein, entries);
+    }
+    return [...byVein.entries()].map(([vein, records]) => {
+      const faces = records
+        .filter((record) => record.roll > 0)
+        .map((record) => `${record.roll}${record.durabilityLost ? '*' : ''}`)
+        .join(' + ');
+      const last = records[records.length - 1];
+      return `Vein ${vein}: ${faces || 'no roll'} = ${last?.progress ?? 0}  [${last?.outcome ?? 'unfinished'}]`;
+    }).join('\n');
+  }
+
+  private async runMineRoomShop(room: MineRoomState): Promise<void> {
+    for (;;) {
+      const choice = await this.promptMineChoice(
+        'MINE SUPPLY ROOM',
+        `Party gold: ${this.swamprunGold}g  •  Pickaxes: ${this.minePickaxes.join(', ') || 'none'}`,
+        `A new pickaxe costs ${MINE_PICKAXE_COST}g and begins at 10 durability. The supply counter carries the complete Swamp Run shop stock.`,
+        [
+          {
+            id: 'pickaxe',
+            label: `Buy pickaxe  ${MINE_PICKAXE_COST}g`,
+            color: '#ffd978',
+            enabled: this.swamprunGold >= MINE_PICKAXE_COST,
+          },
+          { id: 'supplies', label: 'Browse supplies', color: '#9fe6a0' },
+          { id: 'leave', label: 'Leave shop', color: '#9fdcff' },
+        ],
+        room
+      );
+      if (choice === 'pickaxe' && this.swamprunGold >= MINE_PICKAXE_COST) {
+        this.swamprunGold -= MINE_PICKAXE_COST;
+        this.minePickaxes.push(10);
+        this.gs.log(`The party buys a pickaxe for ${MINE_PICKAXE_COST}g (10 durability).`);
+        this.updateWaveHud();
+        continue;
+      }
+      if (choice === 'supplies') {
+        await this.runSwamprunShop();
+        continue;
+      }
+      return;
+    }
+  }
+
+  private async startMineRoomCombat(node: MineMazeNode): Promise<void> {
+    this.hideMinePanel();
+    this.mineExploring = false;
+    this.mineInCombat = true;
+    this.mineActiveRoomId = node.id;
+    await new Promise<void>((resolve) => {
+      this.mineCombatResolve = resolve;
+      this.spawnWave(this.swamprunWave + 1);
+      void this.startTurn();
+    });
+    if (this.mineRunEnded || this.opponentLeft) return;
+    this.mineExploring = true;
+    this.mode = 'shop';
+    this.gs.log('The room falls quiet. The party can choose any passage leading away.');
+    this.redraw();
+  }
+
+  private async promptMineDirection(node: MineMazeNode): Promise<MineDirection | null> {
+    const available = MINE_DIRECTIONS.filter((direction) =>
+      Object.prototype.hasOwnProperty.call(node.exits, direction)
+    );
+    if (available.length === 0) return null;
+    const title = node.kind === 'room'
+      ? `LEAVE ROOM  //  STEP ${this.mineMaze?.steps ?? 0}`
+      : `MINE MAP  //  STEP ${this.mineMaze?.steps ?? 0}`;
+    const subtitle = `Encounters cleared: ${this.swamprunWave}  •  Party gold: ${this.swamprunGold}g  •  Pickaxes: ${this.minePickaxes.length ? this.minePickaxes.join('/') : 'none'}`;
+    this.mode = 'shop';
+    if (this.online && this.localSeat !== 0) {
+      this.drawMineNavigationPrompt(node, title, `${subtitle}  •  Waiting for the party leader.`, false);
+      for (;;) {
+        const message = await this.net!.recv();
+        if (message.k === 'bye') return null;
+        if (message.k !== 'mine-choice' || typeof message.choice !== 'string') continue;
+        return available.includes(message.choice as MineDirection)
+          ? message.choice as MineDirection
+          : available[0];
+      }
+    }
+    this.drawMineNavigationPrompt(node, title, subtitle, true);
+    return new Promise<MineDirection>((resolve) => {
+      this.mineChoiceResolve = (choice) => {
+        const direction = available.includes(choice as MineDirection)
+          ? choice as MineDirection
+          : available[0];
+        if (this.online) this.net?.send({ k: 'mine-choice', choice: direction });
+        this.mineChoiceResolve = null;
+        this.hideMinePanel();
+        resolve(direction);
+      };
+    });
+  }
+
+  /** One host-led maze choice; every peer then performs the same seeded work. */
+  private async promptMineChoice(
+    title: string,
+    subtitle: string,
+    body: string,
+    choices: MinePromptChoice[],
+    visual?: MinePromptVisual
+  ): Promise<string> {
+    const available = choices.filter((choice) => choice.enabled !== false);
+    if (available.length === 0) return '';
+    this.mode = 'shop';
+    if (this.online && this.localSeat !== 0) {
+      this.drawMinePrompt(title, `${subtitle}  •  Waiting for the party leader.`, body, [], visual);
+      for (;;) {
+        const message = await this.net!.recv();
+        if (message.k === 'bye') return '';
+        if (message.k !== 'mine-choice' || typeof message.choice !== 'string') continue;
+        return available.some((choice) => choice.id === message.choice)
+          ? message.choice
+          : available[0].id;
+      }
+    }
+    this.drawMinePrompt(title, subtitle, body, choices, visual);
+    return new Promise<string>((resolve) => {
+      this.mineChoiceResolve = (choice) => {
+        if (this.online) this.net?.send({ k: 'mine-choice', choice });
+        this.mineChoiceResolve = null;
+        this.hideMinePanel();
+        resolve(choice);
+      };
+    });
+  }
+
+  private drawMinePrompt(
+    title: string,
+    subtitle: string,
+    body: string,
+    choices: MinePromptChoice[],
+    visual?: MinePromptVisual
+  ): void {
+    this.hideMinePanel();
+    const panel = this.add.container(0, 0).setDepth(99);
+    this.minePanel = panel;
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    this.addModalChrome(panel, { width: 1080, height: 560, title, subtitle, accent: UI.gold });
+    if (visual) {
+      const kind: MineRoomVisualKind = visual === 'hidden' ? 'hidden' : visual.kind;
+      const label = visual !== 'hidden' && visual.kind === 'ore' && visual.oreKind
+        ? `${MINE_ORE_DEFS[visual.oreKind].name} deposit`
+        : MINE_ROOM_VISUAL_LABEL[kind];
+      const artX = cx - 315;
+      const artY = cy - 92;
+      const frame = this.add
+        .rectangle(artX, artY, 296, 176, 0x080d12, 1)
+        .setStrokeStyle(2, visual === 'hidden' ? 0x677078 : 0xd2a950, 1);
+      const art = this.add.image(artX, artY, mineRoomTextureKey(kind)).setDisplaySize(280, 160);
+      const shade = this.add.rectangle(artX, artY + 62, 280, 36, 0x070b0f, 0.88);
+      const icon = this.add
+        .image(artX - 119, artY + 62, mineRoomIconTextureKey(kind))
+        .setDisplaySize(22, 22);
+      const caption = this.add
+        .text(artX - 98, artY + 62, label.toUpperCase(), {
+          fontFamily: 'Trebuchet MS',
+          fontSize: '14px',
+          color: visual === 'hidden' ? TEXT.dim : '#ffe3a0',
+          fontStyle: 'bold',
+        })
+        .setOrigin(0, 0.5);
+      panel.add([frame, art, shade, icon, caption]);
+    }
+    panel.add(
+      this.add
+        .text(visual ? cx + 145 : cx, cy - 85, body, {
+          fontSize: '18px',
+          color: TEXT.body,
+          align: visual ? 'left' : 'center',
+          wordWrap: { width: visual ? 500 : 880 },
+          lineSpacing: 5,
+        })
+        .setOrigin(0.5)
+    );
+    choices.forEach((choice, index) => {
+      const columns = Math.min(4, choices.length);
+      const row = Math.floor(index / 4);
+      const column = index % 4;
+      const rowCount = Math.min(4, choices.length - row * 4);
+      const x = cx + (column - (rowCount - 1) / 2) * (columns === 1 ? 0 : 220);
+      const y = cy + 35 + row * 74;
+      this.swampShopButton(
+        panel,
+        x,
+        y,
+        choice.label,
+        choice.color ?? '#e8f1ff',
+        choice.enabled !== false,
+        () => this.mineChoiceResolve?.(choice.id)
+      );
+    });
+  }
+
+  private drawMineNavigationPrompt(
+    node: MineMazeNode,
+    title: string,
+    subtitle: string,
+    interactive: boolean
+  ): void {
+    this.hideMinePanel();
+    const panel = this.add.container(0, 0).setDepth(99);
+    this.minePanel = panel;
+    this.mineMapVisible = true;
+    const cx = GAME_WIDTH / 2;
+    const cy = GAME_HEIGHT / 2;
+    this.addModalChrome(panel, { width: 1080, height: 560, title, subtitle, accent: UI.gold });
+    this.drawMineNavigationMap(panel, node, interactive);
+    panel.add(
+      this.add
+        .text(cx, cy + 242, interactive ? 'Choose a highlighted route.' : 'The party leader is choosing a route.', {
+          fontFamily: 'Trebuchet MS',
+          fontSize: '15px',
+          color: interactive ? TEXT.body : TEXT.dim,
+          fontStyle: 'bold',
+        })
+        .setOrigin(0.5)
+    );
+    this.swampShopButton(
+      panel,
+      cx + 430,
+      cy + 242,
+      'Inventory',
+      '#9fdcff',
+      true,
+      () => this.toggleInventory()
+    );
+  }
+
+  /** Draw the complete discovered maze; only exits touching `node` are selectable. */
+  private drawMineNavigationMap(
+    panel: Phaser.GameObjects.Container,
+    node: MineMazeNode,
+    interactive: boolean
+  ): void {
+    if (!this.mineMaze) return;
+    const maze = this.mineMaze;
+    const nodes = Object.values(maze.nodes);
+    const currentRoom = node.kind === 'room' && node.room?.entered ? node.room : undefined;
+    const previewWidth = currentRoom ? 220 : 0;
+    const mapWidth = 1000;
+    const mapHeight = 390;
+    const mapCenterX = GAME_WIDTH / 2;
+    const mapCenterY = GAME_HEIGHT / 2 + 8;
+    const frame = this.add
+      .rectangle(mapCenterX, mapCenterY, mapWidth, mapHeight, 0x090f17, 0.96)
+      .setStrokeStyle(1, UI.borderSoft, 1);
+    const title = this.add.text(
+      mapCenterX - mapWidth / 2 + 14,
+      mapCenterY - mapHeight / 2 + 10,
+      'DISCOVERED MINE',
+      { fontFamily: 'Trebuchet MS', fontSize: '11px', color: TEXT.warn, fontStyle: 'bold' }
+    );
+    const north = this.add
+      .text(mapCenterX + mapWidth / 2 - previewWidth - 18, mapCenterY - mapHeight / 2 + 8, 'N', {
+        fontFamily: 'Trebuchet MS',
+        fontSize: '13px',
+        color: '#9fdcff',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5, 0);
+    const graphics = this.add.graphics();
+    panel.add([frame, title, north, graphics]);
+
+    if (currentRoom) {
+      const kind = currentRoom.kind;
+      const previewLeft = mapCenterX + mapWidth / 2 - previewWidth;
+      const artX = previewLeft + previewWidth / 2;
+      const artY = mapCenterY - 38;
+      const roomName = kind === 'ore' && currentRoom.oreKind
+        ? `${MINE_ORE_DEFS[currentRoom.oreKind].name} deposit`
+        : MINE_ROOM_VISUAL_LABEL[kind];
+      const roomState = kind === 'shop'
+        ? 'SUPPLIES AVAILABLE'
+        : kind === 'ore'
+          ? currentRoom.resolved ? 'EXHAUSTED' : 'VEIN AVAILABLE'
+          : kind === 'enemies'
+            ? currentRoom.resolved ? 'CLEARED' : 'HOSTILE'
+            : kind === 'treasure'
+              ? currentRoom.resolved ? 'OPENED' : 'UNCLAIMED'
+              : 'SEARCHED';
+      graphics.lineStyle(1, UI.borderSoft, 1).lineBetween(
+        previewLeft,
+        mapCenterY - mapHeight / 2 + 38,
+        previewLeft,
+        mapCenterY + mapHeight / 2 - 16
+      );
+      const previewTitle = this.add
+        .text(artX, mapCenterY - mapHeight / 2 + 19, 'CURRENT ROOM', {
+          fontFamily: 'Trebuchet MS',
+          fontSize: '11px',
+          color: TEXT.warn,
+          fontStyle: 'bold',
+        })
+        .setOrigin(0.5);
+      const artFrame = this.add
+        .rectangle(artX, artY, 198, 119, 0x080d12, 1)
+        .setStrokeStyle(2, 0xd2a950, 1);
+      const art = this.add.image(artX, artY, mineRoomTextureKey(kind)).setDisplaySize(184, 105);
+      const roomIcon = this.add
+        .image(artX, mapCenterY + 34, mineRoomIconTextureKey(kind))
+        .setDisplaySize(24, 24);
+      const roomLabel = this.add
+        .text(artX, mapCenterY + 57, roomName.toUpperCase(), {
+          fontFamily: 'Trebuchet MS',
+          fontSize: '13px',
+          color: '#ffe3a0',
+          fontStyle: 'bold',
+          align: 'center',
+          wordWrap: { width: 190 },
+        })
+        .setOrigin(0.5, 0);
+      const stateLabel = this.add
+        .text(artX, mapCenterY + 95, roomState, {
+          fontFamily: 'Trebuchet MS',
+          fontSize: '11px',
+          color: TEXT.dim,
+          fontStyle: 'bold',
+        })
+        .setOrigin(0.5);
+      panel.add([previewTitle, artFrame, art, roomIcon, roomLabel, stateLabel]);
+    }
+
+    const stubs: { x: number; y: number }[] = [];
+    for (const node of nodes) {
+      for (const direction of MINE_DIRECTIONS) {
+        if (!Object.prototype.hasOwnProperty.call(node.exits, direction)) continue;
+        if (node.exits[direction] != null) continue;
+        const vector = MINE_DIRECTION_VECTOR[direction];
+        stubs.push({ x: node.mapX + vector.x * 0.55, y: node.mapY + vector.y * 0.55 });
+      }
+    }
+    const allPoints = [
+      ...nodes.map((node) => ({ x: node.mapX, y: node.mapY })),
+      ...stubs,
+    ];
+    const minX = Math.min(...allPoints.map((point) => point.x));
+    const maxX = Math.max(...allPoints.map((point) => point.x));
+    const minY = Math.min(...allPoints.map((point) => point.y));
+    const maxY = Math.max(...allPoints.map((point) => point.y));
+    const drawableWidth = mapWidth - 80 - previewWidth;
+    const drawableHeight = mapHeight - 76;
+    const scale = Math.min(
+      78,
+      drawableWidth / Math.max(1, maxX - minX),
+      drawableHeight / Math.max(1, maxY - minY)
+    );
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const plotCenterX = mapCenterX - previewWidth / 2;
+    const toScreen = (x: number, y: number): Vec2 => ({
+      x: plotCenterX + (x - centerX) * scale,
+      y: mapCenterY + 12 + (y - centerY) * scale,
+    });
+
+    const drawnEdges = new Set<string>();
+    graphics.lineStyle(3, 0x63869b, 0.9);
+    for (const node of nodes) {
+      for (const direction of MINE_DIRECTIONS) {
+        const destinationId = node.exits[direction];
+        if (destinationId == null) continue;
+        const key = [node.id, destinationId].sort((a, b) => a - b).join(':');
+        if (drawnEdges.has(key)) continue;
+        const destination = maze.nodes[destinationId];
+        if (!destination) continue;
+        drawnEdges.add(key);
+        const from = toScreen(node.mapX, node.mapY);
+        const to = toScreen(destination.mapX, destination.mapY);
+        graphics.lineBetween(from.x, from.y, to.x, to.y);
+      }
+    }
+
+    for (const node of nodes) {
+      const from = toScreen(node.mapX, node.mapY);
+      for (const direction of MINE_DIRECTIONS) {
+        if (!Object.prototype.hasOwnProperty.call(node.exits, direction)) continue;
+        if (node.exits[direction] != null) continue;
+        const vector = MINE_DIRECTION_VECTOR[direction];
+        const to = toScreen(node.mapX + vector.x * 0.55, node.mapY + vector.y * 0.55);
+        const selectable = node.id === maze.currentNodeId;
+        graphics.lineStyle(selectable ? 3 : 2, selectable ? 0xd9a441 : 0x6b7480, selectable ? 1 : 0.55);
+        for (let dash = 0; dash < 3; dash++) {
+          const start = dash / 3;
+          const end = Math.min(1, start + 0.19);
+          graphics.lineBetween(
+            from.x + (to.x - from.x) * start,
+            from.y + (to.y - from.y) * start,
+            from.x + (to.x - from.x) * end,
+            from.y + (to.y - from.y) * end
+          );
+        }
+        graphics.fillStyle(selectable ? 0xd9a441 : 0x6b7480, selectable ? 1 : 0.7).fillCircle(to.x, to.y, 3);
+      }
+    }
+
+    const roomIcons: Phaser.GameObjects.Image[] = [];
+    for (const node of nodes) {
+      const point = toScreen(node.mapX, node.mapY);
+      const room = node.room;
+      const color = room?.entered
+        ? room.kind === 'enemies'
+          ? room.resolved ? 0x79c89a : 0xe66d6d
+          : room.kind === 'treasure'
+            ? 0xe4c160
+            : room.kind === 'ore'
+              ? 0xb9875b
+              : room.kind === 'shop'
+                ? 0x71c7d8
+                : 0x9aa7b8
+        : node.id === 0 ? 0x9fdcff : 0x9aa7b8;
+      graphics.fillStyle(color, 1);
+      graphics.lineStyle(2, 0xdce9f5, 0.9);
+      if (node.kind === 'room') {
+        graphics.fillRect(point.x - 9, point.y - 9, 18, 18);
+        graphics.strokeRect(point.x - 10, point.y - 10, 20, 20);
+        const iconKind: MineRoomVisualKind = room?.entered ? room.kind : 'hidden';
+        roomIcons.push(
+          this.add
+            .image(point.x, point.y, mineRoomIconTextureKey(iconKind))
+            .setDisplaySize(14, 14)
+        );
+      } else {
+        graphics.fillCircle(point.x, point.y, 6);
+        graphics.strokeCircle(point.x, point.y, 7);
+      }
+      if (node.id === maze.currentNodeId) {
+        graphics.lineStyle(3, 0xfff1a8, 1).strokeCircle(point.x, point.y, 12);
+      }
+    }
+    panel.add(roomIcons);
+
+    const currentPoint = toScreen(node.mapX, node.mapY);
+    for (const direction of MINE_DIRECTIONS) {
+      if (!Object.prototype.hasOwnProperty.call(node.exits, direction)) continue;
+      const destinationId = node.exits[direction];
+      const vector = MINE_DIRECTION_VECTOR[direction];
+      const targetNode = destinationId == null ? undefined : maze.nodes[destinationId];
+      const targetPoint = targetNode
+        ? toScreen(targetNode.mapX, targetNode.mapY)
+        : toScreen(node.mapX + vector.x * 0.55, node.mapY + vector.y * 0.55);
+      if (targetNode) {
+        graphics.lineStyle(4, 0xd9a441, 0.95).lineBetween(
+          currentPoint.x,
+          currentPoint.y,
+          targetPoint.x,
+          targetPoint.y
+        );
+      }
+      graphics.lineStyle(3, 0xffd978, 1).strokeCircle(targetPoint.x, targetPoint.y, 15);
+      const labelX = targetPoint.x + vector.x * 25;
+      const labelY = targetPoint.y + vector.y * 21;
+      const label = this.add
+        .text(labelX, labelY, direction, {
+          fontFamily: 'Trebuchet MS',
+          fontSize: '12px',
+          color: '#ffd978',
+          backgroundColor: '#111b29',
+          fontStyle: 'bold',
+          padding: { x: 4, y: 2 },
+        })
+        .setOrigin(0.5);
+      panel.add(label);
+      if (!interactive) continue;
+      const choose = (): void => this.mineChoiceResolve?.(direction);
+      const hit = this.add
+        .circle(targetPoint.x, targetPoint.y, 18, 0xd9a441, 0.12)
+        .setStrokeStyle(2, 0xffd978, 0.9)
+        .setInteractive({ useHandCursor: true });
+      hit.on('pointerdown', choose);
+      hit.on('pointerover', () => hit.setFillStyle(0xd9a441, 0.3));
+      hit.on('pointerout', () => hit.setFillStyle(0xd9a441, 0.12));
+      label.setInteractive({ useHandCursor: true }).on('pointerdown', choose);
+      panel.add(hit);
+      panel.bringToTop(label);
+    }
+  }
+
+  private hideMinePanel(): void {
+    const inventoryWasOpen = this.mineMapVisible && this.mode === 'inventory';
+    this.minePanel?.destroy();
+    this.minePanel = undefined;
+    this.mineMapVisible = false;
+    if (inventoryWasOpen) {
+      this.invPanel?.setVisible(false);
+      this.mode = 'shop';
+    }
   }
 
   private async setupExpedition(): Promise<void> {
@@ -965,6 +1800,7 @@ export class GameScene extends Phaser.Scene {
       player.assignFlatStats(3);
       this.gs.grantItem(player, 'torch');
       player.equipHand('torch');
+      this.gs.notifyLightActivation(player);
       await this.syncExpeditionPlayerChoice(player, async () => {
         await this.promptExpeditionColorIdentity(player);
       });
@@ -985,22 +1821,28 @@ export class GameScene extends Phaser.Scene {
     // Build a genuinely fresh combat around the surviving, persistent party.
     this.beginWaveCombat(n);
     const partySize = this.expedition ? 1 : this.swamprunPartySize();
-    const kinds = waveComposition(n, this.gs.rng, partySize);
-    this.gs.log(`— Wave ${n} — ${kinds.length} foe${kinds.length === 1 ? '' : 's'} emerge from the mire! —`);
-    for (const kind of kinds) this.spawnEnemy(kind);
-    // Boss wave: every fifth wave a Lich rises to command the undead.
-    if (n % 5 === 0) {
-      this.spawnEnemy('lich');
-      this.gs.log('— A LICH rises from the mire, and the dead answer its will! —');
-    }
-    // Every tenth wave the Reaper stalks in — a boss beyond even the Lich.
-    if (n % 10 === 0) {
-      this.spawnEnemy('reaper');
-      this.gs.log('— The REAPER glides from the mist. Flee, and it only follows. —');
+    if (this.mineRun) {
+      const spawns = mineWaveComposition(n, this.gs.rng, partySize);
+      this.gs.log(`— Mine encounter ${n} — ${spawns.length} foe${spawns.length === 1 ? '' : 's'} stir inside the room! —`);
+      for (const spawn of spawns) this.spawnMineEnemy(spawn);
+    } else {
+      const kinds = waveComposition(n, this.gs.rng, partySize);
+      this.gs.log(`— Wave ${n} — ${kinds.length} foe${kinds.length === 1 ? '' : 's'} emerge from the mire! —`);
+      for (const kind of kinds) this.spawnEnemy(kind);
+      // Boss wave: every fifth wave a Lich rises to command the undead.
+      if (n % 5 === 0) {
+        this.spawnEnemy('lich');
+        this.gs.log('— A LICH rises from the mire, and the dead answer its will! —');
+      }
+      // Every tenth wave the Reaper stalks in — a boss beyond even the Lich.
+      if (n % 10 === 0) {
+        this.spawnEnemy('reaper');
+        this.gs.log('— The REAPER glides from the mist. Flee, and it only follows. —');
+      }
     }
     // The complete roster now exists: reset round/turn state and roll everyone
     // into a new initiative order before the first turn starts.
-    this.gs.startNewCombat();
+    this.gs.startNewCombat({ preserveScarabs: true });
     this.updateWaveHud();
     this.redraw();
   }
@@ -1011,16 +1853,25 @@ export class GameScene extends Phaser.Scene {
    */
   private beginWaveCombat(n: number): void {
     const oldRoster = [...this.gs.mages];
-    const survivors = oldRoster.filter((m) => m.team === 1 && m.alive && !m.isSummon);
+    const persists = (mage: Mage): boolean =>
+      mage.alive || (!!mage.edgelordCapturedBy && mage.vitalsAlive);
+    const survivors = oldRoster.filter((m) => m.team === 1 && persists(m) && !m.isSummon);
     const summonOwners = new Map<Mage, Mage>();
     for (const summon of oldRoster) {
-      if (!summon.isSummon || summon.summonOwnerIndex == null) continue;
+      if (!summon.isSummon || !persists(summon) || summon.summonOwnerIndex == null) continue;
       const owner = oldRoster[summon.summonOwnerIndex];
       if (owner && survivors.includes(owner)) summonOwners.set(summon, owner);
     }
     const party = oldRoster.filter(
-      (m) => survivors.includes(m) || (m.team === 1 && m.alive && summonOwners.has(m))
+      (m) => survivors.includes(m) || (m.team === 1 && persists(m) && summonOwners.has(m))
     );
+    const scarabOwners = this.gs.scarabs.flatMap((scarab) => {
+      if (!scarabAlive(scarab)) return [];
+      const owner = scarab.ownerIndex == null
+        ? survivors.find((mage) => mage.team === scarab.owner)
+        : oldRoster[scarab.ownerIndex];
+      return owner && party.includes(owner) ? [{ scarab, owner }] : [];
+    });
     const removed = oldRoster.filter((m) => !party.includes(m));
     for (const mage of removed) this.ais.delete(mage);
     this.gs.mages = party;
@@ -1028,8 +1879,23 @@ export class GameScene extends Phaser.Scene {
       if (party.includes(summon)) summon.summonOwnerIndex = party.indexOf(owner);
     }
     this.resetPartyPositions(party);
+    this.gs.scarabs = scarabOwners.map(({ scarab, owner }) => {
+      scarab.owner = owner.team;
+      scarab.ownerIndex = party.indexOf(owner);
+      scarab.x = owner.x;
+      scarab.y = owner.y;
+      scarab.state = 'seeking';
+      scarab.target = null;
+      return scarab;
+    });
     for (const m of party) {
-      m.resetForNewCombat();
+      for (const status of m.statuses) {
+        if (status.kind !== 'soulRend') continue;
+        const owner = oldRoster[status.ownerIndex];
+        const remappedOwnerIndex = owner ? party.indexOf(owner) : -1;
+        status.ownerIndex = remappedOwnerIndex >= 0 ? remappedOwnerIndex : party.indexOf(m);
+      }
+      m.resetForNewCombat({ preserveLanternState: true });
       this.swamprunArrowsOwned.set(m, m.arrows);
     }
   }
@@ -1048,10 +1914,32 @@ export class GameScene extends Phaser.Scene {
     m.resetDodges();
     m.resetCombatReactions();
     this.gs.addMage(m);
+    this.gs.notifyMageRelocation(m, pos, pos, false);
     this.ais.set(m, new SimpleAI(this.gs, m));
     this.swamprunWaveEnemies.push(m);
     this.syncMageSprites();
     this.styleEnemySprite(m, kind);
+    return m;
+  }
+
+  /** Instantiate a level-scaled Mine creature without touching swamp content. */
+  private spawnMineEnemy(spawn: MineSpawnSpec, at?: Vec2): Mage {
+    const pos = at ?? this.enemySpawnPoint();
+    const m = new Mage({ name: 'Enemy', isAI: true, team: 2, position: pos, loadout: [] });
+    applyMineEnemyTraits(m, spawn, this.gs.rng);
+    const weapon = rollMineEnemyWeapon(spawn.kind, spawn.level, this.gs.rng);
+    if (weapon) {
+      this.gs.grantItem(m, weapon);
+      m.equipHand(weapon);
+    }
+    m.resetDodges();
+    m.resetCombatReactions();
+    this.gs.addMage(m);
+    this.ais.set(m, new SimpleAI(this.gs, m));
+    this.swamprunWaveEnemies.push(m);
+    this.syncMageSprites();
+    this.styleMineEnemySprite(m);
+    this.playMineSentinelReveal(m);
     return m;
   }
 
@@ -1073,11 +1961,57 @@ export class GameScene extends Phaser.Scene {
     rec.sprite.setScale(((MAGE_RADIUS * 2.8) / srcH) * (def.scale ?? 1));
   }
 
+  /** Tint / rescale Mine creatures, including role and dormant-state cues. */
+  private styleMineEnemySprite(m: Mage): void {
+    const rec = this.mageAnims.get(m);
+    if (!rec) return;
+    const visual = mineEnemyVisual(m);
+    const key = `${visual.tint}:${visual.scale}`;
+    if (rec.mineVisualKey === key) return;
+    rec.mineVisualKey = key;
+    rec.sprite.setTint(visual.tint);
+    const srcH = rec.sprite.height || 1;
+    rec.sprite.setScale(((MAGE_RADIUS * 2.8) / srcH) * visual.scale);
+  }
+
+  /** Briefly expand each Sentinel from a role-coloured forge orb. */
+  private playMineSentinelReveal(m: Mage): void {
+    if (m.mine?.kind !== 'sentinel' && m.mine?.kind !== 'magma-sentinel') return;
+    const rec = this.mageAnims.get(m);
+    if (!rec) return;
+    const finalScaleX = rec.sprite.scaleX;
+    const finalScaleY = rec.sprite.scaleY;
+    const color = mineEnemyVisual(m).tint;
+    rec.sprite.setScale(finalScaleX * 0.24, finalScaleY * 0.24);
+    const orb = this.add
+      .circle(m.x, m.y, Math.max(9, m.bodyRadius() * 0.5), color, 0.9)
+      .setStrokeStyle(2, 0xffe7a1, 0.95)
+      .setDepth(6.5);
+    this.tweens.add({
+      targets: orb,
+      scale: 1.65,
+      alpha: 0,
+      duration: 460,
+      ease: 'Sine.Out',
+      onComplete: () => orb.destroy(),
+    });
+    this.tweens.add({
+      targets: rec.sprite,
+      scaleX: finalScaleX,
+      scaleY: finalScaleY,
+      duration: 460,
+      ease: 'Back.Out',
+    });
+  }
+
   /** Spawn the next wave once the field is cleared (and the party still lives). */
   private swamprunWaveCleared(): boolean {
     if (!this.swamprun || this.swamprunInterludeActive) return false;
-    const partyAlive = this.gs.mages.some((m) => m.team === 1 && m.alive && !m.isSummon);
-    const foesLeft = this.gs.mages.some((m) => m.team === 2 && m.alive);
+    if (this.mineRun && !this.mineInCombat) return false;
+    const survives = (mage: Mage): boolean =>
+      mage.alive || (!!mage.edgelordCapturedBy && mage.vitalsAlive);
+    const partyAlive = this.gs.mages.some((m) => m.team === 1 && survives(m) && !m.isSummon);
+    const foesLeft = this.gs.mages.some((m) => m.team === 2 && survives(m));
     return partyAlive && !foesLeft;
   }
 
@@ -1115,6 +2049,17 @@ export class GameScene extends Phaser.Scene {
         this.expeditionRetreatCursor = this.expeditionRunDepth;
         return this.advanceExpeditionRetreat();
       }
+      if (this.mineRun) {
+        const room = this.mineActiveRoomId == null ? undefined : this.mineMaze?.nodes[this.mineActiveRoomId]?.room;
+        if (room) room.resolved = true;
+        this.mineInCombat = false;
+        this.mineExploring = true;
+        this.mineActiveRoomId = null;
+        const resolve = this.mineCombatResolve;
+        this.mineCombatResolve = null;
+        resolve?.();
+        return true;
+      }
       // A shop opens only every third cleared wave; other waves flow straight on.
       if (this.swamprunWave % 3 === 0) await this.runSwamprunShop();
       this.spawnWave(this.swamprunWave + 1);
@@ -1142,7 +2087,9 @@ export class GameScene extends Phaser.Scene {
     const tally: string[] = [];
     for (const m of this.swamprunWaveEnemies) {
       if (!m.enemyKind) continue;
-      const loot = rollLoot(m.enemyKind as EnemyKind, this.gs.rng, this.swamprunWispCopies.has(m));
+      const loot = this.mineRun && isMineEnemyKind(m.enemyKind)
+        ? rollMineLoot(m.enemyKind, this.gs.rng)
+        : rollLoot(m.enemyKind as EnemyKind, this.gs.rng, this.swamprunWispCopies.has(m));
       gold += loot.gold;
       tally.push(...loot.drops);
     }
@@ -1172,7 +2119,9 @@ export class GameScene extends Phaser.Scene {
     this.swamprunWaveEnemies = [];
     const drops = tally.length ? ` — salvage: ${tally.join(', ')}` : '';
     const supplyText = supplyGold > 0 ? ` (${supplyGold}g party supplies)` : '';
-    this.gs.log(`Wave ${this.swamprunWave} cleared! Sold loot for ${gold}g${supplyText}${drops}. Party gold: ${this.swamprunGold}g.`);
+    this.gs.log(
+      `${this.mineRun ? 'Encounter' : 'Wave'} ${this.swamprunWave} cleared! Sold loot for ${gold}g${supplyText}${drops}. Party gold: ${this.swamprunGold}g.`
+    );
   }
 
   private expeditionXpToNext(): number {
@@ -1497,7 +2446,11 @@ export class GameScene extends Phaser.Scene {
     const localPlayer = this.online ? this.mageBySeat(this.localSeat) : this.expeditionLeader();
     const text = this.expedition
       ? `Expedition ${this.expeditionRetreating ? 'return' : 'depth'} ${this.swamprunWave}    Foes: ${alive}    Level ${this.expeditionLevel} (${this.expeditionXp}/${this.expeditionXpToNext()} XP)    Gold: ${this.expeditionGoldOf(localPlayer)}g`
-      : `Wave ${this.swamprunWave}    Foes left: ${alive}    Gold: ${this.swamprunGold}g`;
+      : this.mineRun
+        ? this.mineInCombat
+          ? `Mine Run  Encounter ${this.swamprunWave}  Enemy Lv ${mineEnemyLevel(this.swamprunWave)}  Foes: ${alive}  Gold: ${this.swamprunGold}g`
+          : `Mine Run  Maze step ${this.mineMaze?.steps ?? 0}  Encounters: ${this.swamprunWave}  Gold: ${this.swamprunGold}g  Pickaxes: ${this.minePickaxes.join(', ') || 'none'}`
+        : `Wave ${this.swamprunWave}    Foes left: ${alive}    Gold: ${this.swamprunGold}g`;
     if (!this.swamprunHudText) {
       this.swamprunHudText = this.add
         .text(FIELD.x + 12, FIELD.y + 10, text, {
@@ -1734,7 +2687,7 @@ export class GameScene extends Phaser.Scene {
 
   private expeditionCatalog(tab: Exclude<ExpeditionTownTab, 'guild' | 'donate'>, buyer: Mage): typeof ITEM_DEFS {
     return ITEM_DEFS.filter((def) => {
-      if (def.set === 'conjured') return false;
+      if (def.enemyOnly || def.set === 'conjured') return false;
       if (tab === 'potions') return !!def.potion || !!def.ammo || def.id === 'torch';
       if (tab === 'armor') return ['head', 'torso', 'boots', 'accessory'].includes(def.slot);
       if (buyer.expeditionCompanion === 'elf') return def.weaponFamily === 'bow';
@@ -1828,7 +2781,7 @@ export class GameScene extends Phaser.Scene {
         return current.weaponFamily === def.weaponFamily;
       });
       for (const held of replace) buyer.unequipHand(held);
-      buyer.equipHand(id);
+      if (buyer.equipHand(id)) this.gs.notifyLightActivation(buyer);
       return;
     }
     if (def.slot === 'head') {
@@ -2198,7 +3151,7 @@ export class GameScene extends Phaser.Scene {
       const value = Number(source[key]);
       cleanStats[key] = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 4;
     }
-    return { stats: cleanStats, items: asItemIds(items) };
+    return { stats: cleanStats, items: asItemIds(items).filter((id) => !getItem(id).enemyOnly) };
   }
 
   private applyCreativePrep(mage: Mage, result: CreativePrepResult): void {
@@ -2271,9 +3224,10 @@ export class GameScene extends Phaser.Scene {
       fontSize: '12px', color: TEXT.warn, fontStyle: 'bold',
     }));
     const pageSize = 12;
-    const pages = Math.max(1, Math.ceil(ITEM_DEFS.length / pageSize));
+    const creativeItems = ITEM_DEFS.filter((def) => !def.enemyOnly);
+    const pages = Math.max(1, Math.ceil(creativeItems.length / pageSize));
     this.creativePrepPage = Math.min(this.creativePrepPage, pages - 1);
-    const visible = ITEM_DEFS.slice(this.creativePrepPage * pageSize, (this.creativePrepPage + 1) * pageSize);
+    const visible = creativeItems.slice(this.creativePrepPage * pageSize, (this.creativePrepPage + 1) * pageSize);
     visible.forEach((def, index) => {
       const col = index % 3;
       const row = Math.floor(index / 3);
@@ -2432,7 +3386,9 @@ export class GameScene extends Phaser.Scene {
     this.addModalChrome(c, {
       width: 1180,
       height: 620,
-      title: `${mage.name.toUpperCase()}  //  WAVE ${this.swamprunWave} SHOP`,
+      title: this.mineRun
+        ? `${mage.name.toUpperCase()}  //  MINE SUPPLY SHOP`
+        : `${mage.name.toUpperCase()}  //  WAVE ${this.swamprunWave} SHOP`,
       subtitle: `Party gold ${gold}g  •  Carry ${mage.carriedWeight()}/${capTxt} kg${over ? '  •  OVER CAPACITY' : ''}`,
       accent: over ? UI.coral : UI.green,
     });
@@ -3214,6 +4170,7 @@ export class GameScene extends Phaser.Scene {
     if (mage.isAI) {
       for (const id of [...mage.bag]) {
         if (!mage.equipHand(id)) break;
+        this.gs.notifyLightActivation(mage);
       }
     }
     // Apply one-time HP / sanity changes from equipped gear (rings).
@@ -3439,6 +4396,7 @@ export class GameScene extends Phaser.Scene {
   /** Per-frame: pulse the highlight rings around currently valid targets. */
   update(time: number): void {
     this.syncMageSprites();
+    this.drawMineMarkers();
     this.syncScarabSprites();
     this.drawScarabHp();
     this.drawTargetHighlights(time);
@@ -3478,6 +4436,7 @@ export class GameScene extends Phaser.Scene {
   // ===========================================================================
 
   private async startTurn(): Promise<void> {
+    if (this.mineRun && this.mineExploring) return;
     // Swamprun: if the last wave has fallen, the between-wave interlude (loot +
     // shop + next wave) runs before we check for a match end — clearing a wave
     // never ends the run.
@@ -3640,6 +4599,7 @@ export class GameScene extends Phaser.Scene {
 
 
   private async nextTurn(): Promise<void> {
+    if (this.mineRun && this.mineExploring) return;
     // Swamprun: refill the board the instant a wave is cleared so the run never
     // stalls out on an empty arena.
     if (this.swamprunWaveCleared() && (await this.runWaveInterlude())) return this.startTurn();
@@ -3671,7 +4631,7 @@ export class GameScene extends Phaser.Scene {
     const ai = this.aiFor(this.gs.current);
     let guard = 0;
     while (guard++ < 16) {
-      if (this.gs.isOver) return;
+      if (this.gs.isOver || !this.gs.current.alive) return;
       const decision = ai.chooseAction();
       if (decision.type === 'end') break;
       await this.delay(450);
@@ -3783,6 +4743,13 @@ export class GameScene extends Phaser.Scene {
       case 'reaper-channel': {
         me.spend('main');
         this.gs.reaperBeginChannel(me);
+        break;
+      }
+      case 'mine-action': {
+        if (!canUseMineAction(this.gs, me, d.choice)) break;
+        const cost = commitMineAction(me, d.choice);
+        me.spend(cost);
+        await this.runStack(makeMineActionItem(this.gs, me, d.choice));
         break;
       }
       case 'spell': {
@@ -3925,6 +4892,11 @@ export class GameScene extends Phaser.Scene {
         break;
       }
       case 'item-drop': {
+        const itemId = cmd.itemId as ItemId;
+        if (getItem(itemId).permanentlyBinding) {
+          this.gs.log(`${getItem(itemId).name} is permanently bound to ${me.name}.`);
+          break;
+        }
         me.spend('bonus');
         await this.runStack(
           this.gs.makeActionItem({
@@ -3932,7 +4904,7 @@ export class GameScene extends Phaser.Scene {
             label: 'Drop',
             description: `${me.name} drops an item.`,
             resolve: (game) => {
-              game.dropItem(me, cmd.itemId as ItemId);
+              game.dropItem(me, itemId);
             },
           })
         );
@@ -3983,8 +4955,10 @@ export class GameScene extends Phaser.Scene {
             label: 'Equip',
             description: `${me.name} equips ${getItem(itemId).name}.`,
             resolve: () => {
-              if (me.equipHand(itemId))
+              if (me.equipHand(itemId)) {
+                this.gs.notifyLightActivation(me);
                 this.gs.log(`${me.name} equips ${getItem(itemId).name}.`);
+              }
             },
           })
         );
@@ -3992,6 +4966,10 @@ export class GameScene extends Phaser.Scene {
       }
       case 'item-unequip': {
         const itemId = cmd.itemId as ItemId;
+        if (getItem(itemId).permanentlyBinding) {
+          this.gs.log(`${getItem(itemId).name} is permanently bound to ${me.name}.`);
+          break;
+        }
         me.spend('bonus');
         await this.runStack(
           this.gs.makeActionItem({
@@ -4024,6 +5002,53 @@ export class GameScene extends Phaser.Scene {
             needleBan: { kind: 'item', itemId },
             resolve: (game) => {
               game.throwItem(me, target, itemId);
+            },
+          })
+        );
+        break;
+      }
+      case 'edgelord-shake': {
+        if (
+          !me.hasEdgelordLantern() ||
+          me.isItemBanned('edgelordLantern') ||
+          (!me.edgelordLanternActive &&
+            (me.mana < 4 || this.gs.edgelordCaptives(me).length > 0))
+        ) break;
+        me.spend('bonus');
+        const activating = !me.edgelordLanternActive;
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: activating ? 'Awaken Lantern' : 'Seal Lantern',
+            description: `${me.name} shakes the Edgelord Lantern.`,
+            needleBan: { kind: 'item', itemId: 'edgelordLantern' },
+            resolve: async (game) => {
+              await game.shakeEdgelordLantern(me);
+            },
+          })
+        );
+        break;
+      }
+      case 'edgelord-throw': {
+        const point = { x: cmd.x, y: cmd.y };
+        if (
+          !this.canUseEdgelordThrow(me) ||
+          dist(me.pos, point) > Math.max(0, me.effectiveStr()) * RANGE_UNIT
+        ) break;
+        me.actions = { move: 0, main: 0, bonus: 0 };
+        me.reactionAvailable = false;
+        me.reactedThisCycle = true;
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Throw Edgelord Lantern',
+            description: `${me.name} hurls the loaded Edgelord Lantern.`,
+            targetPoint: point,
+            hostileAttack: true,
+            actionVisual: 'lightningImpact',
+            needleBan: { kind: 'item', itemId: 'edgelordLantern' },
+            resolve: (game) => {
+              game.throwEdgelordLantern(me, point);
             },
           })
         );
@@ -4418,6 +5443,12 @@ export class GameScene extends Phaser.Scene {
   private onOpponentLeft(): void {
     if (this.opponentLeft || this.gs.isOver) return;
     this.opponentLeft = true;
+    this.mineRunEnded = true;
+    this.mineChoiceResolve?.('');
+    this.mineChoiceResolve = null;
+    this.mineCombatResolve?.();
+    this.mineCombatResolve = null;
+    this.hideMinePanel();
     this.mode = 'over';
     // Unblock the assignment phase if we're disconnected mid-allocation.
     if (this.assignResolve) {
@@ -4457,13 +5488,18 @@ export class GameScene extends Phaser.Scene {
     this.busy = false;
     // A Reaper felled by this action releases everyone it had deleted, before
     // the board is judged (so a surviving ally's kill un-does the clap).
-    if (this.gs.restoreReaperDeletions().length > 0) this.syncMageSprites();
+    if (
+      this.gs.restoreReaperDeletions().length > 0 ||
+      this.gs.restoreEdgelordCaptives().length > 0
+    ) this.syncMageSprites();
     // Swamprun: if the acting player's blow cleared the wave, run the between-wave
     // interlude (loot + shop + next wave) before the game-over check — otherwise
     // the run would freeze on an empty board.
     const restartedCombat = this.swamprunWaveCleared() ? await this.runWaveInterlude() : false;
     if (this.gs.isOver) {
       this.mode = 'over';
+    } else if (this.mineRun && this.mineExploring) {
+      this.mode = 'shop';
     } else if (this.online && !this.isLocalTurn()) {
       // Mid-way through the opponent's relayed turn: stay locked.
       this.mode = 'busy';
@@ -4848,7 +5884,7 @@ export class GameScene extends Phaser.Scene {
     if (reactor === this.puppet?.owner) return false;
     // Physical reactions are meaningless against non-attack triggers (end of
     // turn, a blink step) — only counter-magic answers those.
-    const physical = !top.noPhysicalReaction;
+    const physical = !top.noPhysicalReaction && this.isIncomingAttack(top, reactor);
     // A Dexterity dodge is a separate per-combat resource, independent of the
     // single reaction allowed each turn cycle — offer it whenever it is ready.
     if (physical && this.canDodge(reactor)) return true;
@@ -4871,7 +5907,11 @@ export class GameScene extends Phaser.Scene {
 
   /** True if `top` is an attack (melee or spell) aimed squarely at `reactor`. */
   private isIncomingAttack(top: StackItem, reactor: Mage): boolean {
-    return top.target === reactor && (top.kind === 'melee' || top.kind === 'spell');
+    return top.target === reactor && (
+      top.kind === 'melee' ||
+      top.kind === 'spell' ||
+      (top.kind === 'action' && !!top.hostileAttack)
+    );
   }
 
   /**
@@ -5028,7 +6068,12 @@ export class GameScene extends Phaser.Scene {
     });
     kb.on('keydown-I', () => this.toggleInventory());
     kb.on('keydown-R', () => void this.onWeaponAction());
-    kb.on('keydown-T', () => this.beginThrowFirst());
+    kb.on('keydown-T', () => {
+      const me = this.gs.current;
+      const ordinary = me.utility.some((id) => getItem(id).throwable && !me.isItemBanned(id));
+      if (!ordinary && me.hasEdgelordLantern()) this.beginEdgelordThrow();
+      else this.beginThrowFirst();
+    });
     kb.on('keydown-Q', () => this.beginEldritch());
     kb.on('keydown-C', () => this.beginThunder());
     kb.on('keydown-L', () => this.beginLeap());
@@ -5049,6 +6094,7 @@ export class GameScene extends Phaser.Scene {
     });
     kb.on('keydown-K', () => {
       if (this.mode === 'reaction') this.chooseNeedleReaction();
+      else this.shakeEdgelordLantern();
     });
     kb.on('keydown-W', () => {
       if (this.mode === 'reaction') this.chooseWeaponReaction();
@@ -5420,6 +6466,54 @@ export class GameScene extends Phaser.Scene {
     this.beginThrow(itemId);
   }
 
+  private shakeEdgelordLantern(): void {
+    if (this.mode === 'reaction' || !this.humanActive) return;
+    const me = this.gs.current;
+    if (!me.hasEdgelordLantern()) return;
+    if (me.isItemBanned('edgelordLantern'))
+      return this.flashHint('The Edgelord Lantern has been stifled forever.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Shaking the lantern needs a bonus action.');
+    if (!me.edgelordLanternActive && this.gs.edgelordCaptives(me).length > 0)
+      return this.flashHint('The lantern cannot awaken while a creature remains inside.');
+    if (!me.edgelordLanternActive && me.mana < 4)
+      return this.flashHint('Awakening the lantern costs 4 mana.');
+    this.mode = 'busy';
+    this.submitTurn({ t: 'edgelord-shake' });
+  }
+
+  private canUseEdgelordThrow(me: Mage): boolean {
+    if (
+      !me.hasEdgelordLantern() ||
+      me.edgelordLanternActive ||
+      me.isItemBanned('edgelordLantern') ||
+      this.gs.edgelordCaptives(me).length === 0
+    ) return false;
+    const untouched =
+      me.actions.move === ACTIONS_PER_TURN.move &&
+      me.actions.main === ACTIONS_PER_TURN.main &&
+      me.actions.bonus === ACTIONS_PER_TURN.bonus;
+    return Dev.infiniteActions || untouched || me.edgelordLanternJustDeactivated;
+  }
+
+  private beginEdgelordThrow(): void {
+    if (this.mode === 'reaction' || !this.humanActive) return;
+    const me = this.gs.current;
+    if (!me.hasEdgelordLantern()) return;
+    if (me.edgelordLanternActive)
+      return this.flashHint('Seal the Edgelord Lantern before throwing it.');
+    if (this.gs.edgelordCaptives(me).length === 0)
+      return this.flashHint('The lantern must contain at least one living creature.');
+    if (!this.canUseEdgelordThrow(me))
+      return this.flashHint('Throwing requires an untouched turn, except for just deactivating.');
+    if (me.effectiveStr() <= 0)
+      return this.flashHint('You need Strength to throw the lantern.');
+    this.pendingSpell = null;
+    this.mode = 'aiming-edgelord-throw';
+    this.flashHint(`Throw Edgelord Lantern: choose a point within ${me.effectiveStr()}cm.`, true);
+    this.redraw();
+  }
+
   /** Mantle of Eldritch Truth: open the Attack / Defend / Restore menu. */
   private beginEldritch(): void {
     if (this.mode === 'reaction') return;
@@ -5717,6 +6811,44 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
+    if (me.hasEdgelordLantern()) {
+      const captives = this.gs.edgelordCaptives(me).length;
+      const canShake =
+        (me.actions.bonus > 0 || inf) &&
+        !me.isItemBanned('edgelordLantern') &&
+        (me.edgelordLanternActive || (captives === 0 && me.mana >= 4));
+      entries.push({
+        id: 'edgelord-shake',
+        label: me.edgelordLanternActive ? 'Seal Edgelord Lantern' : 'Awaken Edgelord Lantern',
+        hotkey: 'K',
+        desc: me.edgelordLanternActive
+          ? 'Pull nearby units and capture afflicted creatures near death.'
+          : 'Pay 4 mana; give 3 Soul Rend to every unit within 15cm.',
+        enabled: canShake,
+        reason: me.isItemBanned('edgelordLantern')
+          ? 'Stifled forever.'
+          : me.actions.bonus <= 0 && !inf
+            ? 'Needs a bonus action.'
+            : !me.edgelordLanternActive && captives > 0
+              ? 'A living creature is still inside.'
+              : 'Awakening costs 4 mana.',
+        run: () => this.shakeEdgelordLantern(),
+      });
+      entries.push({
+        id: 'edgelord-throw',
+        label: `Throw Edgelord Lantern (${captives} inside)`,
+        hotkey: throwId ? 'Menu' : 'T',
+        desc: 'Spend all actions and reaction; blast a 5cm radius within Strength cm.',
+        enabled: this.canUseEdgelordThrow(me) && me.effectiveStr() > 0,
+        reason: me.edgelordLanternActive
+          ? 'Seal it first.'
+          : captives === 0
+            ? 'Needs a living captive.'
+            : 'Needs an untouched turn, except after deactivating.',
+        run: () => this.beginEdgelordThrow(),
+      });
+    }
+
     // Mantle of Eldritch Truth.
     if (me.hasEldritchMantle()) {
       entries.push({
@@ -5873,7 +7005,7 @@ export class GameScene extends Phaser.Scene {
 
     // Defensive reactions — available to any mage with the gear or stamina,
     // but only against an actual attack (never an end-of-turn or blink trigger).
-    const physical = !top.noPhysicalReaction;
+    const physical = !top.noPhysicalReaction && this.isIncomingAttack(top, reactor);
     entries.push({
       id: 'block',
       label: 'Block',
@@ -6097,12 +7229,12 @@ export class GameScene extends Phaser.Scene {
     const me = this.gs.current;
     if (me.swordFormLocked())
       return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
-    if (me.hands.length === 0) return this.flashHint('You have nothing in hand to drop.');
+    const droppable = me.hands.filter((id) => !getItem(id).permanentlyBinding);
+    if (droppable.length === 0) return this.flashHint('Every held item is permanently bound.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Dropping an item needs a bonus action.');
     // Prefer dropping a non-wand item so casting is freed up first.
-    const idx = me.hands.findIndex((id) => !getItem(id).isWand);
-    const itemId = me.hands[idx >= 0 ? idx : 0];
+    const itemId = droppable.find((id) => !getItem(id).isWand) ?? droppable[0];
     this.resetSelection();
     this.submitTurn({ t: 'item-drop', itemId });
   }
@@ -6154,6 +7286,8 @@ export class GameScene extends Phaser.Scene {
     if (me.swordFormLocked())
       return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
     if (!me.hands.includes(itemId)) return;
+    if (getItem(itemId).permanentlyBinding)
+      return this.flashHint(`${getItem(itemId).name} is permanently bound.`);
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Dropping an item needs a bonus action.');
     this.closeInventory();
@@ -6195,6 +7329,8 @@ export class GameScene extends Phaser.Scene {
     if (me.swordFormLocked())
       return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
     if (!me.hands.includes(itemId)) return;
+    if (getItem(itemId).permanentlyBinding)
+      return this.flashHint(`${getItem(itemId).name} is permanently bound.`);
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Unequipping an item needs a bonus action.');
     this.closeInventory();
@@ -6210,11 +7346,13 @@ export class GameScene extends Phaser.Scene {
       this.closeInventory();
       return;
     }
-    if (this.mode !== 'idle' || !this.humanActive) {
+    const fromMineMap = this.mineRun && this.mineExploring && this.mineMapVisible;
+    if (!fromMineMap && (this.mode !== 'idle' || !this.humanActive)) {
       this.flashHint('Inventory is only available on your turn.');
       return;
     }
-    this.buildInventoryOverlay();
+    if (fromMineMap) this.minePanel?.setVisible(false);
+    this.buildInventoryOverlay(fromMineMap);
     this.mode = 'inventory';
     this.invPanel?.setVisible(true);
     this.redraw();
@@ -6222,8 +7360,21 @@ export class GameScene extends Phaser.Scene {
 
   private closeInventory(): void {
     this.invPanel?.setVisible(false);
-    if (this.mode === 'inventory') this.mode = 'idle';
+    if (this.mode === 'inventory') {
+      this.mode = this.mineMapVisible ? 'shop' : 'idle';
+      if (this.mineMapVisible) this.minePanel?.setVisible(true);
+    }
     this.redraw();
+  }
+
+  /** The local party member whose supplies are inspected during Mine exploration. */
+  private mineInventoryMage(): Mage {
+    if (this.online) return this.mageBySeat(this.localSeat);
+    return this.gs.mages.find(
+      (mage) => mage.team === 1 && mage.alive && !mage.isAI && !mage.isSummon
+    ) ?? this.gs.mages.find(
+      (mage) => mage.team === 1 && mage.alive && !mage.isSummon
+    ) ?? this.gs.current;
   }
 
   /** A short, human-readable description of a status effect (for hover tips). */
@@ -6247,8 +7398,12 @@ export class GameScene extends Phaser.Scene {
         return `Damage over time — takes damage at the start of your turn. (${turns})`;
       case 'fire':
         return `Fire — ${s.stacks} stack${s.stacks === 1 ? '' : 's'}; flares and decays at turn start.`;
+      case 'sentinelFire':
+        return `Sentinel Fire — ${s.stacks} stack${s.stacks === 1 ? '' : 's'}; spreads from 5 and erupts at 10.`;
       case 'blueflare':
         return `Blueflare — ${s.stacks} mental-flame stack${s.stacks === 1 ? '' : 's'}; spreads from 3+.`;
+      case 'soulRend':
+        return `Soul Rend — ${s.stacks} permanent stack${s.stacks === 1 ? '' : 's'}; each tears 1 health and 1 mill at turn start.`;
       case 'debuff': {
         const parts: string[] = [];
         if (s.mods.moveRange) parts.push(`move ${s.mods.moveRange > 0 ? '+' : ''}${s.mods.moveRange}`);
@@ -6275,11 +7430,11 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private buildInventoryOverlay(): void {
+  private buildInventoryOverlay(readOnly = false): void {
     this.invPanel?.destroy();
     this.invTooltip = undefined;
-    const me = this.gs.current;
-    const panel = this.add.container(0, 0).setDepth(96).setVisible(false);
+    const me = readOnly ? this.mineInventoryMage() : this.gs.current;
+    const panel = this.add.container(0, 0).setDepth(readOnly ? 100 : 96).setVisible(false);
     const children: Phaser.GameObjects.GameObject[] = [];
     this.addModalChrome(panel, {
       width: 960,
@@ -6330,7 +7485,7 @@ export class GameScene extends Phaser.Scene {
       });
       children.push(label);
       let bx = leftX + 250;
-      if (it.where === 'utility' && def.potion) {
+      if (!readOnly && it.where === 'utility' && def.potion) {
         const consume = this.add
           .text(bx, y, '[ Consume ]', {
             fontSize: '13px',
@@ -6343,7 +7498,7 @@ export class GameScene extends Phaser.Scene {
         children.push(consume);
         bx += 120;
       }
-      if (it.where === 'utility' && def.throwable) {
+      if (!readOnly && it.where === 'utility' && def.throwable) {
         const throwBtn = this.add
           .text(bx, y, '[ Throw ]', {
             fontSize: '13px',
@@ -6356,7 +7511,7 @@ export class GameScene extends Phaser.Scene {
         children.push(throwBtn);
         bx += 120;
       }
-      if (it.where === 'bag') {
+      if (!readOnly && it.where === 'bag') {
         const equip = this.add
           .text(bx, y, '[ Equip ]', {
             fontSize: '13px',
@@ -6369,7 +7524,18 @@ export class GameScene extends Phaser.Scene {
         children.push(equip);
         bx += 110;
       }
-      if (it.where === 'hand') {
+      if (!readOnly && it.where === 'hand') {
+        if (def.permanentlyBinding) {
+          children.push(
+            this.add.text(bx, y, '[ Bound ]', {
+              fontSize: '13px',
+              color: '#d89bff',
+              backgroundColor: '#25152d',
+              padding: { x: 6, y: 3 },
+            })
+          );
+          return;
+        }
         const unequip = this.add
           .text(bx, y, '[ Unequip ]', {
             fontSize: '13px',
@@ -6392,7 +7558,7 @@ export class GameScene extends Phaser.Scene {
         drop.on('pointerdown', () => this.dropItemById(it.id));
         children.push(drop);
       }
-      if (it.where === 'accessory') {
+      if (!readOnly && it.where === 'accessory') {
         const drop = this.add
           .text(bx, y, '[ Drop ]', {
             fontSize: '13px',
@@ -6549,6 +7715,12 @@ export class GameScene extends Phaser.Scene {
     if (this.mode === 'aiming-cleave') {
       this.mode = 'busy';
       this.submitTurn({ t: 'cleave', x: pt.x, y: pt.y });
+      return;
+    }
+    if (this.mode === 'aiming-edgelord-throw') {
+      const capped = stepTowards(me.pos, pt, Math.max(0, me.effectiveStr()) * RANGE_UNIT);
+      this.mode = 'busy';
+      this.submitTurn({ t: 'edgelord-throw', x: capped.x, y: capped.y });
       return;
     }
     if (this.mode === 'aiming-melee') {
@@ -6903,7 +8075,7 @@ export class GameScene extends Phaser.Scene {
       this.resetSelection();
       const abil = this.castableAbilities(reactor).length > 0 ? '  [Z/X] color ability' : '';
       const needle = this.canNeedle(reactor, top) ? '  [K] needle' : '';
-      const physical = !top.noPhysicalReaction;
+      const physical = !top.noPhysicalReaction && this.isIncomingAttack(top, reactor);
       const block = physical && this.canBlock(reactor) ? '  [B] block' : '';
       const bash = physical && this.canBash(reactor, top) ? '  [N] bash' : '';
       const weapon =
@@ -7381,8 +8553,10 @@ export class GameScene extends Phaser.Scene {
     const clamp = this.gs.clampToBarriers(reactor.pos, fieldDest);
     const mut = this.gs.clampToMutivargZones(reactor, reactor.pos, clamp.dest);
     const final = this.gs.clampToMages(reactor, reactor.pos, mut.dest);
+    const origin = reactor.pos;
     reactor.x = final.x;
     reactor.y = final.y;
+    this.gs.notifyMageRelocation(reactor, origin, final, true);
     this.gs.updateAttachedScarabs();
     this.gs.dropTrailShadows(reactor);
     this.gs.log(`${reactor.name} repositions.`);
@@ -7838,6 +9012,8 @@ export class GameScene extends Phaser.Scene {
     this.gfx = this.add.graphics();
     // Pulsing valid-target highlights live on their own layer, animated in update().
     this.gfxFx = this.add.graphics().setDepth(6);
+    // Mine creature role, eye, and airborne markers sit above their body sprites.
+    this.gfxMine = this.add.graphics().setDepth(6);
     // Scarab health pips, redrawn each frame to track their smoothed motion.
     this.gfxScarab = this.add.graphics().setDepth(7);
     // Targeting overlay drawn when hovering a stack token (line + reticle).
@@ -8563,6 +9739,9 @@ export class GameScene extends Phaser.Scene {
     // stale line/reticle so it does not linger after the stack changes.
     this.hoverGfx?.clear();
 
+    // The dark light sits below shadows so it protects rather than obscures them.
+    this.drawEdgelordDarkLights(g);
+
     // Shadow pools (under everything else on the field).
     this.drawShadows(g);
 
@@ -8577,6 +9756,9 @@ export class GameScene extends Phaser.Scene {
 
     // Mutivarg crushing fields.
     this.drawMutivargZones(g);
+
+    // Black Dragonborn breath pools.
+    this.drawCorrosionPools(g);
 
     // Corrosion totems.
     this.drawTotems(g);
@@ -8623,11 +9805,22 @@ export class GameScene extends Phaser.Scene {
   private drawLightAuras(g: Phaser.GameObjects.Graphics): void {
     for (const m of this.gs.mages) {
       if (!m.alive) continue;
-      const r = m.lightRadius();
+      const r = this.gs.effectiveLightRadius(m);
       if (r <= 0) continue;
       g.fillStyle(0xffd27a, 0.12).fillCircle(m.pos.x, m.pos.y, r);
       g.fillStyle(0xffe6a8, 0.1).fillCircle(m.pos.x, m.pos.y, r * 0.6);
       g.lineStyle(1, 0xffd27a, 0.35).strokeCircle(m.pos.x, m.pos.y, r);
+    }
+  }
+
+  private drawEdgelordDarkLights(g: Phaser.GameObjects.Graphics): void {
+    for (const mage of this.gs.mages) {
+      if (!mage.alive || !mage.hasEdgelordLantern() || !mage.edgelordLanternActive) continue;
+      const radius = 15 * RANGE_UNIT;
+      g.fillStyle(0x030308, 0.48).fillCircle(mage.x, mage.y, radius);
+      g.fillStyle(0x1a0d20, 0.2).fillCircle(mage.x, mage.y, radius * 0.72);
+      g.lineStyle(3, 0x8a5aa5, 0.75).strokeCircle(mage.x, mage.y, radius);
+      g.lineStyle(1, 0xc98dd8, 0.35).strokeCircle(mage.x, mage.y, radius - 5);
     }
   }
 
@@ -8719,6 +9912,8 @@ export class GameScene extends Phaser.Scene {
     for (const t of this.gs.totems) show(`to${t.id}`, t.x, t.y - t.radius - 10, t.ttl, t.owner);
     for (const z of this.gs.mutivargZones)
       show(`mv${z.id}`, z.x, z.y - z.radius - 10, z.turnsLeft, z.owner);
+    for (const pool of this.gs.corrosionPools)
+      show(`cp${pool.id}`, pool.x, pool.y - pool.radius - 10, pool.roundsLeft, pool.ownerTeam);
     for (const b of this.gs.barriers) show(`ba${b.id}`, b.x, b.y, b.ttl, b.owner);
     for (const zone of this.gs.veilBindZones) {
       show(`vb${zone.id}`, zone.x, zone.y - zone.radius - 10, zone.roundsLeft, zone.owner);
@@ -8991,6 +10186,14 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private drawCorrosionPools(g: Phaser.GameObjects.Graphics): void {
+    for (const pool of this.gs.corrosionPools) {
+      g.fillStyle(0x467a3f, 0.2).fillCircle(pool.x, pool.y, pool.radius);
+      g.lineStyle(2, 0x9dcf62, 0.65).strokeCircle(pool.x, pool.y, pool.radius);
+      g.lineStyle(1, 0x263d2b, 0.8).strokeCircle(pool.x, pool.y, pool.radius * 0.62);
+    }
+  }
+
   private drawBarriers(g: Phaser.GameObjects.Graphics): void {
     for (const b of this.gs.barriers) {
       const tint = b.owner === 1 ? COLORS.team1 : COLORS.team2;
@@ -9160,6 +10363,8 @@ export class GameScene extends Phaser.Scene {
     } else if (this.mode === 'aiming-cleave') {
       const weapon = me.activeWeapon();
       range = weapon ? weapon.rangePx : MELEE_RANGE;
+    } else if (this.mode === 'aiming-edgelord-throw') {
+      range = Math.max(0, me.effectiveStr()) * RANGE_UNIT;
     } else if (this.mode === 'aiming-melee') {
       const weapon = me.activeWeapon();
       range = weapon ? weapon.rangePx : MELEE_RANGE;
@@ -9207,6 +10412,11 @@ export class GameScene extends Phaser.Scene {
         this.drawAoePreview(g, me.pos, toward, spell.aoe);
       }
     }
+    if (aiming && this.mode === 'aiming-edgelord-throw') {
+      const toward = stepTowards(me.pos, this.pointer, range);
+      g.fillStyle(0x160f22, 0.22).fillCircle(toward.x, toward.y, 5 * RANGE_UNIT);
+      g.lineStyle(2, 0x8a5aa5, 0.9).strokeCircle(toward.x, toward.y, 5 * RANGE_UNIT);
+    }
 
     // Rotatable rectangular wall preview (blue Wall ability).
     if (aiming && this.mode === 'aiming-wall' && this.pendingSpell?.rotatableWall) {
@@ -9252,6 +10462,7 @@ export class GameScene extends Phaser.Scene {
       { key: 'fx-vanish', end: 20, frameRate: 24 },
       { key: 'fx-shatter', end: 6, frameRate: 18 },
       { key: 'fx-disrupt', end: 30, frameRate: 30 },
+      { key: 'fx-edgelord-impact', end: 9, frameRate: 22 },
     ];
     for (const f of fx) {
       if (this.anims.exists(f.key)) continue;
@@ -9270,6 +10481,167 @@ export class GameScene extends Phaser.Scene {
         repeat: -1,
       });
     }
+  }
+
+  /** Build a compact wooden pixel-art arsenal shared by all held-item overlays. */
+  private buildHeldWeaponTextures(): void {
+    const kinds: HeldWeaponKind[] = [
+      'sword', 'dagger', 'spear', 'axe', 'hammer', 'club', 'bow', 'staff', 'shield', 'lantern',
+    ];
+    const woodDark = 0x3a2417;
+    const wood = 0x87552c;
+    const woodLight = 0xc98a48;
+    const binding = 0xe0bd78;
+    const edgeDark = 0x424a50;
+    const edge = 0xaeb8bd;
+    const edgeLight = 0xe1e7e5;
+
+    for (const kind of kinds) {
+      const key = `held-wood-${kind}`;
+      if (this.textures.exists(key)) continue;
+      const g = this.make.graphics({ x: 0, y: 0 }, false);
+      const rect = (color: number, x: number, y: number, width: number, height: number): void => {
+        g.fillStyle(color, 1).fillRect(x, y, width, height);
+      };
+      const shaft = (x = 14, y = 8, height = 22): void => {
+        rect(woodDark, x, y, 5, height);
+        rect(wood, x + 1, y, 3, height);
+        rect(woodLight, x + 2, y + 1, 1, height - 2);
+      };
+
+      if (kind === 'sword' || kind === 'dagger') {
+        const bladeTop = kind === 'dagger' ? 10 : 3;
+        rect(edgeDark, 13, bladeTop + 2, 7, 19 - bladeTop);
+        rect(edge, 14, bladeTop + 1, 5, 20 - bladeTop);
+        rect(edgeLight, 15, bladeTop, 2, 20 - bladeTop);
+        g.fillStyle(edgeDark, 1).fillTriangle(13, bladeTop + 3, 16, bladeTop - 1, 20, bladeTop + 3);
+        g.fillStyle(edgeLight, 1).fillTriangle(15, bladeTop + 2, 16, bladeTop, 18, bladeTop + 2);
+        rect(binding, 10, 21, 13, 3);
+        rect(woodDark, 14, 24, 5, 7);
+        rect(woodLight, 15, 24, 2, 6);
+      } else if (kind === 'spear') {
+        shaft(14, 7, 24);
+        rect(binding, 12, 8, 9, 3);
+        g.fillStyle(edgeDark, 1).fillTriangle(10, 9, 16, 0, 22, 9);
+        g.fillStyle(edge, 1).fillTriangle(12, 8, 16, 1, 20, 8);
+        rect(edgeLight, 15, 2, 2, 6);
+      } else if (kind === 'axe') {
+        shaft(14, 6, 25);
+        rect(binding, 12, 8, 8, 4);
+        g.fillStyle(edgeDark, 1).fillTriangle(17, 3, 28, 5, 26, 16);
+        g.fillStyle(edge, 1).fillTriangle(18, 4, 26, 6, 24, 14);
+        rect(edgeLight, 23, 7, 3, 6);
+      } else if (kind === 'hammer') {
+        shaft(14, 8, 23);
+        rect(edgeDark, 5, 3, 23, 9);
+        rect(edge, 6, 4, 21, 7);
+        rect(edgeLight, 8, 5, 16, 2);
+        rect(binding, 13, 10, 7, 3);
+      } else if (kind === 'club') {
+        shaft(14, 12, 19);
+        rect(woodDark, 10, 3, 13, 13);
+        rect(wood, 11, 2, 11, 13);
+        rect(woodLight, 13, 3, 4, 10);
+        rect(binding, 11, 14, 11, 3);
+      } else if (kind === 'bow') {
+        rect(woodLight, 9, 4, 3, 5);
+        rect(wood, 6, 8, 4, 6);
+        rect(woodDark, 5, 13, 4, 7);
+        rect(wood, 7, 20, 4, 6);
+        rect(woodLight, 10, 25, 3, 4);
+        g.lineStyle(1, binding, 1);
+        g.lineBetween(11, 4, 18, 16);
+        g.lineBetween(18, 16, 12, 29);
+        rect(edge, 17, 4, 2, 25);
+        g.fillStyle(edgeLight, 1).fillTriangle(14, 6, 18, 1, 22, 6);
+      } else if (kind === 'staff') {
+        shaft(14, 5, 27);
+        rect(binding, 12, 9, 9, 3);
+        g.fillStyle(woodDark, 1).fillCircle(16, 5, 7);
+        g.fillStyle(wood, 1).fillCircle(16, 4, 5);
+        g.fillStyle(0x66c8d4, 1).fillCircle(16, 4, 2);
+        rect(0xb8f4ed, 15, 2, 2, 2);
+      } else if (kind === 'lantern') {
+        g.lineStyle(3, edgeDark, 1).strokeCircle(16, 9, 7);
+        g.lineStyle(1, edgeLight, 0.8).strokeCircle(16, 9, 5);
+        rect(edgeDark, 8, 10, 16, 19);
+        rect(edge, 10, 12, 12, 15);
+        rect(0x160b1d, 12, 14, 8, 11);
+        rect(0x8a5aa5, 14, 16, 4, 7);
+        rect(0xd7a6e3, 15, 17, 2, 4);
+        rect(binding, 7, 10, 18, 3);
+        rect(binding, 7, 27, 18, 3);
+      } else {
+        g.fillStyle(woodDark, 1).fillCircle(16, 16, 13);
+        g.fillStyle(wood, 1).fillCircle(16, 16, 11);
+        rect(woodLight, 12, 6, 3, 20);
+        rect(woodDark, 18, 6, 3, 20);
+        rect(binding, 6, 14, 20, 4);
+        g.lineStyle(2, edge, 1).strokeCircle(16, 16, 11);
+      }
+      g.generateTexture(key, 32, 32);
+      g.destroy();
+    }
+  }
+
+  private heldWeaponKind(mage: Mage, itemId: ItemId): HeldWeaponKind {
+    const def = getItem(itemId);
+    const label = `${itemId} ${def.name}`.toLowerCase();
+    if (def.edgelordLantern) return 'lantern';
+    if (itemId === 'bastionSword' && mage.bastionShieldForm) return 'shield';
+    if (def.weaponFamily === 'bow' || label.includes('bow')) return 'bow';
+    if (def.weaponFamily === 'hammer' || /hammer|maul/.test(label)) return 'hammer';
+    if (/spear|pike|lance|trident/.test(label)) return 'spear';
+    if (/axe|hatchet/.test(label)) return 'axe';
+    if (/club|mace|cudgel/.test(label)) return 'club';
+    if (def.shield || /shield|buckler/.test(label)) return 'shield';
+    if (def.isWand || /wand|staff|rod/.test(label)) return 'staff';
+    if (/dagger|knife|needle/.test(label)) return 'dagger';
+    return 'sword';
+  }
+
+  private syncHeldWeapon(mage: Mage, rec: MageAnim, alpha: number): void {
+    const itemId =
+      mage.activeWeaponId() ?? mage.hands.find((id) => !!getItem(id).edgelordLantern) ?? null;
+    if (!mage.alive || !itemId) {
+      rec.held?.setVisible(false);
+      return;
+    }
+    const kind = this.heldWeaponKind(mage, itemId);
+    const key = `held-wood-${kind}`;
+    if (!rec.held) {
+      rec.held = this.add.image(0, 0, key).setOrigin(0.5, 0.78).setDepth(5.2);
+    } else if (rec.heldVisualKey !== key) {
+      rec.held.setTexture(key);
+    }
+    rec.heldVisualKey = key;
+
+    const facing = rec.sprite.flipX ? -1 : 1;
+    const visualScale = mage.mine ? mineEnemyVisual(mage).scale : 1;
+    const baseSize: Record<HeldWeaponKind, number> = {
+      sword: 43,
+      dagger: 35,
+      spear: 52,
+      axe: 45,
+      hammer: 45,
+      club: 43,
+      bow: 46,
+      staff: 49,
+      shield: 38,
+      lantern: 38,
+    };
+    const size = baseSize[kind] * Phaser.Math.Clamp(visualScale, 0.8, 1.55);
+    const attacking = rec.lock === 'attack';
+    rec.held
+      .setDisplaySize(size, size)
+      .setPosition(
+        rec.sprite.x + facing * MAGE_RADIUS * 0.48,
+        rec.sprite.y - MAGE_RADIUS * 1.15 + (attacking ? 3 : 0)
+      )
+      .setFlipX(facing < 0)
+      .setRotation(facing * (attacking ? 1.02 : 0.38))
+      .setAlpha(alpha)
+      .setVisible(true);
   }
 
   private mageAnims = new Map<Mage, MageAnim>();
@@ -9293,6 +10665,7 @@ export class GameScene extends Phaser.Scene {
     for (const [mage, rec] of this.mageAnims) {
       if (roster.has(mage)) continue;
       rec.sprite.destroy();
+      rec.held?.destroy();
       this.mageAnims.delete(mage);
       this.mageLabels.get(mage)?.destroy();
       this.mageLabels.delete(mage);
@@ -9313,14 +10686,18 @@ export class GameScene extends Phaser.Scene {
         this.mageAnims.set(m, rec);
       }
       const s = rec.sprite;
-      if (!rec.posLocked) s.setPosition(m.x, m.y + footY);
+      if (m.mine) this.styleMineEnemySprite(m);
+      if (!rec.posLocked) s.setPosition(m.x, m.y + footY + this.mineSpriteBob(m));
       s.setFlipX(m.team === 2);
       if (!m.alive) {
         s.setVisible(false);
+        rec.held?.setVisible(false);
         continue;
       }
       s.setVisible(true);
-      s.setAlpha(m.isFullyInvisible() ? 0.18 : m.isInvisible() ? 0.5 : 1);
+      const alpha = this.mageVisibilityAlpha(m);
+      s.setAlpha(alpha);
+      this.syncHeldWeapon(m, rec, alpha);
       // Resting animation: charge while a spell is pending, otherwise idle.
       if (rec.lock === null) {
         const want = rec.charging ? 'mage-charge' : 'mage-idle';
@@ -9449,6 +10826,33 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  /** Pull every affected sprite inward without changing the model's settled position. */
+  private animateEdgelordPull(m: Mage, from: Vec2, to: Vec2): Promise<void> {
+    return new Promise((resolve) => {
+      const rec = this.mageAnims.get(m);
+      if (!rec || dist(from, to) < 1) {
+        resolve();
+        return;
+      }
+      const footY = MAGE_RADIUS * 1.4;
+      rec.lock = 'pull';
+      rec.posLocked = true;
+      rec.sprite.setPosition(from.x, from.y + footY).setVisible(true);
+      this.tweens.add({
+        targets: rec.sprite,
+        x: to.x,
+        y: to.y + footY,
+        duration: EDGELORD_PULL_DURATION,
+        ease: 'Sine.In',
+        onComplete: () => {
+          rec.lock = null;
+          rec.posLocked = false;
+          resolve();
+        },
+      });
+    });
+  }
+
   /** Create one animated bolt whose visible endpoints align with a segment. */
   private lightningSprite(from: Vec2, to: Vec2, depth: number): Phaser.GameObjects.Sprite {
     const length = Math.max(1, dist(from, to));
@@ -9473,6 +10877,25 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  private vfxEdgelordImpact(at: Vec2): Promise<void> {
+    return new Promise((resolve) => {
+      if (!this.anims.exists('fx-edgelord-impact')) {
+        resolve();
+        return;
+      }
+      const sprite = this.add
+        .sprite(at.x, at.y, 'fx-edgelord-impact', 0)
+        .setDepth(31)
+        .setDisplaySize(10 * RANGE_UNIT, 10 * RANGE_UNIT)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      sprite.play('fx-edgelord-impact');
+      sprite.once('animationcomplete', () => {
+        sprite.destroy();
+        resolve();
+      });
+    });
+  }
+
   /** Rebuild the persistent animated Lightning Fire Pierce trail. */
   private setLightningTrail(segments: readonly { from: Vec2; to: Vec2 }[]): void {
     this.clearLightningTrail();
@@ -9486,10 +10909,79 @@ export class GameScene extends Phaser.Scene {
     this.lightningTrailSprites = [];
   }
 
+  private mineSpriteBob(m: Mage): number {
+    if (m.mine?.kind !== 'cavern-bat') return 0;
+    const phase = this.gs.mages.indexOf(m) * 0.8;
+    return -7 + Math.sin(this.time.now / 180 + phase) * 5;
+  }
+
+  /** Draw model-derived Mine cues without adding any lockstep state. */
+  private drawMineMarkers(): void {
+    const g = this.gfxMine;
+    g.clear();
+    if (!this.mineRun) return;
+    for (const m of this.gs.mages) {
+      if (!m.alive || !m.mine) continue;
+      const bob = this.mineSpriteBob(m);
+      if (m.mine.kind === 'pftlhb') {
+        const eyeY = m.y - 8 + bob;
+        g.fillStyle(0xffd85a, 0.18).fillCircle(m.x, eyeY, 12);
+        g.fillStyle(0xfff2a6, 0.95).fillCircle(m.x, eyeY, 5);
+        g.fillStyle(0x2a1835, 1).fillCircle(m.x, eyeY, 2);
+      }
+      if (m.mine.kind === 'earth-elemental') {
+        this.drawEarthElementalPebbles(g, m, bob);
+      }
+      if (m.intrinsicAirborne) {
+        const markerY = m.y + MAGE_RADIUS + 5 + bob;
+        g.lineStyle(2, 0xcad5ff, 0.9).strokeEllipse(m.x, markerY, 34, 9);
+        g.lineBetween(m.x - 8, markerY - 7, m.x, markerY - 13);
+        g.lineBetween(m.x, markerY - 13, m.x + 8, markerY - 7);
+      }
+      if (!m.mine.role) continue;
+      const markerX = m.x + 25;
+      const markerY = m.y - MAGE_RADIUS - 38 + bob;
+      const color = mineEnemyVisual(m).tint;
+      g.fillStyle(0x0b0b14, 0.9).fillCircle(markerX, markerY, 10);
+      g.lineStyle(2, color, 1).strokeCircle(markerX, markerY, 9);
+      g.lineStyle(2, color, 1);
+      if (m.mine.role === 'tank') {
+        g.strokeRect(markerX - 4, markerY - 5, 8, 10);
+      } else if (m.mine.role === 'healer') {
+        g.lineBetween(markerX - 5, markerY, markerX + 5, markerY);
+        g.lineBetween(markerX, markerY - 5, markerX, markerY + 5);
+      } else {
+        g.lineBetween(markerX, markerY - 6, markerX + 5, markerY + 4);
+        g.lineBetween(markerX + 5, markerY + 4, markerX - 5, markerY + 4);
+        g.lineBetween(markerX - 5, markerY + 4, markerX, markerY - 6);
+      }
+    }
+  }
+
+  /** Orbit one visible pebble for every stored Earth Elemental stone. */
+  private drawEarthElementalPebbles(g: Phaser.GameObjects.Graphics, m: Mage, bob: number): void {
+    const count = Math.max(0, Math.floor(m.mine?.stones ?? 0));
+    const time = this.time.now / 850;
+    for (let index = 0; index < count; index++) {
+      const ring = Math.floor(index / 8);
+      const ringStart = ring * 8;
+      const ringCount = Math.min(8, count - ringStart);
+      const direction = ring % 2 === 0 ? 1 : -1;
+      const angle = direction * time * (0.72 + ring * 0.08) +
+        ((index - ringStart) / ringCount) * Math.PI * 2;
+      const radius = 38 + ring * 12;
+      const x = m.x + Math.cos(angle) * radius;
+      const y = m.y - 8 + bob + Math.sin(angle) * (13 + ring * 4) + Math.sin(time * 2 + index) * 2;
+      const size = 4 + (index % 3) * 0.7;
+      g.fillStyle(0x070b0e, 0.55).fillCircle(x + 2, y + 3, size + 1);
+      g.fillStyle(0x766c5b, 1).fillCircle(x, y, size);
+      g.lineStyle(1, 0xb9aa89, 0.9).strokeCircle(x, y, size);
+      g.fillStyle(0xd9c89d, 0.9).fillCircle(x - size * 0.3, y - size * 0.35, 1.2);
+    }
+  }
+
   private drawMage(g: Phaser.GameObjects.Graphics, m: Mage): void {
-    let alpha = 1;
-    if (m.isFullyInvisible()) alpha = 0.18;
-    else if (m.isInvisible()) alpha = 0.5;
+    const alpha = this.mageVisibilityAlpha(m);
 
     const active = m === this.gs.current && !this.gs.isOver;
     if (active) g.lineStyle(3, COLORS.selected, alpha).strokeCircle(m.x, m.y, MAGE_RADIUS + 8);
@@ -9511,6 +11003,14 @@ export class GameScene extends Phaser.Scene {
   }
 
   private mageLabels = new Map<Mage, Phaser.GameObjects.Text>();
+  private mageVisibilityAlpha(mage: Mage): number {
+    const shadowVeiled =
+      mage.statuses.some((status) => status.kind === 'shadowVeil') && this.gs.isInShadow(mage);
+    if (shadowVeiled) return 0.18;
+    if (this.gs.isInEdgelordDarkLight(mage.pos)) return 1;
+    return mage.isFullyInvisible() ? 0.18 : mage.isInvisible() ? 0.5 : 1;
+  }
+
   private labelMage(m: Mage): void {
     let t = this.mageLabels.get(m);
     if (!t) {
@@ -9519,14 +11019,31 @@ export class GameScene extends Phaser.Scene {
     }
     const statuses = m.statuses
       .map((s) =>
-        s.kind === 'fire' || s.kind === 'blueflare'
+        s.kind === 'fire' ||
+        s.kind === 'sentinelFire' ||
+        s.kind === 'blueflare' ||
+        s.kind === 'soulRend'
           ? `${s.name} ×${s.stacks}`
           : Number.isFinite(s.duration) && s.duration > 0
             ? `${s.name} ⌛${s.duration}`
             : s.name
       )
       .join(', ');
-    t.setText(`${m.name}\n${m.hp}❤ ${m.sanity}🧠${statuses ? `\n${statuses}` : ''}`);
+    const mineDetails = m.mine
+      ? [
+          `Lv ${m.mine.level}`,
+          m.mine.role ? m.mine.role.toUpperCase() : '',
+          m.mine.golemState ? m.mine.golemState.toUpperCase() : '',
+          m.mine.stones != null ? `Stones ${m.mine.stones}` : '',
+          m.mine.charges != null ? `Charges ${m.mine.charges}` : '',
+        ].filter(Boolean).join(' · ')
+      : '';
+    const lantern = m.hasEdgelordLantern()
+      ? `Edgelord ${m.edgelordLanternActive ? 'ACTIVE' : 'DORMANT'} · ${this.gs.edgelordCaptives(m).length} captive${this.gs.edgelordCaptives(m).length === 1 ? '' : 's'}`
+      : '';
+    t.setText(
+      `${m.name}${mineDetails ? `\n${mineDetails}` : ''}${lantern ? `\n${lantern}` : ''}\n${m.hp}❤ ${m.sanity}🧠${statuses ? `\n${statuses}` : ''}`
+    );
     t.setPosition(m.x, m.y + MAGE_RADIUS + 22);
   }
 
@@ -9841,6 +11358,11 @@ export class GameScene extends Phaser.Scene {
           : 'Corrosion totem — each round it saps the health of every mage standing within its aura.';
       }
     }
+    for (const pool of this.gs.corrosionPools) {
+      if (dist(p, pool) <= pool.radius) {
+        return 'Corrosion pool - entering slows movement by 50%; hostile units inside take 3d3 corrosive damage at turn start.';
+      }
+    }
     for (const zone of this.gs.veilBindZones) {
       if (dist(p, zone) <= zone.radius) {
         return 'Veil Bind - inside this circle, gaining a veil also roots the bearer; being rooted or bound grants a half veil for the same duration.';
@@ -9864,8 +11386,26 @@ export class GameScene extends Phaser.Scene {
     if (this.swamprun) {
       this.mode = 'over';
       this.busy = false;
+      const mineEncountersCleared = Math.max(
+        0,
+        this.swamprunWave - (this.mineRun && this.mineInCombat ? 1 : 0)
+      );
+      if (this.mineRun) {
+        this.mineRunEnded = true;
+        this.mineExploring = false;
+        this.mineInCombat = false;
+        this.mineChoiceResolve?.('');
+        this.mineChoiceResolve = null;
+        this.mineCombatResolve?.();
+        this.mineCombatResolve = null;
+        this.hideMinePanel();
+      }
+      const defeatText = this.mineRun ? 'The maze claims your party.' : 'The swamp claims you.';
+      const scoreText = this.mineRun
+        ? `Encounters cleared: ${mineEncountersCleared}`
+        : `Waves survived: ${this.swamprunWave}`;
       this.bannerText
-        .setText(`The swamp claims you.\nWaves survived: ${this.swamprunWave}\nClick to return to menu`)
+        .setText(`${defeatText}\n${scoreText}\nClick to return to menu`)
         .setVisible(true);
       this.redraw();
       this.input.once('pointerdown', () => this.scene.start('Menu'));
@@ -9904,7 +11444,29 @@ export class GameScene extends Phaser.Scene {
     if (item.kind === 'move') return this.animateMove(item.source, item.targetPoint ?? item.source.pos);
     // Generic actions (item use / throw / Eldritch / Thunder / weapon action)
     // paint their own effects inside resolve — no default cast animation.
-    if (item.kind === 'action') return Promise.resolve();
+    if (item.kind === 'action') {
+      const at = item.target?.pos ?? item.targetPoint ?? item.source.pos;
+      switch (item.actionVisual) {
+        case 'fire':
+          return this.vfxBurst(at, 0xff7138, 48, 1.8);
+        case 'shatter':
+          return this.vfxBurst(at, 0xc5b89b, 46, 1.6);
+        case 'shadow':
+          return this.vfxBurst(at, 0x5f4a86, 50, 1.8);
+        case 'lightning':
+          return this.vfxLightningBolt(item.source.pos, at);
+        case 'lightningImpact':
+          return this.vfxEdgelordImpact(at);
+        case 'heal':
+          return this.vfxBurst(at, 0x7ce5a5, 42, 1.5);
+        case 'corrosive':
+          return this.vfxBurst(at, 0x86b94c, 54, 1.8);
+        case 'wake':
+          return this.vfxBurst(at, 0xe3b85d, 64, 2);
+        default:
+          return Promise.resolve();
+      }
+    }
 
     const from = item.source.pos;
     const to: Vec2 | null = item.target ? item.target.pos : item.targetPoint ?? null;

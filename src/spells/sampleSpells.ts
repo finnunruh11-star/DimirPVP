@@ -185,7 +185,14 @@ registerSpell({
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const amount = rollDice(ctx, '1d6', 'Shatter');
-    coneDamage(ctx, ctx.targetPoint, R(5), CONE_DEGREES, dmg(amount, 'shatter', 'physical'));
+    coneDamage(
+      ctx,
+      ctx.targetPoint,
+      R(5),
+      CONE_DEGREES,
+      dmg(amount, 'shatter', 'physical'),
+      { strictRange: true }
+    );
   },
 });
 
@@ -2166,14 +2173,16 @@ registerSpell({
   targeting: 'self',
   dc: 14,
   description:
-    'A stronger Lightning Pierce: repeatedly chain into random allies or enemies with 5 additional range and no misfire, dealing 2d6 Fire each hit. The same mage can be hit any number of times. Then roll d6, dash that far, and become invisible for 6 minus the roll turns.',
+    'A stronger Lightning Pierce: chain up to power/3 times (rounded down) into random other allies or enemies with 5 additional range and no misfire, dealing 2d6 Fire each hit. The same mage can be hit any number of times, but the caster cannot be hit. Then roll d6, dash that far, and become invisible for 6 minus the roll turns.',
   visual: { preset: 'nova', color: 0xffc95c, size: 78, speed: 1.5 },
   async cast(ctx) {
     const power = lightningPower(ctx);
+    const dashCount = Math.floor(power / 3);
     let range = R((power + 5) * (ctx.crit ? 2 : 1));
-    while (range >= R(1) && ctx.caster.alive) {
+    for (let dashIndex = 0; dashIndex < dashCount && range >= R(1) && ctx.caster.alive; dashIndex++) {
       const candidates = ctx.game.mages.filter(
         (entity) =>
+          entity !== ctx.caster &&
           entity.alive &&
           Math.hypot(entity.x - ctx.caster.x, entity.y - ctx.caster.y) <= range
       );

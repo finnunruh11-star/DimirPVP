@@ -21,7 +21,9 @@ export type StatusKind =
   | 'twistRune'
   | 'fireVeilAura'
   | 'fire'
-  | 'blueflare';
+  | 'sentinelFire'
+  | 'blueflare'
+  | 'soulRend';
 export type StunType = 'main' | 'movement' | 'full';
 export type InvisMode = 'full' | 'partial';
 /** Kinds of mental compulsion the Mind word can inflict. */
@@ -104,6 +106,13 @@ export interface FireStatus extends BaseStatus {
   ownerIndex: number;
 }
 
+/** Mine elemental flame with separate thresholds and a tenth-stack eruption. */
+export interface SentinelFireStatus extends BaseStatus {
+  kind: 'sentinelFire';
+  stacks: number;
+  ownerIndex: number;
+}
+
 /** Mental counterpart to Fire: easier spread, half damage, and slower decay. */
 export interface BlueflareStatus extends BaseStatus {
   kind: 'blueflare';
@@ -111,6 +120,13 @@ export interface BlueflareStatus extends BaseStatus {
   ownerIndex: number;
   /** Low-stack Blueflare decays only on alternating bearer turns. */
   decayNext: boolean;
+}
+
+/** Permanent true-damage affliction applied by the Edgelord Lantern. */
+export interface SoulRendStatus extends BaseStatus {
+  kind: 'soulRend';
+  stacks: number;
+  ownerIndex: number;
 }
 
 export interface DebuffStatus extends BaseStatus {
@@ -244,7 +260,9 @@ export type Status =
   | TwistRuneStatus
   | FireVeilAuraStatus
   | FireStatus
-  | BlueflareStatus;
+  | SentinelFireStatus
+  | BlueflareStatus
+  | SoulRendStatus;
 
 /**
  * Add a status, or refresh/extend an existing one that shares the same key.
