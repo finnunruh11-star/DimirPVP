@@ -1,8 +1,11 @@
 import Phaser from 'phaser';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH, LOADOUT_SIZE, TEXT } from '../config/constants';
-import { WORDS, WORD_ORDER, type WordId } from '../core/Words';
+import { WORDS, WORD_ORDER, MODIFIER_WORDS, isModifierWord, type WordId } from '../core/Words';
 import { MAGE_CLASSES, MAGE_CLASS_DEFS, DEFAULT_MAGE_CLASS, toMageClass, type MageClass } from '../core/Classes';
+import { SceneInput } from '../engine/SceneInput';
 import { Net, type NetRole, type NetMessage } from '../net/Net';
+import { ENEMY_DEFS, RAID_BOSS_KINDS, type RaidBossKind } from '../pve/swamprun';
+import { UI, UI_FONT, UI_HEX, bindTextControl } from '../ui/theme';
 import magePreviewUrl from '../Sprites/Idle/Idle1.png';
 
 const NAD_LOADOUT: WordId[] = ['mind', 'shatter', 'twist', 'reality'];
@@ -10,22 +13,22 @@ const EASTER_WORD_ORDER: WordId[] = [
   'twist',
   'reality',
   'drain',
-  'pain',
+  'death',
   'order',
   'slash',
   'fire',
   'lightning',
 ];
 
-export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun' | 'expedition' | 'minerun';
+export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun' | 'expedition' | 'minerun' | 'raid';
 export type SwampPrepMode = 'quick' | 'custom' | 'creative';
 
 function isPveRunMode(mode: MatchMode): boolean {
-  return mode === 'swamprun' || mode === 'expedition' || mode === 'minerun';
+  return mode === 'swamprun' || mode === 'expedition' || mode === 'minerun' || mode === 'raid';
 }
 
 function usesSwampPrep(mode: MatchMode): boolean {
-  return mode === 'swamprun' || mode === 'minerun';
+  return mode === 'swamprun' || mode === 'minerun' || mode === 'raid';
 }
 
 /** Which toggleable item catalogues the draft draws from. */
@@ -51,6 +54,8 @@ export interface MatchConfig {
   loadouts: [WordId[], WordId[]];
   /** Swamprun pre-combat character preparation. */
   swampPrepMode?: SwampPrepMode;
+  /** Single boss selected for a one-fight Raid. */
+  raidBoss?: RaidBossKind;
   /**
    * Classes for the classic two-mage layout (parallel to {@link loadouts}).
    * N-player matches carry the class per seat in {@link seats} instead.
@@ -92,10 +97,16 @@ function defaultRelayUrl(): string {
 export class MenuScene extends Phaser.Scene {
   private mode: MatchMode = 'ai';
   private pveMenuOpen = false;
+  private raidMenuOpen = false;
+  private raidBoss: RaidBossKind = 'deathknightSpear';
   private onlineRole: NetRole = 'host';
   private swampRole: 'local' | NetRole = 'local';
   private swampPrepMode: SwampPrepMode = 'custom';
   private selected: WordId[] = [];
+  /** The one modifier word this build carries; it costs no loadout slot. */
+  private selectedModifier: WordId = MODIFIER_WORDS[0];
+  /** Collected modifier per seat while drafting a local match. */
+  private draftModifiers: WordId[] = [];
   /** Local N-player match setup. */
   private seatCount = 2;
   private teamMode: 'teams' | 'ffa' = 'teams';
@@ -119,6 +130,7 @@ export class MenuScene extends Phaser.Scene {
   private selectedClass: MageClass = DEFAULT_MAGE_CLASS;
   /** Collected class per seat while drafting a local match (parallel to loadouts). */
   private draftClasses: MageClass[] = [];
+  private wordCursor = 0;
 
   private wordCells: { rect: Phaser.GameObjects.Rectangle; word: WordId; label: Phaser.GameObjects.Text }[] = [];
   private modeSectionText!: Phaser.GameObjects.Text;
@@ -128,6 +140,7 @@ export class MenuScene extends Phaser.Scene {
   private hintText!: Phaser.GameObjects.Text;
   private classTitle!: Phaser.GameObjects.Text;
   private classBtns: { btn: Phaser.GameObjects.Text; cls: MageClass }[] = [];
+  private modifierBtn!: Phaser.GameObjects.Text;
   private modeAiBtn!: Phaser.GameObjects.Text;
   private modeHsBtn!: Phaser.GameObjects.Text;
   private modeOnlineBtn!: Phaser.GameObjects.Text;
@@ -137,6 +150,8 @@ export class MenuScene extends Phaser.Scene {
   private modeSwamprunBtn!: Phaser.GameObjects.Text;
   private modeExpeditionBtn!: Phaser.GameObjects.Text;
   private modeMinerunBtn!: Phaser.GameObjects.Text;
+  private modeRaidBtn!: Phaser.GameObjects.Text;
+  private raidBossBtns: { btn: Phaser.GameObjects.Text; kind: RaidBossKind }[] = [];
   private setOriginalBtn!: Phaser.GameObjects.Text;
   private setFinnsBtn!: Phaser.GameObjects.Text;
   private setDlcBtn!: Phaser.GameObjects.Text;
@@ -151,6 +166,7 @@ export class MenuScene extends Phaser.Scene {
   private hostBtn!: Phaser.GameObjects.Text;
   private joinBtn!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
+  private summaryText!: Phaser.GameObjects.Text;
   /** True while an online lobby handshake is in progress (locks the UI). */
   private connecting = false;
 
@@ -179,7 +195,7 @@ export class MenuScene extends Phaser.Scene {
 
     this.add
       .text(50, 22, 'DIMIR // ARENA', {
-        fontFamily: 'Trebuchet MS',
+        fontFamily: UI_FONT,
         fontSize: '30px',
         color: '#f8fafc',
         fontStyle: 'bold',
@@ -187,13 +203,13 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0, 0);
 
     this.add.text(50, 54, 'TACTICAL MAGE COMBAT', {
-      fontFamily: 'Trebuchet MS',
+      fontFamily: UI_FONT,
       fontSize: '11px',
       color: '#d9a441',
     });
 
     this.modeSectionText = this.add.text(36, 96, '1 // CHOOSE BATTLE', {
-      fontFamily: 'Trebuchet MS',
+      fontFamily: UI_FONT,
       fontSize: '11px',
       color: '#d9a441',
       fontStyle: 'bold',
@@ -201,7 +217,7 @@ export class MenuScene extends Phaser.Scene {
 
     this.titleText = this.add
       .text(36, 162, '', {
-        fontFamily: 'Trebuchet MS',
+        fontFamily: UI_FONT,
         fontSize: '21px',
         color: '#f8fafc',
         fontStyle: 'bold',
@@ -218,13 +234,13 @@ export class MenuScene extends Phaser.Scene {
       .setOrigin(0, 0);
 
     this.add.text(36, 225, 'SPELL WORDS', {
-      fontFamily: 'Trebuchet MS',
+      fontFamily: UI_FONT,
       fontSize: '12px',
       color: '#d9a441',
       fontStyle: 'bold',
     });
     this.add.text(882, 162, 'MAGE DISCIPLINE', {
-      fontFamily: 'Trebuchet MS',
+      fontFamily: UI_FONT,
       fontSize: '12px',
       color: '#d9a441',
       fontStyle: 'bold',
@@ -250,7 +266,7 @@ export class MenuScene extends Phaser.Scene {
         .setInteractive({ useHandCursor: true });
       const label = this.add
         .text(x, y, this.cellText(word), {
-          fontFamily: 'Trebuchet MS',
+          fontFamily: UI_FONT,
           fontSize: '14px',
           color: TEXT.body,
           align: 'center',
@@ -258,7 +274,11 @@ export class MenuScene extends Phaser.Scene {
           lineSpacing: 2,
         })
         .setOrigin(0.5);
-      rect.on('pointerover', () => rect.setFillStyle(0x202b3d));
+      rect.on('pointerover', () => {
+        const visible = this.wordCells.filter((cell) => cell.rect.visible);
+        this.wordCursor = Math.max(0, visible.findIndex((cell) => cell.word === word));
+        rect.setFillStyle(0x202b3d);
+      });
       rect.on('pointerout', () => this.refresh());
       rect.on('pointerdown', () => this.toggleWord(word));
       this.wordCells.push({ rect, word, label });
@@ -269,7 +289,7 @@ export class MenuScene extends Phaser.Scene {
     const classX = 1060;
     this.classTitle = this.add
       .text(classX, 204, 'Class', {
-        fontFamily: 'Trebuchet MS',
+        fontFamily: UI_FONT,
         fontSize: '19px',
         color: TEXT.body,
         fontStyle: 'bold',
@@ -281,19 +301,51 @@ export class MenuScene extends Phaser.Scene {
       this.classBtns.push({ btn, cls });
     });
 
+    // One modifier word per build, cycled here; it never uses a loadout slot.
+    this.modifierBtn = this.makeButton(985, 412, '', () => this.cycleModifier(), 190);
+    this.modifierBtn.setFontSize(14).setPadding(10, 7);
+
+    this.add
+      .rectangle(1100, 558, 300, 158, UI.panel, 0.96)
+      .setStrokeStyle(1, UI.border, 0.95);
+    this.add.rectangle(963, 496, 4, 22, UI.cyan, 1);
+    this.add.text(977, 494, 'MATCH BRIEF', {
+      fontFamily: UI_FONT,
+      fontSize: '12px',
+      color: UI_HEX.cyan,
+      fontStyle: 'bold',
+    });
+    this.summaryText = this.add.text(963, 524, '', {
+      fontFamily: UI_FONT,
+      fontSize: '13px',
+      color: TEXT.body,
+      lineSpacing: 4,
+      wordWrap: { width: 268 },
+    });
+
     // Mode buttons.
     this.modeAiBtn = this.makeButton(128, 126, 'VS AI', () => this.setMode('ai'), 220);
     this.modeHsBtn = this.makeButton(384, 126, 'HOTSEAT', () => this.setMode('hotseat'), 220);
     this.modeOnlineBtn = this.makeButton(640, 126, 'ONLINE', () => this.setMode('online'), 220);
     this.modeTrainingBtn = this.makeButton(896, 126, 'TRAINING', () => this.setMode('training'), 220);
     this.modePveBtn = this.makeButton(1152, 126, 'PVE', () => this.openPveMenu(), 220);
-    this.modeBackBtn = this.makeButton(256, 126, 'BACK', () => this.closePveMenu(), 220);
-    this.modeSwamprunBtn = this.makeButton(512, 126, 'SWAMPRUN', () => this.setMode('swamprun'), 220);
-    this.modeExpeditionBtn = this.makeButton(768, 126, 'EXPEDITION', () => this.setMode('expedition'), 220);
-    this.modeMinerunBtn = this.makeButton(1024, 126, 'MINE RUN', () => this.setMode('minerun'), 220);
+    this.modeBackBtn = this.makeButton(128, 126, 'BACK', () => {
+      if (this.raidMenuOpen) this.closeRaidMenu();
+      else this.closePveMenu();
+    }, 220);
+    this.modeSwamprunBtn = this.makeButton(384, 126, 'SWAMPRUN', () => this.setMode('swamprun'), 220);
+    this.modeExpeditionBtn = this.makeButton(640, 126, 'EXPEDITION', () => this.setMode('expedition'), 220);
+    this.modeMinerunBtn = this.makeButton(896, 126, 'MINE RUN', () => this.setMode('minerun'), 220);
+    this.modeRaidBtn = this.makeButton(1152, 126, 'RAID', () => this.openRaidMenu(), 220);
+    RAID_BOSS_KINDS.forEach((kind, index) => {
+      const btn = this.makeButton(512 + index * 256, 126, ENEMY_DEFS[kind].name.toUpperCase(), () => {
+        this.selectRaidBoss(kind);
+      }, 220);
+      this.raidBossBtns.push({ btn, kind });
+    });
 
     this.rulesSectionText = this.add.text(36, 480, '', {
-      fontFamily: 'Trebuchet MS',
+      fontFamily: UI_FONT,
       fontSize: '11px',
       color: '#d9a441',
       fontStyle: 'bold',
@@ -342,8 +394,24 @@ export class MenuScene extends Phaser.Scene {
       .text(36, 696, '', { fontSize: '13px', color: TEXT.warn })
       .setOrigin(0, 0.5);
 
-    // Hidden easter egg: typing "NAD" loads a secret premade loadout.
-    this.input.keyboard?.on('keydown', (e: KeyboardEvent) => this.onKey(e));
+    // Hidden easter eggs plus keyboard equivalents for the primary menu flow.
+    const controls = new SceneInput(this);
+    controls.bindAnyKey((event) => this.onKey(event));
+    controls.bindKeys([
+      { key: 'ENTER', run: () => this.primaryAction() },
+      { key: 'LEFT', capture: true, run: () => this.moveWordCursor(-1) },
+      { key: 'RIGHT', capture: true, run: () => this.moveWordCursor(1) },
+      { key: 'UP', capture: true, run: () => this.moveWordCursor(-4) },
+      { key: 'DOWN', capture: true, run: () => this.moveWordCursor(4) },
+      { key: 'SPACE', capture: true, run: () => this.toggleCursorWord() },
+      {
+        key: 'ESC',
+        run: () => {
+          if (this.raidMenuOpen) this.closeRaidMenu();
+          else if (this.pveMenuOpen) this.closePveMenu();
+        },
+      },
+    ]);
 
     this.refresh();
   }
@@ -370,7 +438,7 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private applyKatLoadout(): void {
-    const loadout: WordId[] = ['corrode', 'curse', 'shadow', 'drain', 'pain'];
+    const loadout: WordId[] = ['corrode', 'curse', 'shadow', 'drain', 'death'];
     this.unlockWords(loadout);
     this.selected = loadout;
     this.katActive = true;
@@ -422,29 +490,29 @@ export class MenuScene extends Phaser.Scene {
     width = 190,
     primary = false
   ): Phaser.GameObjects.Text {
-    const t = this.add
+    const button = this.add
       .text(x, y, label, {
-        fontFamily: 'Trebuchet MS',
+        fontFamily: UI_FONT,
         fontSize: '15px',
         color: primary ? '#0a0e16' : TEXT.body,
-        backgroundColor: primary ? '#d9a441' : '#182131',
+        backgroundColor: primary ? UI_HEX.gold : UI_HEX.panelRaised,
         fontStyle: 'bold',
         align: 'center',
         fixedWidth: width,
         padding: { x: 12, y: 9 },
       })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
-    t.on('pointerover', () => t.setShadow(0, 0, primary ? '#f2c76e' : '#71c7d8', 8));
-    t.on('pointerout', () => t.setShadow(0, 0, '#000000', 0));
-    t.on('pointerdown', onClick);
-    return t;
+      .setOrigin(0.5);
+    bindTextControl(button, onClick, {
+      hoverShadow: primary ? '#f2c76e' : UI_HEX.cyan,
+    });
+    return button;
   }
 
   private setMode(mode: MatchMode): void {
     if (this.connecting) return;
     this.mode = mode;
     this.pveMenuOpen = false;
+    this.raidMenuOpen = false;
     // Sensible default AI fill per mode: "vs AI" fills every seat but yours.
     if (mode === 'expedition') {
       this.seatCount = 1;
@@ -456,13 +524,14 @@ export class MenuScene extends Phaser.Scene {
     }
     if (!isPveRunMode(mode) && this.seatCount < 2) this.seatCount = 2;
     this.clampAiCount();
-    this.resetDraft();
+    this.keepCurrentDraftValid();
     this.refresh();
   }
 
   private openPveMenu(): void {
     if (this.connecting) return;
     this.pveMenuOpen = true;
+    this.raidMenuOpen = false;
     this.refresh();
   }
 
@@ -470,6 +539,25 @@ export class MenuScene extends Phaser.Scene {
     if (this.connecting) return;
     this.pveMenuOpen = false;
     this.refresh();
+  }
+
+  private openRaidMenu(): void {
+    if (this.connecting) return;
+    this.pveMenuOpen = false;
+    this.raidMenuOpen = true;
+    this.refresh();
+  }
+
+  private closeRaidMenu(): void {
+    if (this.connecting) return;
+    this.raidMenuOpen = false;
+    this.pveMenuOpen = true;
+    this.refresh();
+  }
+
+  private selectRaidBoss(kind: RaidBossKind): void {
+    this.raidBoss = kind;
+    this.setMode('raid');
   }
 
   private setSessionRole(role: 'local' | NetRole): void {
@@ -481,6 +569,11 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private primaryAction(): void {
+    if (!this.loadoutReady()) {
+      const missing = this.loadoutLimit() - this.selected.length;
+      this.setStatus(`Choose ${missing} more spell word${missing === 1 ? '' : 's'}.`);
+      return;
+    }
     if (this.mode === 'online') {
       void this.startOnline(this.onlineRole);
       return;
@@ -510,7 +603,7 @@ export class MenuScene extends Phaser.Scene {
     if (this.mode === 'ai') this.aiCount = this.seatCount - 1;
     this.clampAiCount();
     this.syncSeatTeams();
-    this.resetDraft();
+    this.keepCurrentDraftValid();
     this.refresh();
   }
 
@@ -518,7 +611,7 @@ export class MenuScene extends Phaser.Scene {
   private cycleAiFill(): void {
     if (this.connecting) return;
     this.aiCount = this.aiCount >= this.seatCount - 1 ? 0 : this.aiCount + 1;
-    this.resetDraft();
+    this.keepCurrentDraftValid();
     this.refresh();
   }
 
@@ -590,17 +683,29 @@ export class MenuScene extends Phaser.Scene {
     return `${Math.max(t1, t2)}v${Math.min(t1, t2)}`;
   }
 
-  /** Clear any in-progress local draft (when the setup changes). */
-  private resetDraft(): void {
-    this.draftIndex = 0;
-    this.draftLoadouts = [];
-    this.draftClasses = [];
-    this.selected = [];
-    this.selectedClass = DEFAULT_MAGE_CLASS;
+  /** Cycle the build's single modifier word: Subtle -> Delay -> Channel. */
+  private cycleModifier(): void {
+    if (this.connecting) return;
+    const next = (MODIFIER_WORDS.indexOf(this.selectedModifier) + 1) % MODIFIER_WORDS.length;
+    this.selectedModifier = MODIFIER_WORDS[next];
+    this.refresh();
+  }
+
+  /** A build's full word list: its chosen words plus its one modifier. */
+  private loadoutWithModifier(words: readonly WordId[], modifier: WordId): WordId[] {
+    return [...words.filter((word) => !isModifierWord(word)), modifier];
+  }
+
+  /** Preserve the current mage while adapting to a stricter mode loadout cap. */
+  private keepCurrentDraftValid(): void {
+    const limit = this.loadoutLimit();
+    if (this.selected.length <= limit) return;
+    this.selected = this.selected.slice(0, limit);
     this.nadActive = false;
     this.katActive = false;
     this.genActive = false;
     this.sniffActive = false;
+    this.setStatus(`Kept your first ${limit} words for this mode.`);
   }
 
   /** Pick the class for the seat currently drafting. */
@@ -630,6 +735,19 @@ export class MenuScene extends Phaser.Scene {
     this.refresh();
   }
 
+  private moveWordCursor(delta: number): void {
+    const visible = this.wordCells.filter((cell) => cell.rect.visible);
+    if (visible.length === 0) return;
+    this.wordCursor = (this.wordCursor + delta + visible.length) % visible.length;
+    this.refresh();
+  }
+
+  private toggleCursorWord(): void {
+    const visible = this.wordCells.filter((cell) => cell.rect.visible);
+    const cell = visible[this.wordCursor];
+    if (cell) this.toggleWord(cell.word);
+  }
+
   private isNadSelection(): boolean {
     return (
       (this.selected.length === NAD_LOADOUT.length || this.selected.length === LOADOUT_SIZE) &&
@@ -650,11 +768,17 @@ export class MenuScene extends Phaser.Scene {
     const humans = this.humanSeats();
     const draftingSeat = humans[this.draftIndex] ?? 0;
     const who = `Player ${draftingSeat + 1}`;
-    this.titleText.setText(`2 // BUILD ${who.toUpperCase()}  •  ${this.selected.length}/${this.loadoutLimit()} WORDS`);
-    if (this.nadActive || this.isNadSelection()) {
+    this.titleText.setText(
+      this.raidMenuOpen
+        ? '2 // SELECT RAID TARGET'
+        : `2 // BUILD ${who.toUpperCase()}  •  ${this.selected.length}/${this.loadoutLimit()} WORDS`
+    );
+    if (this.raidMenuOpen) {
+      this.hintText.setText('Choose the single boss your party will prepare for and defeat.');
+    } else if (this.nadActive || this.isNadSelection()) {
       this.hintText.setText('✨ NAD unlocked: Mind · Shatter · Twist · Reality · optional fifth word');
     } else if (this.katActive) {
-      this.hintText.setText('✨ KAT unlocked: Corrode · Curse · Shadow · Drain · Pain');
+      this.hintText.setText('✨ KAT unlocked: Corrode · Curse · Shadow · Drain · Death');
     } else if (this.genActive) {
       this.hintText.setText('✨ GEN unlocked: Order · Curse · Drain · Slash');
     } else if (this.sniffActive) {
@@ -673,6 +797,8 @@ export class MenuScene extends Phaser.Scene {
       this.hintText.setText('Expedition: delve without rests or shops, choose when to retreat, then spend your silver and recruit in town.');
     } else if (this.mode === 'minerun') {
       this.hintText.setText('Mine Run: chart a seeded maze, click routes on the discovered map, and choose which hostile rooms to enter.');
+    } else if (this.mode === 'raid') {
+      this.hintText.setText(`Raid: prepare up to four allies for one fight against ${ENEMY_DEFS[this.raidBoss].name}. Defeat the target to win.`);
     } else if (this.seatCount > 2) {
       this.hintText.setText(`${this.formatLabel()} — each player drafts their own words in turn.`);
     } else {
@@ -683,6 +809,7 @@ export class MenuScene extends Phaser.Scene {
       (cell) => WORD_ORDER.includes(cell.word) || this.unlockedWords.has(cell.word)
     );
     const compact = visibleCells.length > WORD_ORDER.length;
+    this.wordCursor = Math.min(this.wordCursor, Math.max(0, visibleCells.length - 1));
     const cellHeight = compact ? 58 : 92;
     const rowGap = compact ? 8 : 16;
     const startY = compact ? 252 : 282;
@@ -704,8 +831,13 @@ export class MenuScene extends Phaser.Scene {
         .setWordWrapWidth(177);
       const slot = this.selected.indexOf(cell.word);
       const on = slot >= 0;
+      const focused = index === this.wordCursor;
       cell.rect.setFillStyle(on ? 0x26374a : 0x141b28);
-      cell.rect.setStrokeStyle(on ? 3 : 1, on ? COLORS.selected : WORDS[cell.word].color, on ? 1 : 0.75);
+      cell.rect.setStrokeStyle(
+        on ? 3 : focused ? 2 : 1,
+        on ? COLORS.selected : focused ? UI.cyan : WORDS[cell.word].color,
+        on || focused ? 1 : 0.75
+      );
       cell.label.setColor(on ? '#ffffff' : TEXT.body);
       cell.label.setText(`${on ? `SLOT ${slot + 1}  •  ` : ''}${this.cellText(cell.word)}`);
     }
@@ -717,6 +849,9 @@ export class MenuScene extends Phaser.Scene {
       btn.setColor(on ? '#ffffff' : TEXT.dim);
     }
     this.classTitle.setText(`Class: ${MAGE_CLASS_DEFS[this.selectedClass].label}`);
+    this.modifierBtn.setText(`Modifier: ${WORDS[this.selectedModifier].label}`);
+    this.modifierBtn.setStyle({ backgroundColor: '#285b67' });
+    this.modifierBtn.setColor('#ffffff');
 
     const aiOn = this.mode === 'ai';
     const hsOn = this.mode === 'hotseat';
@@ -725,7 +860,8 @@ export class MenuScene extends Phaser.Scene {
     const swamprunOn = this.mode === 'swamprun';
     const expeditionOn = this.mode === 'expedition';
     const minerunOn = this.mode === 'minerun';
-    const pveOn = swamprunOn || expeditionOn || minerunOn;
+    const raidOn = this.mode === 'raid';
+    const pveOn = swamprunOn || expeditionOn || minerunOn || raidOn;
     this.modeAiBtn.setStyle({ backgroundColor: aiOn ? '#285b67' : '#182131' });
     this.modeHsBtn.setStyle({ backgroundColor: hsOn ? '#285b67' : '#182131' });
     this.modeOnlineBtn.setStyle({ backgroundColor: onlineOn ? '#285b67' : '#182131' });
@@ -734,18 +870,22 @@ export class MenuScene extends Phaser.Scene {
     this.modeSwamprunBtn.setStyle({ backgroundColor: swamprunOn ? '#285b67' : '#182131' });
     this.modeExpeditionBtn.setStyle({ backgroundColor: expeditionOn ? '#285b67' : '#182131' });
     this.modeMinerunBtn.setStyle({ backgroundColor: minerunOn ? '#285b67' : '#182131' });
+    this.modeRaidBtn.setStyle({ backgroundColor: raidOn ? '#285b67' : '#182131' });
     // Mode is only chosen on the first draft screen.
-    const showTopModes = firstScreen && !this.pveMenuOpen;
+    const showTopModes = firstScreen && !this.pveMenuOpen && !this.raidMenuOpen;
     const showPveModes = firstScreen && this.pveMenuOpen;
+    const showRaidBosses = firstScreen && this.raidMenuOpen;
     this.modeAiBtn.setVisible(showTopModes);
     this.modeHsBtn.setVisible(showTopModes);
     this.modeOnlineBtn.setVisible(showTopModes);
     this.modeTrainingBtn.setVisible(showTopModes);
     this.modePveBtn.setVisible(showTopModes);
-    this.modeBackBtn.setVisible(showPveModes);
+    this.modeBackBtn.setVisible(showPveModes || showRaidBosses);
     this.modeSwamprunBtn.setVisible(showPveModes);
     this.modeExpeditionBtn.setVisible(showPveModes);
     this.modeMinerunBtn.setVisible(showPveModes);
+    this.modeRaidBtn.setVisible(showPveModes);
+    for (const { btn } of this.raidBossBtns) btn.setVisible(showRaidBosses);
 
     const networkRole = onlineOn ? this.onlineRole : pveOn ? this.swampRole : 'local';
     const rulesOwner = networkRole !== 'guest';
@@ -839,9 +979,43 @@ export class MenuScene extends Phaser.Scene {
               ? this.swampRole === 'local' ? 'START EXPEDITION' : this.swampRole === 'host' ? 'HOST CAMPAIGN' : 'JOIN CAMPAIGN'
               : minerunOn
                 ? this.swampRole === 'local' ? 'START MINE RUN' : this.swampRole === 'host' ? 'HOST CO-OP ROOM' : 'JOIN CO-OP ROOM'
+              : raidOn
+                ? this.swampRole === 'local' ? 'START RAID' : this.swampRole === 'host' ? 'HOST RAID ROOM' : 'JOIN RAID ROOM'
             : this.mode === 'training' ? 'START TRAINING' : 'START DUEL'
     );
     this.startBtn.setColor(ready ? '#0a0e16' : '#4d4431');
+
+    const modeLabels: Record<MatchMode, string> = {
+      hotseat: 'Hotseat',
+      ai: 'Versus AI',
+      online: 'Online arena',
+      training: 'Training lab',
+      swamprun: 'Swamprun',
+      expedition: 'Expedition',
+      minerun: 'Mine Run',
+      raid: `Raid: ${ENEMY_DEFS[this.raidBoss].name}`,
+    };
+    const roleLabel = networkRole === 'guest' ? 'Join' : networkRole === 'host' ? 'Host' : 'Local';
+    const partyLabel = this.mode === 'training'
+      ? 'Solo sandbox'
+      : isPveRunMode(this.mode)
+        ? `${this.seatCount} ${this.seatCount === 1 ? 'explorer' : 'explorers'} · ${this.aiCount} AI`
+        : `${this.formatLabel()} · ${this.seatCount} seats · ${this.aiCount} AI`;
+    const setLabel = [
+      this.itemSets.original ? 'Original' : '',
+      this.itemSets.finns ? 'Finn' : '',
+      this.itemSets.dlc ? 'DLC' : '',
+    ].filter(Boolean).join(' + ');
+    this.summaryText
+      .setColor(ready ? TEXT.body : TEXT.dim)
+      .setText([
+        `${modeLabels[this.mode]} · ${roleLabel}`,
+        partyLabel,
+        `${MAGE_CLASS_DEFS[this.selectedClass].label} · Mage ${this.draftIndex + 1}/${humans.length}`,
+        `Loadout ${this.selected.length}/${this.loadoutLimit()} · ${ready ? 'READY' : 'INCOMPLETE'}`,
+        `Modifier · ${WORDS[this.selectedModifier].label}`,
+        `Packs · ${setLabel}`,
+      ]);
   }
 
   private confirm(): void {
@@ -858,10 +1032,12 @@ export class MenuScene extends Phaser.Scene {
     const seat = humans[this.draftIndex];
     this.draftLoadouts[seat] = [...this.selected];
     this.draftClasses[seat] = this.selectedClass;
+    this.draftModifiers[seat] = this.selectedModifier;
     if (this.draftIndex < humans.length - 1) {
       this.draftIndex++;
       this.selected = [];
       this.selectedClass = DEFAULT_MAGE_CLASS;
+      this.selectedModifier = MODIFIER_WORDS[0];
       this.nadActive = false;
       this.katActive = false;
       this.genActive = false;
@@ -879,7 +1055,9 @@ export class MenuScene extends Phaser.Scene {
     for (let s = 0; s < this.seatCount; s++) {
       const human = humanSet.has(s);
       const loadout =
-        human && this.draftLoadouts[s]?.length ? this.draftLoadouts[s] : this.randomAILoadout();
+        human && this.draftLoadouts[s]?.length
+          ? this.loadoutWithModifier(this.draftLoadouts[s], this.draftModifiers[s] ?? MODIFIER_WORDS[0])
+          : this.randomAILoadout();
       const mageClass = human ? (this.draftClasses[s] ?? DEFAULT_MAGE_CLASS) : this.randomClass();
       seats.push({ name: this.seatName(s, human), team: this.teamOf(s), isAI: !human, loadout, mageClass });
     }
@@ -887,6 +1065,7 @@ export class MenuScene extends Phaser.Scene {
       mode: this.mode,
       loadouts: [seats[0].loadout, seats[1]?.loadout ?? seats[0].loadout],
       swampPrepMode: usesSwampPrep(this.mode) ? this.swampPrepMode : undefined,
+      raidBoss: this.mode === 'raid' ? this.raidBoss : undefined,
       classes: [seats[0].mageClass ?? DEFAULT_MAGE_CLASS, seats[1]?.mageClass ?? DEFAULT_MAGE_CLASS],
       seats,
       itemSets: { ...this.itemSets },
@@ -901,13 +1080,14 @@ export class MenuScene extends Phaser.Scene {
     if (!picks.some((w) => WORDS[w].grantsReaction)) {
       picks[0] = 'mind';
     }
+    picks.push(MODIFIER_WORDS[Math.floor(Math.random() * MODIFIER_WORDS.length)]);
     return picks;
   }
 
   private start(l1: WordId[], l2: WordId[]): void {
     const config: MatchConfig = {
       mode: this.mode,
-      loadouts: [l1, l2],
+      loadouts: [this.loadoutWithModifier(l1, this.selectedModifier), l2],
       classes: [this.selectedClass, this.randomClass()],
       itemSets: { ...this.itemSets },
     };
@@ -939,7 +1119,7 @@ export class MenuScene extends Phaser.Scene {
     const url = this.askRelayUrl();
     if (url == null) return;
 
-    const myLoadout = [...this.selected];
+    const myLoadout = this.loadoutWithModifier(this.selected, this.selectedModifier);
     const myClass = this.selectedClass;
     this.connecting = true;
     this.refresh();
@@ -1007,11 +1187,13 @@ export class MenuScene extends Phaser.Scene {
           seats,
           itemSets: this.itemSets,
           swampPrepMode: usesSwampPrep(this.mode) ? this.swampPrepMode : undefined,
+          raidBoss: this.mode === 'raid' ? this.raidBoss : undefined,
         });
         config = {
           mode: this.mode,
           loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],
           swampPrepMode: usesSwampPrep(this.mode) ? this.swampPrepMode : undefined,
+          raidBoss: this.mode === 'raid' ? this.raidBoss : undefined,
           seats,
           net,
           localTeam: seats[0].team,
@@ -1030,7 +1212,7 @@ export class MenuScene extends Phaser.Scene {
         const seed = Number(startMsg.seed) | 0;
         const itemSets = this.sanitizeItemSets(startMsg.itemSets);
         // The host tells us which mode we're joining (PvP duel or co-op swamprun).
-        const startMode: MatchMode = startMsg.mode === 'swamprun' || startMsg.mode === 'expedition' || startMsg.mode === 'minerun'
+        const startMode: MatchMode = startMsg.mode === 'swamprun' || startMsg.mode === 'expedition' || startMsg.mode === 'minerun' || startMsg.mode === 'raid'
           ? startMsg.mode
           : 'online';
         config = {
@@ -1041,6 +1223,7 @@ export class MenuScene extends Phaser.Scene {
               ? startMsg.swampPrepMode
               : 'custom'
             : undefined,
+          raidBoss: startMode === 'raid' ? this.sanitizeRaidBoss(startMsg.raidBoss) : undefined,
           seats,
           net,
           localTeam: seats[mySeat]?.team ?? 2,
@@ -1105,8 +1288,11 @@ export class MenuScene extends Phaser.Scene {
   /** Coerce an untrusted loadout from the network into a safe WordId[]. */
   private sanitizeLoadout(value: unknown): WordId[] {
     const arr = Array.isArray(value) ? value : [];
-    const out = arr.filter((w): w is WordId => typeof w === 'string' && w in WORDS).slice(0, LOADOUT_SIZE);
+    const words = arr.filter((w): w is WordId => typeof w === 'string' && w in WORDS);
+    const out = words.filter((w) => !isModifierWord(w)).slice(0, LOADOUT_SIZE);
     if (out.length === 0) out.push('pierce');
+    // A build may carry exactly one modifier, and it costs no loadout slot.
+    out.push(words.find(isModifierWord) ?? MODIFIER_WORDS[0]);
     return out;
   }
 
@@ -1137,5 +1323,11 @@ export class MenuScene extends Phaser.Scene {
     };
     if (!sets.original && !sets.finns && !sets.dlc) sets.original = true;
     return sets;
+  }
+
+  private sanitizeRaidBoss(value: unknown): RaidBossKind {
+    return RAID_BOSS_KINDS.includes(value as RaidBossKind)
+      ? value as RaidBossKind
+      : 'deathknightSpear';
   }
 }

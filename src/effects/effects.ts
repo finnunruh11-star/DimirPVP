@@ -167,7 +167,14 @@ export interface EffectContext {
  * any other effect whose potency is measured in cycles or pixels.
  */
 export function critScale(ctx: EffectContext, value: number): number {
-  return ctx.crit ? value * 2 : value;
+  const scaled = ctx.crit ? value * 2 : value;
+  return castPotencyScale(ctx, scaled);
+}
+
+/** Apply the resolving cast's modifier potency, rounding up as Subtle requires. */
+export function castPotencyScale(ctx: EffectContext, value: number): number {
+  const potency = ctx.game.castPotency;
+  return potency === 1 ? value : Math.ceil(value * potency);
 }
 
 /**
@@ -234,6 +241,7 @@ export function dealDamage(
   } = {}
 ): number {
   const targetWasAlive = target.alive;
+  ctx.game.triggerOniAmbush(ctx.caster, target);
   const canMiss = opts.canMiss !== false;
   const isAoe = !!opts.aoe;
   const isTrue = !!opts.trueDamage;
@@ -288,7 +296,7 @@ export function dealDamage(
 
   // A critical cast (natural-20 success) doubles the raw damage of this hit.
   let amount =
-    (ctx.crit ? damage.amount * 2 : damage.amount) +
+    castPotencyScale(ctx, ctx.crit ? damage.amount * 2 : damage.amount) +
     ctx.caster.modifier('damageDealt') +
     target.modifier('damageTaken');
 
@@ -381,6 +389,25 @@ export function dealDamage(
     `${target.name} takes ${amount} ${damage.type} ${damage.damageClass} damage.`
   );
 
+  if (amount > 0 && ctx.caster.deathknightKind && ctx.caster.alive) {
+    const before = ctx.caster.hp;
+    ctx.caster.hp = Math.min(ctx.caster.maxHp, ctx.caster.hp + amount);
+    const healed = ctx.caster.hp - before;
+    if (healed > 0) ctx.log(`${ctx.caster.name} steals ${healed} health from the wound.`);
+  }
+
+  if (
+    amount > 0 &&
+    ctx.caster !== target &&
+    ctx.caster.hasDeathsAngelWings() &&
+    target.alive &&
+    !target.unkillable &&
+    target.hp <= Math.ceil(target.maxHp * 0.06)
+  ) {
+    target.hp = 0;
+    ctx.log(`${ctx.caster.name}'s Wings execute ${target.name} at death's threshold.`);
+  }
+
   // Lich "Link": HP damage dealt to a linked victim is mirrored back to the
   // owning lich as healing (it profits from the party wounding its thralls).
   if (amount > 0 && damage.damageClass !== 'sanity' && target.drainLinkTo) {
@@ -407,9 +434,16 @@ export function dealDamage(
   }
 
   if (targetWasAlive && !target.alive) {
-    ctx.game.onMageDefeated?.(target, ctx.caster);
+    ctx.game.notifyMageDefeated(target, ctx.caster);
     ctx.game.restoreEdgelordCaptives();
   }
+
+  // Death-word marks resolve after ordinary lethality, so a blow that already
+  // killed the target cannot be attributed twice.
+  if (amount > 0 && (damage.type === 'shadow' || damage.type === 'corrosive')) {
+    ctx.game.tickDeathCurse(target, `${damage.type} damage`);
+  }
+  if (amount > 0) ctx.game.checkReapDeath(target, ctx.caster);
 
   // A landed hit can shatter veils. The victim's veil may be torn off; the
   // attacker may reveal themselves by striking. DoT ticks (canMiss === false)
@@ -421,6 +455,7 @@ export function dealDamage(
     // Curse Drain if the cursed creature wounds one of the curse-author's allies.
     if (target.team !== ctx.caster.team) {
       ctx.caster.dealtDamageThisTurn = true;
+      if (ctx.caster.deathknightKind) ctx.caster.deathknightHitThisTurn.add(target);
       const ocd = ctx.caster.statuses.find(
         (s) => s.kind === 'dot' && s.key === 'dot:order-curse-drain'
       ) as DotStatus | undefined;
@@ -529,6 +564,8 @@ function breakVeilOnStruck(
 
 /** Attacking with anything reveals you: any blow that lands tears your veil away. */
 function breakVeilOnStrike(ctx: EffectContext, attacker: Mage, amount: number): void {
+  // A silent cast never gives the caster away.
+  if (ctx.game.castSilent) return;
   const inv = attacker.getInvisibility();
   if (!inv) return;
   if (amount > 0) {
@@ -567,6 +604,7 @@ export function heal(
       for (const m of ctx.game.mages) {
         if (m.alive && m.profile.primary === 'white') m.gainColorCharges(1);
       }
+      ctx.game.reapOnOwnerHeal(target);
     }
   }
 }
@@ -626,6 +664,10 @@ export function applyStun(
   opts: { duration: number; type: StunType; extend?: boolean; veilBindLinked?: boolean }
 ): void {
   if (ctx.game.isLaranegUntouchable(target)) return;
+  if (target.slowStunImmune) {
+    ctx.log(`${target.name} cannot be slowed or stunned.`);
+    return;
+  }
   if (target.debuffImmune) {
     ctx.log(`${target.name} cannot be stayed — it shrugs off the binding.`);
     return;
@@ -820,6 +862,12 @@ export function applyDot(
     bonusNoDamageSpec?: string;
     /** Owner's team: bearer damaging this team in a cycle extends the DoT +2. */
     extendOwnerTeam?: number;
+    /** Reap stacks added to the bearer on every tick. */
+    reapPerTick?: number;
+    /** Index (in game.mages) whose healing adds 1 Reap to the bearer. */
+    reapOnOwnerHealIndex?: number;
+    /** On the bearer's death, pass its Reap to the nearest enemy in this radius. */
+    reapTransferRadius?: number;
     extend?: boolean;
   }
 ): void {
@@ -835,6 +883,7 @@ export function applyDot(
       name: opts.name,
       kind: 'dot',
       duration,
+      sourceIndex: ctx.game.mages.indexOf(ctx.caster),
       damage: opts.damage,
       damageSpec: opts.damageSpec,
       band: opts.band,
@@ -846,6 +895,9 @@ export function applyDot(
       sourceTeam: opts.sourceTeam,
       bonusNoDamageSpec: opts.bonusNoDamageSpec,
       extendOwnerTeam: opts.extendOwnerTeam,
+      reapPerTick: opts.reapPerTick,
+      reapOnOwnerHealIndex: opts.reapOnOwnerHealIndex,
+      reapTransferRadius: opts.reapTransferRadius,
     },
     !!opts.extend
   );
@@ -899,6 +951,7 @@ export function applyStackingDot(
     name: opts.name,
     kind: 'dot',
     duration: refreshDuration,
+    sourceIndex: ctx.game.mages.indexOf(ctx.caster),
     damage: opts.damage,
     perStackSpec: opts.perStackSpec,
     stacks: 1,
@@ -945,6 +998,10 @@ export function applyDebuff(
   }
 ): void {
   if (ctx.game.isLaranegUntouchable(target)) return;
+  if (target.slowStunImmune && (opts.mods.moveRange ?? 0) < 0) {
+    ctx.log(`${target.name} ignores the slowing curse.`);
+    return;
+  }
   if (target.debuffImmune) {
     ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
     return;
@@ -1000,6 +1057,7 @@ export function areaDamage(
     radius,
     ctx.caster.team,
     damage.amount,
+    damage.type,
     damage.damageClass === 'sanity'
   );
   return hits;
@@ -1026,6 +1084,16 @@ export function coneDamage(
   }
   for (const m of hits) {
     dealDamage(ctx, m, { ...damage }, { ...damageOpts, aoe: true, noImpactFx: true });
+  }
+  if (damage.type === 'fire') {
+    ctx.game.destroyScarabsByFireInCone(
+      ctx.caster.pos,
+      toward,
+      range,
+      degrees,
+      ctx.caster.team,
+      strictRange
+    );
   }
   return hits;
 }

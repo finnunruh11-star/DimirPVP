@@ -25,6 +25,7 @@ export type AIDecision =
   | { type: 'spell'; spell: Spell; target?: Mage; point?: Vec2 }
   | { type: 'companion-heal'; target: Mage }
   | { type: 'color-ability'; ability: ColorAbility; target?: Mage; point?: Vec2 }
+  | { type: 'deaths-angel-wings' }
   // A bespoke Lich power: cast for free (no pay/DC) and always succeeds.
   | { type: 'power'; spell: Spell; target: Mage }
   // Ghast: telegraph a delayed shadow zone that erupts on its next turn.
@@ -57,6 +58,8 @@ export class SimpleAI {
     return allSpells(this.self.mageClass).filter(
       (s) =>
         s.actionType === action &&
+        // Delay only does anything in answer to something on the stack.
+        !s.delaysStackItem &&
         s.words.every((w) => set.has(w)) &&
         !s.words.some((w) => forgotten.includes(w)) &&
         this.game.canCastSpellNow(s) &&
@@ -69,6 +72,15 @@ export class SimpleAI {
     if (this.self.mine) {
       const mine = chooseMineAction(this.game, this.self);
       if (mine) return mine;
+    }
+    if (
+      this.self.hasDeathsAngelWings() &&
+      !this.self.isItemBanned('deathsAngelWings') &&
+      this.self.deathsAngelEnergy > 0 &&
+      this.self.deathsAngelFlightTurns <= 1 &&
+      this.self.actions.bonus > 0
+    ) {
+      return { type: 'deaths-angel-wings' };
     }
     // The Lich runs its own smart routine (bespoke powers, stays put to unlock
     // its end-step, secures kills). Every other undead falls through to the

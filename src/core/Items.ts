@@ -8,7 +8,7 @@
 //  with Strength) and tweak the basic attack, defence, spellcasting or vitals.
 // =============================================================================
 
-import type { DamageType } from './Damage';
+import type { DamageClass, DamageType } from './Damage';
 import {
   BASE_CARRY_KG,
   MELEE_RANGE,
@@ -53,6 +53,8 @@ export type ItemId =
   | 'buckler'
   | 'finesseDagger'
   | 'eldritchMantle'
+  | 'deathsAngelWings'
+  | 'shadowDagger'
   | 'roaringThunder'
   | 'needleOfSerenity'
   | 'secondRingOfLareneg'
@@ -175,6 +177,8 @@ export interface WeaponMod {
   /** Bows consume one arrow per shot and can't fire without ammo. */
   usesArrows?: boolean;
   damageType: DamageType;
+  /** Vital pool damaged by the strike (default physical HP; sanity = mill). */
+  damageClass?: DamageClass;
   /** Chance (0..1) to deal double damage (silver shortsword). */
   critChance?: number;
   /** A single-use weapon that rolls this spec then is consumed (crossbow). */
@@ -333,7 +337,7 @@ export interface ItemDef {
   /** Basic-attack profile used while this item is in shield form (Greatshield). */
   shieldWeapon?: WeaponMod;
   /** What this weapon does when its owner takes the Weapon Action. */
-  weaponAbility?: 'bastionSwap' | 'mutivargZone' | 'gamblerCash' | 'blackBellMode';
+  weaponAbility?: 'bastionSwap' | 'mutivargZone' | 'gamblerCash' | 'blackBellMode' | 'shadowDaggerTeleport';
   /** Occupies both hands even though it is represented by one item id. */
   twoHanded?: boolean;
   /** This weapon's basic attack is a bonus action (Gambler's Blade). */
@@ -361,6 +365,10 @@ export interface ItemDef {
   throwable?: { rollSpec: string; rangePx: number };
   /** Grants the "Eldritch" main action (Mantle of Eldritch Truth). */
   eldritchMantle?: boolean;
+  /** Grants kill Energy, temporary flight, a life-draining aura and execution. */
+  deathsAngelWings?: boolean;
+  /** Shadow teleport toll and round-based stealth upkeep for Dagger of Shadow. */
+  shadowDagger?: { teleportManaCost: number; stealthManaPerRound: number };
   /** Grants the Roaring Thunder stack engine + Charge Up / Discharge bonus actions. */
   thunderBlessing?: boolean;
   /** A one-time reaction that stifles an ability/weapon attack and bans it forever (Needle of Serenity). */
@@ -481,6 +489,38 @@ export const ITEM_DEFS: ItemDef[] = [
     blurb:
       'Grants the "Eldritch" main action: Attack (10 true damage to any target at any range), Defend (cancel all damage to you until your next turn), or Restore (regain 5 HP, 10 mana and 2 charges of each word).',
     eldritchMantle: true,
+  },
+  {
+    id: 'deathsAngelWings',
+    name: 'Wings of Deaths Angel',
+    slot: 'torso',
+    set: 'original',
+    rarity: 'legendary',
+    cost: g(0),
+    weight: 0,
+    blurb:
+      'Permanently binding. Gain 1 Energy whenever you kill an enemy; Energy resets on a long rest. Cape Ability (bonus): spend 1 Energy to fly for 2 of your turns. Once per active turn, heal 1d3 HP and deal 1d3 true damage to every enemy within 5cm. Any positive damage you deal executes a target left at or below 6% max HP (rounded up). Extending flight adds duration without triggering an extra pulse.',
+    deathsAngelWings: true,
+    permanentlyBinding: true,
+  },
+  {
+    id: 'shadowDagger',
+    name: 'Dagger of Shadow',
+    slot: 'hand',
+    set: 'original',
+    rarity: 'legendary',
+    cost: g(0),
+    weight: 0,
+    blurb:
+      'Dex attack (shadow mill): floor((d20 + Dex - 10) / 2). While held in a shadow, gain a half veil for 1 mana per turn (about 5 seconds). Weapon Action (bonus): while standing in a shadow, point at any shadow to teleport there. The toll is 8 mana and never requires enough mana; each unpaid mana silently consumes a random permanent stat point and can kill through max-HP loss.',
+    weaponAbility: 'shadowDaggerTeleport',
+    shadowDagger: { teleportManaCost: 8, stealthManaPerRound: 1 },
+    weapon: {
+      rangePx: MELEE_RANGE,
+      kind: 'dex',
+      damageType: 'shadow',
+      damageClass: 'sanity',
+    },
   },
   {
     id: 'bastionSword',

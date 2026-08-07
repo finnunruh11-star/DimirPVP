@@ -73,6 +73,18 @@ function allyInRange(source: Mage, target: Mage | undefined, range: number): boo
   );
 }
 
+/** True when an unmoved Rockling's exact Launch path ends in target contact. */
+export function canRocklingLaunchHit(game: GameState, source: Mage, target: Mage | undefined): boolean {
+  if (
+    source.movedThisTurn ||
+    mineKind(source) !== 'rockling' ||
+    !enemyInRange(game, source, target, 8 * RANGE_UNIT)
+  ) return false;
+  const destination = stepTowards(source.pos, target!.pos, 8 * RANGE_UNIT);
+  const landing = game.leapDestination(source, destination);
+  return dist(landing, target!.pos) <= source.bodyRadius() + target!.bodyRadius() + 0.5;
+}
+
 function rolledDamage(
   game: GameState,
   source: Mage,
@@ -97,7 +109,8 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
     hostile: true,
     visual: 'shatter',
     available: (source) => mineKind(source) === 'rockling',
-    isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 8 * RANGE_UNIT),
+    canCommit: (source) => !source.movedThisTurn,
+    isStillValid: (game, source, choice) => canRocklingLaunchHit(game, source, choice.target),
     resolve: (game, source, choice) => {
       const target = choice.target!;
       game.leapMove(source, stepTowards(source.pos, target.pos, 8 * RANGE_UNIT));
@@ -170,7 +183,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       let hit: Mage | null = null;
       let first = Infinity;
       for (const candidate of game.livingEnemiesOf(source)) {
-        if (candidate.intrinsicAirborne) continue;
+        if (candidate.isAirborne()) continue;
         const t = segmentCircleFirstIntersection(
           source.pos,
           destination,

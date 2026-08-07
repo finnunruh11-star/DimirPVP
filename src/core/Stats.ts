@@ -11,6 +11,9 @@ import type { Dice } from './Dice';
 
 export type StatKey = 'strength' | 'dex' | 'int' | 'mana' | 'hp' | 'luck';
 
+export const STAT_BUILD_IDS = ['warrior', 'rogue', 'mage'] as const;
+export type StatBuildId = (typeof STAT_BUILD_IDS)[number];
+
 /** Fixed slot order: an assignment is a permutation of die indices in this order. */
 export const STAT_ORDER: StatKey[] = ['strength', 'dex', 'int', 'mana', 'hp', 'luck'];
 
@@ -29,6 +32,21 @@ export const STAT_DEFS: StatDef[] = [
   { key: 'hp', name: 'Vitality', blurb: 'Maximum health increases by value.' },
   { key: 'luck', name: 'Luck', blurb: 'A once-per-duel pool spent to nudge a spell roll up to its DC.' },
 ];
+
+export const STAT_BUILD_DEFS: Record<StatBuildId, { label: string; priority: readonly StatKey[] }> = {
+  warrior: {
+    label: 'Warrior',
+    priority: ['strength', 'hp', 'dex', 'luck', 'int', 'mana'],
+  },
+  rogue: {
+    label: 'Rogue',
+    priority: ['dex', 'luck', 'strength', 'hp', 'int', 'mana'],
+  },
+  mage: {
+    label: 'Mage',
+    priority: ['int', 'luck', 'mana', 'hp', 'dex', 'strength'],
+  },
+};
 
 export interface DieResult {
   /** The dice spec that was rolled, e.g. "2d6" or "1d20". */
@@ -91,19 +109,29 @@ export function defaultAssignment(): number[] {
   return STAT_ORDER.map((_, i) => i);
 }
 
+/** Assign the highest dice to stats in the supplied priority order. */
+function priorityAssignment(dice: DieResult[], priority: readonly StatKey[]): number[] {
+  const byValueDesc = dice
+    .map((die, index) => ({ index, value: die.value }))
+    .sort((a, b) => b.value - a.value || a.index - b.index)
+    .map((die) => die.index);
+  const order = defaultAssignment();
+  priority.forEach((stat, rank) => {
+    if (byValueDesc[rank] != null) order[STAT_ORDER.indexOf(stat)] = byValueDesc[rank];
+  });
+  return order;
+}
+
+/** Deterministically fill all six stat slots using a named player build. */
+export function statBuildAssignment(dice: DieResult[], build: StatBuildId): number[] {
+  return priorityAssignment(dice, STAT_BUILD_DEFS[build].priority);
+}
+
 /**
  * A simple AI allocation: hand the biggest dice to the stats the AI values most.
  * Deterministic (no RNG) so it stays in lockstep across peers.
  */
 export function aiAssignment(dice: DieResult[]): number[] {
   const priority: StatKey[] = ['hp', 'strength', 'int', 'mana', 'dex', 'luck'];
-  const byValueDesc = dice
-    .map((d, i) => ({ i, value: d.value }))
-    .sort((a, b) => b.value - a.value || a.i - b.i)
-    .map((d) => d.i);
-  const order = defaultAssignment();
-  priority.forEach((stat, rank) => {
-    order[STAT_ORDER.indexOf(stat)] = byValueDesc[rank];
-  });
-  return order;
+  return priorityAssignment(dice, priority);
 }

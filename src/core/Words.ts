@@ -15,9 +15,12 @@ export type WordId =
   | 'drain'
   | 'order'
   | 'slash'
-  | 'pain'
+  | 'death'
   | 'fire'
   | 'lightning'
+  | 'subtle'
+  | 'delay'
+  | 'channel'
   | 'stop';
 
 export interface WordDef {
@@ -121,13 +124,13 @@ export const WORDS: Record<WordId, WordDef> = {
     color: 0x57d6a0,
     blurb: 'Corrosive lifesteal.',
   },
-  pain: {
-    id: 'pain',
-    label: 'Pain',
+  death: {
+    id: 'death',
+    label: 'Death',
     grantsReaction: false,
     charges: 4,
-    color: 0xe06b9f,
-    blurb: 'Mental damage.',
+    color: 0xb9c0cc,
+    blurb: 'Reap marks and executions.',
   },
   fire: {
     id: 'fire',
@@ -152,6 +155,31 @@ export const WORDS: Record<WordId, WordDef> = {
     charges: 4,
     color: 0x9ee7ff,
     blurb: 'Companion counter that stops anything.',
+  },
+  // --- Modifiers (granted to every mage; free of the loadout limit) ---
+  subtle: {
+    id: 'subtle',
+    label: 'Subtle',
+    grantsReaction: false,
+    charges: 4,
+    color: 0x8fa3b8,
+    blurb: 'Silent casting at 80% power.',
+  },
+  delay: {
+    id: 'delay',
+    label: 'Delay',
+    grantsReaction: true,
+    charges: 4,
+    color: 0x7fd8c0,
+    blurb: 'Postpone a spell or a stacked action.',
+  },
+  channel: {
+    id: 'channel',
+    label: 'Channel',
+    grantsReaction: false,
+    charges: 4,
+    color: 0xffc98a,
+    blurb: 'Hold a turn for +50% power.',
   },
   // --- Secret words (GEN easter-egg loadout only; hidden from the menu grid) ---
   order: {
@@ -217,13 +245,35 @@ export const WORD_KIND: Record<WordId, WordKind> = {
   lightning: 'noun',
   mind: 'noun',
   fire: 'noun',
-  pain: 'noun',
+  death: 'noun',
   shadow: 'noun',
   reality: 'noun',
   order: 'noun',
+  // Modifiers attach to another spell rather than forming one.
+  subtle: 'modifier',
+  delay: 'modifier',
+  channel: 'modifier',
   // Stop is not part of either class-spell category.
   stop: 'other',
 };
+
+/** Modifier words every mage knows; they never count against the loadout limit. */
+export const MODIFIER_WORDS: WordId[] = ['subtle', 'delay', 'channel'];
+
+export function isModifierWord(word: WordId): boolean {
+  return WORD_KIND[word] === 'modifier';
+}
+
+/** Split a selection into the spell's own words and the modifiers attached to it. */
+export function splitModifiers(words: readonly WordId[]): {
+  base: WordId[];
+  modifiers: WordId[];
+} {
+  return {
+    base: words.filter((word) => !isModifierWord(word)),
+    modifiers: words.filter((word) => isModifierWord(word)),
+  };
+}
 
 /**
  * Whether a word-combo is a "class spell": every word shares one grammatical

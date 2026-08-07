@@ -11,7 +11,11 @@ export type DamageType =
   | 'fire'
   | 'light'
   | 'typeless'
-  | 'generic';
+  | 'generic'
+  // Reserved for restorative magic; no spell deals these yet, but creatures
+  // may already declare a weakness to them.
+  | 'cleansing'
+  | 'healing';
 
 export interface DamageInstance {
   amount: number;

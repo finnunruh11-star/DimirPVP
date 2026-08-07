@@ -19,8 +19,8 @@ For online, LAN, Creative Swamprun, and Campaign hosting instructions, see
 ## How to play
 
 1. **Menu**: choose a competitive mode, Training, or **PvE**. PvE opens the
-  **Swamprun**, **Expedition**, and **Mine Run** choices. Each human then builds
-  their own word loadout.
+  **Swamprun**, **Expedition**, **Mine Run**, and **Raid** choices. Each human
+  then builds their own word loadout.
 2. **Your turn** gives you **1 move, 1 main, 2 bonus** actions (and **1 reaction** per
    round if your loadout has Bind / Veil / Mind).
 3. **Keys**:
@@ -43,6 +43,17 @@ For online, LAN, Creative Swamprun, and Campaign hosting instructions, see
   milestone bosses.
 - **Expedition** adds depth choices, retreating, XP, personal gold, a town, and
   recruitable companions.
+- **Raid** begins by selecting a Lich, Reaper, or Deathknight (Spear), then uses
+  Quick, Rolled stats + gear, or Creative preparation for one boss fight.
+  The fight opens with a preparation phase: three rooted 1 HP practice effigies
+  that never fight back and always reform, plus three free action-menu restores
+  for health and mind, mana, and word charges. The restores cost no action at
+  all, not even a bonus action, and can be used as often as needed. Use the
+  phase to equip your gear and build up kill-powered and stacking items, then
+  summon the boss from the action menu.
+  Everything you built carries straight into the fight. Defeating the selected
+  target wins. Raids support 1-4 local hotseat players, AI allies, and seeded
+  online co-op.
 - **Mine Run** is a seeded maze of tunnels, junctions, and hidden rooms. Choose
   among one to four paths at each junction or room exit; rooms have a slight
   chance to gain one extra path, still capped at four. Navigation uses the

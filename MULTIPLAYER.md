@@ -65,7 +65,8 @@ The tunnel address changes whenever `cloudflared` restarts. Do not expose port `
 
 1. Every player opens the same host or tunnel URL.
 2. Select **Online**, or open **PvE** and choose **Swamprun**, **Expedition**, or
-	**Mine Run**.
+    **Mine Run**, or **Raid**. For a Raid, choose the target boss before setting
+    up the party; the host's target and preparation mode apply to the room.
 3. The first player selects **Host** and sets the player count to the number of human players.
 4. Other players select **Join**.
 5. Everyone enters the exact same room code and relay URL when prompted.
@@ -78,6 +79,16 @@ For a page served by `npm run relay`, accept the prefilled relay URL. When using
 - **Online:** standard competitive multiplayer.
 - **Swamprun:** cooperative survival. In Creative prep, each player configures their own stats and items; the game waits for every player and applies all setups identically on every client.
 - **Expedition / Campaign:** cooperative campaign. Each player chooses upgrades, receives their own gold, buys their own items, can donate 1g at a time, and pays for their own rest. Two-player rewards are 80% per player, three-player rewards are 60%, and four-player rewards are 40%. The host controls continue/retreat decisions, recruitment, and departure.
+- **Raid:** one cooperative fight against the host-selected Lich, Reaper, or
+    Deathknight (Spear). Quick, Rolled stats + gear, and Creative preparation
+    use the same synchronized setup flow as Swamprun. The fight opens with a
+    shared preparation phase of harmless, endlessly reforming 1 HP effigies and
+    three free restores (health and mind, mana, word charges) that cost no
+    action; any player can end the phase from the action menu. Restores and the
+    boss summon are relayed as ordinary turn commands, so every peer applies
+    them together.
+    Defeating the selected boss ends the match in victory, including when it has
+    created extra units.
 - **Mine Run:** cooperative maze exploration using Swamprun's preparation and
     shared gold. The complete discovered maze is shown during navigation; the
     party leader clicks one of the one-to-four highlighted routes connected to the

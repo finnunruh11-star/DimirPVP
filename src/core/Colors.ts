@@ -23,7 +23,7 @@ export const WORD_COLOR: Record<WordId, WordColor> = {
   corrode: 'black',
   curse: 'black',
   drain: 'black',
-  pain: 'black',
+  death: 'black',
   fire: 'red',
   lightning: 'red',
   stop: 'blue',
@@ -36,6 +36,9 @@ export const WORD_COLOR: Record<WordId, WordColor> = {
   twist: 'none',
   order: 'white',
   slash: 'none',
+  subtle: 'none',
+  delay: 'none',
+  channel: 'none',
 };
 
 /**
@@ -59,7 +62,7 @@ const WORD_POTENCY: Record<WordId, number> = {
   order: 2,
   shadow: 2,
   reality: 2,
-  pain: 2,
+  death: 2,
   // Medium: solid utility / damage.
   corrode: 1,
   bind: 1,
@@ -73,6 +76,9 @@ const WORD_POTENCY: Record<WordId, number> = {
   veil: 0,
   mind: 0,
   shatter: 0,
+  subtle: 1,
+  delay: 1,
+  channel: 1,
 };
 
 /**

@@ -1,11 +1,12 @@
 import { RANGE_UNIT } from '../config/constants';
 import type { GameState } from '../core/GameState';
 import type { Mage } from '../core/Mage';
-import { dist } from '../core/utils';
+import { dist, stepTowards, type Vec2 } from '../core/utils';
 import { canUseMineAction, type MineActionChoice } from './mineActions';
 
 export type MineAIDecision =
   | { type: 'mine-action'; choice: MineActionChoice }
+  | { type: 'move'; point: Vec2 }
   | { type: 'end' }
   | null;
 
@@ -48,7 +49,21 @@ export function chooseMineAction(game: GameState, source: Mage): MineAIDecision 
   )!;
 
   if (mine.kind === 'rockling') {
-    return tryAction(game, source, { id: 'rockling-launch', target: nearest });
+    if (source.movedThisTurn) return { type: 'end' };
+    const launchTargets = enemies.filter((target) =>
+      canUseMineAction(game, source, { id: 'rockling-launch', target })
+    );
+    const launchTarget = chooseTied(
+      game,
+      launchTargets,
+      (target) => -Math.round(dist(source.pos, target.pos) * 1000)
+    );
+    if (launchTarget) {
+      return { type: 'mine-action', choice: { id: 'rockling-launch', target: launchTarget } };
+    }
+    return source.actions.move > 0
+      ? { type: 'move', point: stepTowards(source.pos, nearest.pos, source.moveRange()) }
+      : { type: 'end' };
   }
 
   if (mine.kind === 'cavern-bat') {

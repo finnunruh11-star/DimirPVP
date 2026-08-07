@@ -23,7 +23,9 @@ export type StatusKind =
   | 'fire'
   | 'sentinelFire'
   | 'blueflare'
-  | 'soulRend';
+  | 'soulRend'
+  | 'reap'
+  | 'deathCurse';
 export type StunType = 'main' | 'movement' | 'full';
 export type InvisMode = 'full' | 'partial';
 /** Kinds of mental compulsion the Mind word can inflict. */
@@ -50,6 +52,8 @@ export interface StunStatus extends BaseStatus {
 
 export interface DotStatus extends BaseStatus {
   kind: 'dot';
+  /** Index of the mage whose effect created this DoT. */
+  sourceIndex?: number;
   /** Damage applied at the start of the affected mage's turn. */
   damage: DamageInstance;
   /** Optional dice spec rolled fresh each tick (e.g. "1d3"); overrides amount. */
@@ -96,6 +100,29 @@ export interface DotStatus extends BaseStatus {
   extendOwnerTeam?: number;
   /** turnSeq of the last cycle-extension (dedups multi-hit extensions). */
   extendSeq?: number;
+  /** Reap stacks added to the bearer on each tick. */
+  reapPerTick?: number;
+  /** Index (in GameState.mages) whose healing adds 1 Reap to the bearer. */
+  reapOnOwnerHealIndex?: number;
+  /** On the bearer's death, pass its remaining Reap to the nearest enemy. */
+  reapTransferRadius?: number;
+}
+
+/** Stacking execution mark: the bearer dies at or below this much health. */
+export interface ReapStatus extends BaseStatus {
+  kind: 'reap';
+  stacks: number;
+}
+
+/**
+ * Death Curse: `stacks` counters that fall on shadow/corrosive damage and at the
+ * bearer's turn start, each granting Reap. While it lasts, executions become Reap
+ * instead of kills; its final counter executes the bearer.
+ */
+export interface DeathCurseStatus extends BaseStatus {
+  kind: 'deathCurse';
+  stacks: number;
+  ownerIndex: number;
 }
 
 /** Persistent Fire stacks. Their damage, spread, and decay are resolved at turn start. */
@@ -262,7 +289,9 @@ export type Status =
   | FireStatus
   | SentinelFireStatus
   | BlueflareStatus
-  | SoulRendStatus;
+  | SoulRendStatus
+  | ReapStatus
+  | DeathCurseStatus;
 
 /**
  * Add a status, or refresh/extend an existing one that shares the same key.

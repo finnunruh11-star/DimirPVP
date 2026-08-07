@@ -3,8 +3,18 @@ import type { Spell } from '../spells/Spell';
 import type { Vec2 } from './utils';
 import type { GameState } from './GameState';
 import type { ItemId } from './Items';
+import type { WordId } from './Words';
 
 export type StackKind = 'move' | 'melee' | 'spell' | 'action';
+
+/** A spell held for a later turn by the Channel or Delay modifier. */
+export interface PendingCast {
+  spell: Spell;
+  target: Mage | null;
+  point: Vec2 | null;
+  point2: Vec2 | null;
+  modifiers: WordId[];
+}
 
 /**
  * What a Needle of Serenity permanently disables if it stifles an `action`
@@ -45,6 +55,12 @@ export interface StackItem {
    * such as an end-of-turn window or a blink step.
    */
   noPhysicalReaction?: boolean;
+  /** This trigger exceptionally permits the active mage to answer it. */
+  allowCurrentReaction?: boolean;
+  /** Modifier words attached to this cast (Subtle / Delay / Channel). */
+  modifiers?: WordId[];
+  /** A silent cast: nobody may react to it at all. */
+  silent?: boolean;
 
   /** If this item is a reaction, the id of the item it was cast in response to. */
   respondingTo?: number;

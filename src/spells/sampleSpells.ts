@@ -1137,99 +1137,138 @@ registerSpell({
 });
 
 // ===========================================================================
-//  KAT EASTER-EGG SPELLS   (words: Corrode / Curse / Shadow / Drain / Pain)
+//  MODIFIER WORDS   (Subtle / Delay / Channel — known by every mage)
+// -----------------------------------------------------------------------------
+//  Subtle and Channel only ever attach to another spell. Delay does too, but it
+//  is also a spell in its own right: cast alone it postpones something already
+//  waiting on the stack.
 // ===========================================================================
 
 registerSpell({
-  name: 'Pain',
-  words: ['pain'],
+  name: 'Delay',
+  words: ['delay'],
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'none',
+  dc: 7,
+  description:
+    "Answer an action or damage trigger waiting on the stack: it does not happen now. Instead it resolves at the start of the affected entity's next turn.",
+  delaysStackItem: true,
+  visual: { preset: 'nova', color: 0x7fd8c0, size: 46, speed: 1.3 },
+  cast(ctx) {
+    // The postponement itself is performed by the stack once this resolves.
+    ctx.log(`${ctx.caster.name} folds the moment aside.`);
+  },
+});
+
+// ===========================================================================
+//  KAT EASTER-EGG SPELLS   (words: Corrode / Curse / Shadow / Drain / Death)
+// -----------------------------------------------------------------------------
+//  Death is the execute word. It stacks Reap on a victim: a reaped foe dies the
+//  moment its health falls to its Reap count, and every execution threshold is
+//  raised by 2 per stack.
+// ===========================================================================
+
+registerSpell({
+  name: 'Death',
+  words: ['death'],
   actionType: 'main',
   range: R(15),
   targeting: 'enemy',
   dc: 7,
-  description: 'Deal 1d4 mental damage to one enemy (range 15).',
-  visual: { preset: 'beam', color: 0xe06b9f, size: 6, speed: 1.2 },
+  description:
+    'Mark one enemy with 1d6 Reap, then execute it for 1 (range 15). A reaped foe dies at or below its Reap count, and executions are raised by 2 per stack.',
+  visual: { preset: 'beam', color: 0xb9c0cc, size: 6, speed: 1.2 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d4', 'Pain'), 'shadow', 'sanity'));
+    ctx.game.applyReap(ctx.target, rollDice(ctx, '1d6', 'Death — Reap'), ctx.caster);
+    if (ctx.target.alive) ctx.game.executeTarget(ctx.caster, ctx.target, 1);
   },
 });
 
 registerSpell({
-  name: 'Corrode Pain',
-  words: ['corrode', 'pain'],
+  name: 'Death Corrode',
+  words: ['corrode', 'death'],
   actionType: 'main',
   range: R(10),
   targeting: 'enemy',
   dc: 11,
-  description: 'Deal 1d6 corrosive health damage and 1d4 mental damage to one enemy (range 10).',
-  visual: { preset: 'projectile', color: 0xc68b73, size: 10, speed: 1.3 },
+  description: 'Mark one enemy with 1d4 Reap and deal 1d6 corrosive health damage (range 10).',
+  visual: { preset: 'projectile', color: 0xa9b487, size: 10, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Corrode Pain'), 'corrosive', 'physical'));
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d4', 'Corrode Pain'), 'shadow', 'sanity'));
+    ctx.game.applyReap(ctx.target, rollDice(ctx, '1d4', 'Death Corrode — Reap'), ctx.caster);
+    if (!ctx.target.alive) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Death Corrode'), 'corrosive', 'physical'));
   },
 });
 
 registerSpell({
-  name: 'Shadow Pain',
-  words: ['shadow', 'pain'],
-  actionType: 'main',
-  range: R(15),
-  bonusRangeInOwnShadow: R(99),
-  targeting: 'enemy',
-  dc: 11,
-  description: 'Deal 2d3 mental damage (range 15). Shadow pools amplify the damage, and targets in your shadows can be hit from anywhere.',
-  visual: { preset: 'beam', color: 0xb66fd1, size: 7, speed: 1.2 },
-  cast(ctx) {
-    if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d3', 'Shadow Pain'), 'shadow', 'sanity'));
-  },
-});
-
-registerSpell({
-  name: 'Curse Pain',
-  words: ['curse', 'pain'],
-  actionType: 'main',
-  range: R(15),
-  targeting: 'enemy',
-  dc: 11,
-  description: 'Inflict 1d4 mental damage at the start of each of the target\'s next 4 turns (range 15).',
-  visual: { preset: 'beam', color: 0xf07b8c, size: 6, speed: 1 },
-  cast(ctx) {
-    if (!ctx.target) return;
-    applyDot(ctx, ctx.target, {
-      name: 'Pain Curse',
-      duration: 4,
-      damage: dmg(2, 'shadow', 'sanity'),
-      damageSpec: '1d4',
-    });
-  },
-});
-
-registerSpell({
-  name: 'Drain Pain',
-  words: ['drain', 'pain'],
+  name: 'Death Drain',
+  words: ['drain', 'death'],
   actionType: 'main',
   range: R(10),
   targeting: 'enemy',
   dc: 11,
-  description: 'Deal 1d6 corrosive health damage and 1d4 mental damage. Heal health for corrosive damage dealt and sanity for mental damage dealt.',
+  description:
+    'Mark one enemy with 1d4 Reap and deal 1d6 corrosive health damage, healing yourself for the corrosive damage dealt (range 10).',
   visual: { preset: 'projectile', color: 0x8fa88f, size: 11, speed: 1.4 },
   cast(ctx) {
     if (!ctx.target) return;
-    const healthDamage = dealDamage(
+    ctx.game.applyReap(ctx.target, rollDice(ctx, '1d4', 'Death Drain — Reap'), ctx.caster);
+    if (!ctx.target.alive) return;
+    const dealt = dealDamage(
       ctx,
       ctx.target,
-      dmg(rollDice(ctx, '1d6', 'Drain Pain'), 'corrosive', 'physical')
+      dmg(rollDice(ctx, '1d6', 'Death Drain'), 'corrosive', 'physical')
     );
-    if (healthDamage > 0 && ctx.caster.alive) heal(ctx, ctx.caster, healthDamage, 'hp');
-    const mentalDamage = dealDamage(
-      ctx,
-      ctx.target,
-      dmg(rollDice(ctx, '1d4', 'Drain Pain'), 'shadow', 'sanity')
+    if (dealt > 0 && ctx.caster.alive) heal(ctx, ctx.caster, dealt, 'hp');
+  },
+});
+
+registerSpell({
+  name: 'Death Shadow',
+  words: ['shadow', 'death'],
+  actionType: 'main',
+  range: R(5),
+  targeting: 'none',
+  dc: 11,
+  description:
+    'Mark every enemy within range 5 — and every enemy standing in one of your shadows, at any distance — with 1d10 Reap, then execute each of them for 1.',
+  visual: { preset: 'nova', color: 0x8a6bff, size: 60, speed: 1.2 },
+  cast(ctx) {
+    const pools = ctx.game.shadowsOf(ctx.caster.team);
+    const foes = ctx.game.mages.filter(
+      (mage) =>
+        mage.alive &&
+        mage.team !== ctx.caster.team &&
+        (Math.hypot(mage.x - ctx.caster.x, mage.y - ctx.caster.y) <= R(5) ||
+          pools.some((pool) => Math.hypot(pool.x - mage.x, pool.y - mage.y) <= pool.radius))
     );
-    if (mentalDamage > 0 && ctx.caster.alive) heal(ctx, ctx.caster, mentalDamage, 'sanity');
+    if (foes.length === 0) {
+      ctx.log('The dark finds nothing to reap.');
+      return;
+    }
+    for (const foe of foes) {
+      ctx.game.applyReap(foe, rollDice(ctx, '1d10', 'Death Shadow — Reap'), ctx.caster);
+      if (foe.alive) ctx.game.executeTarget(ctx.caster, foe, 1);
+    }
+  },
+});
+
+registerSpell({
+  name: 'Death Curse',
+  words: ['curse', 'death'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 11,
+  description:
+    'Bind one enemy with a 13-counter Death Curse. Each counter falls at the start of its turn and whenever it takes shadow or corrosive damage, granting 2 Reap. While it lasts, executions become Reap instead of kills; its final counter executes the victim for 1.',
+  visual: { preset: 'beam', color: 0x8d7f9c, size: 7, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    ctx.game.applyDeathCurse(ctx.target, 13, ctx.caster);
   },
 });
 
@@ -1295,32 +1334,26 @@ registerSpell({
 });
 
 registerSpell({
-  name: 'Ruined Mind',
-  words: ['corrode', 'curse', 'pain'],
+  name: 'Rotting Verdict',
+  words: ['corrode', 'curse', 'death'],
   actionType: 'main',
   range: R(15),
   targeting: 'enemy',
   dc: 13,
   description:
-    'Destroy the target mind with 1d6 corrosive sanity damage each turn for 4 turns. It takes +2 damage during the curse, and each tick has a 25% chance to fully stun it.',
-  visual: { preset: 'beam', color: 0xb97878, size: 8, speed: 1 },
+    'Pass sentence on one enemy: 1d6 corrosive damage each turn for 4 turns, and every tick adds 2 Reap. The verdict lands with an immediate execution for 2.',
+  visual: { preset: 'beam', color: 0x9aa877, size: 8, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
     applyDot(ctx, ctx.target, {
-      name: 'Ruined Mind',
-      key: 'dot:ruined-mind',
+      name: 'Rotting Verdict',
+      key: 'dot:rotting-verdict',
       duration: 4,
-      damage: dmg(0, 'corrosive', 'sanity'),
+      damage: dmg(0, 'corrosive', 'physical'),
       damageSpec: '1d6',
-      stunChance: 0.25,
-      stunType: 'full',
+      reapPerTick: 2,
     });
-    applyDebuff(ctx, ctx.target, {
-      name: 'Ruined Mind',
-      key: 'debuff:ruined-mind',
-      duration: 4,
-      mods: { damageTaken: 2 },
-    });
+    if (ctx.target.alive) ctx.game.executeTarget(ctx.caster, ctx.target, 2);
   },
 });
 
@@ -1352,77 +1385,64 @@ registerSpell({
 });
 
 registerSpell({
-  name: 'Dark Breakdown',
-  words: ['corrode', 'shadow', 'pain'],
+  name: 'Umbral Guillotine',
+  words: ['corrode', 'shadow', 'death'],
   actionType: 'main',
   range: R(12),
   targeting: 'point',
   dc: 13,
   aoe: { kind: 'circle', radius: R(2) },
   description:
-    'Enemies in a range-2 area take 1d6 corrosive health damage and 3d3 shadow sanity damage. Each has independent 33% chances to be fully stunned and slowed by 30%.',
-  visual: { preset: 'burst', color: 0x9d668f, size: 68, speed: 1.2 },
+    'Drop a blade of darkness on a range-2 area. Enemies take 2d6 corrosive damage and 1d6 Reap, then are executed for 2. A victim standing in one of your shadows takes 2 extra Reap and is executed for 4 instead.',
+  visual: { preset: 'burst', color: 0x6b5a86, size: 68, speed: 1.3 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
+    const pools = ctx.game.shadowsOf(ctx.caster.team);
     const foes = ctx.game
       .magesInRadius(ctx.targetPoint, R(2), ctx.caster)
       .filter((mage) => mage.team !== ctx.caster.team);
     for (const foe of foes) {
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Dark Breakdown'), 'corrosive', 'physical'), {
+      const shadowed = pools.some(
+        (pool) => Math.hypot(pool.x - foe.x, pool.y - foe.y) <= pool.radius
+      );
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Umbral Guillotine'), 'corrosive', 'physical'), {
         aoe: true,
       });
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '3d3', 'Dark Breakdown'), 'shadow', 'sanity'), {
-        aoe: true,
-      });
-      if (ctx.rng.chance(0.33)) applyStun(ctx, foe, { duration: 2, type: 'full' });
-      if (ctx.rng.chance(0.33)) {
-        applyDebuff(ctx, foe, {
-          name: 'Dark Breakdown',
-          key: 'debuff:dark-breakdown',
-          duration: 2,
-          mods: { moveRange: -Math.round(MOVE_RANGE * 0.3) },
-        });
-      }
+      if (!foe.alive) continue;
+      ctx.game.applyReap(
+        foe,
+        rollDice(ctx, '1d6', 'Umbral Guillotine — Reap') + (shadowed ? 2 : 0),
+        ctx.caster
+      );
+      if (foe.alive) ctx.game.executeTarget(ctx.caster, foe, shadowed ? 4 : 2);
     }
   },
 });
 
 registerSpell({
-  name: 'Agony Leech',
-  words: ['corrode', 'drain', 'pain'],
+  name: 'Rotfeast',
+  words: ['corrode', 'drain', 'death'],
   actionType: 'main',
   range: R(10),
-  targeting: 'point',
+  targeting: 'enemy',
   dc: 13,
-  aoe: { kind: 'circle', radius: R(2) },
   description:
-    'Enemies in a range-2 area take 2d6 corrosive health damage and 2d4 corrosive sanity damage. Heal the matching resource for all damage dealt; each target has a 25% slow chance.',
-  visual: { preset: 'burst', color: 0x8c9b78, size: 70, speed: 1.2 },
+    'Corrosion twice over: two separate surges of 2d6 corrosive damage, each healing you for everything it deals and each feeding the mark 1d4 Reap. The feast closes with an execution for 4.',
+  visual: { preset: 'projectile', color: 0x7fa06a, size: 14, speed: 1.4 },
   cast(ctx) {
-    if (!ctx.targetPoint) return;
-    const foes = ctx.game
-      .magesInRadius(ctx.targetPoint, R(2), ctx.caster)
-      .filter((mage) => mage.team !== ctx.caster.team);
-    for (const foe of foes) {
-      drainDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Agony Leech'), 'corrosive', 'physical'), {
-        aoe: true,
-      });
-      const sanityDamage = dealDamage(
+    if (!ctx.target) return;
+    // Corrode and Drain are the same bite, so stacking them lands it twice.
+    for (let surge = 0; surge < 2 && ctx.target.alive; surge++) {
+      const dealt = dealDamage(
         ctx,
-        foe,
-        dmg(rollDice(ctx, '2d4', 'Agony Leech'), 'corrosive', 'sanity'),
-        { aoe: true }
+        ctx.target,
+        dmg(rollDice(ctx, '2d6', 'Rotfeast'), 'corrosive', 'physical')
       );
-      if (sanityDamage > 0 && ctx.caster.alive) heal(ctx, ctx.caster, sanityDamage, 'sanity');
-      if (ctx.rng.chance(0.25)) {
-        applyDebuff(ctx, foe, {
-          name: 'Agony Leech',
-          key: 'debuff:agony-leech',
-          duration: 2,
-          mods: { moveRange: -Math.round(MOVE_RANGE * 0.3) },
-        });
-      }
+      if (dealt > 0 && ctx.caster.alive) heal(ctx, ctx.caster, dealt, 'hp');
+      if (!ctx.target.alive) break;
+      ctx.game.applyReap(ctx.target, rollDice(ctx, '1d4', 'Rotfeast — Reap'), ctx.caster);
     }
+    if (ctx.target.alive) ctx.game.executeTarget(ctx.caster, ctx.target, 4);
   },
 });
 
@@ -1457,90 +1477,99 @@ registerSpell({
 });
 
 registerSpell({
-  name: 'Nightmare Curse',
-  words: ['curse', 'shadow', 'pain'],
+  name: "Reaper's Tithe",
+  words: ['curse', 'shadow', 'death'],
   actionType: 'main',
   range: R(15),
   bonusRangeInOwnShadow: R(99),
   targeting: 'enemy',
   dc: 14,
   description:
-    'Curse the target for 2d4 shadow sanity damage each turn for 5 turns and +2 damage taken. Each tick splashes 1d3 sanity damage to other nearby enemies.',
-  visual: { preset: 'beam', color: 0xa14f88, size: 8, speed: 1 },
+    'A shade stalks the target for 5 turns, dealing 1d4 shadow damage and adding 1 Reap each turn. When the marked victim dies, its entire Reap count leaps to the nearest enemy within range 10. Targets in your shadows can be reached globally.',
+  visual: { preset: 'beam', color: 0x5f5d86, size: 8, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
     applyDot(ctx, ctx.target, {
-      name: 'Nightmare Curse',
-      key: 'dot:nightmare-curse',
+      name: "Reaper's Tithe",
+      key: 'dot:reapers-tithe',
       duration: 5,
-      damage: dmg(0, 'shadow', 'sanity'),
-      damageSpec: '2d4',
-      sourceTeam: ctx.caster.team,
-      splash: {
-        radius: R(2),
-        damage: dmg(0, 'shadow', 'sanity'),
-        damageSpec: '1d3',
-      },
-    });
-    applyDebuff(ctx, ctx.target, {
-      name: 'Nightmare Curse',
-      key: 'debuff:nightmare-curse',
-      duration: 5,
-      mods: { damageTaken: 2 },
+      damage: dmg(0, 'shadow', 'physical'),
+      damageSpec: '1d4',
+      reapPerTick: 1,
+      reapTransferRadius: R(10),
     });
   },
 });
 
 registerSpell({
-  name: 'Agony Harvest',
-  words: ['curse', 'drain', 'pain'],
+  name: 'Grave Tithe',
+  words: ['curse', 'drain', 'death'],
   actionType: 'main',
   range: R(15),
   targeting: 'enemy',
   dc: 14,
   description:
-    'Curse the target for 1d6 shadow sanity damage each turn for 5 turns, restoring your sanity for all damage. It also takes +2 damage for the curse duration.',
-  visual: { preset: 'beam', color: 0xb06f87, size: 8, speed: 1 },
+    'Chain one enemy to your own recovery for 5 turns: it suffers 1d6 corrosive damage each turn and you drink that damage as health. While the chain holds, every heal you receive from any source adds 1 Reap to the victim.',
+  visual: { preset: 'beam', color: 0x6f8f86, size: 8, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
     applyDot(ctx, ctx.target, {
-      name: 'Agony Harvest',
-      key: 'dot:agony-harvest',
+      name: 'Grave Tithe',
+      key: 'dot:grave-tithe',
       duration: 5,
-      damage: dmg(0, 'shadow', 'sanity'),
+      damage: dmg(0, 'corrosive', 'physical'),
       damageSpec: '1d6',
       lifestealToIndex: ctx.game.mages.indexOf(ctx.caster),
-      lifestealPool: 'sanity',
-    });
-    applyDebuff(ctx, ctx.target, {
-      name: 'Agony Harvest',
-      key: 'debuff:agony-harvest',
-      duration: 5,
-      mods: { damageTaken: 2 },
+      reapOnOwnerHealIndex: ctx.game.mages.indexOf(ctx.caster),
     });
   },
 });
 
 registerSpell({
-  name: 'Dark Feast',
-  words: ['shadow', 'drain', 'pain'],
+  name: "Reaper's Shard",
+  words: ['shadow', 'drain', 'death'],
   actionType: 'main',
   range: R(15),
   bonusRangeInOwnShadow: R(99),
   targeting: 'enemy',
   dc: 13,
   description:
-    'Drain 1d6 corrosive health and 3d4 shadow sanity, restoring the matching resource. Targets in your shadows can be reached globally.',
-  visual: { preset: 'projectile', color: 0x796088, size: 13, speed: 1.3 },
-  cast(ctx) {
-    if (!ctx.target) return;
-    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Dark Feast'), 'corrosive', 'physical'));
-    const sanityDamage = dealDamage(
-      ctx,
-      ctx.target,
-      dmg(rollDice(ctx, '3d4', 'Dark Feast'), 'shadow', 'sanity')
-    );
-    if (sanityDamage > 0 && ctx.caster.alive) heal(ctx, ctx.caster, sanityDamage, 'sanity');
+    'Hurl a shard of grave-glass: 1d6 Reap, an execution for 2, and 2d6 corrosive damage that heals you for the amount dealt. If the shard kills, it flies back to your hand and you may spend 5 mana to throw it again at any enemy in range 15 — as long as it keeps killing. Targets in your shadows can be reached globally.',
+  visual: { preset: 'projectile', color: 0x7d6f8c, size: 12, speed: 1.5 },
+  async cast(ctx) {
+    let foe = ctx.target;
+    // Each re-throw costs mana and must kill again, so the loop always ends.
+    for (let throwCount = 0; foe && ctx.caster.alive; throwCount++) {
+      ctx.game.applyReap(foe, rollDice(ctx, "1d6", "Reaper's Shard — Reap"), ctx.caster);
+      if (foe.alive) ctx.game.executeTarget(ctx.caster, foe, 2);
+      if (foe.alive) {
+        const dealt = dealDamage(
+          ctx,
+          foe,
+          dmg(rollDice(ctx, '2d6', "Reaper's Shard"), 'corrosive', 'physical')
+        );
+        if (dealt > 0 && ctx.caster.alive) heal(ctx, ctx.caster, dealt, 'hp');
+      }
+      await ctx.resolveImpacts?.();
+      if (foe.alive || !ctx.caster.alive) return;
+
+      ctx.log(`The shard tears free of ${foe.name} and returns to ${ctx.caster.name}.`);
+      if (!ctx.caster.hasMana(5)) {
+        ctx.log(`${ctx.caster.name} lacks the 5 mana to hurl the shard again.`);
+        return;
+      }
+      const next = ctx.requestEnemy
+        ? await ctx.requestEnemy({
+            range: R(15),
+            origin: ctx.caster.pos,
+            prompt: `${ctx.caster.name}: spend 5 mana to hurl the shard again — Esc to keep it.`,
+          })
+        : null;
+      if (!next) return;
+      ctx.caster.spendMana(5);
+      ctx.log(`${ctx.caster.name} spends 5 mana and hurls the shard at ${next.name}.`);
+      foe = next;
+    }
   },
 });
 

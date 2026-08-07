@@ -17,7 +17,7 @@ import {
 } from '../config/constants';
 import { Dev } from '../config/dev';
 import type { WordId } from './Words';
-import { WORDS } from './Words';
+import { WORDS, isModifierWord } from './Words';
 import type { Dice } from './Dice';
 import type { ColorName, ColorProfile } from './Colors';
 import { computeColorProfile } from './Colors';
@@ -35,7 +35,18 @@ import type {
   StunStatus,
   StunType,
 } from './Status';
+import type { PendingCast, StackItem } from './Stack';
 import type { Vec2 } from './utils';
+
+/**
+ * A build carries at most ONE modifier word, chosen on the menu screen. It sits
+ * outside the loadout limit, so it is kept apart from the ordinary words.
+ */
+function normalizeLoadout(words: readonly WordId[]): WordId[] {
+  const base = words.filter((word) => !isModifierWord(word));
+  const modifier = words.find(isModifierWord);
+  return modifier ? [...base, modifier] : base;
+}
 
 export interface ActionPool {
   move: number;
@@ -58,6 +69,12 @@ export class Mage {
 
   loadout: WordId[];
   charges: Record<string, number> = {};
+  /** Spell held by Channel; it unleashes at this mage's next turn start. */
+  channeledCast?: PendingCast;
+  /** Spell held by Delay; it fires at this mage's next turn start. */
+  delayedCast?: PendingCast;
+  /** Stack items Delay pushed onto this mage's next turn start. */
+  delayedItems: StackItem[] = [];
 
   /** Color identity derived from the loadout (primary / secondary tiers). */
   profile: ColorProfile;
@@ -147,6 +164,12 @@ export class Mage {
 
   /** Bastion Sword form: false = sword (offence), true = shield (defence). */
   bastionShieldForm = false;
+  /** Kills banked by Wings of Deaths Angel; persists until a long rest. */
+  deathsAngelEnergy = 0;
+  /** Remaining wearer turns of Wings flight/aura. */
+  deathsAngelFlightTurns = 0;
+  /** Round whose Dagger of Shadow stealth upkeep has already been paid. */
+  shadowDaggerStealthRound = -1;
   /** Whether the once-per-duel shield bash has already triggered. */
   shieldBashUsed = false;
   /** A raised-shield block queued as a reaction; consumed by the next physical hit. */
@@ -224,6 +247,10 @@ export class Mage {
   intrinsicAirborne = false;
   /** Initiative bracket independent of a player mage's colour identity. */
   intrinsicInitiativePriority = 0;
+  /** Flat physical armour inherent to a creature rather than worn equipment. */
+  intrinsicArmorFlat = 0;
+  /** Persistent Deep Swamp curse carried between wave combats. */
+  swamprunCurse?: 'madness' | 'decay' | 'sloth' | 'feeding';
   /** Guild companion role used by Expedition AI and loadout rules. */
   expeditionCompanion?: 'dwarf' | 'elf' | 'human';
   expeditionPermanent = false;
@@ -296,6 +323,20 @@ export class Mage {
   /** Ghast: a delayed shadow zone that erupts (2d3) at the start of its next turn. */
   ghastKind = false;
   ghastPendingZone?: { x: number; y: number; radius: number };
+  /** Beast Demon: scratch damage stored as blood for later ranged attacks. */
+  beastDemonKind = false;
+  beastDemonBlood = 0;
+  /** Oni remain completely hidden until the party's first damage attempt. */
+  oniKind = false;
+  oniHidden = false;
+  /** Deep Swamp solo boss with a spear, target reaction and end-step powers. */
+  deathknightKind = false;
+  deathknightReactionRound = -1;
+  deathknightAttackAttemptedThisTurn = false;
+  deathknightHitThisTurn = new Set<Mage>();
+  slowStunImmune = false;
+  /** Frail summoned zombie that spits corrosive blood at range. */
+  acidZombieKind = false;
   /** Reaper: enables the leash / unpreventable mark / channel-clap / damage cap. */
   reaperKind = false;
   /** Reaper: cap on damage from any single entity per round (0 = uncapped). */
@@ -413,7 +454,7 @@ export class Mage {
     this.hp = START_HP;
     this.maxSanity = START_SANITY;
     this.sanity = START_SANITY;
-    this.loadout = [...opts.loadout];
+    this.loadout = normalizeLoadout(opts.loadout);
     this.profile = computeColorProfile(this.loadout);
     this.mageClass = opts.mageClass ?? DEFAULT_MAGE_CLASS;
     for (const w of this.loadout) this.charges[w] = this.maxWordCharges(w);
@@ -444,7 +485,7 @@ export class Mage {
     preferredPrimary: ColorName | null = this.preferredPrimaryColor,
     preferredSecondary: ColorName | null = this.preferredSecondaryColor
   ): void {
-    this.loadout = [...words];
+    this.loadout = normalizeLoadout(words);
     this.preferredPrimaryColor = preferredPrimary;
     this.preferredSecondaryColor = preferredSecondary;
     this.profile = computeColorProfile(this.loadout, preferredPrimary, preferredSecondary);
@@ -547,6 +588,7 @@ export class Mage {
     this.bindMantleCharges = 0;
     this.conjuredBowFiredThisTurn = false;
     this.blackBellCondense = false;
+    this.shadowDaggerStealthRound = -1;
     if (!options.preserveLanternState) {
       this.edgelordLanternActive = false;
       this.edgelordLanternJustDeactivated = false;
@@ -557,6 +599,12 @@ export class Mage {
     this.drainLinkTurns = 0;
     this.reaperMarkedBy = undefined;
     this.reaperDeletedBy = undefined;
+    this.deathknightReactionRound = -1;
+    this.deathknightAttackAttemptedThisTurn = false;
+    this.deathknightHitThisTurn.clear();
+    this.channeledCast = undefined;
+    this.delayedCast = undefined;
+    this.delayedItems = [];
     if (!options.preserveLanternState) this.edgelordCapturedBy = undefined;
     this.damageBySourceThisCycle.clear();
     this.bannedItemIds.clear();
@@ -678,6 +726,8 @@ export class Mage {
       const cur = this.charges[w] ?? 0;
       this.charges[w] = Math.min(max, cur + half(max));
     }
+    this.deathsAngelEnergy = 0;
+    this.deathsAngelFlightTurns = 0;
   }
 
   // ---- Statuses -------------------------------------------------------------
@@ -798,6 +848,41 @@ export class Mage {
       case 'luck':
         this.maxLuck += amount;
         this.luck = this.maxLuck;
+        break;
+    }
+  }
+
+  /** Silently consume one positive permanent stat; max-HP loss can be fatal. */
+  loseRandomPermanentStat(rng: Dice): void {
+    const candidates: StatKey[] = [];
+    if (this.statStrength > 0) candidates.push('strength');
+    if (this.statDex > 0) candidates.push('dex');
+    if (this.statInt > 0) candidates.push('int');
+    if (this.maxMana > 0) candidates.push('mana');
+    if (this.maxHp > 0) candidates.push('hp');
+    if (this.maxLuck > 0) candidates.push('luck');
+    if (candidates.length === 0) return;
+    switch (rng.pick(candidates)) {
+      case 'strength':
+        this.statStrength -= 1;
+        break;
+      case 'dex':
+        this.statDex -= 1;
+        break;
+      case 'int':
+        this.statInt -= 1;
+        break;
+      case 'mana':
+        this.maxMana -= 1;
+        this.mana = Math.min(this.mana, this.maxMana);
+        break;
+      case 'hp':
+        this.maxHp -= 1;
+        this.hp = Math.min(this.hp, this.maxHp);
+        break;
+      case 'luck':
+        this.maxLuck -= 1;
+        this.luck = Math.min(this.luck, this.maxLuck);
         break;
     }
   }
@@ -1011,6 +1096,28 @@ export class Mage {
     return this.hasItemWhere((d) => !!d.eldritchMantle);
   }
 
+  /** Does this mage wear Wings of Deaths Angel? */
+  hasDeathsAngelWings(): boolean {
+    return !!this.torso && !!getItem(this.torso).deathsAngelWings;
+  }
+
+  /** Dagger of Shadow traits while the weapon is held. */
+  shadowDaggerTraits(): ReturnType<typeof getItem>['shadowDagger'] {
+    const id = this.hands.find(
+      (itemId) => !this.isItemBanned(itemId) && !!getItem(itemId).shadowDagger
+    );
+    return id ? getItem(id).shadowDagger : undefined;
+  }
+
+  hasShadowDagger(): boolean {
+    return !!this.shadowDaggerTraits();
+  }
+
+  /** Permanent creature flight or temporary flight granted by the Wings. */
+  isAirborne(): boolean {
+    return this.intrinsicAirborne || (this.hasDeathsAngelWings() && this.deathsAngelFlightTurns > 0);
+  }
+
   /** Does this mage carry the Blessing of Roaring Thunder? */
   hasThunderBlessing(): boolean {
     return this.hasItemWhere((d) => !!d.thunderBlessing);
@@ -1213,6 +1320,7 @@ export class Mage {
     const i = this.bag.indexOf(id);
     if (
       i < 0 ||
+      getItem(id).slot !== 'hand' ||
       this.hands.length >= SLOT_CAPS.hand ||
       this.hands.some((held) => !!getItem(held).twoHanded) ||
       (!!getItem(id).twoHanded && this.hands.length > 0)
@@ -1223,6 +1331,41 @@ export class Mage {
     const combats = getItem(id).torchCombats;
     if (combats != null && this.torchCombatsLeft <= 0) this.torchCombatsLeft = combats;
     return true;
+  }
+
+  /** Equip a bag item into whichever slot it actually belongs to. */
+  equipFromBag(id: ItemId): boolean {
+    const def = getItem(id);
+    if (def.slot === 'hand') return this.equipHand(id);
+    const i = this.bag.indexOf(id);
+    if (i < 0) return false;
+    if (def.slot === 'accessory') {
+      if (this.accessories.length >= SLOT_CAPS.accessory) return false;
+      this.bag.splice(i, 1);
+      this.accessories.push(id);
+      return true;
+    }
+    const worn = def.slot === 'head' ? this.head : def.slot === 'torso' ? this.torso : def.slot === 'boots' ? this.boots : null;
+    if (def.slot !== 'head' && def.slot !== 'torso' && def.slot !== 'boots') return false;
+    if (worn === id) return false;
+    if (worn && getItem(worn).permanentlyBinding) return false;
+    this.bag.splice(i, 1);
+    if (worn) this.bag.push(worn);
+    if (def.slot === 'head') this.head = id;
+    else if (def.slot === 'torso') this.torso = id;
+    else this.boots = id;
+    return true;
+  }
+
+  /** Whether this mage could equip `id` from the bag right now. */
+  canEquipFromBag(id: ItemId): boolean {
+    const def = getItem(id);
+    if (!this.bag.includes(id)) return false;
+    if (def.slot === 'hand') return this.hasFreeHand() && !(def.twoHanded && this.hands.length > 0);
+    if (def.slot === 'accessory') return this.accessories.length < SLOT_CAPS.accessory;
+    if (def.slot === 'utility') return false;
+    const worn = def.slot === 'head' ? this.head : def.slot === 'torso' ? this.torso : this.boots;
+    return !(worn && getItem(worn).permanentlyBinding);
   }
 
   /**
@@ -1399,6 +1542,7 @@ export class Mage {
     const isMagical = type === 'shadow' || type === 'corrosive';
     let flat = 0;
     if (isPhysical) {
+      flat += this.intrinsicArmorFlat;
       for (const id of this.equippedItems()) {
         const mod = getItem(id).armor;
         if (mod) flat += mod.flat;
@@ -1456,6 +1600,7 @@ export class Mage {
     if (Dev.infiniteActions) return;
     if (kind === 'move' && Dev.infiniteMove) return;
     this.actions[kind] = Math.max(0, this.actions[kind] - 1);
+    if (this.swamprunCurse === 'feeding') this.spendMana(1);
   }
 
   // ---- Turn lifecycle -------------------------------------------------------
@@ -1477,6 +1622,8 @@ export class Mage {
     this.distMovedThisTurn = 0;
     // Cleared last so start-of-turn DoTs still see whether damage was dealt last turn.
     this.dealtDamageThisTurn = false;
+    this.deathknightAttackAttemptedThisTurn = false;
+    this.deathknightHitThisTurn.clear();
     this.actions = { ...ACTIONS_PER_TURN };
     this.hasCastThisTurn = false;
     this.edgelordLanternJustDeactivated = false;
@@ -1508,7 +1655,9 @@ export class Mage {
         s.kind !== 'fire' &&
         s.kind !== 'sentinelFire' &&
         s.kind !== 'blueflare' &&
-        s.kind !== 'soulRend'
+        s.kind !== 'soulRend' &&
+        s.kind !== 'reap' &&
+        s.kind !== 'deathCurse'
       ) s.duration -= 1;
     }
     const expired = this.statuses.filter((s) => s.duration <= 0);

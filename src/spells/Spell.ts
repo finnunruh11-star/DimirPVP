@@ -82,6 +82,11 @@ export interface Spell {
   minStackDepth?: number;
   /** On successful resolution, remove every older item still on the stack. */
   nullifiesStack?: boolean;
+  /**
+   * On successful resolution, take the answered stack item off the stack and
+   * re-resolve it at the start of its target's next turn (the Delay word).
+   */
+  delaysStackItem?: boolean;
 
   /** Optional visual played when the spell resolves. */
   visual?: SpellVisual;
