@@ -1568,24 +1568,30 @@ export class Mage {
    * Combined damage-type multiplier from resistances / immunities / weaknesses
    * across all equipped gear (immune ×0, each resist ×0.5, each weak ×2). Applied
    * AFTER flat armour. Returns 1 when nothing affects this damage type.
+   *
+   * Heat is half radiant: a heat hit lands as 50% heat + 50% light, so its
+   * multiplier is the average of the two (heat-resistant + light-weak = ×1.25).
    */
   resistMultiplier(type: DamageType): number {
+    if (type === 'heat') {
+      return 0.5 * this.rawResistMultiplier('heat') + 0.5 * this.rawResistMultiplier('light');
+    }
+    return this.rawResistMultiplier(type);
+  }
+
+  private rawResistMultiplier(type: DamageType): number {
     let immune = false;
     let mult = 1;
-    // Light-weak creatures are also weak to fire: a 'light' weakness counts as
-    // a 'fire' weakness too.
-    const isWeakTo = (t: DamageType): boolean =>
-      t === type || (type === 'fire' && t === 'light');
     // Intrinsic creature traits (Swamprun monsters) stack with any gear.
     if (this.intrinsicImmuneTypes.includes(type)) immune = true;
     for (const t of this.intrinsicResistTypes) if (t === type) mult *= 0.5;
-    for (const t of this.intrinsicWeakTypes) if (isWeakTo(t)) mult *= 2;
+    for (const t of this.intrinsicWeakTypes) if (t === type) mult *= 2;
     for (const id of this.equippedItems()) {
       const r = getItem(id).resist;
       if (!r) continue;
       if (r.immune?.includes(type)) immune = true;
       if (r.resist?.includes(type)) mult *= 0.5;
-      if (r.weak?.some(isWeakTo)) mult *= 2;
+      if (r.weak?.includes(type)) mult *= 2;
     }
     return immune ? 0 : mult;
   }

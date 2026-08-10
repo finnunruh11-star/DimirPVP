@@ -8,7 +8,8 @@ export type DamageType =
   | 'shadow'
   | 'corrosive'
   | 'slashing'
-  | 'fire'
+  // Half of every heat hit resolves as 'light' (see Mage.resistMultiplier).
+  | 'heat'
   | 'light'
   | 'typeless'
   | 'generic'

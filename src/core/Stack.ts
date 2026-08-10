@@ -39,6 +39,8 @@ export interface StackItem {
   spell?: Spell;
   target?: Mage;
   targetPoint?: Vec2;
+  /** Where the target stood when this item hit the stack (see GameState.attackEvaded). */
+  targetOrigin?: Vec2;
   /** A second aimed point, chosen up-front for two-point spells (Reality Shatter). */
   targetPoint2?: Vec2;
   /** An action-kind item that is an attack and should allow physical reactions. */

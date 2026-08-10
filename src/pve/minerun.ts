@@ -65,7 +65,7 @@ export interface MineEnemyDef {
   packSize?: number;
 }
 
-const FIRE_RESIST: DamageType[] = ['fire', 'light'];
+const FIRE_RESIST: DamageType[] = ['heat', 'light'];
 const FIRE_WEAK: DamageType[] = ['shadow'];
 const SCALE_RESIST: DamageType[] = ['slashing'];
 const SCALE_WEAK: DamageType[] = ['pierce'];
@@ -141,7 +141,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 5,
     stats: { strength: 3, dex: 3, int: 4 },
     statGrowth: { strength: 3, dex: 3, int: 2 },
-    melee: { spec: '1d4', type: 'fire', damageClass: 'physical' },
+    melee: { spec: '1d4', type: 'heat', damageClass: 'physical' },
     resistTypes: [...FIRE_RESIST],
     weakTypes: [...FIRE_WEAK],
     tint: 0xd4a24f,
@@ -157,7 +157,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 5,
     stats: { strength: 5, dex: 5, int: 6 },
     statGrowth: { strength: 3, dex: 3, int: 2 },
-    melee: { spec: '1d6', type: 'fire', damageClass: 'physical' },
+    melee: { spec: '1d6', type: 'heat', damageClass: 'physical' },
     resistTypes: [...FIRE_RESIST],
     weakTypes: [...FIRE_WEAK],
     bodyRadius: 34,
@@ -261,7 +261,7 @@ const SENTINEL_PROFILES: Record<SentinelRole, Partial<MineEnemyDef>> = {
     moveUnits: 5,
     stats: { strength: 2, dex: 3, int: 6 },
     statGrowth: { strength: 6, dex: 4, int: 2 },
-    melee: { spec: '1d4', type: 'fire', damageClass: 'physical' },
+    melee: { spec: '1d4', type: 'heat', damageClass: 'physical' },
   },
   dps: {
     hpSpec: '2d6+6',
@@ -269,7 +269,7 @@ const SENTINEL_PROFILES: Record<SentinelRole, Partial<MineEnemyDef>> = {
     moveUnits: 6,
     stats: { strength: 2, dex: 5, int: 5 },
     statGrowth: { strength: 6, dex: 3, int: 2 },
-    melee: { spec: '1d4', type: 'fire', damageClass: 'physical' },
+    melee: { spec: '1d4', type: 'heat', damageClass: 'physical' },
   },
 };
 

@@ -82,7 +82,7 @@ Rocklings launch toward a target but deal damage and break apart only if they
 make physical body contact. Sentinels reveal Tank, Healer, or DPS roles;
 Golems must wake after being targeted; Cavern Bats are airborne; Earth Elementals
 stockpile stones; Dragonborn use breath attacks; and Pftlhb collapse on genuine
-torch, lantern, light, or fire exposure. Fire-aligned creatures resist fire and
+torch, lantern, light, or fire exposure. Fire-aligned creatures resist heat and
 light but are weak to shadow. Scaled creatures resist slashing and are weak to
 pierce.
 

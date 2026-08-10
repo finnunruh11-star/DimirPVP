@@ -97,6 +97,8 @@ export interface EnemyDef {
 // already voids all mental damage, so it never actually drops.
 const MINDLESS_SANITY = 999;
 
+// Every swamp dweller resists heat and is weak to light, so a heat hit (half
+// heat, half light) settles at ×1.25 against the whole roster.
 export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
   // Basic shambler: slow, weak, mindless. Weak to light and blunt trauma.
   zombie: {
@@ -111,6 +113,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeType: 'shatter',
     meleeClass: 'physical',
     weakTypes: ['light', 'shatter'],
+    resistTypes: ['heat'],
     sanityImmune: true,
     tint: 0x6f9a52,
   },
@@ -127,7 +130,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeType: 'shatter',
     meleeClass: 'physical',
     weakTypes: ['light', 'shatter'],
-    resistTypes: ['pierce', 'slashing'],
+    resistTypes: ['pierce', 'slashing', 'heat'],
     sanityImmune: true,
     tint: 0xd6cfae,
   },
@@ -144,6 +147,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeType: 'shadow',
     meleeClass: 'physical',
     weakTypes: ['light'],
+    resistTypes: ['heat'],
     physicalImmune: true,
     duplicateChance: 0.5,
     tint: 0x9fe0ff,
@@ -162,6 +166,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeType: 'shadow',
     meleeClass: 'sanity',
     weakTypes: ['light'],
+    resistTypes: ['heat'],
     physicalImmune: true,
     tint: 0xb7a8ff,
   },
@@ -178,8 +183,8 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeType: 'shatter',
     meleeClass: 'physical',
     meleeReach: 108,
-    weakTypes: ['shatter'],
-    resistTypes: ['pierce', 'slashing'],
+    weakTypes: ['shatter', 'light'],
+    resistTypes: ['pierce', 'slashing', 'heat'],
     sanityImmune: true,
     bodyRadius: 58,
     tint: 0x8f8f97,
@@ -207,7 +212,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     // "Physical except shatter" immunity is spelled out as the base physical
     // types minus shatter, plus shadow. Shatter is only resisted; light hurts.
     immuneTypes: ['pierce', 'slashing', 'generic', 'shadow'],
-    resistTypes: ['shatter'],
+    resistTypes: ['shatter', 'heat'],
     weakTypes: ['light'],
     debuffImmune: true,
     boss: true,
@@ -234,6 +239,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeClass: 'physical',
     meleeReach: 360, // 8cm — the shove reach
     immuneTypes: ['pierce', 'slashing', 'shatter', 'generic'],
+    resistTypes: ['heat'],
     weakTypes: ['light'],
     debuffImmune: true,
     ghastKind: true,
@@ -260,6 +266,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeClass: 'physical',
     meleeReach: 180, // 4cm mark range
     immuneTypes: ['pierce', 'slashing', 'shatter', 'generic', 'shadow'],
+    resistTypes: ['heat'],
     weakTypes: ['light'],
     sanityImmune: true,
     debuffImmune: true,
@@ -281,7 +288,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeSpec: '2d6+2',
     meleeType: 'slashing',
     meleeClass: 'physical',
-    resistTypes: ['pierce', 'slashing'],
+    resistTypes: ['pierce', 'slashing', 'heat'],
     weakTypes: ['light'],
     bodyRadius: 48,
     tint: 0xb83b32,
@@ -299,6 +306,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeType: 'slashing',
     meleeClass: 'physical',
     weakTypes: ['light'],
+    resistTypes: ['heat'],
     tint: 0xd86b35,
     scale: 1.25,
   },
@@ -314,6 +322,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeType: 'shadow',
     meleeClass: 'physical',
     weakTypes: ['light'],
+    resistTypes: ['heat'],
     tint: 0x7b2337,
     scale: 1.3,
   },
@@ -330,7 +339,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeClass: 'physical',
     meleeReach: 5 * RANGE_UNIT,
     // Armoured against ordinary steel and its own darkness; blunt force still tells.
-    resistTypes: ['pierce', 'slashing', 'generic', 'shadow'],
+    resistTypes: ['pierce', 'slashing', 'generic', 'shadow', 'heat'],
     weakTypes: ['light', 'cleansing', 'healing'],
     boss: true,
     bodyRadius: 52,
@@ -350,6 +359,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     meleeClass: 'physical',
     meleeReach: 10 * RANGE_UNIT,
     weakTypes: ['light', 'shatter'],
+    resistTypes: ['heat'],
     sanityImmune: true,
     tint: 0x87ad35,
   },

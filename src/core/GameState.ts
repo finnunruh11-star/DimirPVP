@@ -12,7 +12,9 @@ import { dist, segmentCircleFirstIntersection, stepTowards, type Vec2 } from './
 import {
   CONE_DEGREES,
   CLEAVE_DEGREES,
+  EVASION_REACH_FRACTION,
   FIELD,
+  MAGE_BODY_RADIUS,
   MELEE_RANGE,
   MOVE_RANGE,
   PICKUP_RANGE,
@@ -1585,7 +1587,7 @@ export class GameState {
     const kind = target.mine?.kind;
     return (
       burning ||
-      target.intrinsicMelee?.type === 'fire' ||
+      target.intrinsicMelee?.type === 'heat' ||
       kind === 'sentinel' ||
       kind === 'magma-sentinel' ||
       kind === 'red-dragonborn'
@@ -1693,8 +1695,12 @@ export class GameState {
           s.y = tgt.y;
           const ctx = this.effectContext(owner, tgt, null);
           const amount = this.rng.roll(SCARAB.attackSpec).total;
-          dealDamage(ctx, tgt, dmg(amount, 'corrosive', 'physical'), { canMiss: false });
+          const dealt = dealDamage(ctx, tgt, dmg(amount, 'corrosive', 'physical'), { canMiss: false });
           this.log(`A scarab bites ${tgt.name} for ${amount}.`);
+          if (dealt > 0 && s.hp < s.maxHp) {
+            s.hp = s.maxHp;
+            this.log('The scarab gorges on the wound and knits itself whole.');
+          }
         }
         if (s.target) load.set(s.target, (load.get(s.target) ?? 1) - 1);
         // Bite, then fly back this same turn — reaching (and perching on) the
@@ -1774,7 +1780,7 @@ export class GameState {
         scarabFlying(scarab) &&
         dist({ x: scarab.x, y: scarab.y }, at) <= radius + SCARAB.radius
     );
-    if (damageType === 'fire') {
+    if (damageType === 'heat') {
       this.destroyScarabsByFire(targets, ' in the fire');
       return;
     }
@@ -1838,7 +1844,7 @@ export class GameState {
     if (!scarabAlive(scarab)) return;
     const weapon = source.activeWeapon();
     const roll = this.rng.roll('1d6').total;
-    if ((weapon?.damageType ?? source.intrinsicMelee?.type) === 'fire') {
+    if ((weapon?.damageType ?? source.intrinsicMelee?.type) === 'heat') {
       this.destroyScarabsByFire([scarab], ` under ${source.name}'s fire`);
       return;
     }
@@ -2192,7 +2198,7 @@ export class GameState {
     const highFire = fire.stacks >= 4;
     const spec = highFire ? '1d6' : '1d3';
     this.log(`${m.name}'s Fire flares at ${fire.stacks} stacks.`);
-    dealDamage(ctx, m, dmg(this.rng.roll(spec).total, 'fire', 'physical'), {
+    dealDamage(ctx, m, dmg(this.rng.roll(spec).total, 'heat', 'physical'), {
       canMiss: false,
       noImpactFx: true,
     });
@@ -2237,7 +2243,7 @@ export class GameState {
       if (fire.stacks <= 6) continue;
       this.log(`${target.name}'s Fire overflows!`);
       const ctx = this.effectContext(owner, target, null);
-      dealDamage(ctx, target, dmg(this.rng.roll('1d10').total, 'fire', 'physical'), {
+      dealDamage(ctx, target, dmg(this.rng.roll('1d10').total, 'heat', 'physical'), {
         canMiss: false,
       });
       fire.stacks = 5;
@@ -2265,7 +2271,7 @@ export class GameState {
     dealDamage(
       this.effectContext(owner, m, null),
       m,
-      dmg(this.rng.roll(spec).total, 'fire', 'physical'),
+      dmg(this.rng.roll(spec).total, 'heat', 'physical'),
       { canMiss: false, noImpactFx: true }
     );
     this.vfxSink?.spellEffect?.(m, 'dot');
@@ -2314,7 +2320,7 @@ export class GameState {
       dealDamage(
         this.effectContext(owner, target, null),
         target,
-        dmg(this.rng.roll('3d6').total, 'fire', 'physical'),
+        dmg(this.rng.roll('3d6').total, 'heat', 'physical'),
         { canMiss: false }
       );
       for (const other of this.mages) {
@@ -2322,7 +2328,7 @@ export class GameState {
         dealDamage(
           this.effectContext(owner, other, null),
           other,
-          dmg(this.rng.roll('2d6').total, 'fire', 'physical'),
+          dmg(this.rng.roll('2d6').total, 'heat', 'physical'),
           { canMiss: false, aoe: true }
         );
       }
@@ -2341,7 +2347,7 @@ export class GameState {
     const rolled = this.rng.roll(highFlare ? '1d6' : '1d3').total;
     const amount = Math.max(1, Math.ceil(rolled / 2));
     this.log(`${m.name}'s Blueflare pulses at ${flare.stacks} stacks.`);
-    dealDamage(this.effectContext(owner, m, null), m, dmg(amount, 'fire', 'sanity'), {
+    dealDamage(this.effectContext(owner, m, null), m, dmg(amount, 'heat', 'sanity'), {
       canMiss: false,
       noImpactFx: true,
     });
@@ -2387,7 +2393,7 @@ export class GameState {
       if (flare.stacks <= 6) continue;
       const amount = Math.max(1, Math.ceil(this.rng.roll('1d10').total / 2));
       this.log(`${target.name}'s Blueflare overflows!`);
-      dealDamage(this.effectContext(owner, target, null), target, dmg(amount, 'fire', 'sanity'), {
+      dealDamage(this.effectContext(owner, target, null), target, dmg(amount, 'heat', 'sanity'), {
         canMiss: false,
       });
       flare.stacks = 5;
@@ -3251,7 +3257,7 @@ export class GameState {
       const fire = this.rng.roll('1d20').total;
       const mill = this.rng.roll('1d10').total;
       this.log(`Roaring thunder ravages ${m.name} (${fire} fire, ${mill} mill).`);
-      dealDamage(self, m, dmg(fire, 'fire', 'physical'), { canMiss: false });
+      dealDamage(self, m, dmg(fire, 'heat', 'physical'), { canMiss: false });
       dealDamage(self, m, dmg(mill, 'shatter', 'sanity'), { canMiss: false });
       const blast = 10 * RANGE_UNIT;
       for (const other of this.mages) {
@@ -3265,12 +3271,12 @@ export class GameState {
       const fire = this.rng.roll('1d6').total;
       const mill = this.rng.roll('1d3').total;
       this.log(`${m.name} smoulders under the blessing (${fire} fire, ${mill} mill).`);
-      dealDamage(self, m, dmg(fire, 'fire', 'physical'), { canMiss: false });
+      dealDamage(self, m, dmg(fire, 'heat', 'physical'), { canMiss: false });
       dealDamage(self, m, dmg(mill, 'shatter', 'sanity'), { canMiss: false });
     } else {
       const fire = this.rng.roll('1d3').total;
       this.log(`${m.name} glows with roaring thunder (${fire} fire).`);
-      dealDamage(self, m, dmg(fire, 'fire', 'physical'), { canMiss: false });
+      dealDamage(self, m, dmg(fire, 'heat', 'physical'), { canMiss: false });
     }
     this.checkThunderDeath(m);
   }
@@ -3286,8 +3292,8 @@ export class GameState {
       const ctx = this.effectContext(m, other, null);
       const fire = this.rng.roll('1d20').total;
       const blaze = this.rng.roll('1d20').total;
-      dealDamage(ctx, other, dmg(fire, 'fire', 'physical'), { canMiss: false });
-      dealDamage(ctx, other, dmg(blaze, 'fire', 'physical'), { canMiss: false });
+      dealDamage(ctx, other, dmg(fire, 'heat', 'physical'), { canMiss: false });
+      dealDamage(ctx, other, dmg(blaze, 'heat', 'physical'), { canMiss: false });
     }
     m.thunderStacks = 0;
     m.hp = 0;
@@ -3302,7 +3308,7 @@ export class GameState {
     const self = this.effectContext(source, source, null);
     const bite = this.rng.roll('1d6').total;
     this.log(`${source.name} charges the storm — spends ${cost} mana and takes ${bite} true damage.`);
-    dealDamage(self, source, dmg(bite, 'fire', 'physical'), { canMiss: false, trueDamage: true });
+    dealDamage(self, source, dmg(bite, 'heat', 'physical'), { canMiss: false, trueDamage: true });
     if (!source.alive) return;
     const gained = this.rng.roll('1d4').total;
     source.addThunderStacks(gained);
@@ -3393,14 +3399,14 @@ export class GameState {
     this.checkThunderDeath(source);
   }
 
-  /** One lightning bounce: (stacks)d3 x pct, armour-ignoring fire. */
+  /** One lightning bounce: (stacks)d3 x pct, armour-ignoring heat. */
   private dealThunderBolt(source: Mage, target: Mage, stacks: number, pct: number): void {
     const dice = this.rng.roll(`${stacks}d3`).total;
     const total = Math.ceil(dice * pct); // reduce dice by % but round favourably
     if (total <= 0) return;
     const ctx = this.effectContext(source, target, null);
-    // Dealt as a single armour-ignoring fire bolt for clarity.
-    dealDamage(ctx, target, dmg(total, 'fire', 'physical'), { canMiss: false, ignoreArmor: true });
+    // Dealt as a single armour-ignoring heat bolt for clarity.
+    dealDamage(ctx, target, dmg(total, 'heat', 'physical'), { canMiss: false, ignoreArmor: true });
     this.log(`Lightning strikes ${target.name} for ${total} (${Math.round(pct * 100)}%).`);
   }
 
@@ -3408,6 +3414,7 @@ export class GameState {
 
   pushStack(item: StackItem): void {
     const declaredTarget = item.target;
+    this.markTargetOrigin(item);
     if (
       declaredTarget?.alive &&
       declaredTarget.team !== item.source.team &&
@@ -3437,6 +3444,41 @@ export class GameState {
 
   canCastSpellNow(spell: Spell): boolean {
     return this.stack.length >= (spell.minStackDepth ?? 0);
+  }
+
+  /** (Re)open the evasion window: record where the declared target stands now. */
+  markTargetOrigin(item: StackItem): void {
+    if (item.target) item.targetOrigin = { x: item.target.x, y: item.target.y };
+  }
+
+  /**
+   * How far a declared target must travel to slip `item` entirely, or null when
+   * the item is not a single-target attack. Scales with the attack's reach, so a
+   * sidestep beats a sword while a bowshot demands real ground.
+   */
+  private evasionDistance(item: StackItem): number | null {
+    const target = item.target;
+    if (!target || target === item.source || target.team === item.source.team) return null;
+    let reach: number;
+    if (item.kind === 'melee') {
+      reach = item.source.activeWeapon()?.rangePx ?? item.source.intrinsicMeleeReach ?? MELEE_RANGE;
+    } else if (item.kind === 'spell' && item.spell) {
+      reach = item.spell.range;
+    } else if (item.kind === 'action' && item.hostileAttack) {
+      reach = MELEE_RANGE;
+    } else {
+      return null;
+    }
+    return Math.max(MAGE_BODY_RADIUS * 0.5, reach * EVASION_REACH_FRACTION);
+  }
+
+  /** True once the target has covered enough ground to be missed outright. */
+  attackEvaded(item: StackItem): boolean {
+    const target = item.target;
+    if (!target || !item.targetOrigin) return false;
+    const needed = this.evasionDistance(item);
+    if (needed == null) return false;
+    return dist(item.targetOrigin, target.pos) >= needed;
   }
 
   nullifyStack(): StackItem[] {
@@ -3551,6 +3593,19 @@ export class GameState {
     return this.mages.filter((m) => this.isValidSpellTarget(spell, source, m));
   }
 
+  /**
+   * Whether `source`'s basic attack can reach a flying `target`. Creature wings
+   * climb out of reach of everything but ranged weapons; Wings of Deaths Angel
+   * only skim, so any weapon or thrown/spat projectile still connects.
+   */
+  canStrikeAirborne(source: Mage, target: Mage): boolean {
+    if (!target.isAirborne()) return true;
+    const weapon = source.activeWeapon();
+    if (isRangedWeapon(weapon)) return true;
+    if (target.intrinsicAirborne) return false;
+    return !!weapon || (source.intrinsicMeleeReach ?? 0) > MELEE_RANGE;
+  }
+
   canMelee(source: Mage, target: Mage): boolean {
     if (source.cannotAttack) return false;
     if (source.hasForgotten('melee')) return false;
@@ -3562,7 +3617,7 @@ export class GameState {
     if (source.outOfAmmo()) return false;
     // A crossbow that has just fired cannot shoot again until it reloads.
     if (weapon?.toHit && source.reloadTurns > 0) return false;
-    if (target.isAirborne() && !isRangedWeapon(weapon)) return false;
+    if (!this.canStrikeAirborne(source, target)) return false;
     const d = dist(source.pos, target.pos);
     if (source.beastDemonKind && d > MELEE_RANGE && source.beastDemonBlood <= 0) return false;
     const reach = weapon ? weapon.rangePx : source.intrinsicMeleeReach ?? MELEE_RANGE;
@@ -4148,7 +4203,7 @@ export class GameState {
     const perHit = (Math.round(rollBase * (w?.multiplier ?? 1)) + flat) * 2;
     const type: DamageType = w?.damageType ?? 'shatter';
     const targets = this.magesInCone(source.pos, aim, reach, CLEAVE_DEGREES, source).filter(
-      (m) => m.team !== source.team && !m.isAirborne()
+      (m) => m.team !== source.team && this.canStrikeAirborne(source, m)
     );
     if (targets.length === 0) {
       this.log(`${source.name} cleaves the air — nothing in reach.`);
@@ -4258,6 +4313,12 @@ export class GameState {
         : weapon?.kind === 'dex'
           ? 'Shot'
           : 'Melee';
+    // The Deathknight's counter answers wherever its prey ends up; everyone else
+    // must still have the target in reach when the blow actually falls.
+    const stillReaches = (game: GameState): boolean =>
+      source.deathknightKind
+        ? source.alive && target.alive && source.team !== target.team
+        : game.canMelee(source, target);
     return {
       id: this.nextId++,
       kind: 'melee',
@@ -4267,14 +4328,15 @@ export class GameState {
       description: blackBell
         ? `${source.name} strikes ${target.name} with Black Bell in ${source.blackBellCondense ? 'Condense' : 'Toll'} mode.`
         : `${source.name} attacks ${target.name}.`,
-      isStillValid: (game) =>
-        source.deathknightKind
-          ? source.alive && target.alive && source.team !== target.team
-          : game.canMelee(source, target),
+      isStillValid: stillReaches,
       resolve: async (game) => {
         if (source.activeWeapon()) {
           await game.triggerEdgelordWeaponPulse(source);
           if (!source.alive || !target.alive) return;
+        }
+        if (!stillReaches(game)) {
+          game.log(`${target.name} is out of reach — ${source.name}'s attack finds nothing.`);
+          return;
         }
         // Swamprun creatures strike with an intrinsic (weaponless) attack that
         // carries its own damage type / class (e.g. the Specter's mental jab).
@@ -4456,7 +4518,7 @@ export class GameState {
             noImpactFx: true,
           });
           if (fireAmount > 0) {
-            dealt += dealDamage(ctx, target, dmg(fireAmount, 'fire', dmgClass), {
+            dealt += dealDamage(ctx, target, dmg(fireAmount, 'heat', dmgClass), {
               ignoreResist: !!w.ignoreResist,
               ignoreArmor: !!w.ignoreArmor,
               noImpactFx: true,
@@ -4513,7 +4575,7 @@ export class GameState {
             dealDamage(
               game.effectContext(source, arcTarget, null),
               arcTarget,
-              dmg(arcDamage, 'fire', 'sanity'),
+              dmg(arcDamage, 'heat', 'sanity'),
               { canMiss: false }
             );
           }
@@ -4531,8 +4593,8 @@ export class GameState {
           const fireEcho = Math.max(1, Math.round(dealt * 0.5));
           const mentalEcho = Math.max(1, Math.round(dealt * 0.25));
           game.log(`${source.name}'s weapon releases a Lightning Echo.`);
-          dealDamage(ctx, target, dmg(fireEcho, 'fire', 'physical'), { canMiss: false });
-          dealDamage(ctx, target, dmg(mentalEcho, 'fire', 'sanity'), { canMiss: false });
+          dealDamage(ctx, target, dmg(fireEcho, 'heat', 'physical'), { canMiss: false });
+          dealDamage(ctx, target, dmg(mentalEcho, 'heat', 'sanity'), { canMiss: false });
           if (target.alive) game.applyBlueflareStacks(target, 1, source);
           if (source.lightningEchoCritical) {
             const echoRange = RANGE_UNIT * Math.min(12, 3 + Math.floor(source.lightningEchoPower / 3));
@@ -4543,7 +4605,7 @@ export class GameState {
               dealDamage(
                 game.effectContext(source, echoTarget, null),
                 echoTarget,
-                dmg(fireEcho + Math.floor(source.lightningEchoPower / 8), 'fire', 'physical'),
+                dmg(fireEcho + Math.floor(source.lightningEchoPower / 8), 'heat', 'physical'),
                 { canMiss: false }
               );
             }

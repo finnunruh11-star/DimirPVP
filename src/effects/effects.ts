@@ -373,7 +373,7 @@ export function dealDamage(
 
   if (
     amount > 0 &&
-    (damage.type === 'light' || damage.type === 'fire') &&
+    (damage.type === 'light' || damage.type === 'heat') &&
     ctx.game.defeatPftlhbByIllumination(target, ctx.caster)
   ) {
     return 0;
@@ -1085,7 +1085,7 @@ export function coneDamage(
   for (const m of hits) {
     dealDamage(ctx, m, { ...damage }, { ...damageOpts, aoe: true, noImpactFx: true });
   }
-  if (damage.type === 'fire') {
+  if (damage.type === 'heat') {
     ctx.game.destroyScarabsByFireInCone(
       ctx.caster.pos,
       toward,

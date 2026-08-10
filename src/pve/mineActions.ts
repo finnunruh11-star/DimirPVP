@@ -349,7 +349,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
     resolve: (game, source, choice) => {
       const target = choice.target!;
       const magma = mineKind(source) === 'magma-sentinel';
-      rolledDamage(game, source, target, magma ? '2d6' : '1d6', power(source), 'fire', 'physical', 'Fire Bolt');
+      rolledDamage(game, source, target, magma ? '2d6' : '1d6', power(source), 'heat', 'physical', 'Fire Bolt');
       if (magma && target.alive) game.applySentinelFireStacks(target, 1, source);
     },
   },
@@ -363,7 +363,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
     isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 15 * RANGE_UNIT),
     resolve: (game, source, choice) => {
       const target = choice.target!;
-      const dealt = rolledDamage(game, source, target, '2d6', power(source), 'fire', 'physical', 'Fire Lance');
+      const dealt = rolledDamage(game, source, target, '2d6', power(source), 'heat', 'physical', 'Fire Lance');
       if (level(source) < 6 || dealt <= 0) return;
       const second = game.livingEnemiesOf(source)
         .filter((candidate) => candidate !== target && dist(candidate.pos, target.pos) <= 3 * RANGE_UNIT)
@@ -372,7 +372,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
         dealDamage(
           game.effectContext(source, second, null),
           second,
-          dmg(Math.max(1, Math.floor(dealt / 2)), 'fire', 'physical'),
+          dmg(Math.max(1, Math.floor(dealt / 2)), 'heat', 'physical'),
           { canMiss: false }
         );
       }
@@ -388,7 +388,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
     isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 15 * RANGE_UNIT),
     resolve: (game, source, choice) => {
       const target = choice.target!;
-      rolledDamage(game, source, target, '3d6', power(source), 'fire', 'physical', 'Magma Lance');
+      rolledDamage(game, source, target, '3d6', power(source), 'heat', 'physical', 'Magma Lance');
       if (target.alive) game.applySentinelFireStacks(target, level(source) >= 6 ? 2 : 1, source);
     },
   },
@@ -405,7 +405,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       const targets = game.magesInRadius(choice.target!.pos, 2 * RANGE_UNIT)
         .filter((target) => target.team !== source.team);
       for (const target of targets) {
-        rolledDamage(game, source, target, '2d6', power(source), 'fire', 'physical', 'Eruption', {
+        rolledDamage(game, source, target, '2d6', power(source), 'heat', 'physical', 'Eruption', {
           canMiss: false,
           aoe: true,
         });
@@ -440,7 +440,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       const targets = game.magesInCone(source.pos, choice.target!.pos, 15 * RANGE_UNIT, degrees, source)
         .filter((target) => target.team !== source.team);
       for (const target of targets) {
-        rolledDamage(game, source, target, '3d6', 0, 'fire', 'physical', 'Red Breath', {
+        rolledDamage(game, source, target, '3d6', 0, 'heat', 'physical', 'Red Breath', {
           canMiss: false,
           aoe: true,
         });

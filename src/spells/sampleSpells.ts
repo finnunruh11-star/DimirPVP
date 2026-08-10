@@ -1605,15 +1605,15 @@ registerSpell({
     const power = lightningPower(ctx);
     const gamble = lightningGamble(ctx);
     const amount = rollDice(ctx, '1d6', 'Lightning') + Math.floor(power / 6);
-    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
     if (gamble === 'overload' && ctx.caster.alive) {
-      dealDamage(ctx, ctx.caster, dmg(amount, 'fire', 'physical'), { canMiss: false });
+      dealDamage(ctx, ctx.caster, dmg(amount, 'heat', 'physical'), { canMiss: false });
     } else if (gamble === 'surge') {
       const candidates = ctx.game.magesInRadius(ctx.target.pos, R(Math.min(12, 3 + Math.floor(power / 3))), ctx.target);
       if (candidates.length > 0) {
         const arcTarget = ctx.rng.pick(candidates);
         ctx.vfx?.lightningBolt?.(ctx.target.pos, arcTarget.pos);
-        dealDamage(ctx, arcTarget, dmg(amount, 'fire', 'physical'), { canMiss: false });
+        dealDamage(ctx, arcTarget, dmg(amount, 'heat', 'physical'), { canMiss: false });
       }
     }
   },
@@ -1649,7 +1649,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    'Strike an enemy, then gamble through up to one random nearby unit per 5 Lightning power. Every arc deals 1d6 Fire and applies Fire; allies and caster are valid later jumps. A natural 20 overloads every living unit for 20d6 and 20 Fire.',
+    'Strike an enemy, then gamble through up to one random nearby unit per 5 Lightning power. Every arc deals 1d6 heat and applies Fire; allies and caster are valid later jumps. A natural 20 overloads every living unit for 20d6 and 20 Fire.',
   visual: { preset: 'beam', color: 0xff9d36, size: 10, speed: 1.6 },
   async cast(ctx) {
     if (!ctx.target) return;
@@ -1657,7 +1657,7 @@ registerSpell({
     if (ctx.crit) {
       for (const target of ctx.game.mages.filter((mage) => mage.alive)) {
         await ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
-        dealDamage(ctx, target, dmg(rollDice(ctx, '20d6', 'Fire Lightning overload'), 'fire', 'physical'), {
+        dealDamage(ctx, target, dmg(rollDice(ctx, '20d6', 'Fire Lightning overload'), 'heat', 'physical'), {
           canMiss: false,
         });
         if (target.alive) applyFireStacks(ctx, target, 20);
@@ -1675,7 +1675,7 @@ registerSpell({
       if (overload) current = ctx.caster;
       await ctx.vfx?.lightningBolt?.(from, current.pos);
       const amount = rollDice(ctx, '1d6', 'Fire Lightning arc') + Math.floor(power / 6);
-      dealDamage(ctx, current, dmg(amount, 'fire', 'physical'), { canMiss: false });
+      dealDamage(ctx, current, dmg(amount, 'heat', 'physical'), { canMiss: false });
       if (current.alive) applyFireStacks(ctx, current, 1 + Math.floor(power / 10));
       visited.add(current);
       if (overload || !ctx.caster.alive) break;
@@ -1689,7 +1689,7 @@ registerSpell({
       if (gamble === 'surge' && candidates.length > 0) {
         const fork = ctx.rng.pick(candidates);
         await ctx.vfx?.lightningBolt?.(current.pos, fork.pos);
-        dealDamage(ctx, fork, dmg(amount, 'fire', 'physical'), { canMiss: false });
+        dealDamage(ctx, fork, dmg(amount, 'heat', 'physical'), { canMiss: false });
         if (fork.alive) applyFireStacks(ctx, fork, 1 + Math.floor(power / 10));
         visited.add(fork);
       }
@@ -1751,7 +1751,7 @@ registerSpell({
     const power = lightningPower(ctx);
     const gamble = lightningGamble(ctx);
     if (gamble === 'overload') {
-      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Synaptic overload'), 'fire', 'sanity'), {
+      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Synaptic overload'), 'heat', 'sanity'), {
         canMiss: false,
       });
       if (!ctx.crit) {
@@ -1791,7 +1791,7 @@ registerSpell({
       dealDamage(
         ctx,
         target,
-        dmg(rollDice(ctx, ctx.crit ? '20d3' : '1d3', 'Lightning Veil'), 'fire', 'physical'),
+        dmg(rollDice(ctx, ctx.crit ? '20d3' : '1d3', 'Lightning Veil'), 'heat', 'physical'),
         { canMiss: false }
       );
       if (target.alive) {
@@ -1813,7 +1813,7 @@ registerSpell({
       dealDamage(
         ctx,
         target,
-        dmg(rollDice(ctx, ctx.crit ? '20d3' : '1d3', 'Lightning Veil repeat'), 'fire', 'physical'),
+        dmg(rollDice(ctx, ctx.crit ? '20d3' : '1d3', 'Lightning Veil repeat'), 'heat', 'physical'),
         { canMiss: false }
       );
       if (target.alive) {
@@ -1849,7 +1849,7 @@ registerSpell({
       dash(ctx, ctx.caster, { toPoint: target.pos, distance: R(7) });
       const explosion = rollDice(ctx, '2d4', 'Fire Pierce explosion');
       for (const entity of ctx.game.magesInRadius(target.pos, R(2))) {
-        dealDamage(ctx, entity, dmg(explosion, 'fire', 'physical'), {
+        dealDamage(ctx, entity, dmg(explosion, 'heat', 'physical'), {
           canMiss: false,
           aoe: true,
         });
@@ -1858,7 +1858,7 @@ registerSpell({
       return;
     }
     dash(ctx, ctx.caster, { toPoint: target.pos, distance: R(units) });
-    dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Fire Pierce'), 'fire', 'physical'), {
+    dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Fire Pierce'), 'heat', 'physical'), {
       canMiss: false,
     });
   },
@@ -1889,7 +1889,7 @@ registerSpell({
       if (candidates.length === 0) break;
       if (ctx.rng.chance(1 / Math.max(1, power))) {
         ctx.log(`${ctx.caster.name}'s Lightning Pierce misfires!`);
-        dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, ctx.crit ? '4d4' : '2d4', 'Lightning misfire'), 'fire', 'physical'), {
+        dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, ctx.crit ? '4d4' : '2d4', 'Lightning misfire'), 'heat', 'physical'), {
           canMiss: false,
         });
         break;
@@ -1899,7 +1899,7 @@ registerSpell({
       const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
       blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
       await bolt;
-      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Pierce') + Math.floor(power / 8), 'fire', 'physical'), {
+      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Pierce') + Math.floor(power / 8), 'heat', 'physical'), {
         canMiss: false,
       });
       range -= R(1);
@@ -1923,16 +1923,16 @@ registerSpell({
     const gamble = lightningGamble(ctx);
     const bonus = Math.floor(power / 6);
     const physicalAmount = rollDice(ctx, '1d6', 'Fire Lightning Mind') + bonus;
-    dealDamage(ctx, ctx.target, dmg(physicalAmount, 'fire', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(physicalAmount, 'heat', 'physical'));
     if (gamble === 'overload' && ctx.caster.alive) {
-      dealDamage(ctx, ctx.caster, dmg(physicalAmount, 'fire', 'physical'), { canMiss: false });
+      dealDamage(ctx, ctx.caster, dmg(physicalAmount, 'heat', 'physical'), { canMiss: false });
     }
     if (!ctx.target.alive) return;
     const sanityAmount = rollDice(ctx, '1d6', 'Fire Lightning Mind sanity') + bonus;
     dealDamage(
       ctx,
       ctx.target,
-      dmg(sanityAmount, 'fire', 'sanity')
+      dmg(sanityAmount, 'heat', 'sanity')
     );
     if (ctx.target.alive) {
       applyBlueflareStacks(ctx, ctx.target, Math.min(4, 2 + Math.floor(power / 12)));
@@ -1946,7 +1946,7 @@ registerSpell({
       if (candidates.length > 0) {
         const arcTarget = ctx.rng.pick(candidates);
         ctx.vfx?.lightningBolt?.(ctx.target.pos, arcTarget.pos);
-        dealDamage(ctx, arcTarget, dmg(sanityAmount, 'fire', 'sanity'), { canMiss: false });
+        dealDamage(ctx, arcTarget, dmg(sanityAmount, 'heat', 'sanity'), { canMiss: false });
       }
     }
   },
@@ -1979,7 +1979,7 @@ registerSpell({
             ctx.crit
               ? rollDice(ctx, '20d6', 'Fire Lightning Veil catastrophe')
               : rollDice(ctx, '2d6', 'Fire Lightning Veil') + Math.floor(power / 4),
-            'fire',
+            'heat',
             'physical'
           ),
           { canMiss: false, aoe: true }
@@ -2013,14 +2013,14 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     dash(ctx, ctx.caster, { toPoint: ctx.target.pos, distance: R(10) });
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Mind Pierce'), 'fire', 'physical'), {
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Mind Pierce'), 'heat', 'physical'), {
       canMiss: false,
     });
     if (!ctx.target.alive) return;
     dealDamage(
       ctx,
       ctx.target,
-      dmg(rollDice(ctx, '1d6', 'Fire Mind Pierce sanity'), 'fire', 'sanity'),
+      dmg(rollDice(ctx, '1d6', 'Fire Mind Pierce sanity'), 'heat', 'sanity'),
       { canMiss: false }
     );
     if (ctx.target.alive) applyBlueflareStacks(ctx, ctx.target, 2);
@@ -2059,7 +2059,7 @@ registerSpell({
     const blast = rollDice(ctx, '4d6', 'Fire Veil Pierce breach');
     for (const target of ctx.game.magesInRadius(ctx.caster.pos, R(3), ctx.caster)) {
       if (target.team === ctx.caster.team) continue;
-      dealDamage(ctx, target, dmg(blast, 'fire', 'physical'), { canMiss: false, aoe: true });
+      dealDamage(ctx, target, dmg(blast, 'heat', 'physical'), { canMiss: false, aoe: true });
       if (target.alive) applyFireStacks(ctx, target, 4);
     }
     applyInvisibility(ctx, ctx.caster, { duration: 3, mode: 'full' });
@@ -2106,7 +2106,7 @@ registerSpell({
         dealDamage(
           ctx,
           ctx.caster,
-          dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce backlash') + Math.floor(power / 8), 'fire', 'sanity'),
+          dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce backlash') + Math.floor(power / 8), 'heat', 'sanity'),
           { canMiss: false }
         );
         break;
@@ -2124,7 +2124,7 @@ registerSpell({
         dealDamage(
           ctx,
           target,
-          dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce sanity') + bonus, 'fire', 'sanity'),
+          dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce sanity') + bonus, 'heat', 'sanity'),
           { canMiss: false }
         );
       }
@@ -2134,7 +2134,7 @@ registerSpell({
         if (forkCandidates.length > 0) {
           const fork = ctx.rng.pick(forkCandidates);
           await ctx.vfx?.lightningBolt?.(target.pos, fork.pos);
-          dealDamage(ctx, fork, dmg(rollDice(ctx, '1d6', 'Neural fork') + bonus, 'fire', 'sanity'), {
+          dealDamage(ctx, fork, dmg(rollDice(ctx, '1d6', 'Neural fork') + bonus, 'heat', 'sanity'), {
             canMiss: false,
           });
           if (fork.alive) applyBlueflareStacks(ctx, fork, 1);
@@ -2173,7 +2173,7 @@ registerSpell({
             ctx.crit
               ? rollDice(ctx, '20d6', 'Lightning Mind Veil catastrophe')
               : rollDice(ctx, '2d6', 'Lightning Mind Veil') + Math.floor(power / 4),
-            'fire',
+            'heat',
             'sanity'
           ),
           { canMiss: false, aoe: true }
@@ -2202,12 +2202,13 @@ registerSpell({
   targeting: 'self',
   dc: 14,
   description:
-    'A stronger Lightning Pierce: chain up to power/3 times (rounded down) into random other allies or enemies with 5 additional range and no misfire, dealing 2d6 Fire each hit. The same mage can be hit any number of times, but the caster cannot be hit. Then roll d6, dash that far, and become invisible for 6 minus the roll turns.',
+    'A stronger Lightning Pierce: chain up to power/3 times (rounded down) into random other allies or enemies with 5 additional range and no misfire, dealing 2d6 Fire each hit. The bolt always prefers a fresh body; when it has to strike the same mage twice in a row that repeat hit only deals 2d3. The caster cannot be hit. Then roll d6, dash that far, and become invisible for 6 minus the roll turns.',
   visual: { preset: 'nova', color: 0xffc95c, size: 78, speed: 1.5 },
   async cast(ctx) {
     const power = lightningPower(ctx);
     const dashCount = Math.floor(power / 3);
     let range = R((power + 5) * (ctx.crit ? 2 : 1));
+    let previous: Mage | null = null;
     for (let dashIndex = 0; dashIndex < dashCount && range >= R(1) && ctx.caster.alive; dashIndex++) {
       const candidates = ctx.game.mages.filter(
         (entity) =>
@@ -2216,13 +2217,19 @@ registerSpell({
           Math.hypot(entity.x - ctx.caster.x, entity.y - ctx.caster.y) <= range
       );
       if (candidates.length === 0) break;
-      const target = ctx.rng.pick(candidates);
+      const fresh = candidates.filter((entity) => entity !== previous);
+      const target = ctx.rng.pick(fresh.length > 0 ? fresh : candidates);
+      const repeat = target === previous;
       const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
       blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
       await bolt;
-      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Veil Pierce') + Math.floor(power / 8), 'fire', 'physical'), {
+      const rolled = repeat
+        ? rollDice(ctx, '2d3', 'Lightning Veil Pierce repeat')
+        : rollDice(ctx, '2d6', 'Lightning Veil Pierce');
+      dealDamage(ctx, target, dmg(rolled + Math.floor(power / 8), 'heat', 'physical'), {
         canMiss: false,
       });
+      previous = target;
       range -= R(1);
     }
     if (!ctx.caster.alive) return;
@@ -2300,13 +2307,13 @@ registerSpell({
         ctx.vfx?.lightningTrail?.(trail);
         for (const entity of ctx.game.mages) {
           if (entity === ctx.caster || !entity.alive || !segmentHitsMage(segment, entity)) continue;
-          dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail') + Math.floor(power / 5), 'fire', 'physical'), {
+          dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail') + Math.floor(power / 5), 'heat', 'physical'), {
             canMiss: false,
           });
         }
         if (collision) {
           ctx.log(`${ctx.caster.name} crosses the red trail and the spell collapses!`);
-          dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '4d6', 'Red trail collision') + Math.floor(power / 5), 'fire', 'physical'), {
+          dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '4d6', 'Red trail collision') + Math.floor(power / 5), 'heat', 'physical'), {
             canMiss: false,
           });
           break;
@@ -2379,7 +2386,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const amount = rollDice(ctx, '1d6', 'Fire Shadow');
-    const hits = areaDamage(ctx, ctx.targetPoint, R(2), dmg(amount, 'fire', 'physical'), { canMiss: false });
+    const hits = areaDamage(ctx, ctx.targetPoint, R(2), dmg(amount, 'heat', 'physical'), { canMiss: false });
     for (const m of hits) applyFireStacks(ctx, m, 1);
     placeShadow(ctx, ctx.targetPoint, 5);
   },
@@ -2393,14 +2400,14 @@ registerSpell({
   targeting: 'enemy',
   dc: 11,
   description:
-    'Curse one enemy (range 15): 1d3 fire damage each turn for 4 turns, and apply 2 Fire immediately.',
+    'Curse one enemy (range 15): 1d3 heat damage each turn for 4 turns, and apply 2 Fire immediately.',
   visual: { preset: 'beam', color: 0xff7a45, size: 6, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
     applyDot(ctx, ctx.target, {
       name: 'Fire Curse',
       duration: 4,
-      damage: dmg(2, 'fire', 'physical'),
+      damage: dmg(2, 'heat', 'physical'),
       damageSpec: '1d3',
     });
     applyFireStacks(ctx, ctx.target, 2);
@@ -2415,11 +2422,11 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description:
-    '1d6 Fire damage to one enemy (range 15), root it (movement stun) for 3 turns, and apply 2 Fire.',
+    '1d6 heat damage to one enemy (range 15), root it (movement stun) for 3 turns, and apply 2 Fire.',
   visual: { preset: 'projectile', color: 0xff5a36, size: 11, speed: 1.4 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Bind'), 'fire', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Bind'), 'heat', 'physical'));
     if (!ctx.target.alive) return;
     applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
     applyFireStacks(ctx, ctx.target, 2);
@@ -2441,7 +2448,7 @@ registerSpell({
     if (!ctx.targetPoint) return;
     const power = lightningPower(ctx);
     const amount = rollDice(ctx, '1d6', 'Lightning Shatter') + Math.floor(power / 6);
-    const hits = coneDamage(ctx, ctx.targetPoint, R(5), CONE_DEGREES, dmg(amount, 'fire', 'physical'));
+    const hits = coneDamage(ctx, ctx.targetPoint, R(5), CONE_DEGREES, dmg(amount, 'heat', 'physical'));
     for (const h of hits) {
       if (ctx.rng.chance(0.25)) applyStun(ctx, h, { duration: 2, type: 'full' });
     }
@@ -2463,7 +2470,7 @@ registerSpell({
     if (!ctx.targetPoint) return;
     const power = lightningPower(ctx);
     const amount = rollDice(ctx, '1d6', 'Lightning Corrode') + Math.floor(power / 8);
-    const hits = areaDamage(ctx, ctx.targetPoint, R(1.6), dmg(amount, 'fire', 'physical'));
+    const hits = areaDamage(ctx, ctx.targetPoint, R(1.6), dmg(amount, 'heat', 'physical'));
     for (const m of hits) {
       if (ctx.rng.chance(0.33)) {
         applyDot(ctx, m, { name: 'Corrosion', duration: 2, damage: dmg(1, 'corrosive', 'physical') });
@@ -2487,7 +2494,7 @@ registerSpell({
     const power = lightningPower(ctx);
     const amount = rollDice(ctx, '1d6', 'Lightning Shadow') + Math.floor(power / 6);
     const spot = { ...ctx.target.pos };
-    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
     placeShadow(ctx, spot, 5);
   },
 });
@@ -2500,18 +2507,18 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description:
-    'Deal 1d6 plus 1 damage per 6 Lightning power to one enemy (range 15), then curse it for 1d3 fire damage each turn for 4 turns.',
+    'Deal 1d6 plus 1 damage per 6 Lightning power to one enemy (range 15), then curse it for 1d3 heat damage each turn for 4 turns.',
   visual: { preset: 'beam', color: 0xffc95c, size: 7, speed: 1.4 },
   cast(ctx) {
     if (!ctx.target) return;
     const power = lightningPower(ctx);
     const amount = rollDice(ctx, '1d6', 'Lightning Curse') + Math.floor(power / 6);
-    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
     if (!ctx.target.alive) return;
     applyDot(ctx, ctx.target, {
       name: 'Lightning Curse',
       duration: 4,
-      damage: dmg(2, 'fire', 'physical'),
+      damage: dmg(2, 'heat', 'physical'),
       damageSpec: '1d3',
     });
   },
@@ -2531,7 +2538,7 @@ registerSpell({
     if (!ctx.target) return;
     const power = lightningPower(ctx);
     const amount = rollDice(ctx, '1d6', 'Lightning Bind') + Math.floor(power / 6);
-    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
     if (ctx.target.alive) applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
   },
 });
@@ -2558,7 +2565,7 @@ registerSpell({
     if (!ctx.target) return;
     const power = lightningPower(ctx);
     const amount = rollDice(ctx, '1d6', 'Fire Lightning Bind') + Math.floor(power / 5);
-    dealDamage(ctx, ctx.target, dmg(amount, 'fire', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
     if (!ctx.target.alive) return;
     applyFireStacks(ctx, ctx.target, Math.min(3, 1 + Math.floor(power / 10)));
     applyStun(ctx, ctx.target, { duration: Math.min(6, 3 + Math.floor(power / 10)), type: 'movement' });
@@ -2664,7 +2671,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     dash(ctx, ctx.caster, { toPoint: ctx.target.pos, distance: R(10) });
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Bind Pierce'), 'fire', 'physical'), {
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Bind Pierce'), 'heat', 'physical'), {
       canMiss: false,
     });
     if (!ctx.target.alive) return;

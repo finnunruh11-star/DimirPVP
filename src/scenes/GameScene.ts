@@ -1,6 +1,41 @@
 import Phaser from 'phaser';
 import { SceneInput } from '../engine/SceneInput';
-import { UI, UI_FONT, UI_HEX, bindTextControl } from '../ui/theme';
+import {
+  DOCK_LOG,
+  DOCK_SPELL,
+  DOCK_VITALS,
+  FIELD_OVERLAY_TR,
+  HINT_BAR,
+  SPACE,
+  TOP_ACTIONS,
+  TOP_BAR,
+  TOP_RUN,
+  TOP_TOGGLES,
+  TOP_TURN,
+  bottom,
+  centerY,
+  panelBody,
+  right,
+  spellReadout,
+  wordSlot,
+} from '../ui/layout';
+import {
+  FONT,
+  UI,
+  UI_FONT,
+  UI_HEX,
+  bindTextControl,
+  drawBar,
+  drawPanel,
+  makeChip,
+  setChipState,
+} from '../ui/theme';
+import {
+  PRESET_SLOTS,
+  loadCreativePresets,
+  saveCreativePresets,
+  type PresetSlots,
+} from '../ui/creativePresets';
 import {
   ACTIONS_PER_TURN,
   COLORS,
@@ -416,7 +451,30 @@ type SubCommand =
 type DraftCommand = { t: 'draft'; index: number };
 
 const MAGE_RADIUS = 22;
-const HUD_Y = FIELD.y + FIELD.h + 18;
+
+/** How the action palette is grouped, so it reads as short lists. */
+const ACTION_GROUPS: { title: string; ids: string[] }[] = [
+  { title: 'CORE', ids: ['cast', 'move', 'attack', 'end'] },
+  { title: 'MANOEUVRE', ids: ['leap', 'cleave', 'focus', 'command'] },
+  {
+    title: 'POWERS',
+    ids: [
+      'weapon',
+      'eldritch',
+      'thunder',
+      'deaths-angel-wings',
+      'mantle-bind',
+      'edgelord-shake',
+      'edgelord-throw',
+    ],
+  },
+  { title: 'ITEMS', ids: ['inventory', 'drop', 'pickup', 'throw'] },
+  {
+    title: 'RUN',
+    ids: ['raid-begin', 'raid-restore-vitals', 'raid-restore-mana', 'raid-restore-words', 'pickaxe'],
+  },
+  { title: 'RESPOND', ids: ['react-cast', 'needle', 'block', 'bash', 'dodge', 'weapon', 'pass'] },
+];
 /** Practice targets kept standing during raid preparation. */
 const RAID_PREP_EFFIGIES = 3;
 /** Loadout slots plus the single modifier word a build carries. */
@@ -615,6 +673,7 @@ export class GameScene extends Phaser.Scene {
   };
   private creativePrepItems: ItemId[] = [];
   private creativePrepPage = 0;
+  private creativePresets: PresetSlots = loadCreativePresets();
   private creativePrepResolve: ((result: CreativePrepResult) => void) | null = null;
 
   // Human spell-building state (indices into the current mage's loadout).
@@ -736,6 +795,7 @@ export class GameScene extends Phaser.Scene {
   private actionMenu?: Phaser.GameObjects.Container;
   private actionMenuEntries: ActionEntry[] = [];
   private actionMenuRows: Phaser.GameObjects.Rectangle[] = [];
+  private actionMenuFooter?: Phaser.GameObjects.Text;
   private actionMenuSelection = 0;
   private actionMenuRowsPerColumn = 1;
   /** The mode to restore when the action menu closes ('idle' or 'reaction'). */
@@ -2642,14 +2702,15 @@ export class GameScene extends Phaser.Scene {
           : `${swamprunDepth(this.swamprunWave)}m  Power ${this.swamprunEncounterPower}  Foes: ${alive}  Gold: ${this.swamprunGold}g${this.swamprunCurse ? `  Curse: ${this.swamprunCurse}` : ''}`;
     if (!this.swamprunHudText) {
       this.swamprunHudText = this.add
-        .text(FIELD.x + 12, FIELD.y + 10, text, {
-          fontSize: '20px',
-          fontStyle: 'bold',
-          color: '#ffdf80',
-          backgroundColor: '#0b0b14aa',
-          padding: { x: 6, y: 3 },
+        .text(TOP_RUN.x, TOP_BAR.h / 2, text, {
+          fontFamily: UI_FONT,
+          fontSize: FONT.small,
+          color: UI_HEX.gold,
+          fixedWidth: TOP_RUN.w,
+          wordWrap: { width: TOP_RUN.w },
         })
-        .setDepth(60);
+        .setOrigin(0, 0.5)
+        .setDepth(46);
     } else {
       this.swamprunHudText.setText(text);
     }
@@ -3470,6 +3531,65 @@ export class GameScene extends Phaser.Scene {
       this.creativePrepPanel = undefined;
       resolve?.(result);
     });
+
+    this.drawCreativePresets(panel);
+  }
+
+  /** Three saved stat + item builds, loadable in one click. */
+  private drawCreativePresets(panel: Phaser.GameObjects.Container): void {
+    panel.add(
+      this.add.text(105, 515, 'SAVED BUILDS', {
+        fontSize: '12px',
+        color: TEXT.warn,
+        fontStyle: 'bold',
+      })
+    );
+    for (let slot = 0; slot < PRESET_SLOTS; slot++) {
+      const preset = this.creativePresets[slot];
+      const y = 550 + slot * 38;
+      panel.add(
+        this.add.text(105, y - 10, preset ? preset.name : `Slot ${slot + 1} — empty`, {
+          fontFamily: UI_FONT,
+          fontSize: '14px',
+          color: preset ? TEXT.body : TEXT.dim,
+          backgroundColor: UI_HEX.panelRaised,
+          fixedWidth: 210,
+          padding: { x: 8, y: 4 },
+        })
+      );
+      this.swampShopButton(panel, 370, y, 'Load', '#8fdfc8', !!preset, () => {
+        const saved = this.creativePresets[slot];
+        if (!saved) return;
+        this.creativePrepStats = { ...saved.stats };
+        this.creativePrepItems = [...saved.items];
+        this.redrawCreativePrep();
+      });
+      this.swampShopButton(panel, 460, y, 'Save', '#ffcf6b', true, () => this.saveCreativePreset(slot));
+      this.swampShopButton(panel, 560, y, 'Clear', '#ff9a9a', !!preset, () => {
+        this.creativePresets[slot] = null;
+        saveCreativePresets(this.creativePresets);
+        this.redrawCreativePrep();
+      });
+    }
+  }
+
+  /** Name and store the current build in one of the three slots. */
+  private saveCreativePreset(slot: number): void {
+    const existing = this.creativePresets[slot];
+    const name = window.prompt(
+      `Name for slot ${slot + 1}:`,
+      existing?.name ?? `Build ${slot + 1}`
+    );
+    if (name == null) return;
+    this.creativePresets[slot] = {
+      name: name.trim().slice(0, 24) || `Build ${slot + 1}`,
+      stats: { ...this.creativePrepStats },
+      items: [...this.creativePrepItems],
+    };
+    if (!saveCreativePresets(this.creativePresets)) {
+      this.gs.log('Saved builds cannot be stored in this browser; it will last only this session.');
+    }
+    this.redrawCreativePrep();
   }
 
   /** Deterministic AI starting pick: one non-consumable item. */
@@ -5824,6 +5944,8 @@ export class GameScene extends Phaser.Scene {
       (initial.kind === 'melee' || initial.kind === 'spell' || initial.hostileAttack)
     ) {
       this.gs.triggerOniAmbush(initial.source, initial.target);
+      // The ambush teleports hidden Oni; that jump must not read as evasion.
+      this.gs.markTargetOrigin(initial);
       const oniTrigger = this.buildOniTurnEndTrigger();
       if (oniTrigger) this.gs.pushStack(oniTrigger);
     }
@@ -6177,6 +6299,26 @@ export class GameScene extends Phaser.Scene {
       } else {
         this.gs.log(`${item.label} finds nothing left to delay.`);
       }
+    }
+
+    // Last look before the effect lands: a target that slipped out of range (or
+    // stopped being legal) during the reaction window is off the hook entirely.
+    if (!item.isStillValid(this.gs)) {
+      this.gs.log(`${item.label} fizzles — the target slipped out of reach.`);
+      if (item.kind === 'spell') this.setCharging(item.source, false);
+      await this.delay(150);
+      return item;
+    }
+
+    // Ground covered since the attack was declared beats it outright — this is
+    // what makes a movement spell answer a swing, an arrow or a bolt.
+    if (this.gs.attackEvaded(item)) {
+      this.gs.log(
+        `${item.target?.name ?? 'The target'} is already gone — ${item.label} strikes empty ground.`
+      );
+      if (item.kind === 'spell') this.setCharging(item.source, false);
+      await this.delay(150);
+      return item;
     }
 
     // 1) Finish charging, then play the spell/melee animation and the attack
@@ -7763,6 +7905,7 @@ export class GameScene extends Phaser.Scene {
     this.actionMenu = undefined;
     this.actionMenuEntries = [];
     this.actionMenuRows = [];
+    this.actionMenuFooter = undefined;
     if (this.mode === 'action-menu') this.mode = this.actionMenuReturn;
     this.redraw();
   }
@@ -7770,26 +7913,56 @@ export class GameScene extends Phaser.Scene {
   private buildActionMenu(): void {
     this.hideActionMenu();
     const reaction = this.actionMenuReturn === 'reaction';
-    const entries = reaction ? this.reactionActionEntries() : this.turnActionEntries();
+    const raw = reaction ? this.reactionActionEntries() : this.turnActionEntries();
     this.mode = 'action-menu';
-    this.actionMenuEntries = entries;
-    this.actionMenuSelection = Math.max(0, entries.findIndex((entry) => entry.enabled));
+
+    // Group the palette so it reads as a few short lists instead of one wall.
+    const sections: { title: string; entries: ActionEntry[] }[] = [];
+    const taken = new Set<ActionEntry>();
+    for (const group of ACTION_GROUPS) {
+      const entries = raw.filter((entry) => group.ids.includes(entry.id));
+      for (const entry of entries) taken.add(entry);
+      if (entries.length > 0) sections.push({ title: group.title, entries });
+    }
+    const leftovers = raw.filter((entry) => !taken.has(entry));
+    if (leftovers.length > 0) sections.push({ title: 'OTHER', entries: leftovers });
+
+    // Selection indices follow the rendered order.
+    const ordered = sections.flatMap((section) => section.entries);
+    this.actionMenuEntries = ordered;
+    this.actionMenuSelection = Math.max(0, ordered.findIndex((entry) => entry.enabled));
+
+    const rowH = 30;
+    const headerH = 24;
+    const sectionH = (section: { entries: ActionEntry[] }): number =>
+      headerH + section.entries.length * rowH + 6;
+
+    // Split whole sections across two columns so a header never orphans.
+    const total = sections.reduce((sum, section) => sum + sectionH(section), 0);
+    const columns: { title: string; entries: ActionEntry[] }[][] = [[], []];
+    let used = 0;
+    for (const section of sections) {
+      const target = used > 0 && used + sectionH(section) / 2 > total / 2 ? 1 : 0;
+      columns[target].push(section);
+      if (target === 0) used += sectionH(section);
+    }
+    if (columns[1].length === 0) columns.pop();
+
+    const colHeights = columns.map((col) => col.reduce((sum, s) => sum + sectionH(s), 0));
+    const bodyH = Math.max(...colHeights, rowH);
+    const headH = 74;
+    const footH = 46;
+    const panelW = columns.length === 1 ? 620 : 1000;
+    const panelH = Math.min(GAME_HEIGHT - 40, headH + bodyH + footH);
+    const top0 = Math.round((GAME_HEIGHT - panelH) / 2);
+    const cx = GAME_WIDTH / 2;
 
     const cont = this.add.container(0, 0).setDepth(98);
-    const cx = GAME_WIDTH / 2;
-    const columns = entries.length > 10 ? 2 : 1;
-    const rowsPerColumn = Math.max(1, Math.ceil(entries.length / columns));
-    this.actionMenuRowsPerColumn = rowsPerColumn;
-    const panelW = columns === 1 ? 650 : 1100;
-    const rowH = 50;
-    const headH = 82;
-    const panelH = headH + rowsPerColumn * rowH + 18;
-    const top0 = Math.round((GAME_HEIGHT - panelH) / 2);
     this.addModalChrome(cont, {
       width: panelW,
       height: panelH,
-      title: reaction ? 'REACTION WINDOW' : 'COMMAND PALETTE',
-      subtitle: 'Arrow keys move · Enter confirms · Tab or Esc closes',
+      title: reaction ? 'REACTION' : 'ACTIONS',
+      subtitle: '↑↓ move · Enter confirm · Esc close',
       accent: reaction ? UI.coral : UI.gold,
       dismiss: () => {
         this.menuClickGuard = true;
@@ -7797,55 +7970,74 @@ export class GameScene extends Phaser.Scene {
       },
     });
 
+    const gap = 16;
+    const columnW = (panelW - 36 - gap * (columns.length - 1)) / columns.length;
     const panelLeft = cx - panelW / 2;
-    const columnGap = 14;
-    const columnW = (panelW - 36 - columnGap * (columns - 1)) / columns;
-    entries.forEach((entry, index) => {
-      const column = Math.floor(index / rowsPerColumn);
-      const row = index % rowsPerColumn;
-      const x = panelLeft + 18 + column * (columnW + columnGap);
-      const y = top0 + headH + row * rowH;
-      const rowBg = this.add
-        .rectangle(x, y, columnW, rowH - 7, entry.enabled ? UI.panelRaised : UI.panelDisabled, 1)
-        .setOrigin(0, 0)
-        .setStrokeStyle(1, entry.enabled ? UI.borderSoft : 0x1a2533);
-      const key = this.add
-        .text(x + 9, y + 9, entry.hotkey, {
-          fontSize: '12px',
-          color: entry.enabled ? TEXT.warn : TEXT.dim,
-          backgroundColor: '#00000066',
-          padding: { x: 6, y: 3 },
-          fixedWidth: 82,
-          align: 'center',
-        })
-        .setOrigin(0, 0);
-      const label = this.add
-        .text(x + 102, y + 4, entry.label, {
-          fontFamily: UI_FONT,
-          fontSize: '15px',
-          color: entry.enabled ? TEXT.body : TEXT.dim,
-          fontStyle: 'bold',
-        })
-        .setOrigin(0, 0);
-      const desc = this.add
-        .text(x + 102, y + 23, entry.enabled ? entry.desc : entry.reason ?? entry.desc, {
-          fontSize: '11px',
-          color: entry.enabled ? TEXT.dim : TEXT.bad,
-          wordWrap: { width: columnW - 114 },
-        })
-        .setOrigin(0, 0);
-      cont.add([rowBg, key, label, desc]);
-      this.actionMenuRows.push(rowBg);
-      if (entry.enabled) {
-        rowBg.setInteractive({ useHandCursor: true });
-        rowBg.on('pointerover', () => {
-          this.actionMenuSelection = index;
-          this.refreshActionMenuSelection();
-        });
-        rowBg.on('pointerout', () => this.refreshActionMenuSelection());
-        rowBg.on('pointerdown', () => this.runActionMenuEntry(entry, true));
+    let index = 0;
+    columns.forEach((column, colIndex) => {
+      const x = panelLeft + 18 + colIndex * (columnW + gap);
+      let y = top0 + headH;
+      for (const section of column) {
+        cont.add(
+          this.add.text(x + 2, y + 6, section.title, {
+            fontFamily: UI_FONT,
+            fontSize: FONT.micro,
+            color: UI_HEX.textDim,
+            fontStyle: 'bold',
+          })
+        );
+        y += headerH;
+        for (const entry of section.entries) {
+          const rowIndex = index++;
+          const rowBg = this.add
+            .rectangle(x, y, columnW, rowH - 4, entry.enabled ? UI.panelRaised : UI.panelDisabled, 1)
+            .setOrigin(0, 0)
+            .setStrokeStyle(1, entry.enabled ? UI.borderSoft : 0x161d28);
+          const key = this.add
+            .text(x + 8, y + 6, entry.hotkey, {
+              fontFamily: UI_FONT,
+              fontSize: FONT.micro,
+              color: entry.enabled ? UI_HEX.gold : '#4d5666',
+              fixedWidth: 64,
+            })
+            .setOrigin(0, 0);
+          const label = this.add
+            .text(x + 78, y + 5, entry.label, {
+              fontFamily: UI_FONT,
+              fontSize: FONT.body,
+              color: entry.enabled ? UI_HEX.text : '#5b6577',
+            })
+            .setOrigin(0, 0);
+          cont.add([rowBg, key, label]);
+          this.actionMenuRows.push(rowBg);
+          if (entry.enabled) {
+            rowBg.setInteractive({ useHandCursor: true });
+            rowBg.on('pointerover', () => {
+              this.actionMenuSelection = rowIndex;
+              this.refreshActionMenuSelection();
+            });
+            rowBg.on('pointerdown', () => this.runActionMenuEntry(entry, true));
+          }
+          y += rowH;
+        }
+        y += 6;
       }
     });
+    this.actionMenuRowsPerColumn = Math.max(1, Math.ceil(ordered.length / columns.length));
+
+    // One description line, for whatever is highlighted right now.
+    this.actionMenuFooter = this.add
+      .text(panelLeft + 18, top0 + panelH - footH + 12, '', {
+        fontFamily: UI_FONT,
+        fontSize: FONT.small,
+        color: UI_HEX.textDim,
+        wordWrap: { width: panelW - 36 },
+        fixedWidth: panelW - 36,
+        fixedHeight: 32,
+      })
+      .setOrigin(0, 0);
+    cont.add(this.actionMenuFooter);
+
     this.actionMenu = cont;
     this.refreshActionMenuSelection();
   }
@@ -7870,9 +8062,16 @@ export class GameScene extends Phaser.Scene {
       if (!entry?.enabled) return;
       const selected = index === this.actionMenuSelection;
       row
-        .setFillStyle(selected ? UI.panelHover : UI.panelRaised)
+        .setFillStyle(selected ? UI.panelActive : UI.panelRaised)
         .setStrokeStyle(selected ? 2 : 1, selected ? UI.gold : UI.borderSoft);
     });
+    const active = this.actionMenuEntries[this.actionMenuSelection];
+    if (this.actionMenuFooter && active) {
+      const blocked = !active.enabled;
+      this.actionMenuFooter
+        .setText(blocked ? active.reason ?? active.desc : active.desc)
+        .setColor(blocked ? UI_HEX.coral : UI_HEX.textDim);
+    }
   }
 
   private activateActionMenuSelection(): void {
@@ -8953,9 +9152,8 @@ export class GameScene extends Phaser.Scene {
   private refreshAutoPassButton(): void {
     if (!this.autoPassButton) return;
     const on = this.autoPassReactions;
-    this.autoPassButton.setText(`Auto-pass: ${on ? 'ON' : 'OFF'}  [O]`);
-    this.autoPassButton.setBackgroundColor(on ? '#24543f' : '#1a2636');
-    this.autoPassButton.setColor(on ? '#0c0c18' : TEXT.dim);
+    this.autoPassButton.setText(`Auto-pass ${on ? 'ON' : 'OFF'}`);
+    setChipState(this.autoPassButton, on ? 'on' : 'off');
   }
 
   /**
@@ -8994,9 +9192,8 @@ export class GameScene extends Phaser.Scene {
   private refreshSpectateButton(): void {
     if (!this.spectateButton) return;
     const on = this.spectateAll;
-    this.spectateButton.setText(`Spectate: ${on ? 'ON' : 'OFF'}  [Y]`);
-    this.spectateButton.setBackgroundColor(on ? '#24543f' : '#1a2636');
-    this.spectateButton.setColor(on ? '#0c0c18' : TEXT.dim);
+    this.spectateButton.setText(`Spectate ${on ? 'ON' : 'OFF'}`);
+    setChipState(this.spectateButton, on ? 'on' : 'off');
   }
 
   private toggleCombatSpeed(): void {
@@ -9011,9 +9208,8 @@ export class GameScene extends Phaser.Scene {
   private refreshCombatSpeedButton(): void {
     if (!this.combatSpeedButton) return;
     const fast = this.combatSpeed > 1;
-    this.combatSpeedButton.setText(`Speed: ${this.combatSpeed}x  [.]`);
-    this.combatSpeedButton.setBackgroundColor(fast ? '#694f22' : '#1a2636');
-    this.combatSpeedButton.setColor(fast ? '#fff4cf' : TEXT.dim);
+    this.combatSpeedButton.setText(`Speed ${this.combatSpeed}x`);
+    setChipState(this.combatSpeedButton, fast ? 'on' : 'off');
   }
 
   /**
@@ -9027,8 +9223,8 @@ export class GameScene extends Phaser.Scene {
     panel.removeAll(true);
     const me = this.gs.current;
     const foes = this.gs.mages.filter((m) => m.alive && m.team !== me.team);
-    const width = 190;
-    panel.setPosition(FIELD.x + FIELD.w - width - 6, FIELD.y + 6);
+    const width = FIELD_OVERLAY_TR.w;
+    panel.setPosition(FIELD_OVERLAY_TR.x, FIELD_OVERLAY_TR.y);
     const header = this.add
       .text(0, 0, `Foes: ${foes.length}   [J] ${this.showTargetList ? 'hide' : 'show'}`, {
         fontSize: '13px',
@@ -9180,11 +9376,12 @@ export class GameScene extends Phaser.Scene {
 
   /** Build the floating, scrollable window that shows a spell's full description. */
   private buildSpellInfoPanel(): void {
-    const w = 360;
-    const headerH = 26;
-    const bodyH = 132;
-    const x = FIELD.x + 10;
-    const y = FIELD.y + 10;
+    const w = DOCK_SPELL.w + 120;
+    const headerH = 24;
+    const bodyH = 120;
+    // Anchored above its own dock column: clear of the foe list and dev panel.
+    const x = DOCK_SPELL.x;
+    const y = bottom(FIELD) - (headerH + bodyH) - SPACE.sm;
     const c = this.add.container(0, 0).setDepth(70).setVisible(false);
     const bg = this.add
       .rectangle(x, y, w, headerH + bodyH, UI.panel, 0.97)
@@ -9194,16 +9391,17 @@ export class GameScene extends Phaser.Scene {
     const accent = this.add.rectangle(x, y, 5, headerH + bodyH, UI.violet, 1).setOrigin(0, 0);
     const title = this.add
       .text(x + 12, y + 5, '', {
-        fontFamily: 'Trebuchet MS', fontSize: '14px', color: TEXT.warn, fontStyle: 'bold',
+        fontFamily: UI_FONT, fontSize: FONT.body, color: UI_HEX.gold, fontStyle: 'bold',
       })
       .setOrigin(0, 0);
     const hint = this.add
-      .text(x + w - 8, y + 6, 'scroll ↕', { fontSize: '11px', color: TEXT.dim })
+      .text(x + w - 8, y + 6, 'scroll ↕', { fontFamily: UI_FONT, fontSize: FONT.micro, color: UI_HEX.textDim })
       .setOrigin(1, 0);
     const body = this.add
       .text(x + 8, y + headerH + 2, '', {
-        fontSize: '13px',
-        color: '#e6e6f0',
+        fontFamily: UI_FONT,
+        fontSize: FONT.small,
+        color: UI_HEX.text,
         wordWrap: { width: w - 16 },
         lineSpacing: 3,
       })
@@ -9787,14 +9985,13 @@ export class GameScene extends Phaser.Scene {
     g.lineBetween(FIELD.x + FIELD.w - corner, FIELD.y + FIELD.h, FIELD.x + FIELD.w, FIELD.y + FIELD.h);
     g.lineBetween(FIELD.x + FIELD.w, FIELD.y + FIELD.h - corner, FIELD.x + FIELD.w, FIELD.y + FIELD.h);
 
-    g.fillStyle(0x0d131d, 1).fillRect(0, HUD_Y - 12, GAME_WIDTH, GAME_HEIGHT - HUD_Y + 12);
-    g.fillStyle(0x111a27, 1).fillRect(20, HUD_Y - 4, 426, 216);
-    g.fillStyle(0x101824, 1).fillRect(458, HUD_Y - 4, 442, 216);
-    g.lineStyle(1, 0x314056, 1).lineBetween(0, HUD_Y - 12, GAME_WIDTH, HUD_Y - 12);
-    g.lineBetween(452, HUD_Y, 452, GAME_HEIGHT);
-    g.lineBetween(906, HUD_Y, 906, GAME_HEIGHT);
-    g.fillStyle(COLORS.selected, 1).fillRect(20, HUD_Y - 4, 72, 3);
-    g.fillStyle(COLORS.team1, 1).fillRect(458, HUD_Y - 4, 72, 3);
+    g.fillStyle(UI.panel, 1).fillRect(0, 0, GAME_WIDTH, TOP_BAR.h);
+    g.lineStyle(1, UI.border, 0.9).lineBetween(0, TOP_BAR.h, GAME_WIDTH, TOP_BAR.h);
+    g.fillStyle(COLORS.selected, 1).fillRect(0, TOP_BAR.h - 2, 96, 2);
+
+    drawPanel(g, DOCK_VITALS, { accent: COLORS.hp });
+    drawPanel(g, DOCK_SPELL, { accent: UI.cyan });
+    drawPanel(g, DOCK_LOG, { accent: UI.violet });
 
     this.gfx = this.add.graphics();
     // Pulsing valid-target highlights live on their own layer, animated in update().
@@ -9807,142 +10004,156 @@ export class GameScene extends Phaser.Scene {
     this.hoverGfx = this.add.graphics().setDepth(8);
   }
 
+  /** A small uppercase caption used for dock panel headers. */
+  private panelHeader(rect: { x: number; y: number }, label: string, color: string): void {
+    this.add.text(rect.x + SPACE.sm, rect.y + 6, label, {
+      fontFamily: UI_FONT,
+      fontSize: FONT.micro,
+      color,
+      fontStyle: 'bold',
+    });
+  }
+
   private buildHud(): void {
-    this.add.text(32, HUD_Y + 5, 'TURN COMMAND', {
-      fontFamily: 'Trebuchet MS', fontSize: '10px', color: TEXT.warn, fontStyle: 'bold',
-    });
-    this.add.text(470, HUD_Y + 5, 'SPELL LOADOUT', {
-      fontFamily: 'Trebuchet MS', fontSize: '10px', color: '#71c7d8', fontStyle: 'bold',
-    });
-    this.turnText = this.add.text(32, HUD_Y + 22, '', {
-      fontFamily: 'Trebuchet MS', fontSize: '18px', color: TEXT.body, fontStyle: 'bold',
-    });
-    this.comboText = this.add.text(32, HUD_Y + 50, '', {
-      fontSize: '14px',
-      color: TEXT.warn,
-      wordWrap: { width: 402 },
-      lineSpacing: 2,
-    });
-    this.actionText = this.add.text(32, HUD_Y + 101, '', { fontSize: '14px', color: TEXT.body });
-    this.resourceText = this.add.text(32, HUD_Y + 126, '', {
-      fontSize: '12px', color: TEXT.dim, wordWrap: { width: 400 }, lineSpacing: 2,
-    });
-    this.hintText = this.add
-      .text(FIELD.x + FIELD.w / 2, FIELD.y + FIELD.h - 12, '', {
-        fontFamily: 'Trebuchet MS',
-        fontSize: '14px',
-        color: '#f8fafc',
-        backgroundColor: '#080b11dd',
-        align: 'center',
-        fixedWidth: 760,
-        padding: { x: 12, y: 7 },
+    // ---- Top bar: whose turn it is, what they have left, and run state ----
+    this.turnText = this.add
+      .text(TOP_TURN.x, TOP_BAR.h / 2, '', {
+        fontFamily: UI_FONT,
+        fontSize: FONT.title,
+        color: UI_HEX.text,
+        fontStyle: 'bold',
+        fixedWidth: TOP_TURN.w,
       })
-      .setOrigin(0.5, 1)
+      .setOrigin(0, 0.5);
+    this.actionText = this.add
+      .text(TOP_ACTIONS.x, TOP_BAR.h / 2, '', {
+        fontFamily: UI_FONT,
+        fontSize: FONT.body,
+        color: UI_HEX.textDim,
+        fixedWidth: TOP_ACTIONS.w,
+      })
+      .setOrigin(0, 0.5);
+
+    // ---- Hint band: one line of guidance, plus the way into every action ----
+    this.hintText = this.add
+      .text(HINT_BAR.x + SPACE.md, centerY(HINT_BAR), '', {
+        fontFamily: UI_FONT,
+        fontSize: FONT.body,
+        color: UI_HEX.text,
+        fixedWidth: HINT_BAR.w - 260,
+      })
+      .setOrigin(0, 0.5)
       .setDepth(44);
 
-    // A clear, always-visible resource read-out (top-left of the field).
+    this.actionMenuButton = this.add
+      .text(right(HINT_BAR), centerY(HINT_BAR), '', {
+        fontFamily: UI_FONT,
+        fontSize: FONT.body,
+        color: '#07090e',
+        backgroundColor: UI_HEX.gold,
+        fontStyle: 'bold',
+        align: 'center',
+        fixedWidth: 232,
+        padding: { x: 10, y: 5 },
+      })
+      .setOrigin(1, 0.5)
+      .setDepth(46)
+      .setInteractive({ useHandCursor: true });
+    this.actionMenuButton.on('pointerover', () => this.actionMenuButton?.setBackgroundColor('#f0c56d'));
+    this.actionMenuButton.on('pointerout', () => this.actionMenuButton?.setBackgroundColor(UI_HEX.gold));
+    this.actionMenuButton.on('pointerdown', () => this.toggleActionMenu());
+
+    // ---- Dock column 1: vitals ----
+    this.panelHeader(DOCK_VITALS, 'VITALS', UI_HEX.green);
     this.resourceGfx = this.add.graphics().setDepth(40).setVisible(false);
     for (let i = 0; i < 5; i++) {
       this.resourceLabels.push(
         this.add
-          .text(0, 0, '', { fontSize: '13px', color: TEXT.body, fontStyle: 'bold' })
+          .text(0, 0, '', { fontFamily: UI_FONT, fontSize: FONT.small, color: UI_HEX.textDim })
           .setDepth(41)
           .setVisible(false)
       );
       this.resourceValues.push(
         this.add
-          .text(0, 0, '', { fontSize: '12px', color: TEXT.body })
+          .text(0, 0, '', { fontFamily: UI_FONT, fontSize: FONT.small, color: UI_HEX.text })
           .setDepth(41)
           .setOrigin(1, 0)
           .setVisible(false)
       );
     }
+    const vitals = panelBody(DOCK_VITALS);
+    this.resourceText = this.add.text(vitals.x, vitals.y + 118, '', {
+      fontFamily: UI_FONT,
+      fontSize: FONT.small,
+      color: UI_HEX.textDim,
+      wordWrap: { width: vitals.w },
+      fixedWidth: vitals.w,
+      fixedHeight: bottom(vitals) - (vitals.y + 118),
+      lineSpacing: 2,
+    });
 
-    // Word boxes: five loadout slots plus the build's modifier.
+    // ---- Dock column 2: the spell builder ----
+    this.panelHeader(DOCK_SPELL, 'SPELL', UI_HEX.cyan);
     for (let i = 0; i < WORD_SLOTS; i++) {
-      const col = i % 3;
-      const row = Math.floor(i / 3);
+      const slot = wordSlot(i);
       const box = this.add
-        .text(470 + col * 134, HUD_Y + 24 + row * 55, '', {
-          fontFamily: 'Trebuchet MS',
-          fontSize: '13px',
-          color: TEXT.body,
-          backgroundColor: '#172231',
-          padding: { x: 8, y: 6 },
-          fixedWidth: 126,
-          fixedHeight: 46,
+        .text(slot.x, slot.y, '', {
+          fontFamily: UI_FONT,
+          fontSize: FONT.small,
+          color: UI_HEX.text,
+          backgroundColor: UI_HEX.panelRaised,
+          padding: { x: 7, y: 5 },
+          fixedWidth: slot.w,
+          fixedHeight: slot.h,
         })
         .setInteractive({ useHandCursor: true });
       box.on('pointerover', () => box.setAlpha(0.82));
       box.on('pointerout', () => box.setAlpha(1));
-      // Clicking a word box toggles that word's selection (same as [1]–[5]).
       box.on('pointerdown', () => this.onWordKey(i));
       this.wordTexts.push(box);
     }
+    const readout = spellReadout();
+    this.comboText = this.add.text(readout.x, readout.y, '', {
+      fontFamily: UI_FONT,
+      fontSize: FONT.small,
+      color: UI_HEX.textDim,
+      wordWrap: { width: readout.w },
+      fixedWidth: readout.w,
+      fixedHeight: readout.h,
+      lineSpacing: 2,
+    });
 
-    // Always-visible entry point to the context action menu.
-    this.actionMenuButton = this.add
-      .text(470, HUD_Y + 139, '☰  Actions  ([Tab] / right-click)', {
-        fontFamily: 'Trebuchet MS',
-        fontSize: '14px',
-        color: '#090d14',
-        backgroundColor: '#d9a441',
-        fontStyle: 'bold',
-        align: 'center',
-        fixedWidth: 395,
-        padding: { x: 12, y: 7 },
-      })
-      .setDepth(46)
-      .setInteractive({ useHandCursor: true });
-    this.actionMenuButton.on('pointerover', () => this.actionMenuButton?.setBackgroundColor('#edbd5a'));
-    this.actionMenuButton.on('pointerout', () => this.actionMenuButton?.setBackgroundColor('#d9a441'));
-    this.actionMenuButton.on('pointerdown', () => this.toggleActionMenu());
+    // ---- Dock column 3: the log supplies its own clickable header ----
 
-    // Always-available toggle: auto-pass reaction windows.
-    this.autoPassButton = this.add
-      .text(470, HUD_Y + 179, '', {
-        fontSize: '11px',
-        color: TEXT.dim,
-        backgroundColor: '#1a2636',
-        fontStyle: 'bold',
-        align: 'center',
-        fixedWidth: 126,
-        padding: { x: 12, y: 6 },
-      })
-      .setDepth(46)
-      .setInteractive({ useHandCursor: true });
-    this.autoPassButton.on('pointerdown', () => this.toggleAutoPass());
+    // ---- Toggles, right-aligned in the top bar ----
+    const chipW = 82;
+    const chipY = 12;
+    this.autoPassButton = makeChip(
+      this,
+      TOP_TOGGLES.x,
+      chipY,
+      '',
+      () => this.toggleAutoPass(),
+      { width: chipW }
+    ).setDepth(46);
+    this.spectateButton = makeChip(
+      this,
+      TOP_TOGGLES.x + chipW + SPACE.sm,
+      chipY,
+      '',
+      () => this.toggleSpectate(),
+      { width: chipW }
+    ).setDepth(46);
+    this.combatSpeedButton = makeChip(
+      this,
+      TOP_TOGGLES.x + (chipW + SPACE.sm) * 2,
+      chipY,
+      '',
+      () => this.toggleCombatSpeed(),
+      { width: chipW }
+    ).setDepth(46);
     this.refreshAutoPassButton();
-
-    // Always-available toggle: hand every seat to the AI and just watch.
-    this.spectateButton = this.add
-      .text(603, HUD_Y + 179, '', {
-        fontSize: '11px',
-        color: TEXT.dim,
-        backgroundColor: '#1a2636',
-        fontStyle: 'bold',
-        align: 'center',
-        fixedWidth: 126,
-        padding: { x: 12, y: 6 },
-      })
-      .setDepth(46)
-      .setInteractive({ useHandCursor: true });
-    this.spectateButton.on('pointerdown', () => this.toggleSpectate());
     this.refreshSpectateButton();
-
-    this.combatSpeedButton = this.add
-      .text(736, HUD_Y + 179, '', {
-        fontSize: '11px',
-        color: TEXT.dim,
-        backgroundColor: '#1a2636',
-        fontStyle: 'bold',
-        align: 'center',
-        fixedWidth: 129,
-        padding: { x: 8, y: 6 },
-      })
-      .setDepth(46)
-      .setInteractive({ useHandCursor: true });
-    this.combatSpeedButton.on('pointerdown', () => this.toggleCombatSpeed());
     this.refreshCombatSpeedButton();
 
     // Docked, clickable list of every living foe (targets from anywhere).
@@ -9956,22 +10167,23 @@ export class GameScene extends Phaser.Scene {
 
     this.tooltip = this.add
       .text(0, 0, '', {
-        fontSize: '13px',
-        color: TEXT.body,
-        backgroundColor: '#000000cc',
+        fontFamily: UI_FONT,
+        fontSize: FONT.body,
+        color: UI_HEX.text,
+        backgroundColor: '#03050add',
         padding: { x: 8, y: 6 },
-        wordWrap: { width: 240 },
+        wordWrap: { width: 260 },
       })
       .setDepth(50)
       .setVisible(false);
 
     this.bannerText = this.add
       .text(GAME_WIDTH / 2, FIELD.y + FIELD.h / 2, '', {
-        fontFamily: 'Trebuchet MS',
-        fontSize: '36px',
-        color: '#f5f8fc',
+        fontFamily: UI_FONT,
+        fontSize: FONT.hero,
+        color: UI_HEX.text,
         fontStyle: 'bold',
-        backgroundColor: '#0b111af2',
+        backgroundColor: '#080c14f2',
         align: 'center',
         fixedWidth: 650,
         lineSpacing: 10,
@@ -10034,10 +10246,11 @@ export class GameScene extends Phaser.Scene {
     });
 
     this.logText = this.add.text(0, 0, '', {
-      fontSize: '13px',
-      color: TEXT.dim,
-      wordWrap: { width: 340 },
-      lineSpacing: 2,
+      fontFamily: UI_FONT,
+      fontSize: FONT.small,
+      color: UI_HEX.textDim,
+      wordWrap: { width: DOCK_LOG.w - SPACE.sm * 2 },
+      lineSpacing: 3,
     });
 
     this.historyPanel.add([
@@ -10053,23 +10266,28 @@ export class GameScene extends Phaser.Scene {
   /** Position and size the history panel for its current (collapsed/expanded) mode. */
   private layoutHistoryPanel(): void {
     const expanded = this.historyExpanded;
-    const w = expanded ? 760 : 360;
-    const h = expanded ? 540 : 224;
-    const px = expanded ? Math.round((GAME_WIDTH - w) / 2) : GAME_WIDTH - w - 6;
-    const py = expanded ? 80 : HUD_Y - 4;
+    const w = expanded ? 760 : DOCK_LOG.w;
+    const h = expanded ? 540 : DOCK_LOG.h;
+    const px = expanded ? Math.round((GAME_WIDTH - w) / 2) : DOCK_LOG.x;
+    const py = expanded ? 80 : DOCK_LOG.y;
     this.historyPanel.setPosition(px, py).setDepth(expanded ? 70 : 45);
-    this.historyBg.setSize(w, h).setFillStyle(0x0b111a, 0.98).setStrokeStyle(1, 0x314056);
-    this.historyTitle.setText(`COMBAT HISTORY   ${expanded ? '[shrink]' : '[expand]'}`);
+    // Docked, the column panel is already painted behind it.
+    this.historyBg.setSize(w, h).setVisible(expanded);
+    this.historyTitle
+      .setText(expanded ? 'COMBAT LOG   [shrink]' : 'COMBAT LOG   [expand]')
+      .setPosition(SPACE.sm, 6)
+      .setFontSize(10);
 
-    let tx = 10;
-    const toggleY = 28;
+    let tx = SPACE.sm;
+    const toggleY = 22;
     for (const t of this.historyToggleTexts) {
       t.text.setPosition(tx, toggleY);
-      tx += t.text.width + 16;
+      tx += t.text.width + 12;
     }
-    this.logText.setPosition(10, 50);
-    this.logText.setWordWrapWidth(w - 20);
-    this.logText.setFontSize(expanded ? 15 : 13);
+    this.logText.setPosition(SPACE.sm, 42);
+    this.logText.setWordWrapWidth(w - SPACE.sm * 2);
+    this.logText.setFixedSize(w - SPACE.sm * 2, h - 48);
+    this.logText.setFontSize(expanded ? 15 : 12);
   }
 
   /** Refresh the filter-toggle labels/colours to match their on/off state. */
@@ -10080,11 +10298,10 @@ export class GameScene extends Phaser.Scene {
       t.text.setText(`[${on ? 'x' : ' '}] ${label}`);
       t.text.setColor(on ? '#7cfc9a' : TEXT.dim);
     }
-    // Toggle widths changed, so re-flow their horizontal positions.
-    let tx = 10;
+    let tx = SPACE.sm;
     for (const t of this.historyToggleTexts) {
-      t.text.setPosition(tx, 28);
-      tx += t.text.width + 16;
+      t.text.setPosition(tx, 22);
+      tx += t.text.width + 12;
     }
   }
 
@@ -10099,8 +10316,8 @@ export class GameScene extends Phaser.Scene {
 
   /** Build the top-right dev cheat panel with clickable toggles. */
   private buildDevPanel(): void {
-    const px = FIELD.x + FIELD.w - 178;
-    const py = FIELD.y + 6;
+    const px = FIELD.x + 8;
+    const py = FIELD.y + 8;
     this.devPanel = this.add.container(px, py).setDepth(60).setVisible(false);
     const bg = this.add
       .rectangle(0, 0, 170, 138, UI.panel, 0.9)
@@ -11928,21 +12145,23 @@ export class GameScene extends Phaser.Scene {
       const mana = this.spellManaCost(me, spell);
       const mods = this.selectedModifiers();
       const modNote = mods.length
-        ? `  [${mods
+        ? `\n${mods
             .map((w) =>
               w === 'subtle'
-                ? 'Subtle ×0.8, silent on DC 11'
+                ? 'Subtle ×0.8, silent on 11+'
                 : w === 'channel'
                   ? 'Channel: hold a turn, ×1.5'
                   : 'Delay: fires next turn'
             )
-            .join(' · ')}]`
+            .join(' · ')}`
         : '';
       this.comboText.setText(
-        `Selection: ${sel}  →  ${spell.name} (${spell.actionType}, ${rng}, ${mana} mana)${modNote}`
+        `${spell.name}\n${spell.actionType} · ${rng} · ${mana} mana${modNote}`
       );
+      this.comboText.setColor(UI_HEX.gold);
     } else {
-      this.comboText.setText(`Selection: ${sel}  →  (no spell)`);
+      this.comboText.setText(`${sel}\nno spell for this combination`);
+      this.comboText.setColor(UI_HEX.textDim);
     }
     // The full (plain-language) description lives in its own scrollable window.
     this.updateSpellInfoPanel(this.selectedIdx.length === 0 ? undefined : spell, me);
@@ -11952,7 +12171,7 @@ export class GameScene extends Phaser.Scene {
       ? `${Math.max(0, MAX_WORD_SPELL_REACTIONS - me.wordSpellReactionsUsed)} spell`
       : 'defensive';
     this.actionText.setText(
-      `Actions — Move ${dots(a.move, ACTIONS_PER_TURN.move)}  Main ${dots(a.main, ACTIONS_PER_TURN.main)}  Bonus ${dots(a.bonus, ACTIONS_PER_TURN.bonus)}   Reaction: ${reactionLabel}`
+      `Move ${dots(a.move, ACTIONS_PER_TURN.move)}   Main ${dots(a.main, ACTIONS_PER_TURN.main)}   Bonus ${dots(a.bonus, ACTIONS_PER_TURN.bonus)}   Reaction ${reactionLabel}`
     );
 
     this.drawResourceText(me);
@@ -11968,11 +12187,12 @@ export class GameScene extends Phaser.Scene {
       t.setVisible(true);
       const w = me.loadout[i];
       const on = this.selectedIdx.includes(i);
+      const charges = me.charges[w] ?? 0;
       const reaction = WORDS[w].grantsReaction ? ' ⚡' : '';
       const tag = isModifierWord(w) ? ' ◆' : '';
-      t.setText(`[${i + 1}] ${WORDS[w].label}${reaction}${tag}\ncharges: ${me.charges[w] ?? 0}`);
-      t.setBackgroundColor(on ? '#58451f' : isModifierWord(w) ? '#141d2b' : '#172231');
-      t.setColor(on ? TEXT.warn : (me.charges[w] ?? 0) > 0 ? TEXT.body : TEXT.dim);
+      t.setText(`${i + 1}  ${WORDS[w].label}${reaction}${tag}\n${charges} charges`);
+      t.setBackgroundColor(on ? '#2c3a1c' : isModifierWord(w) ? '#141d2b' : UI_HEX.panelRaised);
+      t.setColor(on ? UI_HEX.gold : charges > 0 ? UI_HEX.text : '#5b6577');
     }
 
     // The action-menu button: shown only when the local player can actually act.
@@ -12006,36 +12226,14 @@ export class GameScene extends Phaser.Scene {
     const abilities = getColorAbilitiesFor(p.primary, me.mageClass);
     const abilText = abilities.length
       ? abilities
-          .map((ab, i) => {
-            const c = this.abilityChargeCost(me, ab);
-            return `[${i === 0 ? 'Z' : 'X'}] ${ab.name} (${c}c/${this.abilityManaCost(me, ab)}m)`;
-          })
+          .map((ab, i) => `[${i === 0 ? 'Z' : 'X'}] ${ab.name}`)
           .join('   ')
-      : 'none';
-    const statText = me.statsAssigned
-      ? `   STR ${me.effectiveStr()}  DEX ${me.effectiveDex()}%  INT ${me.effectiveInt()}  Luck ${me.luck}/${me.maxLuck}`
-      : '';
-    const hands = me.hands.length ? me.hands.map((id) => getItem(id).name).join(' + ') : '—';
-    const worn = [me.head, me.torso, me.boots, ...me.accessories]
-      .filter((id): id is ItemId => !!id)
-      .map((id) => getItem(id).name);
-    const wornText = worn.length ? worn.join(', ') : '—';
-    const potions = me.utility.length;
-    const utilBits: string[] = [];
-    if (me.arrows > 0) utilBits.push(`${me.arrows} arrows`);
-    if (potions > 0) utilBits.push(`${potions} potion${potions > 1 ? 's' : ''}`);
-    const utilText = utilBits.length ? `   ${utilBits.join(', ')}` : '';
-    const bagText = me.bag.length
-      ? `\nBag: ${me.bag.map((id) => getItem(id).name).join(', ')}`
-      : '';
-    const cap = me.carryCap();
-    const capText = Number.isFinite(cap) ? `${cap}kg` : '∞';
-    const gearText =
-      `\nHands: ${hands}   Worn: ${wornText}${utilText}` +
-      `   Wt ${me.carriedWeight()}/${capText}${bagText}`;
-    this.resourceText.setText(
-      `[${identity}]   ${abilText}${statText}${gearText}`
-    );
+      : 'no colour abilities';
+    const stats = me.statsAssigned
+      ? `STR ${me.effectiveStr()}  DEX ${me.effectiveDex()}%  INT ${me.effectiveInt()}  Luck ${me.luck}/${me.maxLuck}`
+      : 'stats unassigned';
+    // Gear, bag and weight live in the inventory overlay ([I]) to keep this glanceable.
+    this.resourceText.setText(`${identity} · ${stats}\n${abilText}`);
   }
 
   /**
@@ -12062,29 +12260,25 @@ export class GameScene extends Phaser.Scene {
       rows.push({ label: 'Thunder', cur: me.thunderStacks, max: 15, color: 0xffa53b });
     }
 
-    const x = FIELD.x + 8;
-    const y = FIELD.y + 8;
-    const w = 214;
+    const body = panelBody(DOCK_VITALS);
     const rowH = 22;
-    const pad = 8;
-    const h = pad * 2 + rows.length * rowH;
-    g.fillStyle(0x05050c, 0.82).fillRect(x, y, w, h);
-    g.lineStyle(1, UI.border, 0.9).strokeRect(x, y, w, h);
+    const labelW = 58;
+    const valueW = 62;
     g.setVisible(true);
 
-    const barX = x + 66;
-    const barW = 104;
-    const barH = 11;
     rows.forEach((r, i) => {
-      const ry = y + pad + i * rowH;
+      const ry = body.y + i * rowH;
       const label = this.resourceLabels[i];
-      label.setText(r.label).setPosition(x + 10, ry).setVisible(true);
-      const frac = r.max > 0 ? Math.max(0, Math.min(1, r.cur / r.max)) : 0;
-      g.fillStyle(0x1a1a2a, 1).fillRect(barX, ry + 2, barW, barH);
-      g.fillStyle(r.color, 1).fillRect(barX, ry + 2, barW * frac, barH);
-      g.lineStyle(1, 0x000000, 0.5).strokeRect(barX, ry + 2, barW, barH);
+      label.setText(r.label).setPosition(body.x, ry).setVisible(true);
+      const bar = {
+        x: body.x + labelW,
+        y: ry + 3,
+        w: body.w - labelW - valueW,
+        h: 10,
+      };
+      drawBar(g, bar, r.max > 0 ? r.cur / r.max : 0, r.color);
       const val = this.resourceValues[i];
-      val.setText(`${r.cur}/${r.max}`).setPosition(x + w - 8, ry).setVisible(true);
+      val.setText(`${r.cur}/${r.max}`).setPosition(body.x + body.w, ry).setVisible(true);
     });
     for (let i = rows.length; i < this.resourceLabels.length; i++) {
       this.resourceLabels[i].setVisible(false);
@@ -12094,7 +12288,7 @@ export class GameScene extends Phaser.Scene {
 
   private drawLog(): void {
     if (!this.logText) return;
-    const max = this.historyExpanded ? 26 : 9;
+    const max = this.historyExpanded ? 26 : 7;
     const filtered = this.gs.logLines.filter((l) => this.historyFilters[this.logCategory(l)]);
     const lines = filtered.slice(-max);
     this.logText.setText(lines.length ? lines.join('\n') : '(no entries)');

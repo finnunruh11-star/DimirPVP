@@ -3,8 +3,8 @@
 export const GAME_WIDTH = 1280;
 export const GAME_HEIGHT = 720;
 
-// The playfield (where mages move and fight). The HUD lives below it.
-export const FIELD = { x: 20, y: 20, w: 1240, h: 470 };
+// The playfield. A top bar sits above it and the HUD dock below; see ui/layout.
+export const FIELD = { x: 16, y: 60, w: 1248, h: 420 };
 
 // Action economy granted at the start of every turn.
 // One move, one main spell, and two bonus actions (spells / color abilities /
@@ -76,6 +76,11 @@ export const TOTEM_TTL = 3;
 // directly next to an opponent but never run through / on top of them.
 export const MAGE_BODY_RADIUS = 22;
 
+// Ground a target must cover, between an attack being declared and it landing,
+// to slip it entirely — as a fraction of that attack's reach. A sidestep beats
+// a melee swing; a long shot needs real distance covered.
+export const EVASION_REACH_FRACTION = 0.2;
+
 // Scarab summons (Curse+Drain+Corrode). Distances are in pixels.
 export const SCARAB = {
   count: 5, // scarabs spawned per cast
@@ -125,20 +130,20 @@ export const LOADOUT_SIZE = 5;
 export const MAX_SPELL_WORDS = 3;
 
 export const COLORS = {
-  bg: 0x070a0f,
-  field: 0x101722,
-  fieldBorder: 0x53647c,
-  grid: 0x243247,
-  team1: 0x48b8d0,
-  team2: 0xf06a5d,
-  rangeStroke: 0x6ad1ff,
-  selected: 0xd9a441,
+  bg: 0x05070c,
+  field: 0x0b1119,
+  fieldBorder: 0x334054,
+  grid: 0x18202d,
+  team1: 0x54c7e8,
+  team2: 0xef6a5f,
+  rangeStroke: 0x54c7e8,
+  selected: 0xe0b054,
   stack: 0xa78bfa,
-  hp: 0x47c98b,
+  hp: 0x4fca8b,
   sanity: 0xd183c7,
   shadow: 0x8a6bff,
   totem: 0x9be870,
-  textHex: 0xe9eef6,
+  textHex: 0xeef2f8,
 };
 export const TEXT = {
   body: '#e9eef6',
