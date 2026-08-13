@@ -1,13 +1,26 @@
 import Phaser from 'phaser';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH, LOADOUT_SIZE, TEXT } from '../config/constants';
+import {
+  isPveRunMode,
+  isScenarioMode,
+  usesSwampPrep,
+  type ItemSetSelection,
+  type MatchConfig,
+  type MatchMode,
+  type SeatConfig,
+  type SwampPrepMode,
+} from '../config/MatchConfig';
+import type { Scenario } from '../core/Scenario';
 import { WORDS, WORD_ORDER, MODIFIER_WORDS, isModifierWord, type WordId } from '../core/Words';
 import { MAGE_CLASSES, MAGE_CLASS_DEFS, DEFAULT_MAGE_CLASS, toMageClass, type MageClass } from '../core/Classes';
 import { SceneInput } from '../engine/SceneInput';
 import { Net, type NetRole, type NetMessage } from '../net/Net';
 import { ENEMY_DEFS, RAID_BOSS_KINDS, type RaidBossKind } from '../pve/swamprun';
-import type { Scenario } from '../core/Scenario';
 import { pickScenarioFile } from '../ui/scenarioFile';
 import { UI, UI_FONT, UI_HEX, bindTextControl } from '../ui/theme';
+import { MenuExperience } from '../ui/menu/MenuExperience';
+import { MenuModel } from '../ui/menu/MenuModel';
+import { preloadMenuArt } from '../ui/menu/art';
 import magePreviewUrl from '../Sprites/Idle/Idle1.png';
 
 const NAD_LOADOUT: WordId[] = ['mind', 'shatter', 'twist', 'reality'];
@@ -25,82 +38,6 @@ const EASTER_WORD_ORDER: WordId[] = [
   'fire',
   'lightning',
 ];
-
-export type MatchMode =
-  | 'hotseat'
-  | 'ai'
-  | 'online'
-  | 'training'
-  | 'swamprun'
-  | 'expedition'
-  | 'minerun'
-  | 'raid'
-  | 'scenario'
-  | 'memory';
-export type SwampPrepMode = 'quick' | 'custom' | 'creative';
-
-function isPveRunMode(mode: MatchMode): boolean {
-  return mode === 'swamprun' || mode === 'expedition' || mode === 'minerun' || mode === 'raid';
-}
-
-/** Scenario Lab and Memory build/replay a saved fight instead of drafting one. */
-function isScenarioMode(mode: MatchMode): boolean {
-  return mode === 'scenario' || mode === 'memory';
-}
-
-function usesSwampPrep(mode: MatchMode): boolean {
-  return mode === 'swamprun' || mode === 'minerun' || mode === 'raid';
-}
-
-/** Which toggleable item catalogues the draft draws from. */
-export interface ItemSetSelection {
-  original: boolean;
-  finns: boolean;
-  dlc: boolean;
-}
-
-/** One combatant's seat in a match (used for N-player teamfights / battle royale). */
-export interface SeatConfig {
-  name: string;
-  /** Team number; seats sharing a team fight together. FFA = every seat its own team. */
-  team: number;
-  isAI: boolean;
-  loadout: WordId[];
-  /** Chosen class (Objects / Life / Hexcraft). Defaults applied downstream. */
-  mageClass?: MageClass;
-}
-
-export interface MatchConfig {
-  mode: MatchMode;
-  loadouts: [WordId[], WordId[]];
-  /** Swamprun pre-combat character preparation. */
-  swampPrepMode?: SwampPrepMode;
-  /** Single boss selected for a one-fight Raid. */
-  raidBoss?: RaidBossKind;
-  /**
-   * Classes for the classic two-mage layout (parallel to {@link loadouts}).
-   * N-player matches carry the class per seat in {@link seats} instead.
-   */
-  classes?: [MageClass, MageClass];
-  /**
-   * Optional explicit seat list for N-player matches (up to 4). When present it
-   * fully describes every combatant and their team; when absent the classic
-   * two-mage layout is derived from `loadouts` + `mode`.
-   */
-  seats?: SeatConfig[];
-  /** Item sets enabled for the draft (defaults to original only). */
-  itemSets?: ItemSetSelection;
-  /** Online play: the live connection to the opponent (lockstep relay). */
-  net?: Net;
-  /** Online play: which team this client controls (1 = host, 2 = guest). */
-  localTeam?: number;
-  /** Online play: which seat index this client controls (0-based). */
-  localSeat?: number;
-  /** Online play: shared RNG seed so both peers simulate identically. */
-  seed?: number;
-  /** Memory mode: the saved fight to rebuild instead of drafting a new one. */
-  scenario?: Scenario;
-}
 
 /**
  * Best-guess relay address. When the game is served by the relay itself (the
@@ -192,8 +129,13 @@ export class MenuScene extends Phaser.Scene {
   private joinBtn!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
   private summaryText!: Phaser.GameObjects.Text;
+  private frontBackBtn!: Phaser.GameObjects.Text;
   /** True while an online lobby handshake is in progress (locks the UI). */
   private connecting = false;
+  private menuModel = new MenuModel();
+  private frontMenu?: MenuExperience;
+  private legacyObjects: Phaser.GameObjects.GameObject[] = [];
+  private legacyMenuVisible = false;
 
   constructor() {
     super('Menu');
@@ -201,9 +143,15 @@ export class MenuScene extends Phaser.Scene {
 
   preload(): void {
     this.load.image('menu-mage-preview', magePreviewUrl);
+    preloadMenuArt(this);
   }
 
   create(): void {
+    this.frontMenu?.destroy();
+    this.frontMenu = undefined;
+    this.menuModel = new MenuModel();
+    this.legacyObjects = [];
+    this.legacyMenuVisible = false;
     // Phaser reuses this scene instance, so returning from a duel re-runs
     // create(). Drop the previous run's (already destroyed) widgets and draft
     // state first, or refresh() will touch dead game objects and throw.
@@ -441,6 +389,8 @@ export class MenuScene extends Phaser.Scene {
     this.hostBtn = this.makeButton(431, 519, 'HOST MATCH', () => this.setSessionRole('host'), 245);
     this.joinBtn = this.makeButton(686, 519, 'JOIN MATCH', () => this.setSessionRole('guest'), 245);
     this.startBtn = this.makeButton(1128, 665, 'Confirm', () => this.primaryAction(), 260, true);
+    this.frontBackBtn = this.makeButton(1172, 42, 'MAIN MENU', () => this.openFrontMenu(), 150);
+    this.frontBackBtn.setFontSize(12).setPadding(8, 6);
 
     this.statusText = this.add
       .text(36, 696, '', { fontSize: '13px', color: TEXT.warn })
@@ -448,24 +398,125 @@ export class MenuScene extends Phaser.Scene {
 
     // Hidden easter eggs plus keyboard equivalents for the primary menu flow.
     const controls = new SceneInput(this);
-    controls.bindAnyKey((event) => this.onKey(event));
+    controls.bindAnyKey((event) => {
+      if (this.legacyMenuVisible) this.onKey(event);
+    });
     controls.bindKeys([
-      { key: 'ENTER', run: () => this.primaryAction() },
-      { key: 'LEFT', capture: true, run: () => this.moveWordCursor(-1) },
-      { key: 'RIGHT', capture: true, run: () => this.moveWordCursor(1) },
-      { key: 'UP', capture: true, run: () => this.moveWordCursor(-4) },
-      { key: 'DOWN', capture: true, run: () => this.moveWordCursor(4) },
-      { key: 'SPACE', capture: true, run: () => this.toggleCursorWord() },
+      { key: 'ENTER', run: () => {
+        if (this.legacyMenuVisible) this.primaryAction();
+      } },
+      { key: 'LEFT', capture: true, run: () => {
+        if (this.legacyMenuVisible) this.moveWordCursor(-1);
+      } },
+      { key: 'RIGHT', capture: true, run: () => {
+        if (this.legacyMenuVisible) this.moveWordCursor(1);
+      } },
+      { key: 'UP', capture: true, run: () => {
+        if (this.legacyMenuVisible) this.moveWordCursor(-4);
+      } },
+      { key: 'DOWN', capture: true, run: () => {
+        if (this.legacyMenuVisible) this.moveWordCursor(4);
+      } },
+      { key: 'SPACE', capture: true, run: () => {
+        if (this.legacyMenuVisible) this.toggleCursorWord();
+      } },
       {
         key: 'ESC',
         run: () => {
+          if (!this.legacyMenuVisible) return;
           if (this.raidMenuOpen) this.closeRaidMenu();
           else if (this.pveMenuOpen) this.closePveMenu();
+          else this.openFrontMenu();
         },
       },
     ]);
 
     this.refresh();
+    this.legacyObjects = [...this.children.list];
+    this.setLegacyObjectsVisible(false);
+    this.frontMenu = new MenuExperience(
+      this,
+      this.menuModel,
+      (mode) => this.openLegacyMenu(mode),
+      () => this.launchConfiguredMenu()
+    );
+  }
+
+  private openLegacyMenu(mode: MatchMode): void {
+    this.frontMenu?.destroy();
+    this.frontMenu = undefined;
+    this.legacyMenuVisible = true;
+    this.setLegacyObjectsVisible(true);
+
+    this.mode = mode;
+    this.pveMenuOpen = false;
+    this.raidMenuOpen = false;
+    this.onlineRole = this.menuModel.role === 'guest' ? 'guest' : 'host';
+    this.swampRole = this.menuModel.role;
+    this.swampPrepMode = this.menuModel.prepMode;
+    this.seatCount = this.menuModel.seatCount;
+    this.aiCount = this.menuModel.aiCount;
+    this.teamMode = this.menuModel.teamFormat;
+    this.seatTeams = [...this.menuModel.seatTeams];
+    this.raidBoss = this.menuModel.raidBoss;
+    this.itemSets = { ...this.menuModel.itemSets };
+    const draft = this.menuModel.draftFor(0);
+    this.selected = [...draft.words];
+    this.selectedClass = draft.mageClass;
+    this.selectedModifier = draft.modifier;
+    this.draftIndex = 0;
+    this.draftLoadouts = [];
+    this.draftClasses = [];
+    this.draftModifiers = [];
+    this.refresh();
+  }
+
+  private launchConfiguredMenu(): void {
+    const role = this.menuModel.role;
+    if (role === 'local') {
+      try {
+        const config = this.menuModel.toLocalMatchConfig();
+        this.frontMenu?.destroy();
+        this.frontMenu = undefined;
+        this.scene.start('Game', config);
+      } catch (error) {
+        this.setStatus(error instanceof Error ? error.message : 'The match setup is incomplete.');
+      }
+      return;
+    }
+
+    this.mode = this.menuModel.mode;
+    this.swampRole = role;
+    this.swampPrepMode = this.menuModel.prepMode;
+    this.seatCount = this.menuModel.seatCount;
+    this.aiCount = this.menuModel.aiCount;
+    this.seatTeams = [...this.menuModel.seatTeams];
+    this.itemSets = { ...this.menuModel.itemSets };
+    const draft = this.menuModel.draftFor(0);
+    this.selected = [...draft.words];
+    this.selectedClass = draft.mageClass;
+    this.selectedModifier = draft.modifier;
+    void this.startOnline(role);
+  }
+
+  private openFrontMenu(): void {
+    if (!this.legacyMenuVisible || this.connecting) return;
+    this.legacyMenuVisible = false;
+    this.setLegacyObjectsVisible(false);
+    this.frontMenu = new MenuExperience(
+      this,
+      this.menuModel,
+      (mode) => this.openLegacyMenu(mode),
+      () => this.launchConfiguredMenu()
+    );
+  }
+
+  private setLegacyObjectsVisible(visible: boolean): void {
+    for (const object of this.legacyObjects) {
+      if ('setVisible' in object) {
+        (object as Phaser.GameObjects.GameObject & { setVisible(value: boolean): unknown }).setVisible(visible);
+      }
+    }
   }
 
   /** Accumulate typed letters and unlock a secret loadout when spelled. */
@@ -1381,6 +1432,7 @@ export class MenuScene extends Phaser.Scene {
 
   private setStatus(text: string): void {
     this.statusText.setText(text);
+    if (!this.legacyMenuVisible) this.frontMenu?.setStatus(text);
   }
 
   /** Coerce an untrusted loadout from the network into a safe WordId[]. */

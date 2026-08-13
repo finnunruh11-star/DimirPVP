@@ -37,6 +37,7 @@ import {
   type CreativePreset,
   type PresetSlots,
 } from '../ui/creativePresets';
+import { CreativePrepView } from '../ui/prep/CreativePrepView';
 import {
   ACTIONS_PER_TURN,
   COLORS,
@@ -124,7 +125,7 @@ import { allSpells, getSpell, isClassSpellCombo, spellById, setActiveSpellSets }
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type { SubTargetPointOpts, SubTargetEnemyOpts } from '../effects/effects';
 import { SimpleAI, type AIDecision } from '../ai/SimpleAI';
-import type { MatchConfig, SeatConfig, SwampPrepMode } from './MenuScene';
+import type { MatchConfig, SeatConfig, SwampPrepMode } from '../config/MatchConfig';
 import {
   MINE_ROOM_VISUAL_LABEL,
   buildMineRoomTextures,
@@ -701,7 +702,7 @@ export class GameScene extends Phaser.Scene {
   private swampShopConfirmSlot: number | null = null;
   /** True while running the one-pick, no-consumable start-of-run draft. */
   private swampStartDraftActive = false;
-  private creativePrepPanel?: Phaser.GameObjects.Container;
+  private creativePrepPanel?: CreativePrepView;
   private creativePrepMage?: Mage;
   private creativePrepStats: Record<StatKey, number> = {
     strength: 4, dex: 4, int: 4, mana: 4, hp: 4, luck: 4,
@@ -948,6 +949,9 @@ export class GameScene extends Phaser.Scene {
     this.scenarioPanel = undefined;
     this.scenarioTitle = undefined;
     this.scenarioWidgets = [];
+    this.creativePrepPanel = undefined;
+    this.creativePrepMage = undefined;
+    this.creativePrepResolve = null;
     this.mageAnims.clear();
     this.mageLabels.clear();
     this.scarabSprites.clear();
@@ -3600,140 +3604,60 @@ export class GameScene extends Phaser.Scene {
     this.creativePrepPanel?.destroy();
     const mage = this.creativePrepMage;
     if (!mage) return;
-    const panel = this.add.container(0, 0).setDepth(98);
-    this.creativePrepPanel = panel;
-    const cx = GAME_WIDTH / 2;
-    const cy = GAME_HEIGHT / 2;
-    this.addModalChrome(panel, {
-      width: 1190,
-      height: 660,
-      title: `${mage.name.toUpperCase()}  //  CREATIVE PREP`,
-      subtitle: 'Set any non-negative stat value. Add any item repeatedly; cost, rarity, quantity, and carry limits are ignored.',
-      accent: UI.cyan,
-    });
-
-    panel.add(this.add.text(105, 105, 'STATS', { fontSize: '12px', color: TEXT.warn, fontStyle: 'bold' }));
-    STAT_DEFS.forEach((def, index) => {
-      const y = 145 + index * 67;
-      panel.add(this.add.text(105, y - 12, def.name, { fontSize: '15px', color: TEXT.body, fontStyle: 'bold' }));
-      panel.add(this.add.text(105, y + 10, def.blurb, { fontSize: '11px', color: TEXT.dim, wordWrap: { width: 260 } }));
-      const adjust = (amount: number): void => {
-        this.creativePrepStats[def.key] = Math.max(0, this.creativePrepStats[def.key] + amount);
+    this.creativePrepPanel = new CreativePrepView(this, {
+      mageName: mage.name,
+      confirmLabel: this.raid ? 'Begin Raid Prep' : this.mineRun ? 'Enter the Mine' : 'Enter the Swamp',
+      stats: { ...this.creativePrepStats },
+      items: [...this.creativePrepItems],
+      page: this.creativePrepPage,
+      presets: this.creativePresets,
+    }, {
+      adjustStat: (key, amount) => {
+        this.creativePrepStats[key] = Math.max(0, this.creativePrepStats[key] + amount);
         this.redrawCreativePrep();
-      };
-      this.swampShopButton(panel, 395, y, '-10', '#ff9a9a', true, () => adjust(-10));
-      this.swampShopButton(panel, 452, y, '-1', '#ffcf6b', true, () => adjust(-1));
-      panel.add(this.add.text(510, y, String(this.creativePrepStats[def.key]), {
-        fontSize: '19px', color: '#ffffff', backgroundColor: '#172231', fixedWidth: 62, align: 'center', padding: { y: 7 },
-      }).setOrigin(0.5));
-      this.swampShopButton(panel, 568, y, '+1', '#8fdfc8', true, () => adjust(1));
-      this.swampShopButton(panel, 625, y, '+10', '#7cfc9a', true, () => adjust(10));
-    });
-
-    panel.add(this.add.text(680, 105, 'ITEM CATALOG  //  CLICK TO ADD', {
-      fontSize: '12px', color: TEXT.warn, fontStyle: 'bold',
-    }));
-    const pageSize = 12;
-    const creativeItems = ITEM_DEFS.filter((def) => !def.enemyOnly);
-    const pages = Math.max(1, Math.ceil(creativeItems.length / pageSize));
-    this.creativePrepPage = Math.min(this.creativePrepPage, pages - 1);
-    const visible = creativeItems.slice(this.creativePrepPage * pageSize, (this.creativePrepPage + 1) * pageSize);
-    visible.forEach((def, index) => {
-      const col = index % 3;
-      const row = Math.floor(index / 3);
-      const x = 680 + col * 178;
-      const y = 135 + row * 88;
-      const count = this.creativePrepItems.filter((id) => id === def.id).length;
-      const card = this.add.text(x, y, `${def.name}${count ? `  x${count}` : ''}\n${def.slot} • ${def.rarity}`, {
-        fontSize: '12px', color: RARITY_COLOR[def.rarity], backgroundColor: '#111b29',
-        fixedWidth: 164, fixedHeight: 72, wordWrap: { width: 148 }, padding: { x: 8, y: 8 },
-      }).setInteractive({ useHandCursor: true });
-      card.on('pointerdown', () => {
-        this.creativePrepItems.push(def.id);
+      },
+      addItem: (id) => {
+        this.creativePrepItems.push(id);
         this.redrawCreativePrep();
-      });
-      panel.add(card);
-    });
-    this.swampShopButton(panel, 720, 510, 'Previous', '#9fb7ce', this.creativePrepPage > 0, () => {
-      this.creativePrepPage -= 1;
-      this.redrawCreativePrep();
-    });
-    panel.add(this.add.text(850, 510, `${this.creativePrepPage + 1} / ${pages}`, { fontSize: '14px', color: TEXT.dim }).setOrigin(0.5));
-    this.swampShopButton(panel, 980, 510, 'Next', '#9fb7ce', this.creativePrepPage < pages - 1, () => {
-      this.creativePrepPage += 1;
-      this.redrawCreativePrep();
-    });
-
-    const last = this.creativePrepItems[this.creativePrepItems.length - 1];
-    panel.add(this.add.text(680, 555, `Selected: ${this.creativePrepItems.length} item(s)${last ? `  •  Last: ${getItem(last).name}` : ''}`, {
-      fontSize: '13px', color: TEXT.body, wordWrap: { width: 500 },
-    }));
-    this.swampShopButton(panel, 760, 610, 'Undo last', '#ffcf6b', !!last, () => {
-      this.creativePrepItems.pop();
-      this.redrawCreativePrep();
-    });
-    this.swampShopButton(panel, 900, 610, 'Clear items', '#ff9a9a', this.creativePrepItems.length > 0, () => {
-      this.creativePrepItems = [];
-      this.redrawCreativePrep();
-    });
-    this.swampShopButton(panel, 1080, 610, 'Enter the swamp', '#7cfc9a', true, () => {
-      const resolve = this.creativePrepResolve;
-      const result = { stats: { ...this.creativePrepStats }, items: [...this.creativePrepItems] };
-      this.creativePrepResolve = null;
-      this.creativePrepPanel?.destroy();
-      this.creativePrepPanel = undefined;
-      resolve?.(result);
-    });
-
-    this.drawCreativePresets(panel);
-  }
-
-  /** Three saved stat + item builds, loadable in one click. */
-  private drawCreativePresets(panel: Phaser.GameObjects.Container): void {
-    panel.add(
-      this.add.text(105, 515, 'SAVED BUILDS', {
-        fontSize: '12px',
-        color: TEXT.warn,
-        fontStyle: 'bold',
-      })
-    );
-    for (let slot = 0; slot < PRESET_SLOTS; slot++) {
-      const preset = this.creativePresets[slot];
-      const y = 550 + slot * 38;
-      panel.add(
-        this.add.text(105, y - 10, preset ? preset.name : `Slot ${slot + 1} — empty`, {
-          fontFamily: UI_FONT,
-          fontSize: '14px',
-          color: preset ? TEXT.body : TEXT.dim,
-          backgroundColor: UI_HEX.panelRaised,
-          fixedWidth: 210,
-          padding: { x: 8, y: 4 },
-        })
-      );
-      this.swampShopButton(panel, 370, y, 'Load', '#8fdfc8', !!preset, () => {
+      },
+      setPage: (page) => {
+        this.creativePrepPage = page;
+        this.redrawCreativePrep();
+      },
+      undoItem: () => {
+        this.creativePrepItems.pop();
+        this.redrawCreativePrep();
+      },
+      clearItems: () => {
+        this.creativePrepItems = [];
+        this.redrawCreativePrep();
+      },
+      loadPreset: (slot) => {
         const saved = this.creativePresets[slot];
         if (!saved) return;
         this.creativePrepStats = { ...saved.stats };
         this.creativePrepItems = [...saved.items];
         this.redrawCreativePrep();
-      });
-      this.swampShopButton(panel, 460, y, 'Save', '#ffcf6b', true, () => this.saveCreativePreset(slot));
-      this.swampShopButton(panel, 560, y, 'Clear', '#ff9a9a', !!preset, () => {
+      },
+      savePreset: (slot, name) => this.saveCreativePreset(slot, name),
+      clearPreset: (slot) => {
         this.creativePresets[slot] = null;
         saveCreativePresets(this.creativePresets);
         this.redrawCreativePrep();
-      });
-    }
+      },
+      confirm: () => {
+        const resolve = this.creativePrepResolve;
+        const result = { stats: { ...this.creativePrepStats }, items: [...this.creativePrepItems] };
+        this.creativePrepResolve = null;
+        this.creativePrepPanel?.destroy();
+        this.creativePrepPanel = undefined;
+        resolve?.(result);
+      },
+    });
   }
 
   /** Name and store the current build in one of the three slots. */
-  private saveCreativePreset(slot: number): void {
-    const existing = this.creativePresets[slot];
-    const name = window.prompt(
-      `Name for slot ${slot + 1}:`,
-      existing?.name ?? `Build ${slot + 1}`
-    );
-    if (name == null) return;
+  private saveCreativePreset(slot: number, name: string): void {
     this.creativePresets[slot] = {
       name: name.trim().slice(0, 24) || `Build ${slot + 1}`,
       stats: { ...this.creativePrepStats },
