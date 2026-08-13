@@ -162,8 +162,8 @@ export class Mage {
   /** Set while a cast spell is resolving, for spell-lifesteal bookkeeping (Blood Charm). */
   spellcastActive = false;
 
-  /** Bastion Sword form: false = sword (offence), true = shield (defence). */
-  bastionShieldForm = false;
+  /** Bastion Sword form: false = sword (offence), true = shield (defence). Starts shielded. */
+  bastionShieldForm = true;
   /** Kills banked by Wings of Deaths Angel; persists until a long rest. */
   deathsAngelEnergy = 0;
   /** Remaining wearer turns of Wings flight/aura. */
@@ -579,7 +579,7 @@ export class Mage {
     this.eldritchDefend = false;
     this.blockPending = false;
     this.reloadTurns = 0;
-    this.bastionShieldForm = false;
+    this.bastionShieldForm = true;
     this.shieldBashUsed = false;
     this.firstBlackSpellUsed = false;
     this.manaMilledOnce = false;

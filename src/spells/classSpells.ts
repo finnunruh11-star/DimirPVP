@@ -39,6 +39,7 @@ import {
   rollDice,
 } from '../effects/effects';
 import type { EffectContext } from '../effects/effects';
+import { attachSummonRider } from './summonRiders';
 import { registerClassSpell, registerClassSpellVariants } from './registry';
 
 /** Abstract range number (5 / 10 / 15) to pixels. */
@@ -207,19 +208,8 @@ registerClassSpellVariants({
           pos: ctx.targetPoint,
           team: ctx.caster.team,
         });
-        leech.intrinsicMelee!.onHit = (hitCtx, victim) => {
-          applyDot(hitCtx, victim, {
-            name: 'Neural Rot',
-            duration: 3,
-            damage: dmg(1, 'corrosive', 'sanity'),
-          });
-          applyControl(hitCtx, victim, {
-            name: 'Reaction Eaten',
-            mode: 'expose',
-            duration: 3,
-          });
-        };
         ctx.game.spawnSummon(leech, ctx.caster, 'neural-leech');
+        attachSummonRider(leech, 'neural-leech');
         ctx.log(`${ctx.caster.name} breeds ${leech.name} (HP ${leech.hp}).`);
       },
     },
@@ -283,26 +273,8 @@ registerClassSpellVariants({
           pos: ctx.targetPoint,
           team: ctx.caster.team,
         });
-        leech.intrinsicMelee!.onHit = (hitCtx, victim) => {
-          const charged = victim.loadout.filter((word) => (victim.charges[word] ?? 0) > 0);
-          if (charged.length === 0) {
-            hitCtx.log(`${leech.name} finds no charged thought to drain.`);
-            return;
-          }
-          const stolen = hitCtx.rng.pick(charged);
-          victim.charges[stolen] = Math.max(0, (victim.charges[stolen] ?? 0) - 1);
-          const owner =
-            leech.summonOwnerIndex != null ? hitCtx.game.mages[leech.summonOwnerIndex] : undefined;
-          if (!owner?.alive) return;
-          if (owner.loadout.includes(stolen)) {
-            owner.charges[stolen] = (owner.charges[stolen] ?? 0) + 1;
-            hitCtx.log(`${leech.name} transfers ${stolen} from ${victim.name} to ${owner.name}.`);
-          } else {
-            owner.gainMana(2);
-            hitCtx.log(`${leech.name} digests ${victim.name}'s ${stolen} thought into 2 mana.`);
-          }
-        };
         ctx.game.spawnSummon(leech, ctx.caster, 'thought-leech');
+        attachSummonRider(leech, 'thought-leech');
         ctx.log(`${ctx.caster.name} breeds ${leech.name} (HP ${leech.hp}).`);
       },
     },
@@ -571,10 +543,8 @@ registerClassSpell({
           pos: ctx.targetPoint,
           team: ctx.caster.team,
         });
-        binder.intrinsicMelee!.onHit = (hitCtx, victim) => {
-          applyStun(hitCtx, victim, { duration: 2, type: 'movement' });
-        };
         ctx.game.spawnSummon(binder, ctx.caster, 'binder');
+        attachSummonRider(binder, 'binder');
         ctx.log(`${ctx.caster.name} raises ${binder.name} (HP ${binder.hp}).`);
       },
     },
@@ -666,15 +636,8 @@ registerClassSpell({
           pos: ctx.targetPoint,
           team: ctx.caster.team,
         });
-        archer.intrinsicMelee!.onHit = (hitCtx, victim) => {
-          dispelVeil(hitCtx, victim);
-          applyDebuff(hitCtx, victim, {
-            name: 'Mired',
-            duration: 2,
-            mods: { moveRange: -R(3) },
-          });
-        };
         ctx.game.spawnSummon(archer, ctx.caster, 'archer');
+        attachSummonRider(archer, 'archer');
         ctx.log(`${ctx.caster.name} raises ${archer.name} (HP ${archer.hp}).`);
       },
     },

@@ -293,6 +293,25 @@ export class GameState {
     this.initiativeRolls[idx] = roll + m.effectiveDex();
   }
 
+  /**
+   * Adopt a turn order wholesale instead of rolling one (loading a saved
+   * scenario). Indices outside the roster are dropped and the pointer is parked
+   * on `currentIndex` so play resumes exactly where the snapshot left off.
+   */
+  restoreTurnOrder(order: number[], rolls: number[], currentIndex: number): void {
+    const valid = order.filter((i) => i >= 0 && i < this.mages.length);
+    this.initiativeOrder = valid.length > 0 ? valid : this.mages.map((_, i) => i);
+    this.initiativeRolls = this.mages.map((_, i) => rolls[i] ?? 0);
+    const ptr = this.initiativeOrder.indexOf(currentIndex);
+    this.turnPtr = ptr >= 0 ? ptr : 0;
+    this.currentIndex = this.initiativeOrder[this.turnPtr] ?? 0;
+  }
+
+  /** Replace the scarab swarm with a saved one, issuing fresh object ids. */
+  restoreScarabs(swarm: Omit<Scarab, 'id'>[]): void {
+    this.scarabs = swarm.map((s) => ({ ...s, id: this.nextId++ }));
+  }
+
   /** Reset turn/field state and roll initiative for a newly assembled combat roster. */
   startNewCombat(options: { preserveScarabs?: boolean } = {}): void {
     const scarabs = options.preserveScarabs ? this.scarabs.filter(scarabAlive) : [];
@@ -784,7 +803,14 @@ export class GameState {
    */
   coopSurvivalTeam: number | null = null;
 
+  /**
+   * Sandbox switch: while set, no roster can win. The Scenario Lab needs it so
+   * a half-built fight (often a lone mage) is not declared over on turn one.
+   */
+  victorySuspended = false;
+
   get isOver(): boolean {
+    if (this.victorySuspended) return false;
     // Co-op survival: the run is lost only once every party member has fallen.
     // Clearing a wave (no foes left) is NOT a game over — the next wave spawns.
     if (this.coopSurvivalTeam != null) {

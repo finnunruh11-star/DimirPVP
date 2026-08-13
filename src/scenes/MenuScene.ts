@@ -5,10 +5,16 @@ import { MAGE_CLASSES, MAGE_CLASS_DEFS, DEFAULT_MAGE_CLASS, toMageClass, type Ma
 import { SceneInput } from '../engine/SceneInput';
 import { Net, type NetRole, type NetMessage } from '../net/Net';
 import { ENEMY_DEFS, RAID_BOSS_KINDS, type RaidBossKind } from '../pve/swamprun';
+import type { Scenario } from '../core/Scenario';
+import { pickScenarioFile } from '../ui/scenarioFile';
 import { UI, UI_FONT, UI_HEX, bindTextControl } from '../ui/theme';
 import magePreviewUrl from '../Sprites/Idle/Idle1.png';
 
 const NAD_LOADOUT: WordId[] = ['mind', 'shatter', 'twist', 'reality'];
+
+/** Seven-slot layout for the PVE / lab submenu row (narrower than the top row). */
+const SUB_W = 172;
+const SUB_X = [94, 276, 458, 640, 822, 1004, 1186];
 const EASTER_WORD_ORDER: WordId[] = [
   'twist',
   'reality',
@@ -20,11 +26,26 @@ const EASTER_WORD_ORDER: WordId[] = [
   'lightning',
 ];
 
-export type MatchMode = 'hotseat' | 'ai' | 'online' | 'training' | 'swamprun' | 'expedition' | 'minerun' | 'raid';
+export type MatchMode =
+  | 'hotseat'
+  | 'ai'
+  | 'online'
+  | 'training'
+  | 'swamprun'
+  | 'expedition'
+  | 'minerun'
+  | 'raid'
+  | 'scenario'
+  | 'memory';
 export type SwampPrepMode = 'quick' | 'custom' | 'creative';
 
 function isPveRunMode(mode: MatchMode): boolean {
   return mode === 'swamprun' || mode === 'expedition' || mode === 'minerun' || mode === 'raid';
+}
+
+/** Scenario Lab and Memory build/replay a saved fight instead of drafting one. */
+function isScenarioMode(mode: MatchMode): boolean {
+  return mode === 'scenario' || mode === 'memory';
 }
 
 function usesSwampPrep(mode: MatchMode): boolean {
@@ -77,6 +98,8 @@ export interface MatchConfig {
   localSeat?: number;
   /** Online play: shared RNG seed so both peers simulate identically. */
   seed?: number;
+  /** Memory mode: the saved fight to rebuild instead of drafting a new one. */
+  scenario?: Scenario;
 }
 
 /**
@@ -151,6 +174,8 @@ export class MenuScene extends Phaser.Scene {
   private modeExpeditionBtn!: Phaser.GameObjects.Text;
   private modeMinerunBtn!: Phaser.GameObjects.Text;
   private modeRaidBtn!: Phaser.GameObjects.Text;
+  private modeScenarioBtn!: Phaser.GameObjects.Text;
+  private modeMemoryBtn!: Phaser.GameObjects.Text;
   private raidBossBtns: { btn: Phaser.GameObjects.Text; kind: RaidBossKind }[] = [];
   private setOriginalBtn!: Phaser.GameObjects.Text;
   private setFinnsBtn!: Phaser.GameObjects.Text;
@@ -179,6 +204,31 @@ export class MenuScene extends Phaser.Scene {
   }
 
   create(): void {
+    // Phaser reuses this scene instance, so returning from a duel re-runs
+    // create(). Drop the previous run's (already destroyed) widgets and draft
+    // state first, or refresh() will touch dead game objects and throw.
+    this.wordCells = [];
+    this.classBtns = [];
+    this.raidBossBtns = [];
+    this.seatBtns = [];
+    this.selected = [];
+    this.selectedClass = DEFAULT_MAGE_CLASS;
+    this.selectedModifier = MODIFIER_WORDS[0];
+    this.draftIndex = 0;
+    this.draftLoadouts = [];
+    this.draftClasses = [];
+    this.draftModifiers = [];
+    this.unlockedWords = new Set();
+    this.wordCursor = 0;
+    this.typed = '';
+    this.nadActive = false;
+    this.katActive = false;
+    this.genActive = false;
+    this.sniffActive = false;
+    this.connecting = false;
+    this.pveMenuOpen = false;
+    this.raidMenuOpen = false;
+
     this.cameras.main.setBackgroundColor(COLORS.bg);
 
     const backdrop = this.add.graphics();
@@ -329,14 +379,16 @@ export class MenuScene extends Phaser.Scene {
     this.modeOnlineBtn = this.makeButton(640, 126, 'ONLINE', () => this.setMode('online'), 220);
     this.modeTrainingBtn = this.makeButton(896, 126, 'TRAINING', () => this.setMode('training'), 220);
     this.modePveBtn = this.makeButton(1152, 126, 'PVE', () => this.openPveMenu(), 220);
-    this.modeBackBtn = this.makeButton(128, 126, 'BACK', () => {
+    this.modeBackBtn = this.makeButton(SUB_X[0], 126, 'BACK', () => {
       if (this.raidMenuOpen) this.closeRaidMenu();
       else this.closePveMenu();
-    }, 220);
-    this.modeSwamprunBtn = this.makeButton(384, 126, 'SWAMPRUN', () => this.setMode('swamprun'), 220);
-    this.modeExpeditionBtn = this.makeButton(640, 126, 'EXPEDITION', () => this.setMode('expedition'), 220);
-    this.modeMinerunBtn = this.makeButton(896, 126, 'MINE RUN', () => this.setMode('minerun'), 220);
-    this.modeRaidBtn = this.makeButton(1152, 126, 'RAID', () => this.openRaidMenu(), 220);
+    }, SUB_W);
+    this.modeSwamprunBtn = this.makeButton(SUB_X[1], 126, 'SWAMPRUN', () => this.setMode('swamprun'), SUB_W);
+    this.modeExpeditionBtn = this.makeButton(SUB_X[2], 126, 'EXPEDITION', () => this.setMode('expedition'), SUB_W);
+    this.modeMinerunBtn = this.makeButton(SUB_X[3], 126, 'MINE RUN', () => this.setMode('minerun'), SUB_W);
+    this.modeRaidBtn = this.makeButton(SUB_X[4], 126, 'RAID', () => this.openRaidMenu(), SUB_W);
+    this.modeScenarioBtn = this.makeButton(SUB_X[5], 126, 'SCENARIO', () => this.setMode('scenario'), SUB_W);
+    this.modeMemoryBtn = this.makeButton(SUB_X[6], 126, 'MEMORY', () => this.setMode('memory'), SUB_W);
     RAID_BOSS_KINDS.forEach((kind, index) => {
       const btn = this.makeButton(512 + index * 256, 126, ENEMY_DEFS[kind].name.toUpperCase(), () => {
         this.selectRaidBoss(kind);
@@ -522,7 +574,7 @@ export class MenuScene extends Phaser.Scene {
     } else {
       this.aiCount = 0;
     }
-    if (!isPveRunMode(mode) && this.seatCount < 2) this.seatCount = 2;
+    if (!isPveRunMode(mode) && !isScenarioMode(mode) && this.seatCount < 2) this.seatCount = 2;
     this.clampAiCount();
     this.keepCurrentDraftValid();
     this.refresh();
@@ -569,6 +621,10 @@ export class MenuScene extends Phaser.Scene {
   }
 
   private primaryAction(): void {
+    if (this.mode === 'memory') {
+      void this.startFromMemory();
+      return;
+    }
     if (!this.loadoutReady()) {
       const missing = this.loadoutLimit() - this.selected.length;
       this.setStatus(`Choose ${missing} more spell word${missing === 1 ? '' : 's'}.`);
@@ -585,6 +641,30 @@ export class MenuScene extends Phaser.Scene {
     this.confirm();
   }
 
+  /** Memory mode: pick a saved scenario file and jump straight into that fight. */
+  private async startFromMemory(): Promise<void> {
+    if (this.connecting) return;
+    this.setStatus('Choose a saved scenario file…');
+    let scenario: Scenario | null;
+    try {
+      scenario = await pickScenarioFile();
+    } catch (err) {
+      this.setStatus(err instanceof Error ? err.message : 'That scenario could not be loaded.');
+      return;
+    }
+    if (!scenario) {
+      this.setStatus('');
+      return;
+    }
+    const config: MatchConfig = {
+      mode: 'memory',
+      loadouts: [scenario.entities[0]?.loadout ?? [], scenario.entities[1]?.loadout ?? []],
+      itemSets: { ...this.itemSets },
+      scenario,
+    };
+    this.scene.start('Game', config);
+  }
+
   /** Toggle an item set on/off; never allow every set to be disabled. */
   private toggleSet(set: keyof ItemSetSelection): void {
     if (this.connecting) return;
@@ -597,7 +677,7 @@ export class MenuScene extends Phaser.Scene {
   /** Cycle the local combatant count. Swamprun allows 1; others start at 2. */
   private cyclePlayers(): void {
     if (this.connecting) return;
-    const min = isPveRunMode(this.mode) ? 1 : 2;
+    const min = isPveRunMode(this.mode) || isScenarioMode(this.mode) ? 1 : 2;
     this.seatCount = this.seatCount >= 4 ? min : this.seatCount + 1;
     // Keep "vs AI" meaning 1 human vs the rest as the table resizes.
     if (this.mode === 'ai') this.aiCount = this.seatCount - 1;
@@ -799,6 +879,10 @@ export class MenuScene extends Phaser.Scene {
       this.hintText.setText('Mine Run: chart a seeded maze, click routes on the discovered map, and choose which hostile rooms to enter.');
     } else if (this.mode === 'raid') {
       this.hintText.setText(`Raid: prepare up to four allies for one fight against ${ENEMY_DEFS[this.raidBoss].name}. Defeat the target to win.`);
+    } else if (this.mode === 'scenario') {
+      this.hintText.setText('Scenario Lab: build a fight from scratch — press [P] in combat to add players and creatures, drag them into place, kit them out, then save it to a file.');
+    } else if (this.mode === 'memory') {
+      this.hintText.setText('Memory: load a saved scenario file and drop straight into that exact fight. No drafting needed.');
     } else if (this.seatCount > 2) {
       this.hintText.setText(`${this.formatLabel()} — each player drafts their own words in turn.`);
     } else {
@@ -861,7 +945,11 @@ export class MenuScene extends Phaser.Scene {
     const expeditionOn = this.mode === 'expedition';
     const minerunOn = this.mode === 'minerun';
     const raidOn = this.mode === 'raid';
-    const pveOn = swamprunOn || expeditionOn || minerunOn || raidOn;
+    const scenarioOn = this.mode === 'scenario';
+    const memoryOn = this.mode === 'memory';
+    const pveOn = swamprunOn || expeditionOn || minerunOn || raidOn || scenarioOn || memoryOn;
+    // The lab modes are offline-only, so they get no host / join lobby row.
+    const netPveOn = swamprunOn || expeditionOn || minerunOn || raidOn;
     this.modeAiBtn.setStyle({ backgroundColor: aiOn ? '#285b67' : '#182131' });
     this.modeHsBtn.setStyle({ backgroundColor: hsOn ? '#285b67' : '#182131' });
     this.modeOnlineBtn.setStyle({ backgroundColor: onlineOn ? '#285b67' : '#182131' });
@@ -871,6 +959,8 @@ export class MenuScene extends Phaser.Scene {
     this.modeExpeditionBtn.setStyle({ backgroundColor: expeditionOn ? '#285b67' : '#182131' });
     this.modeMinerunBtn.setStyle({ backgroundColor: minerunOn ? '#285b67' : '#182131' });
     this.modeRaidBtn.setStyle({ backgroundColor: raidOn ? '#285b67' : '#182131' });
+    this.modeScenarioBtn.setStyle({ backgroundColor: scenarioOn ? '#285b67' : '#182131' });
+    this.modeMemoryBtn.setStyle({ backgroundColor: memoryOn ? '#285b67' : '#182131' });
     // Mode is only chosen on the first draft screen.
     const showTopModes = firstScreen && !this.pveMenuOpen && !this.raidMenuOpen;
     const showPveModes = firstScreen && this.pveMenuOpen;
@@ -885,12 +975,14 @@ export class MenuScene extends Phaser.Scene {
     this.modeExpeditionBtn.setVisible(showPveModes);
     this.modeMinerunBtn.setVisible(showPveModes);
     this.modeRaidBtn.setVisible(showPveModes);
+    this.modeScenarioBtn.setVisible(showPveModes);
+    this.modeMemoryBtn.setVisible(showPveModes);
     for (const { btn } of this.raidBossBtns) btn.setVisible(showRaidBosses);
 
-    const networkRole = onlineOn ? this.onlineRole : pveOn ? this.swampRole : 'local';
+    const networkRole = onlineOn ? this.onlineRole : netPveOn ? this.swampRole : 'local';
     const rulesOwner = networkRole !== 'guest';
-    const showRole = firstScreen && (onlineOn || pveOn) && !this.pveMenuOpen;
-    this.localBtn.setVisible(showRole && pveOn);
+    const showRole = firstScreen && (onlineOn || netPveOn) && !this.pveMenuOpen;
+    this.localBtn.setVisible(showRole && netPveOn);
     this.hostBtn.setVisible(showRole);
     this.joinBtn.setVisible(showRole);
     if (onlineOn) {
@@ -929,7 +1021,7 @@ export class MenuScene extends Phaser.Scene {
 
     // Player-count / format controls: local teamfights & online room setup.
     // Swamprun is co-op survival, so it shows Players + AI but no team format.
-    const showSetup = firstScreen && this.mode !== 'training' && rulesOwner;
+    const showSetup = firstScreen && this.mode !== 'training' && this.mode !== 'memory' && rulesOwner;
     this.playersBtn.setText(`Players: ${this.seatCount}`);
     this.playersBtn.setVisible(showSetup);
     this.formatBtn.setText(`Format: ${this.formatLabel()}`);
@@ -967,7 +1059,7 @@ export class MenuScene extends Phaser.Scene {
     const ready = this.loadoutReady();
     const moreSeats = this.draftIndex < humans.length - 1;
     this.startBtn.setVisible(true);
-    this.startBtn.setAlpha(ready ? 1 : 0.4);
+    this.startBtn.setAlpha(ready || memoryOn ? 1 : 0.4);
     this.startBtn.setText(
       moreSeats
         ? 'NEXT MAGE'
@@ -981,9 +1073,13 @@ export class MenuScene extends Phaser.Scene {
                 ? this.swampRole === 'local' ? 'START MINE RUN' : this.swampRole === 'host' ? 'HOST CO-OP ROOM' : 'JOIN CO-OP ROOM'
               : raidOn
                 ? this.swampRole === 'local' ? 'START RAID' : this.swampRole === 'host' ? 'HOST RAID ROOM' : 'JOIN RAID ROOM'
+            : scenarioOn
+              ? 'OPEN SCENARIO LAB'
+              : memoryOn
+                ? 'LOAD MEMORY FILE'
             : this.mode === 'training' ? 'START TRAINING' : 'START DUEL'
     );
-    this.startBtn.setColor(ready ? '#0a0e16' : '#4d4431');
+    this.startBtn.setColor(ready || memoryOn ? '#0a0e16' : '#4d4431');
 
     const modeLabels: Record<MatchMode, string> = {
       hotseat: 'Hotseat',
@@ -994,6 +1090,8 @@ export class MenuScene extends Phaser.Scene {
       expedition: 'Expedition',
       minerun: 'Mine Run',
       raid: `Raid: ${ENEMY_DEFS[this.raidBoss].name}`,
+      scenario: 'Scenario Lab',
+      memory: 'Memory',
     };
     const roleLabel = networkRole === 'guest' ? 'Join' : networkRole === 'host' ? 'Host' : 'Local';
     const partyLabel = this.mode === 'training'

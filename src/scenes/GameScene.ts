@@ -34,6 +34,7 @@ import {
   PRESET_SLOTS,
   loadCreativePresets,
   saveCreativePresets,
+  type CreativePreset,
   type PresetSlots,
 } from '../ui/creativePresets';
 import {
@@ -43,16 +44,22 @@ import {
   GAME_HEIGHT,
   GAME_WIDTH,
   LOADOUT_SIZE,
+  MANA_CAP,
   MAX_SPELL_WORDS,
   MAX_WEAPON_REACTIONS,
   MAX_WORD_SPELL_REACTIONS,
   MELEE_RANGE,
   RANGE_UNIT,
   SCARAB,
+  START_HP,
+  START_SANITY,
   TEXT,
 } from '../config/constants';
 import { GameState } from '../core/GameState';
 import { Mage } from '../core/Mage';
+import { Dice } from '../core/Dice';
+import { scenarioToMages, scenarioToScarabs, type Scenario } from '../core/Scenario';
+import { downloadScenario, pickScenarioFile } from '../ui/scenarioFile';
 import type { Status } from '../core/Status';
 import scarabGifUrl from '../Sprites/Scarab.gif';
 import moveIconUrl from '../Sprites/Move.png';
@@ -69,12 +76,14 @@ import edgelordImpactSheetUrl from '../../spritesheet/Lightning/lightning_burst_
 import { scarabAlive, type ScarabState } from '../core/Scarab';
 import { Dev, type DevToggle } from '../config/dev';
 import {
+  MODIFIER_WORDS,
   WORD_ORDER,
   WORDS,
   isModifierWord,
   splitModifiers,
   type WordId,
 } from '../core/Words';
+import { MAGE_CLASSES, MAGE_CLASS_DEFS, type MageClass } from '../core/Classes';
 import { WORD_COLOR, wordSpellMana, type ColorName } from '../core/Colors';
 import {
   STAT_DEFS,
@@ -142,6 +151,8 @@ import {
   mineWaveComposition,
   rollMineEnemyWeapon,
   rollMineLoot,
+  MINE_ENEMY_DEFS,
+  type MineEnemyKind,
   type MineSpawnSpec,
 } from '../pve/minerun';
 import { canUseMineAction, commitMineAction, makeMineActionItem } from '../pve/mineActions';
@@ -317,6 +328,10 @@ type InputMode =
   | 'thunder-menu'
   | 'action-menu'
   | 'training'
+  | 'dev-resources'
+  | 'scenario-lab'
+  | 'scenario-place'
+  | 'scenario-move'
   | 'over';
 
 interface DiceRoll {
@@ -564,9 +579,29 @@ export class GameScene extends Phaser.Scene {
 
   private mode: InputMode = 'idle';
   private busy = false;
+  /** Set once the result banner is up, so repeated isOver checks are ignored. */
+  private gameEnded = false;
+  /** Set while handing control back to the menu, so it can only happen once. */
+  private leaving = false;
 
   // Training sandbox (offline only). Enabled when the match mode is 'training'.
   private training = false;
+  // Scenario Lab: build a fight by hand, then save it as a memory file.
+  private scenarioLab = false;
+  private scenarioPanel?: Phaser.GameObjects.Container;
+  private scenarioTitle?: Phaser.GameObjects.Text;
+  private scenarioWidgets: Phaser.GameObjects.GameObject[] = [];
+  private scenarioPage: 'roster' | 'spawn' | 'stats' | 'words' | 'gear' = 'roster';
+  /** Index into `gs.mages` of the entity the gear page edits. */
+  private scenarioTargetIndex = 0;
+  /** Team stamped on the next entity placed on the field. */
+  private scenarioTeam = 2;
+  /** What the next field click spawns, or the entity it relocates. */
+  private scenarioBrush: { player: true } | { enemy: EnemyKind } | { mine: MineEnemyKind } | null = null;
+  private scenarioMoveTarget: Mage | null = null;
+  // Memory: a saved fight was rebuilt instead of drafted.
+  private memoryMode = false;
+  private memoryName = '';
   /** Spawn points restored on a training soft reset. */
   private playerSpawn: Vec2 = { x: 0, y: 0 };
   private enemySpawn: Vec2 = { x: 0, y: 0 };
@@ -807,6 +842,13 @@ export class GameScene extends Phaser.Scene {
   private devPanel!: Phaser.GameObjects.Container;
   private devToggles: { key: DevToggle; label: string; hot: string; text: Phaser.GameObjects.Text }[] = [];
   private devClickGuard = false;
+  // Dev resource editor (HP / mana / sanity / actions / stacks of any entity).
+  private devResPanel?: Phaser.GameObjects.Container;
+  private devResWidgets: Phaser.GameObjects.GameObject[] = [];
+  /** Index into `gs.mages` of the entity the resource editor is editing. */
+  private devResIndex = 0;
+  /** The mode to restore when the resource editor closes. */
+  private devResReturn: InputMode = 'idle';
   /** Swallows the field click that opened an aiming mode from the action menu. */
   private menuClickGuard = false;
 
@@ -870,8 +912,57 @@ export class GameScene extends Phaser.Scene {
     this.load.spritesheet('fx-edgelord-impact', edgelordImpactSheetUrl, { frameWidth: 96, frameHeight: 96 });
   }
 
+  /**
+   * Phaser reuses this scene instance, so a second match would otherwise
+   * inherit the previous run's destroyed widgets, cached panels and sprite
+   * maps. Clearing them here is what makes "return to menu" survivable.
+   */
+  private resetSceneState(): void {
+    this.mode = 'idle';
+    this.busy = false;
+    this.gameEnded = false;
+    this.leaving = false;
+    this.reactor = null;
+    this.puppet = null;
+    this.selectedIdx = [];
+    this.pendingDice = [];
+    this.pendingHits = [];
+    this.pendingEffects = [];
+    this.stackTokens = [];
+    this.resourceLabels = [];
+    this.resourceValues = [];
+    this.wordTexts = [];
+    this.assignDieTexts = [];
+    this.assignSlotTexts = [];
+    this.shopOptionTexts = [];
+    this.shopPicks = [];
+    // Lazily-built overlays cache their container, so stale handles must go.
+    this.actionMenu = undefined;
+    this.actionMenuEntries = [];
+    this.actionMenuRows = [];
+    this.trainPanel = undefined;
+    this.trainTitle = undefined;
+    this.trainWidgets = [];
+    this.devResPanel = undefined;
+    this.devResWidgets = [];
+    this.scenarioPanel = undefined;
+    this.scenarioTitle = undefined;
+    this.scenarioWidgets = [];
+    this.mageAnims.clear();
+    this.mageLabels.clear();
+    this.scarabSprites.clear();
+    this.zoneLabels.clear();
+    this.dropLabels.clear();
+    this.ais.clear();
+    this.swamprunWaveEnemies = [];
+    this.swamprunWispCopies.clear();
+    this.swamprunArrowsOwned.clear();
+    this.expeditionXpEnemies.clear();
+  }
+
   create(config: MatchConfig): void {
     this.cameras.main.setBackgroundColor(COLORS.bg);
+    this.resetSceneState();
     this.spectateAll = false;
     this.autoPassReactions = false;
     this.combatSpeed = 1;
@@ -895,6 +986,9 @@ export class GameScene extends Phaser.Scene {
     this.localSeat = config.localSeat ?? this.localTeam - 1;
     this.opponentLeft = false;
     this.training = config.mode === 'training';
+    this.scenarioLab = config.mode === 'scenario';
+    this.memoryMode = config.mode === 'memory';
+    this.memoryName = config.scenario?.name ?? '';
     this.expedition = config.mode === 'expedition';
     this.mineRun = config.mode === 'minerun';
     this.raid = config.mode === 'raid';
@@ -942,19 +1036,32 @@ export class GameScene extends Phaser.Scene {
     this.playerSpawn = this.spawns[0] ?? { x: FIELD.x + 180, y: FIELD.y + FIELD.h / 2 };
     this.enemySpawn = this.spawns[1] ?? { x: FIELD.x + FIELD.w - 180, y: FIELD.y + FIELD.h / 2 };
 
-    const mages = seats.map(
-      (s, i) =>
-        new Mage({
-          name: this.online && i === this.localSeat ? `${s.name} (You)` : s.name,
-          isAI: s.isAI,
-          team: s.team,
-          position: { ...this.spawns[i] },
-          loadout: s.loadout,
-          mageClass: s.mageClass,
-        })
-    );
+    // A loaded memory fully describes its roster, so it replaces the drafted
+    // seats: every combatant keeps the kit and the spot it was saved on.
+    const scenario = config.scenario ?? null;
+    if (scenario) this.spawns = scenario.entities.map((e) => ({ x: e.x, y: e.y }));
+
+    const mages = scenario
+      ? scenarioToMages(scenario, new Dice(config.seed))
+      : seats.map(
+        (s, i) =>
+          new Mage({
+            name: this.online && i === this.localSeat ? `${s.name} (You)` : s.name,
+            isAI: s.isAI,
+            team: s.team,
+            position: { ...this.spawns[i] },
+            loadout: s.loadout,
+            mageClass: s.mageClass,
+          })
+      );
 
     this.gs = new GameState(mages, config.seed);
+    if (scenario) {
+      this.gs.restoreScarabs(scenarioToScarabs(scenario, mages));
+      this.gs.restoreTurnOrder(scenario.turn.order, scenario.turn.rolls, scenario.turn.currentIndex);
+      this.gs.round = scenario.turn.round;
+      this.gs.turnSeq = scenario.turn.turnSeq;
+    }
     // Swamprun is co-op survival: the run ends only when the whole party (team 1)
     // falls, never when a wave is merely cleared.
     if (this.swamprun) this.gs.coopSurvivalTeam = 1;
@@ -1062,6 +1169,28 @@ export class GameScene extends Phaser.Scene {
   /** Roll the shared stat dice, run the assignment phase, then start the duel. */
   private async beginDuel(): Promise<void> {
     this.redraw();
+    if (this.memoryMode) {
+      this.restyleCreatureSprites();
+      // A one-sided memory is a solo drill, not an instant win.
+      const sides = new Set(
+        this.gs.mages.filter((m) => !m.isSummon && m.alive).map((m) => m.team)
+      );
+      if (sides.size < 2) {
+        this.gs.victorySuspended = true;
+        this.gs.log('Only one side is present — victory checks are off. Press [P] to edit the fight.');
+      }
+      this.gs.log(
+        `Memory loaded — "${this.memoryName}" (round ${this.gs.round}, ${this.gs.mages.length} entities).`
+      );
+      this.startTurn();
+      return;
+    }
+    if (this.scenarioLab) {
+      this.setupScenarioLab();
+      this.gs.startRound();
+      this.startTurn();
+      return;
+    }
     if (this.training) {
       this.setupTraining();
       this.gs.startRound();
@@ -1111,6 +1240,30 @@ export class GameScene extends Phaser.Scene {
     for (const m of this.gs.mages) m.resetCombatReactions();
     this.applyTrainingEnemyKind(this.mageByTeam(2), this.trainEnemyKind);
     this.gs.log('Training sandbox — press [P] to open the training tools.');
+  }
+
+  /** Scenario Lab: playable mages with flat stats, ready to be reshaped by hand. */
+  private setupScenarioLab(): void {
+    // A fight under construction usually has one side only; let it be.
+    this.gs.victorySuspended = true;
+    for (const m of this.gs.mages) {
+      if (!m.statsAssigned) m.assignFlatStats(5);
+      m.resetDodges();
+      m.resetCombatReactions();
+    }
+    this.gs.log('Scenario Lab — press [P] to add entities, move them, kit them out, and save.');
+    this.gs.log('Victory checks are off while you build; switch them on in the lab to test the fight.');
+  }
+
+  /** Re-apply creature tints/scales after a roster arrives without spawn calls. */
+  private restyleCreatureSprites(): void {
+    this.syncMageSprites();
+    for (const m of this.gs.mages) {
+      if (m.mine) this.styleMineEnemySprite(m);
+      else if (m.enemyKind && m.enemyKind in ENEMY_DEFS) {
+        this.styleEnemySprite(m, m.enemyKind as EnemyKind);
+      }
+    }
   }
 
   // ===========================================================================
@@ -5923,7 +6076,7 @@ export class GameScene extends Phaser.Scene {
     this.hideShopOverlay();
     this.bannerText.setText('Opponent disconnected.\nClick to return to menu').setVisible(true);
     this.redraw();
-    this.input.once('pointerdown', () => this.scene.start('Menu'));
+    this.armReturnToMenu();
   }
 
   // ===========================================================================
@@ -6732,7 +6885,10 @@ export class GameScene extends Phaser.Scene {
       { key: 'V', run: actionHotkey('V', () => this.beginCleave()) },
       { key: 'S', run: actionHotkey('S', () => this.activateDeathsAngelWings()) },
       { key: 'U', run: actionHotkey('U', () => this.beginCommand()) },
-      { key: 'P', run: actionHotkey('', () => this.toggleTrainingOverlay()) },
+      { key: 'P', run: actionHotkey('', () => {
+        if (this.scenarioLab || this.memoryMode) this.toggleScenarioLab();
+        else this.toggleTrainingOverlay();
+      }) },
       { key: 'TAB', capture: true, run: () => this.toggleActionMenu() },
       { key: 'UP', capture: true, run: () => this.moveActionMenuSelection(-1) },
       { key: 'DOWN', capture: true, run: () => this.moveActionMenuSelection(1) },
@@ -6816,6 +6972,21 @@ export class GameScene extends Phaser.Scene {
             this.closeTrainingOverlay();
             return;
           }
+          if (this.mode === 'dev-resources') {
+            this.closeDevResources();
+            return;
+          }
+          if (this.mode === 'scenario-lab') {
+            this.closeScenarioLab();
+            return;
+          }
+          if (this.mode === 'scenario-place' || this.mode === 'scenario-move') {
+            this.scenarioBrush = null;
+            this.scenarioMoveTarget = null;
+            this.mode = 'idle';
+            this.toggleScenarioLab();
+            return;
+          }
           this.cancelAiming();
         },
       },
@@ -6826,12 +6997,14 @@ export class GameScene extends Phaser.Scene {
       { key: 'F3', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDev('infiniteActions'); }) },
       { key: 'F4', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDev('aiPassive'); }) },
       { key: 'F5', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDev('skipDice'); }) },
+      { key: 'F6', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDevResources(); }) },
     ]);
     controls.bindAnyKey((event) => {
       if (event.key !== '#') return;
       if (this.mode === 'action-menu') return;
       if (this.mode === 'assign' || this.mode === 'shop' || this.mode === 'over') return;
       this.devPanel.setVisible(!this.devPanel.visible);
+      if (!this.devPanel.visible) this.closeDevResources();
     });
 
     // Right-click opens the action menu, so suppress the browser context menu.
@@ -8619,6 +8792,9 @@ export class GameScene extends Phaser.Scene {
     const pt = { x: p.worldX, y: p.worldY };
     const me = this.gs.current;
 
+    // Scenario Lab tools own the click while a brush / move target is armed.
+    if (this.onScenarioFieldClick(pt)) return;
+
     if (this.mode === 'subtarget-point') {
       const origin = this.subtargetOrigin ?? me.pos;
       const capped = stepTowards(origin, pt, this.subtargetRange);
@@ -10320,7 +10496,7 @@ export class GameScene extends Phaser.Scene {
     const py = FIELD.y + 8;
     this.devPanel = this.add.container(px, py).setDepth(60).setVisible(false);
     const bg = this.add
-      .rectangle(0, 0, 170, 138, UI.panel, 0.9)
+      .rectangle(0, 0, 170, 162, UI.panel, 0.9)
       .setOrigin(0, 0)
       .setStrokeStyle(1, UI.border);
     const title = this.add.text(8, 5, 'DEV MODE  (# to hide)', {
@@ -10345,7 +10521,14 @@ export class GameScene extends Phaser.Scene {
       });
       return { ...d, text };
     });
-    this.devPanel.add([bg, title, ...this.devToggles.map((d) => d.text)]);
+    const resources = this.add
+      .text(8, 27 + defs.length * 21, '[F6] Edit resources…', { fontSize: '12px', color: UI_HEX.cyan })
+      .setInteractive({ useHandCursor: true });
+    resources.on('pointerdown', () => {
+      this.devClickGuard = true;
+      this.toggleDevResources();
+    });
+    this.devPanel.add([bg, title, ...this.devToggles.map((d) => d.text), resources]);
     this.refreshDevPanel();
   }
 
@@ -10356,6 +10539,990 @@ export class GameScene extends Phaser.Scene {
       d.text.setText(`[${d.hot}] ${d.label}: ${on ? 'ON' : 'off'}`);
       d.text.setColor(on ? '#7cfc9a' : TEXT.dim);
     }
+  }
+
+  // ─── Dev resource editor ─────────────────────────────────────────────────
+
+  /** Open / close the cheat overlay that edits any entity's live resources. */
+  private toggleDevResources(): void {
+    if (this.mode === 'dev-resources') {
+      this.closeDevResources();
+      return;
+    }
+    const blocked: InputMode[] = [
+      'assign',
+      'shop',
+      'over',
+      'action-menu',
+      'inventory',
+      'training',
+      'eldritch-menu',
+      'thunder-menu',
+    ];
+    if (blocked.includes(this.mode)) return;
+    if (!this.devResPanel) {
+      const panel = this.add.container(0, 0).setDepth(97).setVisible(false);
+      this.addModalChrome(panel, {
+        width: 1000,
+        height: 660,
+        title: 'RESOURCE EDITOR',
+        subtitle: 'Cheat: set any entity\u2019s vitals, charges, actions and stacks',
+        accent: UI.violet,
+      });
+      this.devResPanel = panel;
+    }
+    // Never restore a transient mode (aiming / busy): the game loop owns those.
+    this.devResReturn = this.mode === 'reaction' ? 'reaction' : 'idle';
+    this.mode = 'dev-resources';
+    this.devResPanel.setVisible(true);
+    this.refreshDevResources();
+    this.redraw();
+  }
+
+  private closeDevResources(): void {
+    this.devResPanel?.setVisible(false);
+    if (this.mode === 'dev-resources') this.mode = this.devResReturn;
+    this.redraw();
+  }
+
+  private devResButton(
+    x: number,
+    y: number,
+    label: string,
+    onClick: () => void,
+    color = '#e8e8f0',
+    bg = '#111b29',
+  ): Phaser.GameObjects.Text {
+    const t = this.add
+      .text(x, y, label, {
+        fontFamily: UI_FONT, fontSize: '13px', color, backgroundColor: bg, padding: { x: 7, y: 4 },
+      })
+      .setInteractive({ useHandCursor: true });
+    t.on('pointerdown', () => onClick());
+    t.on('pointerover', () => t.setAlpha(0.78));
+    t.on('pointerout', () => t.setAlpha(1));
+    this.devResPanel!.add(t);
+    this.devResWidgets.push(t);
+    return t;
+  }
+
+  private devResLabel(x: number, y: number, text: string, color?: string): Phaser.GameObjects.Text {
+    const t = this.add.text(x, y, text, { fontSize: '14px', color: color ?? TEXT.body });
+    this.devResPanel!.add(t);
+    this.devResWidgets.push(t);
+    return t;
+  }
+
+  private refreshDevResources(): void {
+    if (!this.devResPanel) return;
+    for (const w of this.devResWidgets) w.destroy();
+    this.devResWidgets = [];
+    const entities = this.gs.mages;
+    if (entities.length === 0) return;
+    this.devResIndex = Phaser.Math.Clamp(this.devResIndex, 0, entities.length - 1);
+    const t = entities[this.devResIndex];
+
+    const left = GAME_WIDTH / 2 - 475;
+    const right = GAME_WIDTH / 2 + 15;
+    const top = GAME_HEIGHT / 2 - 262;
+
+    // Entity picker: every mage, summon and creature currently on the field.
+    this.devResLabel(left, top, 'Entity:');
+    let px = left + 62;
+    let py = top - 4;
+    entities.forEach((m, i) => {
+      const on = i === this.devResIndex;
+      const label = `${m.name}${m.isSummon ? ' *' : ''}${m.alive ? '' : ' †'}`;
+      if (px > GAME_WIDTH / 2 + 360) {
+        px = left + 62;
+        py += 28;
+      }
+      const b = this.devResButton(
+        px,
+        py,
+        label,
+        () => {
+          this.devResIndex = i;
+          this.refreshDevResources();
+        },
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#285b67' : '#111b29',
+      );
+      px += b.width + 8;
+    });
+
+    const rows = { left: py + 48, right: py + 48 };
+    const row = (
+      col: 'left' | 'right',
+      label: string,
+      value: string,
+      steps: [number, string][],
+      apply: (delta: number) => void,
+    ): void => {
+      const x = col === 'left' ? left : right;
+      const y = rows[col];
+      this.devResLabel(x, y, `${label}: ${value}`);
+      let bx = x + 250;
+      for (const [delta, text] of steps) {
+        const b = this.devResButton(bx, y - 4, text, () => {
+          apply(delta);
+          this.refreshDevResources();
+          this.redraw();
+        });
+        bx += b.width + 6;
+      }
+      rows[col] += 32;
+    };
+
+    const BIG = 999999;
+    const pool = (
+      label: string,
+      cur: number,
+      max: number,
+      set: (value: number) => void,
+      floor = 0,
+    ): void => {
+      row(
+        'left',
+        label,
+        `${cur} / ${max}`,
+        [
+          [-5, '-5'],
+          [-1, '-1'],
+          [1, '+1'],
+          [5, '+5'],
+          [BIG, 'Max'],
+        ],
+        (d) => set(Phaser.Math.Clamp(cur + d, floor, max)),
+      );
+    };
+
+    pool('HP', t.hp, t.maxHp, (v) => (t.hp = v), t.unkillable ? 1 : 0);
+    pool('Mana', t.mana, t.maxMana, (v) => (t.mana = v));
+    pool('Sanity', t.sanity, t.maxSanity, (v) => (t.sanity = v));
+    pool('Luck', t.luck, t.maxLuck, (v) => (t.luck = v));
+    pool('Color charges', t.colorCharges, t.maxColorCharges, (v) => (t.colorCharges = v));
+    const wordTotal = t.loadout.reduce((sum, w) => sum + (t.charges[w] ?? 0), 0);
+    const wordMax = t.loadout.reduce((sum, w) => sum + t.maxWordCharges(w), 0);
+    row(
+      'left',
+      'Word charges (all)',
+      `${wordTotal} / ${wordMax}`,
+      [
+        [-1, '-1'],
+        [1, '+1'],
+        [BIG, 'Max'],
+      ],
+      (d) => {
+        for (const w of t.loadout) {
+          const max = t.maxWordCharges(w);
+          t.charges[w] = Phaser.Math.Clamp((t.charges[w] ?? 0) + d, 0, max);
+        }
+      },
+    );
+
+    const action = (label: string, key: 'move' | 'main' | 'bonus'): void => {
+      row(
+        'right',
+        label,
+        `${t.actions[key]}`,
+        [
+          [-1, '-1'],
+          [1, '+1'],
+          [ACTIONS_PER_TURN[key] - t.actions[key], 'Reset'],
+        ],
+        (d) => (t.actions[key] = Math.max(0, t.actions[key] + d)),
+      );
+    };
+    action('Move actions', 'move');
+    action('Main actions', 'main');
+    action('Bonus actions', 'bonus');
+
+    const stack = (label: string, get: () => number, set: (value: number) => void): void => {
+      row(
+        'right',
+        label,
+        `${get()}`,
+        [
+          [-5, '-5'],
+          [-1, '-1'],
+          [1, '+1'],
+          [5, '+5'],
+          [-BIG, 'Clear'],
+        ],
+        (d) => set(Math.max(0, get() + d)),
+      );
+    };
+    const toggle = (col: 'left' | 'right', label: string, get: () => boolean, set: (value: boolean) => void): void => {
+      const x = col === 'left' ? left : right;
+      const y = rows[col];
+      const on = get();
+      this.devResLabel(x, y, `${label}: ${on ? 'yes' : 'no'}`);
+      this.devResButton(
+        x + 250,
+        y - 4,
+        on ? 'Turn off' : 'Turn on',
+        () => {
+          set(!on);
+          this.refreshDevResources();
+          this.redraw();
+        },
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#24543f' : '#111b29',
+      );
+      rows[col] += 32;
+    };
+
+    stack('Thunder stacks', () => t.thunderStacks, (v) => (t.thunderStacks = v));
+    stack('Greed stacks', () => t.greedStacks, (v) => (t.greedStacks = v));
+    stack('Momentum stacks', () => t.momentumStacks, (v) => (t.momentumStacks = v));
+    stack('Anchor stacks', () => t.anchorStacks, (v) => (t.anchorStacks = v));
+
+    // Reactions: the shared once-per-cycle reaction plus each capped budget.
+    row(
+      'left',
+      'Dodges left',
+      `${t.dodgesRemaining} / ${t.maxDodges()}`,
+      [
+        [-1, '-1'],
+        [1, '+1'],
+        [BIG, 'Max'],
+      ],
+      (d) => (t.dodgesRemaining = Phaser.Math.Clamp(t.dodgesRemaining + d, 0, t.maxDodges())),
+    );
+    row(
+      'left',
+      'Word-spell reactions used',
+      `${t.wordSpellReactionsUsed} / ${MAX_WORD_SPELL_REACTIONS}`,
+      [
+        [-1, '-1'],
+        [1, '+1'],
+        [-BIG, 'Clear'],
+      ],
+      (d) =>
+        (t.wordSpellReactionsUsed = Phaser.Math.Clamp(
+          t.wordSpellReactionsUsed + d,
+          0,
+          MAX_WORD_SPELL_REACTIONS,
+        )),
+    );
+    row(
+      'left',
+      'Weapon reactions used',
+      `${t.weaponReactionsUsed} / ${MAX_WEAPON_REACTIONS}`,
+      [
+        [-1, '-1'],
+        [1, '+1'],
+        [-BIG, 'Clear'],
+      ],
+      (d) =>
+        (t.weaponReactionsUsed = Phaser.Math.Clamp(t.weaponReactionsUsed + d, 0, MAX_WEAPON_REACTIONS)),
+    );
+    toggle('right', 'Reaction available', () => t.reactionAvailable, (v) => (t.reactionAvailable = v));
+    toggle('right', 'Reacted this cycle', () => t.reactedThisCycle, (v) => (t.reactedThisCycle = v));
+
+    const bottom = Math.max(rows.left, rows.right) + 10;
+    this.devResButton(
+      left,
+      bottom,
+      'Refill everything',
+      () => {
+        t.hp = t.maxHp;
+        t.mana = t.maxMana;
+        t.sanity = t.maxSanity;
+        t.luck = t.maxLuck;
+        t.colorCharges = t.maxColorCharges;
+        t.actions = { ...ACTIONS_PER_TURN };
+        for (const w of t.loadout) t.charges[w] = t.maxWordCharges(w);
+        t.resetDodges();
+        t.wordSpellReactionsUsed = 0;
+        t.weaponReactionsUsed = 0;
+        t.reactedThisCycle = false;
+        t.reactionAvailable = t.canEverReact;
+        this.refreshDevResources();
+        this.redraw();
+      },
+      '#7cfc9a',
+      '#24543f',
+    );
+    this.devResButton(
+      left + 160,
+      bottom,
+      'Clear statuses',
+      () => {
+        t.statuses = [];
+        this.refreshDevResources();
+        this.redraw();
+      },
+      '#ffd27a',
+      '#4a3a1a',
+    );
+    this.devResButton(
+      left + 300,
+      bottom,
+      'Close [F6]',
+      () => this.closeDevResources(),
+      '#ff9a9a',
+      '#4a1a1a',
+    );
+    this.devResLabel(left, bottom + 40, '* summon   † dead', TEXT.dim);
+  }
+
+  // ─── Scenario Lab (build & save a fight) ─────────────────────────────────
+
+  /** Open / close the Scenario Lab. Also available in Memory mode for tweaks. */
+  private toggleScenarioLab(): void {
+    if (!this.scenarioLab && !this.memoryMode) return;
+    if (this.mode === 'scenario-lab') {
+      this.closeScenarioLab();
+      return;
+    }
+    if (this.mode !== 'idle') return;
+    if (!this.scenarioPanel) {
+      const panel = this.add.container(0, 0).setDepth(96).setVisible(false);
+      const chrome = this.addModalChrome(panel, {
+        width: 980,
+        height: 660,
+        title: 'SCENARIO LAB',
+        subtitle: 'Place entities, kit them out, then save or load the fight as a memory file',
+        accent: UI.violet,
+      });
+      this.scenarioTitle = chrome.title;
+      this.scenarioPanel = panel;
+    }
+    this.scenarioPage = 'roster';
+    // Presets live in localStorage, so pick up anything saved since last time.
+    this.creativePresets = loadCreativePresets();
+    this.mode = 'scenario-lab';
+    this.scenarioPanel.setVisible(true);
+    this.refreshScenarioLab();
+    this.redraw();
+  }
+
+  private closeScenarioLab(): void {
+    this.scenarioPanel?.setVisible(false);
+    if (this.mode === 'scenario-lab') this.mode = 'idle';
+    this.redraw();
+  }
+
+  private scenarioButton(
+    x: number,
+    y: number,
+    label: string,
+    onClick: () => void,
+    color = '#e8e8f0',
+    bg = '#111b29',
+  ): Phaser.GameObjects.Text {
+    const t = this.add
+      .text(x, y, label, {
+        fontFamily: UI_FONT, fontSize: '13px', color, backgroundColor: bg, padding: { x: 7, y: 4 },
+      })
+      .setInteractive({ useHandCursor: true });
+    t.on('pointerdown', () => onClick());
+    t.on('pointerover', () => t.setAlpha(0.78));
+    t.on('pointerout', () => t.setAlpha(1));
+    this.scenarioPanel!.add(t);
+    this.scenarioWidgets.push(t);
+    return t;
+  }
+
+  private scenarioLabel(x: number, y: number, text: string, color?: string): Phaser.GameObjects.Text {
+    const t = this.add.text(x, y, text, { fontSize: '14px', color: color ?? TEXT.body });
+    this.scenarioPanel!.add(t);
+    this.scenarioWidgets.push(t);
+    return t;
+  }
+
+  private refreshScenarioLab(): void {
+    if (!this.scenarioPanel) return;
+    for (const w of this.scenarioWidgets) w.destroy();
+    this.scenarioWidgets = [];
+    const left = GAME_WIDTH / 2 - 465;
+    const top = GAME_HEIGHT / 2 - 262;
+
+    // Page tabs.
+    let tx = left;
+    const tabs: [typeof this.scenarioPage, string][] = [
+      ['roster', 'Roster'],
+      ['spawn', 'Place'],
+      ['stats', 'Stats'],
+      ['words', 'Words'],
+      ['gear', 'Gear'],
+    ];
+    for (const [page, label] of tabs) {
+      const on = this.scenarioPage === page;
+      const b = this.scenarioButton(
+        tx,
+        top,
+        label,
+        () => {
+          this.scenarioPage = page;
+          this.refreshScenarioLab();
+        },
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#285b67' : '#111b29',
+      );
+      tx += b.width + 8;
+    }
+    let ax = tx + 16;
+    const save = this.scenarioButton(ax, top, 'Save', () => this.saveScenarioFile(), '#7cfc9a', '#24543f');
+    ax += save.width + 8;
+    const load = this.scenarioButton(ax, top, 'Load', () => void this.loadScenarioFile(), '#8ad6ff', '#1d3a4a');
+    ax += load.width + 8;
+    const live = !this.gs.victorySuspended;
+    this.scenarioButton(
+      ax,
+      top,
+      `Victory: ${live ? 'ON' : 'off'}`,
+      () => {
+        this.gs.victorySuspended = live;
+        this.refreshScenarioLab();
+        this.redraw();
+      },
+      live ? '#7cfc9a' : '#ffd27a',
+      live ? '#24543f' : '#4a3a1a',
+    );
+    this.scenarioButton(
+      GAME_WIDTH / 2 + 380,
+      top,
+      'Close [P]',
+      () => this.closeScenarioLab(),
+      '#ff9a9a',
+      '#4a1a1a',
+    );
+
+    if (this.scenarioPage === 'spawn') this.refreshScenarioSpawn(left, top + 44);
+    else if (this.scenarioPage === 'stats') this.refreshScenarioStats(left, top + 44);
+    else if (this.scenarioPage === 'words') this.refreshScenarioWords(left, top + 44);
+    else if (this.scenarioPage === 'gear') this.refreshScenarioGear(left, top + 44);
+    else this.refreshScenarioRoster(left, top + 44);
+  }
+
+  /**
+   * The shared "which entity am I editing" picker used by the stats, words and
+   * gear pages. Returns the target and the y to continue laying out from.
+   */
+  private scenarioTargetRow(left: number, top: number): { target?: Mage; y: number } {
+    const target = this.gs.mages[this.scenarioTargetIndex] ?? this.gs.mages[0];
+    if (!target) return { y: top };
+    this.scenarioLabel(left, top, 'Editing:');
+    let bx = left + 80;
+    let by = top - 4;
+    this.gs.mages.forEach((m, i) => {
+      if (bx > GAME_WIDTH / 2 + 340) {
+        bx = left + 80;
+        by += 28;
+      }
+      const on = m === target;
+      const b = this.scenarioButton(
+        bx,
+        by,
+        m.name,
+        () => {
+          this.scenarioTargetIndex = i;
+          this.refreshScenarioLab();
+        },
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#285b67' : '#111b29',
+      );
+      bx += b.width + 6;
+    });
+    return { target, y: by + 40 };
+  }
+
+  private refreshScenarioStats(left: number, top: number): void {
+    const { target: t, y: rowY } = this.scenarioTargetRow(left, top);
+    if (!t) return;
+    this.scenarioTitle!.setText(`SCENARIO LAB — STATS: ${t.name}`);
+    let y = rowY;
+    const stat = (label: string, get: () => number, set: (value: number) => void): void => {
+      this.scenarioLabel(left, y, `${label}: ${get()}`);
+      let bx = left + 200;
+      for (const [delta, text] of [
+        [-5, '-5'],
+        [-1, '-1'],
+        [1, '+1'],
+        [5, '+5'],
+      ] as [number, string][]) {
+        const b = this.scenarioButton(bx, y - 4, text, () => {
+          set(get() + delta);
+          this.refreshScenarioLab();
+          this.redraw();
+        });
+        bx += b.width + 6;
+      }
+      y += 32;
+    };
+    const clamp = (v: number, min: number, max: number): number => Math.min(max, Math.max(min, v));
+    stat('Strength', () => t.statStrength, (v) => (t.statStrength = clamp(v, 0, 999)));
+    stat('Dexterity', () => t.statDex, (v) => (t.statDex = clamp(v, 0, 999)));
+    stat('Intellect', () => t.statInt, (v) => (t.statInt = clamp(v, 0, 999)));
+    stat('Max HP', () => t.maxHp, (v) => {
+      t.maxHp = clamp(v, 1, 9999);
+      t.hp = Math.min(t.hp, t.maxHp);
+    });
+    stat('Max mana', () => t.maxMana, (v) => {
+      t.maxMana = clamp(v, 0, 9999);
+      t.mana = Math.min(t.mana, t.maxMana);
+    });
+    stat('Max sanity', () => t.maxSanity, (v) => {
+      t.maxSanity = clamp(v, 1, 9999);
+      t.sanity = Math.min(t.sanity, t.maxSanity);
+    });
+    stat('Max luck', () => t.maxLuck, (v) => {
+      t.maxLuck = clamp(v, 0, 999);
+      t.luck = Math.min(t.luck, t.maxLuck);
+    });
+    y += 8;
+
+    this.scenarioLabel(left, y, 'Class:');
+    let bx = left + 80;
+    for (const cls of MAGE_CLASSES) {
+      const on = t.mageClass === cls;
+      const b = this.scenarioButton(
+        bx,
+        y - 4,
+        MAGE_CLASS_DEFS[cls].label,
+        () => {
+          t.mageClass = cls;
+          this.refreshScenarioLab();
+          this.redraw();
+        },
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#285b67' : '#111b29',
+      );
+      bx += b.width + 6;
+    }
+    y += 44;
+
+    this.scenarioLabel(left, y, 'Creative presets (stats + items):', TEXT.dim);
+    y += 24;
+    bx = left;
+    for (let slot = 0; slot < PRESET_SLOTS; slot++) {
+      const preset = this.creativePresets[slot];
+      const b = this.scenarioButton(
+        bx,
+        y,
+        preset ? `Apply "${preset.name}"` : `Slot ${slot + 1} — empty`,
+        () => {
+          if (!preset) return;
+          this.applyPresetToEntity(t, preset);
+          this.refreshScenarioLab();
+          this.redraw();
+        },
+        preset ? '#8ad6ff' : '#637084',
+        preset ? '#1d3a4a' : '#111b29',
+      );
+      bx += b.width + 8;
+    }
+    this.scenarioLabel(
+      left,
+      y + 34,
+      'Presets come from the Creative prep screen (Swamprun / Raid / Mine Run). Applying one replaces stats and gear.',
+      TEXT.dim,
+    );
+  }
+
+  private refreshScenarioWords(left: number, top: number): void {
+    const { target: t, y: rowY } = this.scenarioTargetRow(left, top);
+    if (!t) return;
+    const { base, modifiers } = splitModifiers(t.loadout);
+    this.scenarioTitle!.setText(`SCENARIO LAB — WORDS: ${t.name}`);
+    this.scenarioLabel(
+      left,
+      rowY,
+      `Words ${base.length}/${LOADOUT_SIZE} — click to add or remove. Colour identity and charges update instantly.`,
+      TEXT.dim,
+    );
+
+    const setWords = (next: WordId[]): void => {
+      t.setLoadout(next);
+      this.refreshScenarioLab();
+      this.redraw();
+    };
+
+    const pool = (Object.keys(WORDS) as WordId[]).filter((w) => !isModifierWord(w));
+    const colW = 200;
+    const step = 26;
+    const y0 = rowY + 30;
+    const perCol = Math.ceil(pool.length / 4);
+    pool.forEach((word, i) => {
+      const on = base.includes(word);
+      const secret = !WORD_ORDER.includes(word);
+      this.scenarioButton(
+        left + Math.floor(i / perCol) * colW,
+        y0 + (i % perCol) * step,
+        `${on ? '✓ ' : ''}${WORDS[word].label}${secret ? ' *' : ''}`,
+        () => {
+          if (on) setWords([...base.filter((w) => w !== word), ...modifiers]);
+          else if (base.length < LOADOUT_SIZE) setWords([...base, word, ...modifiers]);
+          else this.flashHint(`A build carries at most ${LOADOUT_SIZE} words.`);
+        },
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#24543f' : '#111b29',
+      );
+    });
+
+    const y = y0 + perCol * step + 18;
+    this.scenarioLabel(left, y, 'Modifier:');
+    let bx = left + 100;
+    const current = modifiers[0];
+    for (const word of [...MODIFIER_WORDS, null] as (WordId | null)[]) {
+      const on = word === null ? current === undefined : current === word;
+      const b = this.scenarioButton(
+        bx,
+        y - 4,
+        word === null ? 'None' : WORDS[word].label,
+        () => setWords(word === null ? base : [...base, word]),
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#285b67' : '#111b29',
+      );
+      bx += b.width + 6;
+    }
+    this.scenarioLabel(left, y + 36, '* not offered on the draft screen (easter-egg words).', TEXT.dim);
+  }
+
+  /** Overwrite an entity's stats and gear from a saved Creative preset. */
+  private applyPresetToEntity(m: Mage, preset: CreativePreset): void {
+    // applyStatAllocation ADDS to the HP/mana pools, so rebase them first.
+    m.maxHp = START_HP;
+    m.maxMana = MANA_CAP;
+    m.maxSanity = START_SANITY;
+    this.applyCreativePrep(m, { stats: { ...preset.stats }, items: [...preset.items] });
+    this.gs.log(`${m.name} is rebuilt from preset "${preset.name}".`);
+  }
+
+  private refreshScenarioRoster(left: number, top: number): void {
+    this.scenarioTitle!.setText(`SCENARIO LAB — ROSTER (${this.gs.mages.length})`);
+    this.scenarioLabel(
+      left,
+      top,
+      'Move places an entity anywhere; Edit opens its stats, words and gear. F6 (dev panel) edits live resources.',
+      TEXT.dim,
+    );
+    let y = top + 28;
+    const visible = this.gs.mages.slice(0, 16);
+    visible.forEach((m, i) => {
+      const acting = m === this.gs.current;
+      this.scenarioLabel(
+        left,
+        y,
+        `${i + 1}. ${m.name}${m.isSummon ? ' *' : ''} — T${m.team} · ${m.hp}/${m.maxHp} HP${acting ? ' · acting' : ''}`,
+        acting ? '#ffd27a' : m.alive ? TEXT.body : TEXT.dim,
+      );
+      let bx = left + 400;
+      const move = this.scenarioButton(bx, y - 4, 'Move', () => this.beginScenarioMove(m));
+      bx += move.width + 6;
+      const gear = this.scenarioButton(bx, y - 4, 'Edit', () => {
+        this.scenarioTargetIndex = i;
+        this.scenarioPage = 'stats';
+        this.refreshScenarioLab();
+      });
+      bx += gear.width + 6;
+      const team = this.scenarioButton(bx, y - 4, `Team ${m.team}`, () => {
+        m.team = (m.team % 4) + 1;
+        this.refreshScenarioLab();
+        this.redraw();
+      });
+      bx += team.width + 6;
+      const ai = this.scenarioButton(
+        bx,
+        y - 4,
+        m.isAI ? 'AI' : 'Human',
+        () => this.setScenarioController(m, !m.isAI),
+        m.isAI ? '#ffd27a' : '#7cfc9a',
+        m.isAI ? '#4a3a1a' : '#24543f',
+      );
+      bx += ai.width + 6;
+      this.scenarioButton(bx, y - 4, '✕', () => this.removeScenarioEntity(m), '#ff8a8a', '#3a1a1a');
+      y += 30;
+    });
+    const hidden = this.gs.mages.length - visible.length;
+    if (hidden > 0) this.scenarioLabel(left, y, `…and ${hidden} more.`, TEXT.dim);
+  }
+
+  private refreshScenarioSpawn(left: number, top: number): void {
+    this.scenarioTitle!.setText('SCENARIO LAB — PLACE ENTITIES');
+    this.scenarioLabel(left, top, 'Team for new entities:');
+    let bx = left + 190;
+    for (const team of [1, 2, 3, 4]) {
+      const on = this.scenarioTeam === team;
+      const b = this.scenarioButton(
+        bx,
+        top - 4,
+        `T${team}`,
+        () => {
+          this.scenarioTeam = team;
+          this.refreshScenarioLab();
+        },
+        on ? '#7cfc9a' : '#e8e8f0',
+        on ? '#285b67' : '#111b29',
+      );
+      bx += b.width + 6;
+    }
+    this.scenarioLabel(
+      left,
+      top + 26,
+      'Pick one, then click the field to drop it. Keep clicking to place more; Esc returns here.',
+      TEXT.dim,
+    );
+
+    const colW = 300;
+    const step = 26;
+    const y0 = top + 58;
+    const entries: { label: string; color: string; arm: () => void }[] = [
+      { label: 'Mage (blank kit)', color: '#8ad6ff', arm: () => (this.scenarioBrush = { player: true }) },
+      ...(Object.keys(ENEMY_DEFS) as EnemyKind[]).map((kind) => ({
+        label: ENEMY_DEFS[kind].name,
+        color: '#e8e8f0',
+        arm: () => (this.scenarioBrush = { enemy: kind }),
+      })),
+      ...(Object.keys(MINE_ENEMY_DEFS) as MineEnemyKind[]).map((kind) => ({
+        label: `${MINE_ENEMY_DEFS[kind].name} (mine)`,
+        color: '#d8c39a',
+        arm: () => (this.scenarioBrush = { mine: kind }),
+      })),
+    ];
+    const perCol = Math.ceil(entries.length / 3);
+    entries.forEach((entry, i) => {
+      const x = left + Math.floor(i / perCol) * colW;
+      const y = y0 + (i % perCol) * step;
+      this.scenarioButton(x, y, entry.label, () => {
+        entry.arm();
+        this.mode = 'scenario-place';
+        // The same pointerdown also reaches the field handler; swallow it.
+        this.menuClickGuard = true;
+        this.closeScenarioLab();
+        this.flashHint(`Placing ${entry.label} — click the field. Esc to stop.`, true);
+      }, entry.color);
+    });
+  }
+
+  private refreshScenarioGear(left: number, top: number): void {
+    const { target, y: rowY } = this.scenarioTargetRow(left, top);
+    if (!target) return;
+    this.scenarioTitle!.setText(`SCENARIO LAB — GEAR: ${target.name}`);
+    this.scenarioLabel(left, rowY - 8, 'Click a name to give it; ✕ removes one.', TEXT.dim);
+
+    const colW = 232;
+    const step = 24;
+    const y0 = rowY + 18;
+    const perCol = Math.ceil(ITEM_DEFS.length / 4);
+    ITEM_DEFS.forEach((def, i) => {
+      const x = left + Math.floor(i / perCol) * colW;
+      const y = y0 + (i % perCol) * step;
+      this.scenarioButton(x, y, '✕', () => {
+        this.gs.removeItem(target, def.id);
+        this.refreshScenarioLab();
+        this.redraw();
+      }, '#ff8a8a', '#3a1a1a');
+      const name = this.add
+        .text(x + 26, y, def.name, { fontSize: '13px', color: RARITY_COLOR[def.rarity] })
+        .setInteractive({ useHandCursor: true });
+      name.on('pointerdown', () => {
+        this.gs.grantItem(target, def.id);
+        this.refreshScenarioLab();
+        this.redraw();
+      });
+      this.scenarioPanel!.add(name);
+      this.scenarioWidgets.push(name);
+    });
+  }
+
+  /** Arm the move tool: the next field click teleports `m` there. */
+  private beginScenarioMove(m: Mage): void {
+    this.scenarioMoveTarget = m;
+    this.mode = 'scenario-move';
+    this.menuClickGuard = true;
+    this.closeScenarioLab();
+    this.flashHint(`Moving ${m.name} — click the field. Esc cancels.`, true);
+  }
+
+  /** Handle a field click while a lab tool is armed. Returns true if consumed. */
+  private onScenarioFieldClick(at: Vec2): boolean {
+    if (this.mode === 'scenario-move') {
+      const m = this.scenarioMoveTarget;
+      this.scenarioMoveTarget = null;
+      this.mode = 'idle';
+      if (m) {
+        m.x = at.x;
+        m.y = at.y;
+        this.syncMageSprites();
+      }
+      this.flashHint('', true);
+      this.toggleScenarioLab();
+      return true;
+    }
+    if (this.mode !== 'scenario-place') return false;
+    const brush = this.scenarioBrush;
+    if (!brush) {
+      this.mode = 'idle';
+      return true;
+    }
+    if ('player' in brush) this.spawnScenarioMage(at);
+    else if ('enemy' in brush) this.spawnScenarioCreature(brush.enemy, at);
+    else this.spawnScenarioMineCreature(brush.mine, at);
+    this.redraw();
+    return true;
+  }
+
+  /** Register a freshly built entity with the roster, AI table and sprites. */
+  private admitScenarioEntity(m: Mage): void {
+    m.resetDodges();
+    m.resetCombatReactions();
+    this.gs.addMage(m);
+    if (m.isAI) this.ais.set(m, new SimpleAI(this.gs, m));
+    this.syncMageSprites();
+  }
+
+  private spawnScenarioMage(at: Vec2): Mage {
+    const template = this.gs.mages.find((m) => !m.isSummon && !m.enemyKind && !m.mine);
+    const m = new Mage({
+      name: `Mage ${this.gs.mages.length + 1}`,
+      isAI: this.scenarioTeam !== 1,
+      team: this.scenarioTeam,
+      position: at,
+      loadout: template ? [...template.loadout] : [],
+      mageClass: template?.mageClass,
+    });
+    m.assignFlatStats(5);
+    this.admitScenarioEntity(m);
+    this.gs.log(`${m.name} joins the scenario on team ${m.team}.`);
+    return m;
+  }
+
+  private spawnScenarioCreature(kind: EnemyKind, at: Vec2): Mage {
+    const m = new Mage({ name: 'Enemy', isAI: true, team: this.scenarioTeam, position: at, loadout: [] });
+    applyEnemyTraits(m, kind, this.gs.rng);
+    m.team = this.scenarioTeam;
+    this.admitScenarioEntity(m);
+    this.styleEnemySprite(m, kind);
+    this.gs.log(`${m.name} is placed on team ${m.team}.`);
+    return m;
+  }
+
+  private spawnScenarioMineCreature(kind: MineEnemyKind, at: Vec2): Mage {
+    const m = new Mage({ name: 'Enemy', isAI: true, team: this.scenarioTeam, position: at, loadout: [] });
+    applyMineEnemyTraits(m, { kind, level: 1 }, this.gs.rng);
+    m.team = this.scenarioTeam;
+    this.admitScenarioEntity(m);
+    this.styleMineEnemySprite(m);
+    this.gs.log(`${m.name} is placed on team ${m.team}.`);
+    return m;
+  }
+
+  /** Flip an entity between human control and the AI. */
+  private setScenarioController(m: Mage, ai: boolean): void {
+    m.isAI = ai;
+    if (ai) this.ais.set(m, new SimpleAI(this.gs, m));
+    else this.ais.delete(m);
+    this.refreshScenarioLab();
+    this.redraw();
+  }
+
+  /**
+   * Drop an entity from the fight. Every stored index (initiative, summon
+   * owners) is remapped, and field objects are cleared because they also point
+   * at mages by index.
+   */
+  private removeScenarioEntity(m: Mage): void {
+    if (m === this.gs.current) {
+      this.flashHint('That entity is taking its turn — end the turn first.');
+      return;
+    }
+    const removed = this.gs.mages.indexOf(m);
+    if (removed < 0) return;
+    const remap = new Map<number, number>();
+    let next = 0;
+    this.gs.mages.forEach((_, i) => {
+      if (i !== removed) remap.set(i, next++);
+    });
+    const rolls = this.gs.initiativeRolls;
+    const nextRolls: number[] = [];
+    for (const [from, to] of remap) nextRolls[to] = rolls[from] ?? 0;
+    const order = this.gs.initiativeOrder
+      .map((i) => remap.get(i))
+      .filter((i): i is number => i !== undefined);
+    const current = remap.get(this.gs.currentIndex) ?? 0;
+
+    this.ais.delete(m);
+    this.gs.mages = this.gs.mages.filter((x) => x !== m);
+    for (const other of this.gs.mages) {
+      if (other.summonOwnerIndex !== undefined) {
+        other.summonOwnerIndex = remap.get(other.summonOwnerIndex);
+      }
+    }
+    this.gs.clearFieldObjects();
+    this.gs.restoreTurnOrder(order, nextRolls, current);
+    this.syncMageSprites();
+    this.refreshScenarioLab();
+    this.redraw();
+  }
+
+  /** Snapshot the fight and hand it to the browser as a download. */
+  private saveScenarioFile(): void {
+    const suggestion = this.memoryName || 'My fight';
+    const name = window.prompt('Name this scenario', suggestion);
+    if (name == null) return;
+    try {
+      const saved = downloadScenario(this.gs, name.trim() || suggestion);
+      this.memoryName = saved.name;
+      this.gs.log(`Scenario saved as "${saved.name}".`);
+      this.flashHint(`Saved "${saved.name}" — load it from the Memory menu.`);
+    } catch {
+      this.flashHint('Could not save that scenario.');
+    }
+  }
+
+  /** Pick a memory file and swap the whole fight over to it, in place. */
+  private async loadScenarioFile(): Promise<void> {
+    let scenario: Scenario | null;
+    try {
+      scenario = await pickScenarioFile();
+    } catch (err) {
+      this.flashHint(err instanceof Error ? err.message : 'That scenario could not be loaded.');
+      return;
+    }
+    if (!scenario) return;
+    this.adoptScenario(scenario);
+  }
+
+  /**
+   * Replace the live roster, field and turn order with a saved fight. Safe only
+   * from the lab, which can be opened solely while the scene is idle — no turn
+   * is mid-resolution, so restarting the turn loop cannot orphan an await.
+   */
+  private adoptScenario(scenario: Scenario): void {
+    const mages = scenarioToMages(scenario, this.gs.rng);
+    this.gs.stack = [];
+    this.gs.extraTurnQueue = [];
+    this.gs.clearFieldObjects();
+    this.gs.mages = mages;
+    this.gs.restoreScarabs(scenarioToScarabs(scenario, mages));
+    this.gs.restoreTurnOrder(scenario.turn.order, scenario.turn.rolls, scenario.turn.currentIndex);
+    this.gs.round = scenario.turn.round;
+    this.gs.turnSeq = scenario.turn.turnSeq;
+    this.ais.clear();
+    for (const m of mages) if (m.isAI) this.ais.set(m, new SimpleAI(this.gs, m));
+    this.spawns = mages.map((m) => ({ x: m.x, y: m.y }));
+    const sides = new Set(mages.filter((m) => !m.isSummon && m.alive).map((m) => m.team));
+    this.gs.victorySuspended = this.scenarioLab || sides.size < 2;
+    this.memoryName = scenario.name;
+    this.scenarioTargetIndex = 0;
+    this.scenarioMoveTarget = null;
+    this.scenarioBrush = null;
+    this.reactor = null;
+    this.puppet = null;
+    this.gameEnded = false;
+    this.bannerText.setVisible(false);
+    this.closeScenarioLab();
+    this.resetSelection();
+    this.restyleCreatureSprites();
+    this.gs.log(
+      `Memory loaded — "${scenario.name}" (round ${this.gs.round}, ${mages.length} entities).`
+    );
+    this.mode = 'busy';
+    void this.startTurn();
   }
 
   // ─── Training sandbox overlay ────────────────────────────────────────────
@@ -10677,6 +11844,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Restore both mages to full and clear every field object. */
   private softReset(): void {
+    this.gameEnded = false;
     if (this.trainPanel) this.trainPanel.setVisible(false);
     for (const m of this.gs.mages) {
       const sp = this.spawns[this.seatOf(m)] ?? (m.team === 1 ? this.playerSpawn : this.enemySpawn);
@@ -10698,7 +11866,7 @@ export class GameScene extends Phaser.Scene {
       m.eldritchDefend = false;
       m.blockPending = false;
       m.reloadTurns = 0;
-      m.bastionShieldForm = false;
+      m.bastionShieldForm = true;
       m.shieldBashUsed = false;
       m.firstBlackSpellUsed = false;
       m.manaMilledOnce = false;
@@ -11606,7 +12774,7 @@ export class GameScene extends Phaser.Scene {
     const def = getItem(itemId);
     const label = `${itemId} ${def.name}`.toLowerCase();
     if (def.edgelordLantern) return 'lantern';
-    if (itemId === 'bastionSword' && mage.bastionShieldForm) return 'shield';
+    if (itemId === 'bastionSword') return mage.bastionShieldForm ? 'shield' : 'sword';
     if (def.weaponFamily === 'bow' || label.includes('bow')) return 'bow';
     if (def.weaponFamily === 'hammer' || /hammer|maul/.test(label)) return 'hammer';
     if (/spear|pike|lance|trident/.test(label)) return 'spear';
@@ -12400,6 +13568,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private endGame(): void {
+    // isOver is polled from several points in the turn flow; only the first
+    // call may raise the banner and arm the click that leaves the duel.
+    if (this.gameEnded) return;
+    this.gameEnded = true;
     if (this.raid) {
       this.mode = 'over';
       this.busy = false;
@@ -12412,7 +13584,7 @@ export class GameScene extends Phaser.Scene {
         )
         .setVisible(true);
       this.redraw();
-      this.input.once('pointerdown', () => this.scene.start('Menu'));
+      this.armReturnToMenu();
       return;
     }
     // Swamprun: the run ends only when the survivor falls. Report the score.
@@ -12441,7 +13613,7 @@ export class GameScene extends Phaser.Scene {
         .setText(`${defeatText}\n${scoreText}\nClick to return to menu`)
         .setVisible(true);
       this.redraw();
-      this.input.once('pointerdown', () => this.scene.start('Menu'));
+      this.armReturnToMenu();
       return;
     }
     // Training never truly ends: whoever fell is patched up on the next click.
@@ -12455,6 +13627,7 @@ export class GameScene extends Phaser.Scene {
       this.redraw();
       this.input.once('pointerdown', () => {
         this.bannerText.setVisible(false);
+        this.gameEnded = false;
         this.softReset();
       });
       return;
@@ -12465,7 +13638,16 @@ export class GameScene extends Phaser.Scene {
       .setText(w ? `${w.name} wins!\nClick to return to menu` : 'Draw!\nClick to return to menu')
       .setVisible(true);
     this.redraw();
-    this.input.once('pointerdown', () => this.scene.start('Menu'));
+    this.armReturnToMenu();
+  }
+
+  /** Wait for one click, then hand control back to the start menu exactly once. */
+  private armReturnToMenu(): void {
+    this.input.once('pointerdown', () => {
+      if (this.leaving) return;
+      this.leaving = true;
+      this.scene.start('Menu');
+    });
   }
 
   // ===========================================================================

@@ -530,7 +530,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'Weapon Action toggles form (both forms: -25% move). Shield: +2 physical & +2 magic armour, block reaction removes 67% of a physical/magical blow, enables shield-bash, and strikes at -50% Strength (shatter). Sword: +1 range and a +100% Strength slashing strike that fully ignores armour & resistances — but disables bag actions & weapon swaps and cannot be dropped.',
+      'Starts in shield form; the Weapon Action toggles form (both forms: -25% move). Shield: +2 physical & +2 magic armour, block reaction removes 67% of a physical/magical blow, enables shield-bash, and strikes at -50% Strength (shatter). Sword: +1 range and a +100% Strength slashing strike that fully ignores armour & resistances — but disables bag actions & weapon swaps and cannot be dropped.',
     moveMult: 0.75,
     weaponAbility: 'bastionSwap',
     weapon: {
