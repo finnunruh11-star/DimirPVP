@@ -179,6 +179,8 @@ export interface CabinetChipOptions {
   height: number;
   label: string;
   tone?: 'normal' | 'positive' | 'danger' | 'primary';
+  accent?: number;
+  selected?: boolean;
   enabled?: boolean;
   onActivate: () => void;
   onFocus?: () => void;
@@ -189,6 +191,7 @@ export class CabinetChip extends Phaser.GameObjects.Container implements MenuCon
   private readonly labelText: Phaser.GameObjects.Text;
   private readonly hit: Phaser.GameObjects.Zone;
   private focused = false;
+  private selected: boolean;
   private enabled: boolean;
   private pressed = false;
   private focusRequest: (() => void) | null = null;
@@ -200,6 +203,8 @@ export class CabinetChip extends Phaser.GameObjects.Container implements MenuCon
   constructor(scene: Phaser.Scene, x: number, y: number, private readonly options: CabinetChipOptions) {
     super(scene, x, y);
     scene.add.existing(this);
+    this.setSize(options.width, options.height);
+    this.selected = options.selected ?? false;
     this.enabled = options.enabled ?? true;
     this.face = scene.add.graphics();
     this.labelText = scene.add.text(options.width / 2, options.height / 2, options.label, {
@@ -253,6 +258,11 @@ export class CabinetChip extends Phaser.GameObjects.Container implements MenuCon
     this.redraw();
   }
 
+  setSelected(selected: boolean): void {
+    this.selected = selected;
+    this.redraw();
+  }
+
   setLabel(label: string): void {
     this.labelText.setText(label);
   }
@@ -269,18 +279,21 @@ export class CabinetChip extends Phaser.GameObjects.Container implements MenuCon
     const { width, height } = this.options;
     const tone = this.options.tone ?? 'normal';
     const primary = tone === 'primary';
-    const accent = tone === 'danger'
+    const accent = this.options.accent ?? (tone === 'danger'
       ? MENU_COLOR.blood
       : tone === 'positive'
         ? MENU_COLOR.verdigris
-        : MENU_COLOR.brass;
+        : MENU_COLOR.brass);
     this.face.clear();
     this.face.fillStyle(MENU_COLOR.pitch, 1).fillRect(2, 3, width, height);
-    this.face.fillStyle(primary ? MENU_COLOR.bone : MENU_COLOR.charcoalRaised, this.enabled ? 1 : 0.55)
+    this.face.fillStyle(primary ? MENU_COLOR.bone : this.selected ? MENU_COLOR.woodRaised : MENU_COLOR.charcoalRaised, this.enabled ? 1 : 0.55)
       .fillRect(0, 0, width, height);
     this.face.fillStyle(accent, this.enabled ? 1 : 0.4).fillRect(0, 0, 4, height);
-    this.face.lineStyle(this.focused ? 2 : 1, this.focused ? MENU_COLOR.brassLight : MENU_COLOR.brassDark, 1)
+    this.face.lineStyle(this.focused ? 2 : 1, this.focused ? MENU_COLOR.brassLight : this.selected ? accent : MENU_COLOR.brassDark, 1)
       .strokeRect(0.5, 0.5, width - 1, height - 1);
+    if (this.selected) {
+      this.face.fillStyle(MENU_COLOR.brassLight, 1).fillRect(width - 12, 7, 4, height - 14);
+    }
     this.labelText.setColor(primary ? MENU_HEX.ink : this.enabled ? MENU_HEX.bone : MENU_HEX.disabled);
     this.setAlpha(this.enabled ? 1 : 0.68);
   }
@@ -304,6 +317,8 @@ export class WordPlate extends Phaser.GameObjects.Container implements MenuContr
   private readonly hit: Phaser.GameObjects.Zone;
   private focused = false;
   private selectedOrder: number;
+  private meta = '';
+  private accent: number;
   private pressed = false;
   private focusRequest: (() => void) | null = null;
 
@@ -313,6 +328,7 @@ export class WordPlate extends Phaser.GameObjects.Container implements MenuContr
     super(scene, x, y);
     scene.add.existing(this);
     this.selectedOrder = options.selectedOrder ?? 0;
+    this.accent = options.accent;
     this.face = scene.add.graphics();
     this.labelText = scene.add.text(options.width / 2, options.height / 2 - 7, options.label, {
       fontFamily: MENU_FONT.control,
@@ -364,6 +380,13 @@ export class WordPlate extends Phaser.GameObjects.Container implements MenuContr
     this.redraw();
   }
 
+  setCopy(label: string, meta: string, accent = this.accent): void {
+    this.labelText.setText(label);
+    this.meta = meta;
+    this.accent = accent;
+    this.redraw();
+  }
+
   activate(): void {
     this.options.onActivate();
   }
@@ -373,13 +396,13 @@ export class WordPlate extends Phaser.GameObjects.Container implements MenuContr
   }
 
   private redraw(): void {
-    const { width, height, accent } = this.options;
+    const { width, height } = this.options;
     const selected = this.selectedOrder > 0;
     this.face.clear();
     this.face.fillStyle(MENU_COLOR.pitch, 1).fillRect(2, 3, width, height);
     this.face.fillStyle(selected ? MENU_COLOR.bone : MENU_COLOR.charcoalRaised, 1)
       .fillRect(0, 0, width, height);
-    this.face.fillStyle(accent, selected || this.focused ? 1 : 0.68).fillRect(0, 0, width, 5);
+    this.face.fillStyle(this.accent, selected || this.focused ? 1 : 0.68).fillRect(0, 0, width, 5);
     this.face.lineStyle(this.focused ? 2 : 1, this.focused ? MENU_COLOR.brassLight : MENU_COLOR.brassDark, 1)
       .strokeRect(0.5, 0.5, width - 1, height - 1);
     if (selected) {
@@ -392,7 +415,7 @@ export class WordPlate extends Phaser.GameObjects.Container implements MenuContr
     this.labelText.setColor(selected ? MENU_HEX.ink : MENU_HEX.bone);
     this.metaText
       .setColor(selected ? '#514735' : MENU_HEX.boneDim)
-      .setText(selected ? `SLOT ${this.selectedOrder}` : this.options.reaction ? 'REACTION' : '');
+      .setText(selected ? `SLOT ${this.selectedOrder} · ${this.meta}` : this.meta);
   }
 }
 

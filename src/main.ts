@@ -2,11 +2,14 @@ import Phaser from 'phaser';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config/constants';
 import { MenuScene } from './scenes/MenuScene';
 import { GameScene } from './scenes/GameScene';
+import { GalleryScene } from './scenes/GalleryScene';
 
 // Registering the sample spells (side-effect import). Add your own spell files
 // the same way, or import them here.
 import './spells/sampleSpells';
 import './spells/classSpells';
+
+const galleryMode = new URLSearchParams(window.location.search).get('ui') === 'gallery';
 
 const gameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -35,7 +38,7 @@ const gameConfig: Phaser.Types.Core.GameConfig = {
     autoCenter: Phaser.Scale.CENTER_BOTH,
     autoRound: true,
   },
-  scene: [MenuScene, GameScene],
+  scene: galleryMode ? [GalleryScene] : [MenuScene, GameScene],
   callbacks: {
     postBoot: (game) => {
       const canvas = game.canvas;

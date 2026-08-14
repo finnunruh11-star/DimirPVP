@@ -64,12 +64,14 @@ The tunnel address changes whenever `cloudflared` restarts. Do not expose port `
 ## Start a match
 
 1. Every player opens the same host or tunnel URL.
-2. Select **Online**, or open **PvE** and choose **Swamprun**, **Expedition**, or
+2. Select **Versus → Online**, or open **Adventures** and choose **Swamprun**,
     **Mine Run**, or **Raid**. For a Raid, choose the target boss before setting
     up the party; the host's target and preparation mode apply to the room.
-3. The first player selects **Host** and sets the player count to the number of human players.
-4. Other players select **Join**.
-5. Everyone enters the exact same room code and relay URL when prompted.
+3. The first player selects **Host** and sets the roster to the required number
+    of human players, with any remaining seats assigned to AI.
+4. Other players select **Join** and build their own mage.
+5. Everyone enters the exact same room code in the cabinet lobby. The default
+    relay URL is hidden under **Connection Details** and normally needs no change.
 6. Keep every browser tab open until the match ends.
 
 For a page served by `npm run relay`, accept the prefilled relay URL. When using the development server, manually entering another relay URL is possible but is not the recommended setup.
@@ -78,7 +80,9 @@ For a page served by `npm run relay`, accept the prefilled relay URL. When using
 
 - **Online:** standard competitive multiplayer.
 - **Swamprun:** cooperative survival. In Creative prep, each player configures their own stats and items; the game waits for every player and applies all setups identically on every client.
-- **Expedition / Campaign:** cooperative campaign. Each player chooses upgrades, receives their own gold, buys their own items, can donate 1g at a time, and pays for their own rest. Two-player rewards are 80% per player, three-player rewards are 60%, and four-player rewards are 40%. The host controls continue/retreat decisions, recruitment, and departure.
+- **Expedition / Campaign:** currently launched as a solo/local campaign from
+    the Adventures menu. Its runtime retains multi-player campaign mechanics, but
+    online Expedition is not exposed by the current setup rules.
 - **Raid:** one cooperative fight against the host-selected Lich, Reaper, or
     Deathknight (Spear). Quick, Rolled stats + gear, and Creative preparation
     use the same synchronized setup flow as Swamprun. The fight opens with a

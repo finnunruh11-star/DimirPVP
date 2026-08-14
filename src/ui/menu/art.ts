@@ -6,7 +6,7 @@ import idle4Url from '../../Sprites/Idle/Idle4.png';
 import idle5Url from '../../Sprites/Idle/Idle5.png';
 import idle6Url from '../../Sprites/Idle/Idle6.png';
 import smokeUrl from '../../../spritesheet/Smoke Bursts/symmetrical_smoke_burst_001/symmetrical_smoke_burst_001_small_brown/spritesheet.png';
-import { MENU_COLOR, MENU_FONT, MENU_HEX, addRecess } from './theme';
+import { MENU_COLOR, MENU_FONT, MENU_HEX, addRecess } from '../cabinet/theme';
 
 const IDLE_URLS = [idle1Url, idle2Url, idle3Url, idle4Url, idle5Url, idle6Url];
 const IDLE_KEYS = IDLE_URLS.map((_, index) => `menu-mage-idle-${index}`);

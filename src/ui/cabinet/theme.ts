@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
+import { SPACE, type Rect } from '../layout';
 
 export const MENU_COLOR = {
   pitch: 0x080907,
@@ -46,6 +47,52 @@ export const MENU_MOTION = {
   distance: 42,
   ease: 'Sine.Out',
 } as const;
+
+export const FONT = {
+  micro: '10px',
+  small: '12px',
+  body: '13px',
+  label: '15px',
+  title: '18px',
+  hero: '34px',
+} as const;
+
+export interface CabinetPanelStyle {
+  accent?: number;
+  fill?: number;
+  border?: number;
+  alpha?: number;
+}
+
+export function drawCabinetPanel(
+  graphics: Phaser.GameObjects.Graphics,
+  rect: Rect,
+  style: CabinetPanelStyle = {},
+): void {
+  graphics.fillStyle(style.fill ?? MENU_COLOR.woodDeep, style.alpha ?? 1);
+  graphics.fillRect(rect.x, rect.y, rect.w, rect.h);
+  graphics.lineStyle(1, style.border ?? MENU_COLOR.brassDark, 0.9);
+  graphics.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+  if (style.accent != null) {
+    graphics.fillStyle(style.accent, 1);
+    graphics.fillRect(rect.x + SPACE.sm, rect.y + 1, 28, 2);
+  }
+}
+
+export function drawCabinetBar(
+  graphics: Phaser.GameObjects.Graphics,
+  rect: Rect,
+  fraction: number,
+  color: number,
+): void {
+  const clamped = Math.max(0, Math.min(1, fraction));
+  graphics.fillStyle(MENU_COLOR.pitch, 1).fillRect(rect.x, rect.y, rect.w, rect.h);
+  if (clamped > 0) {
+    graphics.fillStyle(color, 1).fillRect(rect.x, rect.y, Math.max(2, rect.w * clamped), rect.h);
+  }
+  graphics.lineStyle(1, MENU_COLOR.brassDark, 0.8);
+  graphics.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+}
 
 export function addCabinetBackdrop(scene: Phaser.Scene, parent: Phaser.GameObjects.Container): void {
   const graphics = scene.add.graphics();

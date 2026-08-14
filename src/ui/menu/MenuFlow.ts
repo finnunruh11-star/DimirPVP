@@ -1,15 +1,24 @@
 import Phaser from 'phaser';
-import type { MenuCategory, SessionRole } from '../../config/MatchConfig';
-import type { MenuFocusGroup } from './controls';
-import { MENU_MOTION } from './theme';
+import type { MenuCategory } from '../../config/MatchConfig';
+import type { MenuFocusGroup } from '../cabinet/controls';
+import { MENU_MOTION } from '../cabinet/theme';
+import { isReducedMotion } from '../cabinet/motion';
 
 export type MenuRoute =
   | { id: 'main' }
   | { id: 'category'; category: MenuCategory }
-  | { id: 'swamprun'; role?: SessionRole }
-  | { id: 'swamprun-party' }
-  | { id: 'swamprun-prep' }
-  | { id: 'swamprun-build'; seat: number };
+  | { id: 'mode-intro' }
+  | { id: 'raid-target'; returnToReview?: boolean }
+  | { id: 'session-role' }
+  | { id: 'roster'; returnToReview?: boolean }
+  | { id: 'team-layout'; returnToReview?: boolean }
+  | { id: 'preparation'; returnToReview?: boolean }
+  | { id: 'content-packs'; returnToReview?: boolean }
+  | { id: 'player-handoff'; seat: number }
+  | { id: 'mage-build'; seat: number; returnToReview?: boolean }
+  | { id: 'review' }
+  | { id: 'memory-file' }
+  | { id: 'online-lobby' };
 
 export interface MenuScreenView {
   root: Phaser.GameObjects.Container;
@@ -23,8 +32,7 @@ export class MenuNavigator {
   private currentRoute: MenuRoute | null = null;
   private currentView: MenuScreenView | null = null;
   private transitioning = false;
-  private readonly reducedMotion = typeof window !== 'undefined'
-    && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  private readonly reducedMotion = isReducedMotion();
 
   constructor(
     private readonly scene: Phaser.Scene,

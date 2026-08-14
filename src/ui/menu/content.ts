@@ -1,4 +1,5 @@
 import type { MenuCategory, MatchMode } from '../../config/MatchConfig';
+import type { RaidBossKind } from '../../pve/swamprun';
 
 export interface MenuEntryCopy {
   label: string;
@@ -111,3 +112,24 @@ export const PREP_COPY = {
     description: 'Build without price, rarity, quantity, or carry restrictions before the run begins.',
   },
 } as const;
+
+export const RAID_BOSS_COPY: Record<RaidBossKind, MenuEntryCopy> = {
+  lich: {
+    label: 'Lich',
+    detail: 'Commander / revives once / rejects most control',
+    title: 'THE LICH',
+    description: 'A calculating undead commander with 30 HP and high sanity. It ignores most physical attacks and debuffs, commands the dead, and revives once at half health. Light is its clearest weakness.',
+  },
+  reaper: {
+    label: 'Reaper',
+    detail: 'Execution marks / damage cap / physical immunity',
+    title: 'THE REAPER',
+    description: 'A slow executioner that leashes and marks prey before its killing clap. Each entity can deal at most 10 damage to it per round. It ignores physical damage and shadow; light remains effective.',
+  },
+  deathknightSpear: {
+    label: 'Deathknight',
+    detail: '125 HP / long spear reach / relentless pressure',
+    title: 'THE DEATHKNIGHT',
+    description: 'A massive armoured spear fighter with 125 HP, long reach, and high movement. It resists ordinary steel, shadow, and heat; light, cleansing, and healing effects exploit its weaknesses.',
+  },
+};

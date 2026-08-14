@@ -36,7 +36,7 @@ export class Net {
   }
 
   /** Open a connection to the relay. Resolves once the socket is ready. */
-  static connect(url: string): Promise<Net> {
+  static connect(url: string, signal?: AbortSignal): Promise<Net> {
     return new Promise((resolve, reject) => {
       let ws: WebSocket;
       try {
@@ -45,12 +45,26 @@ export class Net {
         reject(err instanceof Error ? err : new Error(String(err)));
         return;
       }
+      const onAbort = (): void => {
+        try {
+          ws.close();
+        } catch {
+          /* connection was never opened */
+        }
+        reject(new Error('Connection cancelled.'));
+      };
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener('abort', onAbort, { once: true });
       const onOpen = (): void => {
+        signal?.removeEventListener('abort', onAbort);
         ws.onerror = null;
         resolve(new Net(ws));
       };
       ws.onopen = onOpen;
-      ws.onerror = () => reject(new Error('Could not connect to the relay.'));
+      ws.onerror = () => {
+        signal?.removeEventListener('abort', onAbort);
+        reject(new Error('Could not connect to the relay.'));
+      };
     });
   }
 
@@ -97,7 +111,10 @@ export class Net {
   }
 
   close(): void {
+    if (this.closed) return;
     this.closed = true;
+    const pending = this.waiters.splice(0);
+    for (const waiter of pending) waiter({ k: 'bye' });
     try {
       this.ws.close();
     } catch {

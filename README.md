@@ -9,40 +9,58 @@ cooperative PvE runs.
 
 ```bash
 npm install
-npm run dev      # opens http://localhost:5173
+npm run dev      # serves http://localhost:5173
+npm test         # runs the menu/config/network checks
 npm run build    # type-check + production bundle into dist/
 ```
+
+Append `?ui=gallery` to the local URL to open the cabinet UI gallery with
+representative menu, preparation, combat, inventory, PvE, Workshop, pause, and
+end-state surfaces without starting a match.
 
 For online, LAN, Creative Swamprun, and Campaign hosting instructions, see
 [MULTIPLAYER.md](MULTIPLAYER.md).
 
 ## How to play
 
-1. **Menu**: choose a competitive mode, Training, or **PvE**. PvE opens the
-  **Swamprun**, **Expedition**, **Mine Run**, and **Raid** choices. Each human
-  then builds their own word loadout.
+1. **Menu**: choose **Versus**, **Adventures**, or **Workshop**, then follow the
+  connected setup screens. Only relevant decisions are shown: roster and teams,
+  preparation, content packs, each human mage build, then a final review.
+  Adventures contains **Swamprun**, **Expedition**, **Mine Run**, and **Raid**;
+  Workshop contains **Training Lab**, **Scenario Lab**, and **Memory**.
 2. **Your turn** gives you **1 move, 1 main, 2 bonus** actions (and **1 reaction** per
    round if your loadout has Bind / Veil / Mind).
 3. **Keys**:
   - `1`–`5` — toggle the loadout words into your current selection (max 3).
    - `Enter` — cast the selected combination (if a spell exists for it).
+  - `Tab` or right-click — open the complete context-aware action menu.
+  - `I` — open equipment, supplies, and status effects.
    - `M` — move (click within the range circle).
    - `A` — melee attack (click an enemy in range).
    - `E` — end your turn.
-   - `Esc` — cancel the current aim.
-4. The **range circle** shows the reach of your current selection. Targeted spells need
+  - `Esc` — cancel the current aim; with no active aim, open Pause.
+4. The **measured range instrument** shows the reach of your current selection. Targeted spells need
    a valid target clicked.
 5. **The stack**: every action becomes a token at the top of the screen (hover to
    inspect). Before anything resolves, the opponent may **react** if eligible. Items
    resolve last-in-first-out and **fizzle** if their target is gone, dead or unseen on
    resolution.
 
+## Interface
+
+The frontend uses one Phaser-native cabinet system across setup and play: dark
+timber frames, brass fittings, bone word plates, felt recesses, shared focus
+states, and bounded paged catalogues. Pointer/touch, arrows, `Tab`/
+`Shift+Tab`, `Enter`/`Space`, and `Esc` are supported throughout connected
+menus and windows. Pause contains the persistent Full/Reduced motion setting
+and combat-speed control.
+
 ## PvE runs
 
 - **Swamprun** is endless co-op survival against escalating swamp creatures and
   milestone bosses.
-- **Expedition** adds depth choices, retreating, XP, personal gold, a town, and
-  recruitable companions.
+- **Expedition** is currently a solo/local campaign with depth choices,
+  retreating, XP, personal gold, a town, and recruitable companions.
 - **Raid** begins by selecting a Lich, Reaper, or Deathknight (Spear), then uses
   Quick, Rolled stats + gear, or Creative preparation for one boss fight.
   The fight opens with a preparation phase: three rooted 1 HP practice effigies
@@ -112,6 +130,7 @@ src/
     Stack.ts            StackItem shape.
     utils.ts            Vec2 maths.
   effects/effects.ts    >>> SPELL EFFECT INFRASTRUCTURE (build spells from these).
+  effects/FxPresets.ts  Named action and animation timing presets.
   pve/
     swamprun.ts         Swamp roster, wave composition, and loot.
     minerun.ts          Mine roster, scaling, affinities, equipment, and loot.
@@ -124,6 +143,10 @@ src/
     sampleSpells.ts     Example spells — copy these to make your own.
   ai/SimpleAI.ts        The optional AI opponent.
   scenes/               MenuScene (loadout) + GameScene (gameplay/UI).
+  ui/cabinet/           Shared materials, controls, windows, and motion setting.
+  ui/combat/            Action/choice menus, inventory, pause, and end cards.
+  ui/prep/              Rolled, draft, and Creative preparation workspaces.
+  ui/pve/               Swamprun, Mine, and Expedition cabinet workspaces.
 ```
 
 ## Extending it (the important bit)

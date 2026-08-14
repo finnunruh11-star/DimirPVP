@@ -3,6 +3,7 @@ import {
   MAGE_CLASSES,
   type MageClass,
 } from '../../core/Classes';
+import type { Scenario } from '../../core/Scenario';
 import {
   MODIFIER_WORDS,
   WORDS,
@@ -226,6 +227,32 @@ export class MenuModel {
     return Math.max(0, this.loadoutLimit() - this.draftFor(seat).words.length);
   }
 
+  buildSeatsReady(): boolean {
+    return this.localDraftSeats().every((seat) => this.loadoutReady(seat));
+  }
+
+  validationIssues(): string[] {
+    const issues: string[] = [];
+    if (!this.itemSets.original && !this.itemSets.finns && !this.itemSets.dlc) {
+      issues.push('Enable at least one content pack.');
+    }
+    for (const seat of this.localDraftSeats()) {
+      if (!this.loadoutReady(seat)) issues.push(`Player ${seat + 1}'s build is incomplete.`);
+    }
+    if (this.role === 'host' && this.humanCount() < 2) {
+      issues.push('Online rooms require at least two human seats.');
+    }
+    if (this.teamFormat === 'teams' && !isPveRunMode(this.mode) && this.seatCount > 1) {
+      const teams = Array.from({ length: this.seatCount }, (_, seat) => this.teamOf(seat));
+      if (!teams.includes(1) || !teams.includes(2)) issues.push('Both teams need at least one combatant.');
+    }
+    return issues;
+  }
+
+  isReady(): boolean {
+    return this.validationIssues().length === 0;
+  }
+
   humanCount(): number {
     return Math.max(1, this.seatCount - this.aiCount);
   }
@@ -293,6 +320,16 @@ export class MenuModel {
       itemSets: { ...this.itemSets },
       swampPrepMode: usesSwampPrep(this.mode) ? this.prepMode : undefined,
       raidBoss: this.mode === 'raid' ? this.raidBoss : undefined,
+    };
+  }
+
+  toMemoryMatchConfig(scenario: Scenario): MatchConfig {
+    if (this.mode !== 'memory') throw new Error('Memory configuration requires Memory mode.');
+    return {
+      mode: 'memory',
+      loadouts: [scenario.entities[0]?.loadout ?? [], scenario.entities[1]?.loadout ?? []],
+      itemSets: { ...this.itemSets },
+      scenario,
     };
   }
 

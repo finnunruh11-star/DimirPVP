@@ -4,7 +4,7 @@ import { ITEM_DEFS, RARITY_COLOR, getItem, type ItemDef, type ItemId } from '../
 import { STAT_DEFS, type StatKey } from '../../core/Stats';
 import { SceneInput } from '../../engine/SceneInput';
 import { PRESET_SLOTS, type PresetSlots } from '../creativePresets';
-import { CabinetChip, MenuFocusGroup, type MenuControl } from '../menu/controls';
+import { CabinetChip, MenuFocusGroup, type MenuControl } from '../cabinet/controls';
 import {
   MENU_COLOR,
   MENU_FONT,
@@ -12,7 +12,7 @@ import {
   addCabinetBackdrop,
   addRecess,
   addSectionRule,
-} from '../menu/theme';
+} from '../cabinet/theme';
 
 const PAGE_SIZE = 12;
 
