@@ -1,7 +1,9 @@
 import { MODE_CAPABILITIES } from '../../config/MatchConfig';
+import { Dice } from '../../core/Dice';
 import type { Scenario } from '../../core/Scenario';
 import type { WordId } from '../../core/Words';
 import { Net } from '../../net/Net';
+import { rollSwamprunEncounter } from '../../pve/swamprun';
 import { MenuModel } from './MenuModel';
 import {
   OnlineCoordinator,
@@ -39,6 +41,17 @@ function throws(run: () => void, expectedMessage: string): void {
 }
 
 const tests: [name: string, run: () => void | Promise<void>][] = [
+  ['spawns the Reaper only against parties of at least two', () => {
+    const lowRoll = { die: () => 1 } as unknown as Dice;
+
+    equal(
+      rollSwamprunEncounter(7, lowRoll, 1).kinds,
+      ['lich', 'defender', 'defender'],
+      'Solo 700m fallback',
+    );
+    equal(rollSwamprunEncounter(7, lowRoll, 2).kinds, ['reaper'], 'Two-member Reaper encounter');
+  }],
+
   ['keeps Expedition honest as a solo three-word campaign', () => {
     const model = new MenuModel();
     model.setMode('expedition');
@@ -236,6 +249,21 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(config.swampPrepMode, 'creative', 'Raid preparation');
     equal(config.seats?.map((seat) => seat.isAI), [false, true], 'Raid controllers');
     equal(config.seats?.every((seat) => seat.team === 1), true, 'Raid teams');
+  }],
+
+  ['keeps Reaper Raid parties at two or more members', () => {
+    const model = new MenuModel();
+    model.setMode('raid');
+    model.setSeatCount(1);
+
+    equal(model.seatCount, 1, 'Solo non-Reaper Raid');
+    equal(model.setRaidBoss('reaper'), true, 'Select Reaper');
+    equal(model.seatCount, 2, 'Reaper party reservation');
+    model.setSeatCount(1);
+    equal(model.seatCount, 2, 'Reaper solo clamp');
+    equal(model.setRaidBoss('lich'), true, 'Select solo-capable boss');
+    model.setSeatCount(1);
+    equal(model.seatCount, 1, 'Solo Lich Raid');
   }],
 
   ['requires every local Swamprun player to finish a build', () => {

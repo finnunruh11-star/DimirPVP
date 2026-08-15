@@ -25,6 +25,11 @@ export type EnemyKind =
 export type SwamprunCurse = 'madness' | 'decay' | 'sloth' | 'feeding';
 export const RAID_BOSS_KINDS = ['lich', 'reaper', 'deathknightSpear'] as const;
 export type RaidBossKind = (typeof RAID_BOSS_KINDS)[number];
+export const REAPER_MIN_PARTY_SIZE = 2;
+
+export function canSpawnReaper(partySize: number): boolean {
+  return Math.floor(partySize) >= REAPER_MIN_PARTY_SIZE;
+}
 
 export const SWAMPRUN_DEPTH_STEP = 100;
 export const DEEP_SWAMP_DEPTH = 800;
@@ -424,14 +429,18 @@ export interface SwamprunEncounter {
   kinds: EnemyKind[];
 }
 
-const STANDARD_TEMPLATES: Record<number, (roll: number) => EnemyKind[]> = {
+const STANDARD_TEMPLATES: Record<number, (roll: number, partySize: number) => EnemyKind[]> = {
   100: (roll) => Array.from({ length: roll >= 11 ? 3 : 2 }, () => 'zombie' as EnemyKind),
   200: () => ['skeleton', 'skeleton', 'wisp', 'wisp'],
   300: () => ['specter', 'specter', 'skeleton'],
   400: () => ['ghast', 'wisp', 'wisp'],
   500: (roll) => (roll >= 19 ? ['lich', 'defender'] : ['defender', 'defender']),
   600: (roll) => ['lich', ...Array.from({ length: roll >= 18 ? 2 : roll >= 10 ? 1 : 0 }, () => 'zombie' as EnemyKind)],
-  700: (roll) => (roll >= 18 ? ['lich', 'defender', 'defender'] : ['reaper']),
+  700: (roll, partySize) => (
+    roll >= 18 || !canSpawnReaper(partySize)
+      ? ['lich', 'defender', 'defender']
+      : ['reaper']
+  ),
 };
 
 function deepTemplate(roll: number): EnemyKind[] {
@@ -443,7 +452,7 @@ function deepTemplate(roll: number): EnemyKind[] {
 }
 
 function scaleCompactRoster(kinds: EnemyKind[], partySize: number): EnemyKind[] {
-  if (kinds.includes('deathknightSpear')) return kinds;
+  if (kinds.includes('deathknightSpear') || kinds.includes('reaper')) return kinds;
   const extraMembers = Math.max(0, Math.min(3, Math.floor(partySize) - 1));
   if (extraMembers === 0) return kinds;
   const strongest = [...kinds]
@@ -463,7 +472,8 @@ export function rollSwamprunEncounter(wave: number, rng: Dice, partySize = 1): S
   const power = Math.round((basePower + roll) * swamprunPartyScale(partySize));
   const baseKinds = deep
     ? deepTemplate(roll)
-    : STANDARD_TEMPLATES[Math.min(700, depth)]?.(roll) ?? STANDARD_TEMPLATES[700](roll);
+    : STANDARD_TEMPLATES[Math.min(700, depth)]?.(roll, partySize)
+      ?? STANDARD_TEMPLATES[700](roll, partySize);
   return { depth, power, deep, kinds: scaleCompactRoster(baseKinds, partySize) };
 }
 

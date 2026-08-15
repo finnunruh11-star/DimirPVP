@@ -31,8 +31,7 @@ function ensureAnimations(scene: Phaser.Scene): void {
       key: 'menu-smoke',
       frames: scene.anims.generateFrameNumbers(SMOKE_KEY, { start: 0, end: 9 }),
       frameRate: 9,
-      repeat: -1,
-      repeatDelay: 1100,
+      repeat: 0,
     });
   }
 }
@@ -64,11 +63,35 @@ export function addMenuMageStage(
   frame.lineBetween(1023, 240, 1023, 448);
   root.add(frame);
 
-  const smoke = scene.add.sprite(1023, 458, SMOKE_KEY, 0).setScale(5).setAlpha(0.3);
-  smoke.play('menu-smoke');
+  const smoke = scene.add.sprite(1023, 458, SMOKE_KEY, 0).setVisible(false);
   const mage = scene.add.sprite(1023, 469, IDLE_KEYS[0]).setOrigin(0.5, 1).setScale(12);
   mage.play('menu-mage-idle');
   root.add([smoke, mage]);
+
+  let dustTimer: Phaser.Time.TimerEvent | null = null;
+  const scheduleDust = (): void => {
+    dustTimer = scene.time.delayedCall(Phaser.Math.Between(3000, 18000), () => {
+      if (!root.active || !smoke.active) return;
+      smoke
+        .setPosition(1023 + Phaser.Math.Between(-24, 24), 458 + Phaser.Math.Between(-8, 8))
+        .setScale(Phaser.Math.FloatBetween(4.1, 6.2))
+        .setAlpha(Phaser.Math.FloatBetween(0.18, 0.36))
+        .setFlipX(Math.random() < 0.5)
+        .setVisible(true)
+        .play('menu-smoke', true);
+    });
+  };
+  const finishDust = (animation: Phaser.Animations.Animation): void => {
+    if (animation.key !== 'menu-smoke') return;
+    smoke.setVisible(false);
+    scheduleDust();
+  };
+  smoke.on(Phaser.Animations.Events.ANIMATION_COMPLETE, finishDust);
+  root.once(Phaser.GameObjects.Events.DESTROY, () => {
+    dustTimer?.remove(false);
+    smoke.off(Phaser.Animations.Events.ANIMATION_COMPLETE, finishDust);
+  });
+  scheduleDust();
 
   const plaque = scene.add.graphics();
   plaque.fillStyle(MENU_COLOR.bone, 1).fillRect(882, 521, 282, 85);

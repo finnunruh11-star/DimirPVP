@@ -24,7 +24,12 @@ import {
   type SwampPrepMode,
   type TeamFormat,
 } from '../../config/MatchConfig';
-import { RAID_BOSS_KINDS, type RaidBossKind } from '../../pve/swamprun';
+import {
+  RAID_BOSS_KINDS,
+  REAPER_MIN_PARTY_SIZE,
+  canSpawnReaper,
+  type RaidBossKind,
+} from '../../pve/swamprun';
 
 export interface MageDraft {
   words: WordId[];
@@ -79,7 +84,7 @@ export class MenuModel {
     this.mode = mode;
     const capability = this.capability;
     this.role = capability.roles[0];
-    this.seatCount = this.clamp(this.seatCount, capability.seats[0], capability.seats[1]);
+    this.seatCount = this.clamp(this.seatCount, this.minimumSeatCount(), capability.seats[1]);
 
     if (mode === 'ai') this.aiCount = this.seatCount - 1;
     else this.aiCount = 0;
@@ -106,7 +111,8 @@ export class MenuModel {
   }
 
   setSeatCount(value: number): void {
-    const [minimum, maximum] = this.capability.seats;
+    const [, maximum] = this.capability.seats;
+    const minimum = this.minimumSeatCount();
     this.seatCount = this.clamp(Math.round(value), minimum, maximum);
     if (this.mode === 'ai') this.aiCount = this.seatCount - 1;
     else this.aiCount = this.clamp(this.aiCount, 0, this.maximumAiCount());
@@ -149,6 +155,9 @@ export class MenuModel {
   setRaidBoss(kind: RaidBossKind): boolean {
     if (!RAID_BOSS_KINDS.includes(kind)) return false;
     this.raidBoss = kind;
+    if (kind === 'reaper' && !canSpawnReaper(this.seatCount)) {
+      this.setSeatCount(REAPER_MIN_PARTY_SIZE);
+    }
     return true;
   }
 
@@ -241,6 +250,9 @@ export class MenuModel {
     }
     if (this.role === 'host' && this.humanCount() < 2) {
       issues.push('Online rooms require at least two human seats.');
+    }
+    if (this.mode === 'raid' && this.raidBoss === 'reaper' && !canSpawnReaper(this.seatCount)) {
+      issues.push(`The Reaper requires at least ${REAPER_MIN_PARTY_SIZE} party members.`);
     }
     if (this.teamFormat === 'teams' && !isPveRunMode(this.mode) && this.seatCount > 1) {
       const teams = Array.from({ length: this.seatCount }, (_, seat) => this.teamOf(seat));
@@ -335,6 +347,13 @@ export class MenuModel {
 
   private maximumAiCount(): number {
     return this.capability.allowAi ? Math.max(0, this.seatCount - 1) : 0;
+  }
+
+  private minimumSeatCount(): number {
+    const minimum = this.capability.seats[0];
+    return this.mode === 'raid' && this.raidBoss === 'reaper'
+      ? Math.max(minimum, REAPER_MIN_PARTY_SIZE)
+      : minimum;
   }
 
   private syncSeatTeams(): void {

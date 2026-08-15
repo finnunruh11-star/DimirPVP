@@ -98,6 +98,22 @@ import vanishSheetUrl from '../Sprites/Spell/Vanish.png';
 import shatterSheetUrl from '../Sprites/Spell/Shatter.png';
 import disruptSheetUrl from '../Sprites/Spell/Disrupt.png';
 import lightningSheetUrl from '../Sprites/Spell/Lightning.png';
+import zombieAttackSheetUrl from '../Sprites/Zombie/Zombie_Default_Attack1 (1).png';
+import zombieDeathSheetUrl from '../Sprites/Zombie/Zombie_Default_Dead (1).png';
+import zombieHurtSheetUrl from '../Sprites/Zombie/Zombie_Default_Hurt (1).png';
+import zombieIdleSheetUrl from '../Sprites/Zombie/Zombie_Default_Idle (1).png';
+import zombieWalkSheetUrl from '../Sprites/Zombie/Zombie_Default_Walk (1).png';
+import skeletonAttackSheetUrl from '../Sprites/Skeleton/Skeleton_Default_Attack_Unarmed (2).png';
+import skeletonHurtSheetUrl from '../Sprites/Skeleton/Skeleton_Default_Hurt (2).png';
+import skeletonIdleSheetUrl from '../Sprites/Skeleton/Skeleton_Default_Idle_Unarmed (1).png';
+import skeletonWalkSheetUrl from '../Sprites/Skeleton/MP_Skeleton_Default_Walk_Unarmed (2).png';
+import ghostSheetUrl from '../Sprites/Wisp/ghost.png';
+import defenderSheetUrl from '../Sprites/Defender/knight-Sheet_greyfx.png';
+import reaperIdleSheetUrl from '../Sprites/Reaper/wraith_original_idle_sheet.png';
+import reaperWalkSheetUrl from '../Sprites/Reaper/wraith_original_walk_sheet.png';
+import reaperAttackSheetUrl from '../Sprites/Reaper/wraith_original_attack_sheet.png';
+import reaperHitSheetUrl from '../Sprites/Reaper/wraith_original_hit_sheet.png';
+import reaperDeathSheetUrl from '../Sprites/Reaper/wraith_original_death_sheet.png';
 import edgelordImpactSheetUrl from '../../spritesheet/Lightning/lightning_burst_003/lightning_burst_003_large_violet/spritesheet.png';
 import { scarabAlive, type ScarabState } from '../core/Scarab';
 import { Dev, type DevToggle } from '../config/dev';
@@ -162,6 +178,7 @@ import {
 import type { Net, NetMessage } from '../net/Net';
 import {
   applyEnemyTraits,
+  canSpawnReaper,
   rollSwamprunEncounter,
   swamprunDepth,
   ENEMY_DEFS,
@@ -217,6 +234,111 @@ interface AnimSet {
   frameRate: number;
   repeat: number;
 }
+
+interface CreatureAnimSet {
+  key: string;
+  url: string;
+  end: number;
+  frameRate: number;
+  repeat: number;
+  frameWidth?: number;
+  frameHeight?: number;
+}
+
+interface SheetFrameAnimSet {
+  key: string;
+  frames: number[];
+  frameRate: number;
+  repeat: number;
+}
+
+const CREATURE_ANIM_SETS: CreatureAnimSet[] = [
+  { key: 'enemy-zombie-idle', url: zombieIdleSheetUrl, end: 5, frameRate: 6, repeat: -1 },
+  { key: 'enemy-zombie-walk', url: zombieWalkSheetUrl, end: 5, frameRate: 10, repeat: -1 },
+  { key: 'enemy-zombie-attack', url: zombieAttackSheetUrl, end: 5, frameRate: 14, repeat: 0 },
+  { key: 'enemy-zombie-hurt', url: zombieHurtSheetUrl, end: 5, frameRate: 16, repeat: 0 },
+  { key: 'enemy-zombie-death', url: zombieDeathSheetUrl, end: 5, frameRate: 16, repeat: 0 },
+  { key: 'enemy-skeleton-idle', url: skeletonIdleSheetUrl, end: 5, frameRate: 6, repeat: -1 },
+  { key: 'enemy-skeleton-walk', url: skeletonWalkSheetUrl, end: 5, frameRate: 10, repeat: -1 },
+  { key: 'enemy-skeleton-attack', url: skeletonAttackSheetUrl, end: 5, frameRate: 14, repeat: 0 },
+  { key: 'enemy-skeleton-hurt', url: skeletonHurtSheetUrl, end: 1, frameRate: 14, repeat: 0 },
+  {
+    key: 'enemy-reaper-idle',
+    url: reaperIdleSheetUrl,
+    end: 23,
+    frameRate: 10,
+    repeat: -1,
+    frameWidth: 26,
+    frameHeight: 24,
+  },
+  {
+    key: 'enemy-reaper-walk',
+    url: reaperWalkSheetUrl,
+    end: 11,
+    frameRate: 10,
+    repeat: -1,
+    frameWidth: 26,
+    frameHeight: 24,
+  },
+  {
+    key: 'enemy-reaper-attack',
+    url: reaperAttackSheetUrl,
+    end: 5,
+    frameRate: 10,
+    repeat: 0,
+    frameWidth: 26,
+    frameHeight: 24,
+  },
+  {
+    key: 'enemy-reaper-hurt',
+    url: reaperHitSheetUrl,
+    end: 3,
+    frameRate: 10,
+    repeat: 0,
+    frameWidth: 26,
+    frameHeight: 24,
+  },
+  {
+    key: 'enemy-reaper-death',
+    url: reaperDeathSheetUrl,
+    end: 7,
+    frameRate: 10,
+    repeat: 0,
+    frameWidth: 26,
+    frameHeight: 24,
+  },
+];
+
+// ghost.png is a labelled 12x5 grid. Body/effect frames begin at column 2;
+// columns 0-1 contain labels and the trailing columns are transparent padding.
+const WISP_ANIM_SETS: SheetFrameAnimSet[] = [
+  {
+    key: 'enemy-wisp-attack',
+    frames: [2, 3, 4, 5, 6, 7, 8, 14, 15, 16, 17, 18, 19, 20],
+    frameRate: 14,
+    repeat: 0,
+  },
+  { key: 'enemy-wisp-fx', frames: [26, 27, 28, 29, 30, 31], frameRate: 16, repeat: 0 },
+  { key: 'enemy-wisp-walk', frames: [38, 39, 40, 41, 42, 43], frameRate: 10, repeat: -1 },
+  { key: 'enemy-wisp-idle', frames: [50, 51, 52, 53, 54, 55], frameRate: 6, repeat: -1 },
+];
+
+const DEFENDER_ANIM_SETS: SheetFrameAnimSet[] = [
+  { key: 'enemy-defender-idle', frames: [0, 1, 2, 3, 4, 5], frameRate: 6, repeat: -1 },
+  {
+    key: 'enemy-defender-walk',
+    frames: [6, 7, 8, 9, 10, 11, 12, 13, 24, 25, 26, 27],
+    frameRate: 10,
+    repeat: -1,
+  },
+  {
+    key: 'enemy-defender-attack',
+    frames: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+    frameRate: 14,
+    repeat: 0,
+  },
+  { key: 'enemy-defender-hurt', frames: [34, 35, 36], frameRate: 12, repeat: 0 },
+];
 
 const ANIM_SETS: AnimSet[] = [
   {
@@ -292,6 +414,9 @@ const FX_FRAME_SETS: AnimSet[] = [
   },
 ];
 
+type CreatureSpriteKind = 'zombie' | 'skeleton' | 'wisp' | 'defender' | 'reaper';
+type BodyAnimState = 'idle' | 'run' | 'role' | 'charge' | 'attack' | 'hurt' | 'death';
+
 type HeldWeaponKind = 'sword' | 'dagger' | 'spear' | 'axe' | 'hammer' | 'club' | 'bow' | 'staff' | 'shield' | 'lantern';
 
 /** Per-mage sprite + animation-state machine. */
@@ -300,11 +425,15 @@ interface MageAnim {
   held?: Phaser.GameObjects.Image;
   heldVisualKey?: string;
   /** A special animation currently owning the sprite (else idle/charge rests). */
-  lock: 'move' | 'dash' | 'pull' | 'attack' | 'hit' | null;
+  lock: 'move' | 'dash' | 'pull' | 'attack' | 'hit' | 'death' | null;
   /** A sprite-position tween owns the position; don't snap to logical. */
   posLocked: boolean;
   /** The attack-charge loop is the current resting animation. */
   charging: boolean;
+  /** A fatal hit is queued but waits for the damage dice to settle. */
+  deathPending: boolean;
+  /** The death animation has finished and the body can remain hidden. */
+  deathComplete: boolean;
   /** Last applied Mine tint/scale state; changes when a Golem wakes. */
   mineVisualKey?: string;
 }
@@ -491,6 +620,39 @@ type SubCommand =
 type DraftCommand = { t: 'draft'; index: number };
 
 const MAGE_RADIUS = 22;
+const CREATURE_SPRITE_HEIGHT = MAGE_RADIUS * 4.5;
+
+const creatureSpriteKind = (mage: Mage): CreatureSpriteKind | null => {
+  if (mage.enemyKind === 'zombie' || mage.enemyKind === 'acidZombie') return 'zombie';
+  if (mage.enemyKind === 'skeleton') return 'skeleton';
+  if (mage.enemyKind === 'wisp') return 'wisp';
+  if (mage.enemyKind === 'defender') return 'defender';
+  if (mage.enemyKind === 'reaper') return 'reaper';
+  return null;
+};
+
+const bodyAnimationKey = (mage: Mage, state: BodyAnimState): string => {
+  const kind = creatureSpriteKind(mage);
+  if (!kind) {
+    if (state === 'run') return 'mage-run';
+    if (state === 'role') return 'mage-role';
+    if (state === 'hurt' || state === 'death') return 'mage-hit';
+    return `mage-${state}`;
+  }
+  const creatureState =
+    state === 'run' || state === 'role'
+      ? 'walk'
+      : state === 'charge'
+        ? 'idle'
+        : kind === 'skeleton' && state === 'death'
+          ? 'hurt'
+          : kind === 'defender' && state === 'death'
+            ? 'hurt'
+          : kind === 'wisp' && (state === 'hurt' || state === 'death')
+            ? 'idle'
+          : state;
+  return `enemy-${kind}-${creatureState}`;
+};
 
 /** How the action palette is grouped, so it reads as short lists. */
 const ACTION_GROUPS: { title: string; ids: string[] }[] = [
@@ -899,6 +1061,14 @@ export class GameScene extends Phaser.Scene {
     for (const set of FX_FRAME_SETS) {
       set.frames.forEach((url, i) => this.load.image(`${set.key}-${i}`, url));
     }
+    for (const set of CREATURE_ANIM_SETS) {
+      this.load.spritesheet(set.key, set.url, {
+        frameWidth: set.frameWidth ?? 64,
+        frameHeight: set.frameHeight ?? 64,
+      });
+    }
+    this.load.spritesheet('enemy-wisp-sheet', ghostSheetUrl, { frameWidth: 32, frameHeight: 32 });
+    this.load.spritesheet('enemy-defender-sheet', defenderSheetUrl, { frameWidth: 90, frameHeight: 90 });
     // First frame of the scarab gif, used until the animated frames decode.
     this.load.image('scarab-static', scarabGifUrl);
     // Stack token icons (move / basic attack / spell cast).
@@ -1076,6 +1246,10 @@ export class GameScene extends Phaser.Scene {
       );
 
     this.gs = new GameState(mages, config.seed);
+    if (this.raid && this.raidBoss === 'reaper' && !canSpawnReaper(this.swamprunPartySize())) {
+      this.raidBoss = 'lich';
+      this.gs.log('The Reaper requires at least two party members. The Lich answers this solo Raid instead.');
+    }
     if (scenario) {
       this.gs.restoreScarabs(scenarioToScarabs(scenario, mages));
       this.gs.restoreTurnOrder(scenario.turn.order, scenario.turn.rolls, scenario.turn.currentIndex);
@@ -1087,6 +1261,7 @@ export class GameScene extends Phaser.Scene {
     if (this.swamprun) this.gs.coopSurvivalTeam = 1;
     this.gs.onLog = () => this.drawLog();
     this.gs.onMageDefeated = (target) => {
+      this.queueCreatureDeath(target);
       this.showDefeatSeal(target);
       if (this.raid && target === this.raidTarget) {
         this.raidVictory = true;
@@ -2317,11 +2492,20 @@ export class GameScene extends Phaser.Scene {
     this.redraw();
   }
 
-  /** Tint / rescale a spawned creature's sprite so kinds read apart. */
+  /** Apply authored creature art or the generic tinted mage treatment. */
   private styleEnemySprite(m: Mage, kind: EnemyKind): void {
     const rec = this.mageAnims.get(m);
     if (!rec) return;
     const def = ENEMY_DEFS[kind];
+    if (creatureSpriteKind(m)) {
+      rec.sprite.setOrigin(0.5, 0.9);
+      if (kind === 'acidZombie') rec.sprite.setTint(def.tint);
+      else rec.sprite.clearTint();
+      const srcH = rec.sprite.height || 1;
+      rec.sprite.setScale((CREATURE_SPRITE_HEIGHT / srcH) * (def.scale ?? 1));
+      return;
+    }
+    rec.sprite.setOrigin(0.5, 1);
     rec.sprite.setTint(def.tint);
     const srcH = rec.sprite.height || 1;
     rec.sprite.setScale(((MAGE_RADIUS * 2.8) / srcH) * (def.scale ?? 1));
@@ -4587,6 +4771,8 @@ export class GameScene extends Phaser.Scene {
       await this.delay(300);
     }
     if (m.reaperKind && m.reaperChanneling) {
+      this.startBodyAttack(m);
+      await this.delay(600);
       this.gs.reaperResolveClap(m);
       this.syncMageSprites();
       this.redraw();
@@ -4654,11 +4840,15 @@ export class GameScene extends Phaser.Scene {
       }
       case 'reaper-mark': {
         me.spend('main');
+        this.startBodyAttack(me);
+        await this.delay(600);
         this.gs.reaperMark(me, d.target);
         break;
       }
       case 'reaper-channel': {
         me.spend('main');
+        this.startBodyAttack(me);
+        await this.delay(600);
         this.gs.reaperBeginChannel(me);
         break;
       }
@@ -11867,6 +12057,33 @@ export class GameScene extends Phaser.Scene {
         repeat: set.repeat,
       });
     }
+    for (const set of CREATURE_ANIM_SETS) {
+      if (this.anims.exists(set.key)) continue;
+      this.anims.create({
+        key: set.key,
+        frames: this.anims.generateFrameNumbers(set.key, { start: 0, end: set.end }),
+        frameRate: set.frameRate,
+        repeat: set.repeat,
+      });
+    }
+    for (const set of WISP_ANIM_SETS) {
+      if (this.anims.exists(set.key)) continue;
+      this.anims.create({
+        key: set.key,
+        frames: set.frames.map((frame) => ({ key: 'enemy-wisp-sheet', frame })),
+        frameRate: set.frameRate,
+        repeat: set.repeat,
+      });
+    }
+    for (const set of DEFENDER_ANIM_SETS) {
+      if (this.anims.exists(set.key)) continue;
+      this.anims.create({
+        key: set.key,
+        frames: set.frames.map((frame) => ({ key: 'enemy-defender-sheet', frame })),
+        frameRate: set.frameRate,
+        repeat: set.repeat,
+      });
+    }
     // One-shot hit-effect overlays (target-anchored spell impacts).
     const fx: { key: string; end: number; frameRate: number }[] = [
       { key: 'fx-dot', end: 24, frameRate: 16 },
@@ -12014,6 +12231,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private syncHeldWeapon(mage: Mage, rec: MageAnim, alpha: number): void {
+    if (creatureSpriteKind(mage)) {
+      rec.held?.setVisible(false);
+      return;
+    }
     const itemId =
       mage.activeWeaponId() ?? mage.hands.find((id) => !!getItem(id).edgelordLantern) ?? null;
     if (!mage.alive || !itemId) {
@@ -12071,6 +12292,32 @@ export class GameScene extends Phaser.Scene {
   /** Queued one-shot hit-effect overlays; flushed alongside hit recoils. */
   private pendingEffects: { mage: Mage; kind: 'generic' | 'poison' | 'dot' | 'vanish' | 'disrupt' }[] = [];
 
+  /** Face the closest opponent, accounting for each sheet's authored direction. */
+  private creatureShouldFlipX(mage: Mage): boolean {
+    let nearest: Mage | null = null;
+    let nearestDistance = Infinity;
+    for (const candidate of this.gs.mages) {
+      if (
+        candidate === mage ||
+        candidate.team === mage.team ||
+        !candidate.alive ||
+        candidate.edgelordCapturedBy
+      ) continue;
+      const distance = dist(mage.pos, candidate.pos);
+      if (distance < nearestDistance) {
+        nearest = candidate;
+        nearestDistance = distance;
+      }
+    }
+    const kind = creatureSpriteKind(mage);
+    const nativeFacesRight = kind === 'wisp' || kind === 'defender';
+    if (nearest && nearest.x !== mage.x) {
+      const targetIsRight = nearest.x > mage.x;
+      return nativeFacesRight ? !targetIsRight : targetIsRight;
+    }
+    return nativeFacesRight ? mage.team === 2 : mage.team !== 2;
+  }
+
   /** Create/position each mage's sprite and pick its resting animation. */
   private syncMageSprites(): void {
     if (!this.gs) return;
@@ -12091,19 +12338,50 @@ export class GameScene extends Phaser.Scene {
     for (const m of this.gs.mages) {
       let rec = this.mageAnims.get(m);
       if (!rec) {
-        const sprite = this.add.sprite(m.x, m.y, 'mage-idle-0').setOrigin(0.5, 1).setDepth(5);
+        const customCreature = creatureSpriteKind(m) !== null;
+        const idleKey = bodyAnimationKey(m, 'idle');
+        const kind = creatureSpriteKind(m);
+        const textureKey =
+          kind === 'wisp'
+            ? 'enemy-wisp-sheet'
+            : kind === 'defender'
+              ? 'enemy-defender-sheet'
+              : idleKey;
+        const sprite = this.add
+          .sprite(m.x, m.y, customCreature ? textureKey : 'mage-idle-0')
+          .setOrigin(0.5, customCreature ? 0.9 : 1)
+          .setDepth(5);
+        sprite.play(idleKey);
         const srcH = sprite.height || 1;
-        sprite.setScale((MAGE_RADIUS * 2.8) / srcH);
-        sprite.play('mage-idle');
-        rec = { sprite, lock: null, posLocked: false, charging: false };
+        sprite.setScale((customCreature ? CREATURE_SPRITE_HEIGHT : MAGE_RADIUS * 2.8) / srcH);
+        rec = {
+          sprite,
+          lock: null,
+          posLocked: false,
+          charging: false,
+          deathPending: false,
+          deathComplete: false,
+        };
         this.mageAnims.set(m, rec);
       }
       const s = rec.sprite;
+      const customCreature = creatureSpriteKind(m) !== null;
+      s.setOrigin(0.5, customCreature ? 0.9 : 1);
+      if (m.alive && (rec.deathPending || rec.deathComplete || rec.lock === 'death')) {
+        this.tweens.killTweensOf(s);
+        rec.deathPending = false;
+        rec.deathComplete = false;
+        if (rec.lock === 'death') rec.lock = null;
+        s.setAngle(0);
+      }
       if (m.mine) this.styleMineEnemySprite(m);
       if (!rec.posLocked) s.setPosition(m.x, m.y + footY + this.mineSpriteBob(m));
-      s.setFlipX(m.team === 2);
+      s.setFlipX(customCreature ? this.creatureShouldFlipX(m) : m.team === 2);
       if (!m.alive) {
-        s.setVisible(false);
+        const showingDeath =
+          customCreature && !rec.deathComplete && (rec.deathPending || rec.lock === 'death');
+        s.setVisible(showingDeath);
+        if (showingDeath) s.setAlpha(1);
         rec.held?.setVisible(false);
         continue;
       }
@@ -12118,7 +12396,7 @@ export class GameScene extends Phaser.Scene {
       this.syncHeldWeapon(m, rec, alpha);
       // Resting animation: charge while a spell is pending, otherwise idle.
       if (rec.lock === null) {
-        const want = rec.charging ? 'mage-charge' : 'mage-idle';
+        const want = bodyAnimationKey(m, rec.charging ? 'charge' : 'idle');
         if (s.anims.currentAnim?.key !== want) s.play(want, true);
       }
     }
@@ -12132,6 +12410,15 @@ export class GameScene extends Phaser.Scene {
   /** Queue a hit recoil to play once the damage dice have resolved. */
   private playHit(m: Mage): void {
     if (!this.pendingHits.includes(m)) this.pendingHits.push(m);
+  }
+
+  /** Keep a defeated authored creature visible until its fatal animation plays. */
+  private queueCreatureDeath(m: Mage): void {
+    const kind = creatureSpriteKind(m);
+    if (!kind || kind === 'wisp') return;
+    const rec = this.mageAnims.get(m);
+    if (rec) rec.deathPending = true;
+    this.playHit(m);
   }
 
   /** Play every queued hit recoil and clear the queue. */
@@ -12173,11 +12460,97 @@ export class GameScene extends Phaser.Scene {
   /** Brief recoil when a mage takes damage; never interrupts movement/attack. */
   private triggerHit(m: Mage): void {
     const rec = this.mageAnims.get(m);
-    if (!rec || rec.lock) return;
+    if (!rec) return;
+    const kind = creatureSpriteKind(m);
+    if (kind === 'wisp') {
+      if (!m.alive || rec.lock) return;
+      rec.lock = 'hit';
+      this.tweens.add({
+        targets: rec.sprite,
+        alpha: 0.18,
+        duration: 70,
+        yoyo: true,
+        repeat: 1,
+        onComplete: () => {
+          if (rec.lock === 'hit') rec.lock = null;
+        },
+      });
+      return;
+    }
+    if (!m.alive && kind) {
+      this.triggerCreatureDeath(m, rec);
+      return;
+    }
+    if (rec.lock) return;
     rec.lock = 'hit';
-    rec.sprite.play('mage-hit', true);
-    rec.sprite.once('animationcomplete-mage-hit', () => {
+    const key = bodyAnimationKey(m, 'hurt');
+    rec.sprite.play(key, true);
+    rec.sprite.once(`animationcomplete-${key}`, () => {
       if (rec.lock === 'hit') rec.lock = null;
+    });
+  }
+
+  /** Play Zombie death art; Skeleton falls after its Hurt strip. */
+  private triggerCreatureDeath(m: Mage, rec: MageAnim): void {
+    const kind = creatureSpriteKind(m);
+    if (!kind || kind === 'wisp' || rec.deathComplete || rec.lock === 'death') return;
+    this.tweens.killTweensOf(rec.sprite);
+    rec.posLocked = false;
+    rec.charging = false;
+    rec.deathPending = false;
+    rec.lock = 'death';
+    const key = bodyAnimationKey(m, 'death');
+    rec.sprite.setVisible(true).setAlpha(1).setAngle(0).play(key, true);
+
+    const finish = (): void => {
+      if (!rec.sprite.active) return;
+      rec.deathComplete = true;
+      if (rec.lock === 'death') rec.lock = null;
+      rec.sprite.setVisible(false);
+    };
+    rec.sprite.once(`animationcomplete-${key}`, () => {
+      if (kind !== 'skeleton' || !rec.sprite.active) {
+        finish();
+        return;
+      }
+      this.tweens.add({
+        targets: rec.sprite,
+        angle: rec.sprite.flipX ? 82 : -82,
+        alpha: 0,
+        duration: 155,
+        ease: 'Quad.In',
+        onComplete: finish,
+      });
+    });
+  }
+
+  /** Start the body's authored attack strip, then release it to idle. */
+  private startBodyAttack(m: Mage): void {
+    const rec = this.mageAnims.get(m);
+    if (!rec || !m.alive) return;
+    rec.charging = false;
+    rec.lock = 'attack';
+    const key = bodyAnimationKey(m, 'attack');
+    rec.sprite.play(key, true);
+    rec.sprite.once(`animationcomplete-${key}`, () => {
+      if (rec.lock === 'attack') rec.lock = null;
+    });
+  }
+
+  /** Play the ghost sheet's dedicated magic flourish over the struck target. */
+  private playWispAttackFx(at: Vec2, source: Mage): Promise<void> {
+    if (!this.anims.exists('enemy-wisp-fx')) return Promise.resolve();
+    return new Promise((resolve) => {
+      const sprite = this.add
+        .sprite(at.x, at.y, 'enemy-wisp-sheet', 26)
+        .setDepth(9)
+        .setScale((MAGE_RADIUS * 3.2) / 32)
+        .setFlipX(at.x < source.x);
+      sprite.play('enemy-wisp-fx');
+      sprite.once('animationcomplete-enemy-wisp-fx', () => {
+        sprite.destroy();
+        resolve();
+      });
     });
   }
 
@@ -12185,15 +12558,10 @@ export class GameScene extends Phaser.Scene {
   private async finishChargeThenAttack(m: Mage): Promise<void> {
     const rec = this.mageAnims.get(m);
     if (!rec) return;
-    if (rec.sprite.anims.currentAnim?.key === 'mage-charge') {
+    if (rec.sprite.anims.currentAnim?.key === bodyAnimationKey(m, 'charge')) {
       await new Promise<void>((res) => rec!.sprite.once('animationrepeat', res));
     }
-    rec.charging = false;
-    rec.lock = 'attack';
-    rec.sprite.play('mage-attack', true);
-    rec.sprite.once('animationcomplete-mage-attack', () => {
-      if (rec.lock === 'attack') rec.lock = null;
-    });
+    this.startBodyAttack(m);
   }
 
   /** Glide a mage to a point over ~1s while the run loop plays. */
@@ -12206,7 +12574,7 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       rec.lock = 'move';
-      rec.sprite.play('mage-run', true);
+      rec.sprite.play(bodyAnimationKey(m, 'run'), true);
       this.tweens.add({
         targets: m,
         x: to.x,
@@ -12230,7 +12598,7 @@ export class GameScene extends Phaser.Scene {
     rec.lock = 'dash';
     rec.posLocked = true;
     rec.sprite.setPosition(from.x, from.y + footY);
-    rec.sprite.play('mage-role', true);
+    rec.sprite.play(bodyAnimationKey(m, 'role'), true);
     this.tweens.add({
       targets: rec.sprite,
       x: m.x,
@@ -12998,6 +13366,9 @@ export class GameScene extends Phaser.Scene {
 
     if (item.kind === 'melee') {
       const at = item.target?.pos ?? from;
+      const creatureKind = creatureSpriteKind(item.source);
+      if (creatureKind) this.startBodyAttack(item.source);
+      if (creatureKind === 'wisp') return this.playWispAttackFx(at, item.source);
       // A basic weapon / unarmed strike sweeps a quick slash arc across the
       // struck foe, aimed along the attack direction.
       if (this.anims.exists('fx-slash-arc')) {
