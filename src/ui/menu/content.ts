@@ -10,20 +10,20 @@ export interface MenuEntryCopy {
 
 export const CATEGORY_COPY: Record<MenuCategory, MenuEntryCopy> = {
   versus: {
-    label: 'Versus',
+    label: 'PvP',
     detail: 'Duels against people or the machine',
     title: 'THE DUELLING TABLE',
-    description: 'Settle a compact battle locally, online, or against an AI-controlled mage.',
+    description: 'Fight against another player, online, or against an AI-controlled mage.',
   },
   adventures: {
-    label: 'Adventures',
+    label: 'PvE',
     detail: 'Persistent runs into hostile places',
     title: 'THE WAY OUT',
     description: 'Take a party into the Swamp, the Mine, an Expedition, or a prepared Raid.',
   },
   workshop: {
     label: 'Workshop',
-    detail: 'Training, authored fights, and memories',
+    detail: 'Training and fight Setups',
     title: 'THE WORKBENCH',
     description: 'Test builds, construct scenarios, or reopen a fight saved to disk.',
   },
@@ -38,15 +38,15 @@ export const MODE_COPY: Record<MatchMode, MenuEntryCopy> = {
   },
   hotseat: {
     label: 'Hotseat',
-    detail: 'Two to four local seats',
+    detail: 'Local couch coop on the same device',
     title: 'HOTSEAT',
     description: 'Draft each local mage in private, then share the battlefield in teams or free-for-all.',
   },
   online: {
     label: 'Online',
-    detail: 'Host or join a deterministic match',
+    detail: 'Host or join a match',
     title: 'ONLINE TABLE',
-    description: 'Connect through a room code. The host owns the rules; every player owns a mage.',
+    description: 'Connect through a room code. The host decides the rules; every player plays a mage.',
   },
   training: {
     label: 'Training Lab',
@@ -56,13 +56,13 @@ export const MODE_COPY: Record<MatchMode, MenuEntryCopy> = {
   },
   swamprun: {
     label: 'Swamprun',
-    detail: 'Endless survival, supplies, and escalating horrors',
+    detail: 'Endless survival run',
     title: 'THE SWAMP',
     description: 'Survive fresh combats at increasing depth. Spend shared gold between waves and keep what the party earns.',
   },
   expedition: {
     label: 'Expedition',
-    detail: 'A solo campaign of depth, retreat, and town',
+    detail: 'Swamps but you get upgrades each time to go deeper',
     title: 'EXPEDITION',
     description: 'Push deeper without field shops, choose when to retreat, then spend personal gold and recruit in town.',
   },
@@ -122,9 +122,9 @@ export const RAID_BOSS_COPY: Record<RaidBossKind, MenuEntryCopy> = {
   },
   reaper: {
     label: 'Reaper',
-    detail: 'Execution marks / damage cap / physical immunity',
+    detail: 'Requires 2+ party members / execution marks / damage cap',
     title: 'THE REAPER',
-    description: 'A slow executioner that leashes and marks prey before its killing clap. Each entity can deal at most 10 damage to it per round. It ignores physical damage and shadow; light remains effective.',
+    description: 'Requires at least two party members. A slow executioner that leashes and marks prey before its killing clap. Each entity can deal at most 10 damage to it per round. It ignores physical damage and shadow; light remains effective.',
   },
   deathknightSpear: {
     label: 'Deathknight',

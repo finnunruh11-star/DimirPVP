@@ -34,6 +34,23 @@ import { Dev } from '../config/dev';
  */
 const BASE_PHYSICAL_TYPES = new Set<DamageType>(['pierce', 'shatter', 'slashing', 'generic']);
 
+export type CombatFeedbackKind =
+  | 'damage'
+  | 'sanityDamage'
+  | 'heal'
+  | 'sanityHeal'
+  | 'immune'
+  | 'miss'
+  | 'blocked';
+
+export interface CombatFeedback {
+  kind: CombatFeedbackKind;
+  amount?: number;
+  damageType?: DamageType;
+  label?: string;
+  critical?: boolean;
+}
+
 /**
  * Optional bridge the scene supplies so effects can request visuals. Pure logic
  * still works without it (e.g. in tests), so every call is guarded with `?.`.
@@ -51,6 +68,8 @@ export interface VfxSink {
   lightningBolt?(from: Vec2, to: Vec2): Promise<void>;
   /** Play a one-shot hit-effect overlay on `mage` (spell impact / DoT / vanish). */
   spellEffect?(mage: Mage, kind: 'generic' | 'poison' | 'dot' | 'vanish'): void;
+  /** Show one outcome-aware floating combat readout over `mage`. */
+  combatFeedback?(mage: Mage, feedback: CombatFeedback): void;
   /** Play a compact shatter-sheet burst at an exact impact point. */
   shatterBurst?(at: Vec2, size: number): void;
   /**
@@ -253,6 +272,7 @@ export function dealDamage(
 
   // Second Ring of Lareneg: untouchable to all hostile damage in cycles 3 & 4.
   if (ctx.game.isLaranegUntouchable(target)) {
+    ctx.vfx?.combatFeedback?.(target, { kind: 'immune', label: 'UNTOUCHABLE' });
     return 0;
   }
 
@@ -260,6 +280,7 @@ export function dealDamage(
   // their next turn.
   if (target.eldritchDefend) {
     ctx.log(`${target.name} stands untouched — eldritch truth voids the blow.`);
+    ctx.vfx?.combatFeedback?.(target, { kind: 'blocked', label: 'VOIDED' });
     return 0;
   }
 
@@ -267,10 +288,16 @@ export function dealDamage(
   // damage; incorporeal things ignore physical damage except radiant 'light'.
   if (target.sanityImmune && damage.damageClass === 'sanity') {
     ctx.log(`${target.name} is mindless — the psychic assault finds nothing.`);
+    ctx.vfx?.combatFeedback?.(target, { kind: 'immune', label: 'MINDLESS' });
     return 0;
   }
   if (target.physicalImmune && BASE_PHYSICAL_TYPES.has(damage.type)) {
     ctx.log(`${target.name} is incorporeal — the blow passes through it.`);
+    ctx.vfx?.combatFeedback?.(target, {
+      kind: 'immune',
+      damageType: damage.type,
+      label: 'INCORPOREAL',
+    });
     return 0;
   }
 
@@ -283,6 +310,7 @@ export function dealDamage(
       const dodge = veilDodgeChance(inv.mode, units);
       if (dodge >= 1 || ctx.rng.chance(dodge)) {
         ctx.log(`${target.name} blurs aside — the attack finds nothing.`);
+        ctx.vfx?.combatFeedback?.(target, { kind: 'miss', label: 'DODGED' });
         return 0;
       }
     }
@@ -291,6 +319,7 @@ export function dealDamage(
   // A Mind Dodge ward absorbs the next instance of sanity damage.
   if (damage.damageClass === 'sanity' && target.consumeWard('mind')) {
     ctx.log(`${target.name}'s Mind Dodge absorbs the psychic assault.`);
+    ctx.vfx?.combatFeedback?.(target, { kind: 'blocked', label: 'MIND WARD' });
     return 0;
   }
 
@@ -299,6 +328,7 @@ export function dealDamage(
     castPotencyScale(ctx, ctx.crit ? damage.amount * 2 : damage.amount) +
     ctx.caster.modifier('damageDealt') +
     target.modifier('damageTaken');
+  let feedbackLabel: string | undefined;
 
   const globalHexcraftBonus = ctx.game.hexcraftDamageBonus(damage.type, damage.damageClass);
   if (globalHexcraftBonus > 0) {
@@ -320,7 +350,9 @@ export function dealDamage(
   // Worn armour soaks physical / magical blows (flat reduction), unless this
   // strike is fully armour-penetrating (Greatshield sword form).
   if (!opts.ignoreArmor && !isTrue) {
+    const beforeArmor = amount;
     amount = target.reduceIncoming(amount, damage.type, damage.damageClass);
+    if (amount < beforeArmor) feedbackLabel = amount > 0 ? 'ARMOUR' : 'ARMOURED';
   }
 
   // Damage-type resistances / immunities / weaknesses (multiplicative), unless
@@ -332,10 +364,13 @@ export function dealDamage(
       amount = Math.floor(amount * mult);
       if (mult === 0) {
         ctx.log(`${target.name} is immune to ${damage.type} — the blow is absorbed.`);
+        feedbackLabel = 'IMMUNE';
       } else if (mult < 1) {
         ctx.log(`${target.name} resists ${damage.type} (${before} → ${amount}).`);
+        feedbackLabel = 'RESISTED';
       } else {
         ctx.log(`${target.name} is vulnerable to ${damage.type} (${before} → ${amount})!`);
+        feedbackLabel = 'VULNERABLE';
       }
     }
   }
@@ -344,6 +379,7 @@ export function dealDamage(
   if (damage.damageClass === 'sanity' && amount > 0 && amount < target.sanityWardBelow()) {
     ctx.log(`${target.name}'s foil hat shrugs off the minor psychic jab.`);
     amount = 0;
+    feedbackLabel = 'FOIL WARD';
   }
 
   // A shield raised as a reaction blunts the next physical blow (one-shot).
@@ -354,6 +390,7 @@ export function dealDamage(
       const before = amount;
       amount = Math.floor(amount * (1 - block));
       ctx.log(`${target.name} catches it on the shield (${before} → ${amount}).`);
+      feedbackLabel = 'BLOCKED';
     }
   }
 
@@ -367,6 +404,7 @@ export function dealDamage(
         `${target.name} shrugs off the excess — only ${allowed} of ${ctx.caster.name}'s damage lands this cycle.`
       );
       amount = allowed;
+      feedbackLabel = 'CAPPED';
     }
     target.damageBySourceThisCycle.set(ctx.caster, used + amount);
   }
@@ -379,6 +417,14 @@ export function dealDamage(
     return 0;
   }
 
+  if (amount <= 0) {
+    ctx.vfx?.combatFeedback?.(target, {
+      kind: feedbackLabel === 'IMMUNE' ? 'immune' : 'blocked',
+      damageType: damage.type,
+      label: feedbackLabel ?? 'NEGATED',
+    });
+  }
+
   const floorVital = target.unkillable ? 1 : 0;
   if (damage.damageClass === 'sanity') {
     target.sanity = Math.max(floorVital, target.sanity - amount);
@@ -388,12 +434,24 @@ export function dealDamage(
   ctx.log(
     `${target.name} takes ${amount} ${damage.type} ${damage.damageClass} damage.`
   );
+  if (amount > 0) {
+    ctx.vfx?.combatFeedback?.(target, {
+      kind: damage.damageClass === 'sanity' ? 'sanityDamage' : 'damage',
+      amount,
+      damageType: damage.type,
+      label: feedbackLabel,
+      critical: !!ctx.crit,
+    });
+  }
 
   if (amount > 0 && ctx.caster.deathknightKind && ctx.caster.alive) {
     const before = ctx.caster.hp;
     ctx.caster.hp = Math.min(ctx.caster.maxHp, ctx.caster.hp + amount);
     const healed = ctx.caster.hp - before;
-    if (healed > 0) ctx.log(`${ctx.caster.name} steals ${healed} health from the wound.`);
+    if (healed > 0) {
+      ctx.log(`${ctx.caster.name} steals ${healed} health from the wound.`);
+      ctx.vfx?.combatFeedback?.(ctx.caster, { kind: 'heal', amount: healed, label: 'LIFESTEAL' });
+    }
   }
 
   if (
@@ -416,7 +474,10 @@ export function dealDamage(
       const before = lich.hp;
       lich.hp = Math.min(lich.maxHp, lich.hp + amount);
       const healed = lich.hp - before;
-      if (healed > 0) ctx.log(`${lich.name} drains ${healed} life through its link to ${target.name}.`);
+      if (healed > 0) {
+        ctx.log(`${lich.name} drains ${healed} life through its link to ${target.name}.`);
+        ctx.vfx?.combatFeedback?.(lich, { kind: 'heal', amount: healed, label: 'DRAIN LINK' });
+      }
     }
   }
 
@@ -591,13 +652,19 @@ export function heal(
 ): void {
   amount = Math.max(0, Math.round(amount));
   if (pool === 'sanity') {
+    const before = target.sanity;
     target.sanity = Math.min(target.maxSanity, target.sanity + amount);
     ctx.log(`${target.name} recovers ${amount} sanity.`);
+    const restored = target.sanity - before;
+    if (restored > 0) ctx.vfx?.combatFeedback?.(target, { kind: 'sanityHeal', amount: restored });
   } else {
     // Blood Charm and the like make every heal restore more.
     amount = Math.round(amount * target.healMult());
+    const before = target.hp;
     target.hp = Math.min(target.maxHp, target.hp + amount);
     ctx.log(`${target.name} heals ${amount} health.`);
+    const restored = target.hp - before;
+    if (restored > 0) ctx.vfx?.combatFeedback?.(target, { kind: 'heal', amount: restored });
     // White primary feeds on healing magic: every heal grants each WHITE-primary
     // mage an extra color-charge (its "gain 1 whenever someone heals" identity).
     if (amount > 0) {

@@ -166,6 +166,7 @@ import { allSpells, getSpell, isClassSpellCombo, spellById, setActiveSpellSets }
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type { SubTargetPointOpts, SubTargetEnemyOpts } from '../effects/effects';
 import { ACTION_FX_PRESETS, FX_MOTION, FX_TWEEN } from '../effects/FxPresets';
+import { CombatFeedbackLayer } from '../visuals/CombatFeedbackLayer';
 import { SimpleAI, type AIDecision } from '../ai/SimpleAI';
 import type { MatchConfig, SeatConfig, SwampPrepMode } from '../config/MatchConfig';
 import {
@@ -939,6 +940,8 @@ export class GameScene extends Phaser.Scene {
   private spellInfoBodyTop = 0;
   private spellInfoBodyH = 0;
   private spellInfoScroll = 0;
+  private spellInfoHovered = false;
+  private spellInfoPinned = false;
 
   // Dedicated, filterable history panel.
   private historyPanel!: Phaser.GameObjects.Container;
@@ -1042,6 +1045,7 @@ export class GameScene extends Phaser.Scene {
   private showTargetList = true;
   private targetListPage = 0;
   private targetListPanel?: Phaser.GameObjects.Container;
+  private combatFeedback?: CombatFeedbackLayer;
 
   // Stack token hit areas for hover.
   private stackTokens: { x: number; y: number; r: number; item: StackItem }[] = [];
@@ -1092,6 +1096,8 @@ export class GameScene extends Phaser.Scene {
    * maps. Clearing them here is what makes "return to menu" survivable.
    */
   private resetSceneState(): void {
+    this.combatFeedback?.destroy();
+    this.combatFeedback = undefined;
     this.mode = 'idle';
     this.busy = false;
     this.gameEnded = false;
@@ -1104,9 +1110,12 @@ export class GameScene extends Phaser.Scene {
     this.pendingEffects = [];
     this.endCard = undefined;
     this.stackTokens = [];
+    this.stackIcons = [];
     this.resourceLabels = [];
     this.resourceValues = [];
     this.wordPlates = [];
+    this.spellInfoHovered = false;
+    this.spellInfoPinned = false;
     this.assignPanel = undefined;
     this.assignTitleText = '';
     this.assignResolve = null;
@@ -1246,6 +1255,7 @@ export class GameScene extends Phaser.Scene {
       );
 
     this.gs = new GameState(mages, config.seed);
+    this.combatFeedback = new CombatFeedbackLayer(this, () => this.reducedMotion);
     if (this.raid && this.raidBoss === 'reaper' && !canSpawnReaper(this.swamprunPartySize())) {
       this.raidBoss = 'lich';
       this.gs.log('The Reaper requires at least two party members. The Lich answers this solo Raid instead.');
@@ -1292,6 +1302,7 @@ export class GameScene extends Phaser.Scene {
       pull: (mover, from, to) => this.animateEdgelordPull(mover, from, to),
       lightningBolt: (from, to) => this.vfxLightningBolt(from, to),
       spellEffect: (m, kind) => this.pendingEffects.push({ mage: m, kind }),
+      combatFeedback: (mage, feedback) => this.combatFeedback?.show(mage, feedback),
       shatterBurst: (at, size) => void this.vfxSpriteAt('fx-shatter', at, { lengthPx: size }),
       wedge: (apex, angle, halfAngle, range) => this.vfxWedge(apex, angle, halfAngle, range),
       lightningTrail: (segments) => this.setLightningTrail(segments),
@@ -6319,12 +6330,20 @@ export class GameScene extends Phaser.Scene {
     reactor: Mage,
     top: StackItem
   ): Promise<ReactionChoice | null> {
-    if (this.controllerIsAI(reactor)) {
+    const aiControlled = this.controllerIsAI(reactor) || (reactor.isAI && !this.gs.controlSwapped);
+    if (aiControlled) {
       // Dev: a passive AI never reacts. Training dummies stay inert too.
       if (Dev.aiPassive || reactor.trainingPassive) return null;
       // Prefer a counter-spell / colour ability if the AI wants one…
       const ai = this.aiFor(reactor);
-      const r = ai.chooseReaction(top) ?? null;
+      let r: ReturnType<SimpleAI['chooseReaction']> = null;
+      try {
+        r = ai.chooseReaction(top) ?? null;
+      } catch (error) {
+        console.error('AI reaction decision failed; passing priority.', error);
+        this.gs.log(`${reactor.name} cannot find a response and passes priority.`);
+        return null;
+      }
       if (r) return { spell: r.spell, target: r.target, point: r.point };
       // …otherwise defend against an incoming attack: dodge first (fully shrugs
       // off the blow for a per-combat charge), then a bash, then a block.
@@ -6333,6 +6352,7 @@ export class GameScene extends Phaser.Scene {
         if (this.canBash(reactor, top)) return { shield: 'bash' };
         if (this.canBlock(reactor)) return { shield: 'block' };
       }
+      this.gs.log(`${reactor.name} passes priority.`);
       return null;
     }
     // Online: the opponent's reaction arrives over the wire; ours is relayed.
@@ -8930,9 +8950,10 @@ export class GameScene extends Phaser.Scene {
     const w = DOCK_SPELL.w + 120;
     const headerH = 24;
     const bodyH = 120;
-    // Anchored above its own dock column: clear of the foe list and dev panel.
-    const x = DOCK_SPELL.x;
-    const y = bottom(FIELD) - (headerH + bodyH) - SPACE.sm;
+    // This inspector replaces the lower-right log temporarily rather than
+    // covering combatants on the battlefield.
+    const x = right(DOCK_LOG) - w;
+    const y = DOCK_LOG.y + 32;
     const c = this.add.container(0, 0).setDepth(70).setVisible(false);
     const bg = this.add
       .rectangle(x, y, w, headerH + bodyH, MENU_COLOR.woodDeep, 1)
@@ -8969,6 +8990,11 @@ export class GameScene extends Phaser.Scene {
     // The background spans the whole panel and catches wheel scrolls (the body
     // text on top is non-interactive, so events fall through to it).
     bg.on('wheel', (_p: Phaser.Input.Pointer, _dx: number, dy: number) => this.scrollSpellInfo(dy));
+    bg.on('pointerdown', () => {
+      this.spellInfoPinned = false;
+      this.spellInfoHovered = false;
+      c.setVisible(false);
+    });
     this.spellInfoPanel = c;
     this.spellInfoTitle = title;
     this.spellInfoBody = body;
@@ -8991,7 +9017,8 @@ export class GameScene extends Phaser.Scene {
     const title = this.spellInfoTitle;
     const body = this.spellInfoBody;
     if (!panel || !title || !body) return;
-    if (!spell) {
+    if (!spell || (!this.spellInfoHovered && !this.spellInfoPinned)) {
+      if (!spell) this.spellInfoPinned = false;
       panel.setVisible(false);
       return;
     }
@@ -9570,7 +9597,10 @@ export class GameScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
     this.actionMenuButton.on('pointerover', () => this.actionMenuButton?.setBackgroundColor(MENU_HEX.bone));
     this.actionMenuButton.on('pointerout', () => this.actionMenuButton?.setBackgroundColor(MENU_HEX.brassLight));
-    this.actionMenuButton.on('pointerdown', () => this.toggleActionMenu());
+    this.actionMenuButton.on('pointerdown', () => {
+      if (this.mode === 'reaction') this.onReactionPass();
+      else this.toggleActionMenu();
+    });
 
     // ---- Dock column 1: vitals ----
     this.panelHeader(DOCK_VITALS, 'MAGE', MENU_HEX.verdigris);
@@ -9623,6 +9653,20 @@ export class GameScene extends Phaser.Scene {
       fixedWidth: readout.w,
       fixedHeight: readout.h,
       lineSpacing: 2,
+    })
+      .setInteractive({ useHandCursor: true });
+    this.comboText.on('pointerover', () => {
+      this.spellInfoHovered = true;
+      this.redraw();
+    });
+    this.comboText.on('pointerout', () => {
+      this.spellInfoHovered = false;
+      this.redraw();
+    });
+    this.comboText.on('pointerdown', () => {
+      if (!this.currentComboSpell()) return;
+      this.spellInfoPinned = !this.spellInfoPinned;
+      this.redraw();
     });
 
     // ---- Dock column 3: the log supplies its own clickable header ----
@@ -11271,7 +11315,7 @@ export class GameScene extends Phaser.Scene {
 
   private buildDicePanel(): void {
     this.dicePanel = this.add
-      .container(GAME_WIDTH / 2, FIELD.y + 96)
+      .container(GAME_WIDTH / 2, GAME_HEIGHT - 96)
       .setDepth(80)
       .setVisible(false);
   }
@@ -12558,10 +12602,37 @@ export class GameScene extends Phaser.Scene {
   private async finishChargeThenAttack(m: Mage): Promise<void> {
     const rec = this.mageAnims.get(m);
     if (!rec) return;
-    if (rec.sprite.anims.currentAnim?.key === bodyAnimationKey(m, 'charge')) {
-      await new Promise<void>((res) => rec!.sprite.once('animationrepeat', res));
+    const chargeKey = bodyAnimationKey(m, 'charge');
+    if (rec.sprite.anims.currentAnim?.key === chargeKey) {
+      await this.waitForAnimationRepeat(rec.sprite, chargeKey, 850);
     }
     this.startBodyAttack(m);
+  }
+
+  private waitForAnimationRepeat(
+    sprite: Phaser.GameObjects.Sprite,
+    animationKey: string,
+    maximumMs: number,
+  ): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: Phaser.Time.TimerEvent | null = null;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        timer?.remove(false);
+        sprite.off(Phaser.Animations.Events.ANIMATION_REPEAT, onRepeat);
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        resolve();
+      };
+      const onRepeat = (animation: Phaser.Animations.Animation): void => {
+        if (animation.key === animationKey) finish();
+      };
+      sprite.on(Phaser.Animations.Events.ANIMATION_REPEAT, onRepeat);
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+      timer = this.time.delayedCall(maximumMs, finish);
+      if (!sprite.active || !sprite.anims.isPlaying) finish();
+    });
   }
 
   /** Glide a mage to a point over ~1s while the run loop plays. */
@@ -12575,18 +12646,37 @@ export class GameScene extends Phaser.Scene {
       }
       rec.lock = 'move';
       rec.sprite.play(bodyAnimationKey(m, 'run'), true);
-      this.tweens.add({
+      let settled = false;
+      let timeout: Phaser.Time.TimerEvent | null = null;
+      let tween: Phaser.Tweens.Tween | null = null;
+      const finish = (snapToDestination = false): void => {
+        if (settled) return;
+        settled = true;
+        timeout?.remove(false);
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, onShutdown);
+        if (snapToDestination) {
+          tween?.stop();
+          m.x = to.x;
+          m.y = to.y;
+          this.redraw();
+          console.warn(`${m.name}'s movement tween timed out; snapped to its resolved destination.`);
+        }
+        if (rec.lock === 'move') rec.lock = null;
+        resolve();
+      };
+      const onShutdown = (): void => finish(false);
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, onShutdown);
+      tween = this.tweens.add({
         targets: m,
         x: to.x,
         y: to.y,
         duration: FX_MOTION.move.duration,
         ease: FX_MOTION.move.ease,
         onUpdate: () => this.redraw(),
-        onComplete: () => {
-          rec.lock = null;
-          resolve();
-        },
+        onComplete: () => finish(false),
+        onStop: () => finish(false),
       });
+      timeout = this.time.delayedCall(FX_MOTION.move.duration + 300, () => finish(true));
     });
   }
 
@@ -12639,28 +12729,143 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  /** Create one animated bolt whose visible endpoints align with a segment. */
-  private lightningSprite(from: Vec2, to: Vec2, depth: number): Phaser.GameObjects.Sprite {
+  /** Create one animated bolt layer whose visible endpoints align with a segment. */
+  private lightningSprite(
+    from: Vec2,
+    to: Vec2,
+    depth: number,
+    options: { color?: number; alpha?: number; thickness?: number; startFrame?: number } = {},
+  ): Phaser.GameObjects.Sprite {
     const length = Math.max(1, dist(from, to));
     const sprite = this.add
       .sprite((from.x + to.x) / 2, (from.y + to.y) / 2, 'fx-lightning', 0)
       .setDepth(depth)
       .setRotation(Math.atan2(to.y - from.y, to.x - from.x))
-      .setScale(length / 210, 0.5)
+      .setScale(length / 210, 0.5 * (options.thickness ?? 1))
+      .setAlpha(options.alpha ?? 1)
       .setBlendMode(Phaser.BlendModes.ADD);
-    sprite.play('fx-lightning-loop');
+    if (options.color != null) sprite.setTint(options.color);
+    sprite.play({ key: 'fx-lightning-loop', startFrame: options.startFrame ?? 0 });
     return sprite;
   }
 
-  /** Show one complete lightning cycle between consecutive chain targets. */
-  private vfxLightningBolt(from: Vec2, to: Vec2): Promise<void> {
+  /** Show one complete layered lightning cycle between consecutive chain targets. */
+  private vfxLightningBolt(
+    from: Vec2,
+    to: Vec2,
+    color = 0xa8dcff,
+    thickness = 1,
+  ): Promise<void> {
+    const distance = dist(from, to);
+    if (distance < 3) return this.vfxLightningNova(from, color, thickness);
+
     return new Promise((resolve) => {
-      const sprite = this.lightningSprite(from, to, 30);
-      this.time.delayedCall(FX_TWEEN.lightningLifetime, () => {
-        sprite.destroy();
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const inverseLength = 1 / Math.max(1, Math.hypot(dx, dy));
+      const perpendicular = { x: -dy * inverseLength, y: dx * inverseLength };
+      const offset = Math.min(4, Math.max(1.5, thickness * 1.4));
+      const layers = [
+        this.lightningSprite(from, to, 30, {
+          color,
+          alpha: 0.34,
+          thickness: thickness * 1.9,
+          startFrame: 1,
+        }),
+        this.lightningSprite(from, to, 31, {
+          color,
+          alpha: 0.96,
+          thickness,
+          startFrame: 0,
+        }),
+        this.lightningSprite(
+          { x: from.x + perpendicular.x * offset, y: from.y + perpendicular.y * offset },
+          { x: to.x - perpendicular.x * offset, y: to.y - perpendicular.y * offset },
+          31.2,
+          {
+            color: 0xffffff,
+            alpha: 0.7,
+            thickness: Math.max(0.42, thickness * 0.48),
+            startFrame: 2,
+          },
+        ),
+      ];
+      const sourceFlare = this.add
+        .circle(from.x, from.y, 8 + thickness * 2.5, color, 0.26)
+        .setStrokeStyle(Math.max(1, thickness), 0xffffff, 0.72)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setDepth(31.4);
+      const impactFlare = this.add
+        .circle(to.x, to.y, 11 + thickness * 3, color, 0.3)
+        .setStrokeStyle(Math.max(1.5, thickness * 1.2), 0xffffff, 0.86)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setDepth(31.4)
+        .setScale(0.35);
+      const duration = this.reducedMotion ? 100 : FX_TWEEN.lightningLifetime;
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        for (const object of [...layers, sourceFlare, impactFlare]) {
+          this.tweens.killTweensOf(object);
+          if (object.active) object.destroy();
+        }
         resolve();
-      });
+      };
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+
+      if (!this.reducedMotion) {
+        layers.forEach((layer, index) => {
+          this.tweens.add({
+            targets: layer,
+            alpha: { from: layer.alpha * 0.35, to: layer.alpha },
+            scaleY: layer.scaleY * (index === 0 ? 1.12 : 0.92),
+            duration: 54 + index * 17,
+            yoyo: true,
+            repeat: 2,
+            ease: 'Sine.InOut',
+          });
+        });
+        this.tweens.add({
+          targets: sourceFlare,
+          scale: 1.5,
+          alpha: 0,
+          duration,
+          ease: 'Cubic.Out',
+        });
+        this.tweens.add({
+          targets: impactFlare,
+          scale: 1.65,
+          alpha: 0,
+          duration,
+          ease: 'Back.Out',
+        });
+      } else {
+        impactFlare.setScale(1);
+      }
+
+      this.time.delayedCall(duration, finish);
     });
+  }
+
+  private vfxLightningNova(at: Vec2, color: number, thickness = 1): Promise<void> {
+    const radius = 34 + thickness * 7;
+    const directions = [
+      -Math.PI * 0.12,
+      Math.PI * 0.38,
+      Math.PI * 0.88,
+      Math.PI * 1.38,
+    ];
+    return Promise.all(directions.map((angle, index) => this.vfxLightningBolt(
+      at,
+      {
+        x: at.x + Math.cos(angle) * radius * (index % 2 ? 0.82 : 1),
+        y: at.y + Math.sin(angle) * radius * (index % 2 ? 0.82 : 1),
+      },
+      color,
+      Math.max(0.55, thickness * 0.72),
+    ))).then(() => undefined);
   }
 
   private vfxEdgelordImpact(at: Vec2): Promise<void> {
@@ -12923,7 +13128,7 @@ export class GameScene extends Phaser.Scene {
       // Overlay the action-type icon (move / basic attack / spell cast).
       const key = `stack-${item.kind}`;
       let icon = this.stackIcons[i];
-      if (!icon) {
+      if (!icon || !icon.scene || !icon.active) {
         icon = this.add.image(x, y, key).setDepth(60);
         this.stackIcons[i] = icon;
       }
@@ -12942,7 +13147,8 @@ export class GameScene extends Phaser.Scene {
   private drawHud(): void {
     const me = this.viewMage;
     if (this.mode === 'reaction' && this.reactor) {
-      this.turnText.setFontSize('16px').setText(`REACTION\n${this.reactor.name}`);
+      const source = this.reactionTop?.source.name ?? 'incoming action';
+      this.turnText.setFontSize('16px').setText(`YOUR REACTION\n${this.reactor.name} vs ${source}`);
     } else {
       const cur = this.gs.current;
       const swap = this.gs.controlSwapped ? '   ⟲ MINDS SWAPPED' : '';
@@ -13042,7 +13248,7 @@ export class GameScene extends Phaser.Scene {
     this.actionMenuButton?.setVisible(canOpenActions);
     if (canOpenActions && this.actionMenuButton) {
       this.actionMenuButton.setText(
-        this.mode === 'reaction' ? 'REACTION OPTIONS' : 'ACTIONS'
+        this.mode === 'reaction' ? 'PASS PRIORITY' : 'ACTIONS'
       );
     }
 
@@ -13378,6 +13584,17 @@ export class GameScene extends Phaser.Scene {
       return this.vfxBurst(at, 0xffffff, 34, 1.6);
     }
 
+    const v = item.spell?.visual ?? this.defaultVisual(item);
+    const lightningSpell = item.spell && (
+      item.spell.words.includes('lightning') || item.spell.id === 'ability:lightning-bolt'
+    );
+    if (item.kind === 'spell' && lightningSpell) {
+      const thickness = Phaser.Math.Clamp((v.size ?? 8) / 8, 0.75, 1.8);
+      return to
+        ? this.vfxLightningBolt(from, to, v.color, thickness)
+        : this.vfxLightningNova(from, v.color, thickness);
+    }
+
     // Ground-targeted elemental spells paint their sprite sheet where they land
     // (the aimed point / area), not on a foe — so the impact reads as hitting
     // the ground. Enemy-targeted variants keep their on-target hit overlay.
@@ -13412,16 +13629,11 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    const v = item.spell?.visual ?? this.defaultVisual(item);
     switch (v.preset) {
       case 'projectile':
-        // Projectiles no longer travel — the impact is shown by the hit overlay
-        // that lands on the struck target (or the caster's dash animation).
-        return Promise.resolve();
+        return to ? this.vfxProjectile(from, to, v) : this.vfxBurst(from, v.color, 28, v.speed ?? 1);
       case 'beam':
-        // Beams no longer draw a travelling line — the impact reads from the
-        // hit overlay / status change on the target.
-        return Promise.resolve();
+        return to ? this.vfxBeam(from, to, v) : this.vfxBurst(from, v.color, 24, v.speed ?? 1);
       case 'burst':
         return this.vfxBurst(to ?? from, v.color, v.size ?? 45, v.speed ?? 1);
       case 'nova':
@@ -13447,6 +13659,262 @@ export class GameScene extends Phaser.Scene {
       return { preset: 'nova', color, size: 55, speed: 1 };
     }
     return { preset: 'projectile', color, size: 10, speed: 1 };
+  }
+
+  private vfxBeam(from: Vec2, to: Vec2, visual: SpellVisual): Promise<void> {
+    const distance = dist(from, to);
+    if (distance < 3) return this.vfxBurst(to, visual.color, 24, visual.speed ?? 1);
+
+    return new Promise((resolve) => {
+      const speed = Math.max(0.25, visual.speed ?? 1);
+      const thickness = Phaser.Math.Clamp(visual.size ?? 6, 3, 16);
+      const unit = { x: (to.x - from.x) / distance, y: (to.y - from.y) / distance };
+      const perpendicular = { x: -unit.y, y: unit.x };
+      const start = {
+        x: from.x + unit.x * (MAGE_RADIUS * 0.55),
+        y: from.y + unit.y * (MAGE_RADIUS * 0.55),
+      };
+      const end = {
+        x: to.x - unit.x * Math.min(5, thickness * 0.5),
+        y: to.y - unit.y * Math.min(5, thickness * 0.5),
+      };
+      const length = Math.max(1, dist(start, end));
+      const segments = Phaser.Math.Clamp(Math.ceil(length / 18), 14, 52);
+      const duration = this.reducedMotion
+        ? 120
+        : Phaser.Math.Clamp(FX_TWEEN.beam.duration / speed, 230, 520);
+      const seed = (
+        from.x * 0.017 +
+        from.y * 0.029 +
+        to.x * 0.041 +
+        to.y * 0.053 +
+        (visual.color & 0xfff) * 0.001
+      ) % (Math.PI * 2);
+      const curveBias = Math.sin(seed * 2.31) * Math.min(22, length * 0.045);
+      const graphics = this.add
+        .graphics()
+        .setDepth(31)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      const state = { life: 0 };
+      let impactStarted = false;
+
+      const pointAt = (amount: number, phase: number, lane = 0): Vec2 => {
+        const envelope = Math.sin(Math.PI * amount);
+        const broadCurve = envelope * curveBias;
+        const primaryWave = Math.sin(amount * Math.PI * 4 + phase + seed) * thickness * 0.62;
+        const secondaryWave = Math.sin(amount * Math.PI * 9 - phase * 1.37 + seed * 0.7) * thickness * 0.24;
+        const laneMotion = lane * thickness * (
+          0.68 + 0.16 * Math.sin(amount * Math.PI * 6 + phase * 0.73 + seed)
+        );
+        const offset = envelope * (broadCurve + primaryWave + secondaryWave + laneMotion);
+        return {
+          x: Phaser.Math.Linear(start.x, end.x, amount) + perpendicular.x * offset,
+          y: Phaser.Math.Linear(start.y, end.y, amount) + perpendicular.y * offset,
+        };
+      };
+
+      const buildPath = (reveal: number, phase: number, lane = 0): Vec2[] => {
+        if (reveal <= 0) return [start];
+        const count = Math.max(1, Math.floor(segments * reveal));
+        const points: Vec2[] = [];
+        for (let index = 0; index <= count; index++) {
+          points.push(pointAt(Math.min(reveal, index / segments), phase, lane));
+        }
+        const finalAmount = Math.min(1, reveal);
+        const lastAmount = count / segments;
+        if (lastAmount < finalAmount) points.push(pointAt(finalAmount, phase, lane));
+        return points;
+      };
+
+      const strokePath = (points: readonly Vec2[], width: number, color: number, alpha: number): void => {
+        if (points.length < 2 || alpha <= 0) return;
+        graphics.lineStyle(Math.max(1, width), color, Phaser.Math.Clamp(alpha, 0, 1));
+        graphics.beginPath();
+        graphics.moveTo(points[0].x, points[0].y);
+        for (let index = 1; index < points.length; index++) {
+          graphics.lineTo(points[index].x, points[index].y);
+        }
+        graphics.strokePath();
+      };
+
+      const render = (): void => {
+        if (!graphics.active) return;
+        const life = state.life;
+        const reveal = Phaser.Math.Clamp(life / 0.27, 0, 1);
+        const attack = Phaser.Math.Clamp(life / 0.1, 0, 1);
+        const decay = life < 0.62 ? 1 : Phaser.Math.Clamp(1 - (life - 0.62) / 0.38, 0, 1);
+        const opacity = attack * decay;
+        const phase = this.reducedMotion ? seed : seed + life * Math.PI * 11;
+        const breathing = 0.9 + Math.sin(life * Math.PI * 18 + seed) * 0.1;
+        const centre = buildPath(reveal, phase);
+
+        graphics.clear();
+        strokePath(centre, thickness * 5.2 * breathing, visual.color, 0.1 * opacity);
+        strokePath(centre, thickness * 2.5 * breathing, visual.color, 0.54 * opacity);
+        strokePath(centre, thickness * 1.12, visual.color, 0.96 * opacity);
+        strokePath(centre, thickness * 0.36, 0xffffff, 0.98 * opacity);
+
+        if (!this.reducedMotion) {
+          const upper = buildPath(reveal, phase + 0.9, 1);
+          const lower = buildPath(reveal, phase - 1.1, -1);
+          strokePath(upper, thickness * 0.34, visual.color, 0.44 * opacity);
+          strokePath(upper, thickness * 0.12, 0xffffff, 0.58 * opacity);
+          strokePath(lower, thickness * 0.3, visual.color, 0.36 * opacity);
+
+          for (let index = 0; index < 4; index++) {
+            const knotAmount = (life * 2.15 + index * 0.247) % 1;
+            if (knotAmount > reveal) continue;
+            const knot = pointAt(knotAmount, phase, index % 2 ? 0.28 : -0.28);
+            const knotRadius = thickness * (0.32 + (index % 3) * 0.08);
+            graphics.fillStyle(visual.color, 0.45 * opacity).fillCircle(knot.x, knot.y, knotRadius * 2.2);
+            graphics.fillStyle(0xffffff, 0.82 * opacity).fillCircle(knot.x, knot.y, knotRadius);
+          }
+
+          for (let index = 0; index < 6; index++) {
+            const sparkAmount = Phaser.Math.Clamp(reveal * ((index + 1) / 7), 0, 1);
+            const spark = pointAt(sparkAmount, phase + index * 0.83);
+            const scatter = Math.sin(phase * 1.7 + index * 2.41) * thickness * (2.1 + index * 0.08);
+            const sparkX = spark.x + perpendicular.x * scatter;
+            const sparkY = spark.y + perpendicular.y * scatter;
+            graphics.fillStyle(index % 2 ? visual.color : 0xffffff, 0.42 * opacity)
+              .fillCircle(sparkX, sparkY, Math.max(1, thickness * 0.15));
+          }
+        }
+
+        const sourcePulse = thickness * (1.7 + attack * 0.9);
+        graphics.fillStyle(visual.color, 0.18 * opacity).fillCircle(start.x, start.y, sourcePulse * 1.7);
+        graphics.lineStyle(Math.max(1, thickness * 0.22), 0xffffff, 0.74 * opacity)
+          .strokeCircle(start.x, start.y, sourcePulse);
+
+        if (reveal > 0.72) {
+          const impact = Phaser.Math.Clamp((reveal - 0.72) / 0.28, 0, 1);
+          const impactRadius = thickness * (1.4 + impact * 2.8);
+          graphics.fillStyle(visual.color, 0.22 * opacity).fillCircle(end.x, end.y, impactRadius * 1.5);
+          graphics.lineStyle(Math.max(1, thickness * 0.26), 0xffffff, (1 - impact * 0.45) * opacity)
+            .strokeCircle(end.x, end.y, impactRadius);
+        }
+
+        if (!impactStarted && reveal >= 1) {
+          impactStarted = true;
+          void this.vfxBurst(to, visual.color, Math.max(20, thickness * 3.1), speed * 1.45);
+        }
+      };
+
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        this.tweens.killTweensOf(state);
+        if (graphics.active) graphics.destroy();
+        resolve();
+      };
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+      render();
+      this.tweens.add({
+        targets: state,
+        life: 1,
+        duration,
+        ease: FX_TWEEN.beam.ease,
+        onUpdate: render,
+        onComplete: finish,
+      });
+    });
+  }
+
+  private vfxProjectile(from: Vec2, to: Vec2, visual: SpellVisual): Promise<void> {
+    const distance = dist(from, to);
+    if (distance < 3) return this.vfxBurst(to, visual.color, 28, visual.speed ?? 1);
+
+    return new Promise((resolve) => {
+      const speed = Math.max(0.25, visual.speed ?? 1);
+      const radius = Phaser.Math.Clamp(visual.size ?? 10, 5, 18);
+      const unit = { x: (to.x - from.x) / distance, y: (to.y - from.y) / distance };
+      const start = {
+        x: from.x + unit.x * (MAGE_RADIUS * 0.65),
+        y: from.y + unit.y * (MAGE_RADIUS * 0.65),
+      };
+      const end = { x: to.x - unit.x * 4, y: to.y - unit.y * 4 };
+      const arc = this.reducedMotion ? 0 : Math.min(28, distance * 0.065);
+      const duration = this.reducedMotion
+        ? 90
+        : Phaser.Math.Clamp(
+          (distance / (FX_TWEEN.projectile.pixelsPerSecond * speed)) * 1000,
+          FX_TWEEN.projectile.minDuration,
+          FX_TWEEN.projectile.maxDuration,
+        );
+
+      const root = this.add.container(start.x, start.y).setDepth(31);
+      const tail = this.add
+        .rectangle(-radius * 0.8, 0, radius * 3.4, radius * 1.25, visual.color, 0.24)
+        .setOrigin(1, 0.5)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      const innerTail = this.add
+        .rectangle(-radius * 0.35, 0, radius * 2.25, Math.max(2, radius * 0.42), 0xffffff, 0.58)
+        .setOrigin(1, 0.5)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      const aura = this.add
+        .circle(0, 0, radius * 1.6, visual.color, 0.24)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      const body = this.add.circle(0, 0, radius, visual.color, 0.96);
+      const core = this.add
+        .circle(-radius * 0.12, -radius * 0.12, Math.max(2, radius * 0.38), 0xffffff, 0.92)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      root.add([tail, innerTail, aura, body, core]);
+      root.setScale(this.reducedMotion ? 1 : 0.72);
+
+      const progress = { value: 0 };
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        this.tweens.killTweensOf(root);
+        this.tweens.killTweensOf(aura);
+        this.tweens.killTweensOf(progress);
+        if (root.active) root.destroy(true);
+        resolve();
+      };
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+
+      if (!this.reducedMotion) {
+        this.tweens.add({
+          targets: root,
+          scale: 1,
+          duration: Math.min(130, duration * 0.4),
+          ease: 'Back.Out',
+        });
+        this.tweens.add({
+          targets: aura,
+          scale: 1.28,
+          alpha: 0.12,
+          duration: 90,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.InOut',
+        });
+      }
+
+      this.tweens.add({
+        targets: progress,
+        value: 1,
+        duration,
+        ease: FX_TWEEN.projectile.ease,
+        onUpdate: () => {
+          const amount = progress.value;
+          const x = Phaser.Math.Linear(start.x, end.x, amount);
+          const y = Phaser.Math.Linear(start.y, end.y, amount) - Math.sin(Math.PI * amount) * arc;
+          const tangentX = end.x - start.x;
+          const tangentY = end.y - start.y - Math.cos(Math.PI * amount) * Math.PI * arc;
+          root.setPosition(x, y).setRotation(Math.atan2(tangentY, tangentX));
+        },
+        onComplete: () => {
+          this.tweens.killTweensOf(aura);
+          if (root.active) root.destroy(true);
+          void this.vfxBurst(to, visual.color, Math.max(26, radius * 3.1), speed).then(finish);
+        },
+      });
+    });
   }
 
   /** A conjured attack that simply erupts on the target — no projectile travel. */
