@@ -37,7 +37,6 @@ export const FX_TWEEN = {
   healGlow: { duration: 620, ease: 'Sine.Out' },
   healSparkle: { duration: 520, ease: 'Sine.Out', stagger: 40 },
   burst: { duration: 360, ease: 'Cubic.Out' },
-  lightningLifetime: 290,
   quarterTurn: { duration: 240, hold: 80, ease: 'Cubic.InOut' },
   twistMarker: { duration: 420, ease: 'Cubic.Out' },
   twistRune: { duration: 460, ease: 'Cubic.Out' },

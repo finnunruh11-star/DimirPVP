@@ -3,8 +3,8 @@
 // -----------------------------------------------------------------------------
 //  The simulation is deterministic (seeded dice, all randomness via gs.rng), so
 //  both players run the *same* GameState and only exchange their decisions:
-//  turn actions, reaction choices and mid-cast sub-targets. This class is just
-//  an ordered message pipe — connect, send JSON, await the next JSON message.
+//  turn actions, reactions, perfect-dodge bonus picks and mid-cast targets. This
+//  class is just an ordered message pipe — connect, send JSON, await the next.
 //
 //  Messages flow through a relay server (server/relay.mjs) that pairs the two
 //  clients of a room and forwards everything between them. Because both peers

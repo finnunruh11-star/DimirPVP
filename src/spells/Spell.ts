@@ -91,6 +91,9 @@ export interface Spell {
   /** Optional visual played when the spell resolves. */
   visual?: SpellVisual;
 
+  /** The cast body sequences its own travel/impact visual instead of using `visual`. */
+  manualCastVisual?: boolean;
+
   /**
    * Suppress the automatic natural-20 critical for this spell. Class-spell rule:
    * only Objects-class variants may crit; Life and Hexcraft variants set this so

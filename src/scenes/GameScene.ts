@@ -37,6 +37,7 @@ import {
 } from '../ui/combat/CombatMenus';
 import { EndCardView, type EndCardOptions } from '../ui/combat/EndCardView';
 import { PauseView } from '../ui/combat/PauseView';
+import { DicePanelView, type DiceRollView } from '../ui/combat/DicePanelView';
 import {
   InventoryView,
   type InventoryActionKind,
@@ -84,6 +85,7 @@ import {
 import { GameState } from '../core/GameState';
 import { Mage } from '../core/Mage';
 import { Dice } from '../core/Dice';
+import { analyzeDodge, dodgeGrantsBonusAction, type DodgeTier } from '../core/Dodge';
 import { scenarioToMages, scenarioToScarabs, type Scenario } from '../core/Scenario';
 import { downloadScenario, pickScenarioFile } from '../ui/scenarioFile';
 import type { Status } from '../core/Status';
@@ -93,7 +95,8 @@ import attackIconUrl from '../Sprites/Attack.png';
 import spellIconUrl from '../Sprites/SpellCast.png';
 import dotSheetUrl from '../Sprites/Spell/DoT.png';
 import genericSheetUrl from '../Sprites/Spell/Generic.png';
-import poisonSheetUrl from '../Sprites/Spell/Poison Attack.png';
+import rootSheetUrl from '../Sprites/Root/1_2.png';
+import stunSheetUrl from '../Sprites/Stun/StunEffect_Sheet_64x64.png';
 import vanishSheetUrl from '../Sprites/Spell/Vanish.png';
 import shatterSheetUrl from '../Sprites/Spell/Shatter.png';
 import disruptSheetUrl from '../Sprites/Spell/Disrupt.png';
@@ -115,6 +118,12 @@ import reaperAttackSheetUrl from '../Sprites/Reaper/wraith_original_attack_sheet
 import reaperHitSheetUrl from '../Sprites/Reaper/wraith_original_hit_sheet.png';
 import reaperDeathSheetUrl from '../Sprites/Reaper/wraith_original_death_sheet.png';
 import edgelordImpactSheetUrl from '../../spritesheet/Lightning/lightning_burst_003/lightning_burst_003_large_violet/spritesheet.png';
+import lightningChargeSheetUrl from '../../spritesheet/Lightning/lightning_burst_001/lightning_burst_001_large_violet/spritesheet.png';
+import lightningImpactSheetUrl from '../../spritesheet/Lightning/lightning_burst_002/lightning_burst_002_large_violet/spritesheet.png';
+import lightningStrikeSheetUrl from '../../spritesheet/Lightning/lightning_strike_001/lightning_strike_001_large_violet/spritesheet.png';
+import summonSmokeSheetUrl from '../../spritesheet/Smoke Bursts/symmetrical_smoke_burst_001/symmetrical_smoke_burst_001_small_brown/spritesheet.png';
+import swampMistSheetUrl from '../../spritesheet/Smoke Bursts/directional_smoke_burst_001/directional_smoke_burst_001_large_white/spritesheet.png';
+import swampTilesUrl from '../assets/arena/kenney/roguelikeSheet_transparent.png';
 import { scarabAlive, type ScarabState } from '../core/Scarab';
 import { Dev, type DevToggle } from '../config/dev';
 import {
@@ -164,9 +173,25 @@ import { barrierContains } from '../core/Barrier';
 import type { Spell, SpellVisual } from '../spells/Spell';
 import { allSpells, getSpell, isClassSpellCombo, spellById, setActiveSpellSets } from '../spells/registry';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
-import type { SubTargetPointOpts, SubTargetEnemyOpts } from '../effects/effects';
+import type {
+  SubTargetCombatantOpts,
+  SubTargetPointOpts,
+  SubTargetEnemyOpts,
+} from '../effects/effects';
 import { ACTION_FX_PRESETS, FX_MOTION, FX_TWEEN } from '../effects/FxPresets';
 import { CombatFeedbackLayer } from '../visuals/CombatFeedbackLayer';
+import {
+  LIGHTNING_FX_SHEETS,
+  LightningFxDirector,
+  registerLightningFxAnimations,
+} from '../visuals/LightningFxDirector';
+import {
+  SWAMP_MIST_FRAME,
+  SWAMP_MIST_KEY,
+  SWAMP_TILESET_FRAME,
+  SWAMP_TILESET_KEY,
+  SwampArenaView,
+} from '../visuals/SwampArenaView';
 import { SimpleAI, type AIDecision } from '../ai/SimpleAI';
 import type { MatchConfig, SeatConfig, SwampPrepMode } from '../config/MatchConfig';
 import {
@@ -425,6 +450,10 @@ interface MageAnim {
   sprite: Phaser.GameObjects.Sprite;
   held?: Phaser.GameObjects.Image;
   heldVisualKey?: string;
+  /** Binding roots held on the body while a physical root lasts. */
+  root?: Phaser.GameObjects.Sprite;
+  /** A ring of stars spinning over the head while a full stun lasts. */
+  stun?: Phaser.GameObjects.Sprite;
   /** A special animation currently owning the sprite (else idle/charge rests). */
   lock: 'move' | 'dash' | 'pull' | 'attack' | 'hit' | 'death' | null;
   /** A sprite-position tween owns the position; don't snap to logical. */
@@ -475,6 +504,7 @@ type InputMode =
   | 'subtarget-enemy'
   | 'busy'
   | 'reaction'
+  | 'dodge-bonus'
   | 'assign'
   | 'shop'
   | 'inventory'
@@ -489,11 +519,13 @@ type InputMode =
   | 'pause'
   | 'over';
 
-interface DiceRoll {
-  spec: string;
-  total: number;
-  rolls: number[];
-  label?: string;
+interface ArenaTheme {
+  kind: 'duel' | 'swamp' | 'mine' | 'raid';
+  floor: number;
+  tile: number;
+  grid: number;
+  accent: number;
+  shadow: number;
 }
 
 /**
@@ -520,35 +552,10 @@ interface ActionEntry {
   run: () => void;
 }
 
-/** The reward tier of a dodge roll (see {@link analyzeDodge}). */
-type DodgeTier = 'none' | 'pair' | 'triple' | 'quad';
-
-/** A follow-up action offered after a strong dodge (triple / quad). */
-type DodgeChoice =
-  | { kind: 'attack' }
-  | { kind: 'spell'; spell: Spell }
-  | { kind: 'ability'; ability: ColorAbility };
-
-/**
- * Classify a dodge dice roll (Nd6) into its reward tier:
- *  - none   : no repeated value — the dodge fails.
- *  - pair   : one repeated value — evade + reposition.
- *  - triple : three of a kind OR two pairs — pair + a free bonus action.
- *  - quad   : four of a kind OR three pairs — triple + the option to riposte.
- */
-function analyzeDodge(rolls: number[]): DodgeTier {
-  const counts = new Map<number, number>();
-  for (const r of rolls) counts.set(r, (counts.get(r) ?? 0) + 1);
-  let pairs = 0;
-  let maxCount = 0;
-  for (const c of counts.values()) {
-    if (c >= 2) pairs++;
-    if (c > maxCount) maxCount = c;
-  }
-  if (maxCount >= 4 || pairs >= 3) return 'quad';
-  if (maxCount >= 3 || pairs >= 2) return 'triple';
-  if (maxCount >= 2) return 'pair';
-  return 'none';
+interface DodgeBonusOption {
+  id: string;
+  label: string;
+  detail: string;
 }
 
 function dodgeTierLabel(t: DodgeTier): string {
@@ -556,9 +563,9 @@ function dodgeTierLabel(t: DodgeTier): string {
     case 'pair':
       return 'a clean evade';
     case 'triple':
-      return 'an evade + free action';
+      return 'a perfect evade + free bonus action';
     case 'quad':
-      return 'an evade + riposte';
+      return 'a perfect evade + free bonus action';
     default:
       return 'no match — the dodge fails';
   }
@@ -619,6 +626,9 @@ type SubCommand =
 
 /** A mid-resolution draft pick (Gambler's Blade cash-out): the chosen card index. */
 type DraftCommand = { t: 'draft'; index: number };
+
+/** The selected action in a synchronized perfect-dodge bonus window. */
+type DodgeBonusChoiceCommand = { t: 'dodge-bonus'; optionId: string | null };
 
 const MAGE_RADIUS = 22;
 const CREATURE_SPRITE_HEIGHT = MAGE_RADIUS * 4.5;
@@ -906,19 +916,24 @@ export class GameScene extends Phaser.Scene {
   private subtargetOrigin: Vec2 | null = null;
   private subtargetRange = 0;
   private subtargetMinRange = 0;
+  private subtargetCandidates: Set<Mage> | null = null;
+  private subtargetRequired = false;
 
   // Dice rolls queued during the current resolution, shown after the effect.
-  private pendingDice: DiceRoll[] = [];
+  private pendingDice: DiceRollView[] = [];
 
   // Graphics & text.
   private gfxStatic!: Phaser.GameObjects.Graphics;
+  private gfxArenaAmbient!: Phaser.GameObjects.Graphics;
+  private arenaThemeCache?: ArenaTheme;
+  private swampArena?: SwampArenaView;
   private gfx!: Phaser.GameObjects.Graphics;
   private gfxFx!: Phaser.GameObjects.Graphics;
   private gfxMine!: Phaser.GameObjects.Graphics;
   private gfxScarab!: Phaser.GameObjects.Graphics;
-  private lightningTrailSprites: Phaser.GameObjects.Sprite[] = [];
+  private lightningFx?: LightningFxDirector;
   private hoverGfx!: Phaser.GameObjects.Graphics;
-  private dicePanel!: Phaser.GameObjects.Container;
+  private dicePanel!: DicePanelView;
   private turnText!: Phaser.GameObjects.Text;
   private comboText!: Phaser.GameObjects.Text;
   private hintText!: Phaser.GameObjects.Text;
@@ -1022,6 +1037,10 @@ export class GameScene extends Phaser.Scene {
   // Reaction prompt.
   private reactor: Mage | null = null;
 
+  // Perfect-dodge bonus-action chooser.
+  private dodgeBonusActor: Mage | null = null;
+  private dodgeBonusMenu?: PagedChoiceMenuView<string>;
+
   /**
    * Active "Command" puppet: while the owner directs a summon it becomes the
    * current mage (so all normal move/attack/item input drives it) for exactly
@@ -1082,12 +1101,38 @@ export class GameScene extends Phaser.Scene {
     // One-shot hit-effect sprite sheets, played on the afflicted target.
     this.load.spritesheet('fx-dot', dotSheetUrl, { frameWidth: 96, frameHeight: 96 });
     this.load.spritesheet('fx-generic', genericSheetUrl, { frameWidth: 96, frameHeight: 96 });
-    this.load.spritesheet('fx-poison', poisonSheetUrl, { frameWidth: 128, frameHeight: 128 });
+    this.load.spritesheet('fx-root', rootSheetUrl, { frameWidth: 72, frameHeight: 72 });
+    this.load.spritesheet('fx-stun', stunSheetUrl, { frameWidth: 64, frameHeight: 64 });
     this.load.spritesheet('fx-vanish', vanishSheetUrl, { frameWidth: 64, frameHeight: 64 });
     this.load.spritesheet('fx-shatter', shatterSheetUrl, { frameWidth: 64, frameHeight: 64 });
     this.load.spritesheet('fx-disrupt', disruptSheetUrl, { frameWidth: 128, frameHeight: 128 });
     this.load.spritesheet('fx-lightning', lightningSheetUrl, { frameWidth: 256, frameHeight: 128 });
     this.load.spritesheet('fx-edgelord-impact', edgelordImpactSheetUrl, { frameWidth: 96, frameHeight: 96 });
+    this.load.spritesheet(LIGHTNING_FX_SHEETS.charge.key, lightningChargeSheetUrl, {
+      frameWidth: LIGHTNING_FX_SHEETS.charge.frameWidth,
+      frameHeight: LIGHTNING_FX_SHEETS.charge.frameHeight,
+    });
+    this.load.spritesheet(LIGHTNING_FX_SHEETS.impact.key, lightningImpactSheetUrl, {
+      frameWidth: LIGHTNING_FX_SHEETS.impact.frameWidth,
+      frameHeight: LIGHTNING_FX_SHEETS.impact.frameHeight,
+    });
+    this.load.spritesheet(LIGHTNING_FX_SHEETS.strike.key, lightningStrikeSheetUrl, {
+      frameWidth: LIGHTNING_FX_SHEETS.strike.frameWidth,
+      frameHeight: LIGHTNING_FX_SHEETS.strike.frameHeight,
+    });
+    this.load.spritesheet('fx-summon-smoke', summonSmokeSheetUrl, {
+      frameWidth: 32,
+      frameHeight: 32,
+    });
+    this.load.spritesheet(SWAMP_TILESET_KEY, swampTilesUrl, {
+      frameWidth: SWAMP_TILESET_FRAME.width,
+      frameHeight: SWAMP_TILESET_FRAME.height,
+      spacing: SWAMP_TILESET_FRAME.spacing,
+    });
+    this.load.spritesheet(SWAMP_MIST_KEY, swampMistSheetUrl, {
+      frameWidth: SWAMP_MIST_FRAME.width,
+      frameHeight: SWAMP_MIST_FRAME.height,
+    });
   }
 
   /**
@@ -1098,6 +1143,8 @@ export class GameScene extends Phaser.Scene {
   private resetSceneState(): void {
     this.combatFeedback?.destroy();
     this.combatFeedback = undefined;
+    this.lightningFx?.destroy();
+    this.lightningFx = undefined;
     this.mode = 'idle';
     this.busy = false;
     this.gameEnded = false;
@@ -1108,9 +1155,21 @@ export class GameScene extends Phaser.Scene {
     this.pendingDice = [];
     this.pendingHits = [];
     this.pendingEffects = [];
+    this.pendingDrains = [];
+    this.pendingSummonPuffs = [];
+    this.subtargetResolve = null;
+    this.subtargetSource = null;
+    this.subtargetOrigin = null;
+    this.subtargetRange = 0;
+    this.subtargetMinRange = 0;
+    this.subtargetCandidates = null;
+    this.subtargetRequired = false;
     this.endCard = undefined;
     this.stackTokens = [];
     this.stackIcons = [];
+    this.arenaThemeCache = undefined;
+    this.swampArena?.destroy();
+    this.swampArena = undefined;
     this.resourceLabels = [];
     this.resourceValues = [];
     this.wordPlates = [];
@@ -1299,13 +1358,22 @@ export class GameScene extends Phaser.Scene {
       diceRoll: (spec, total, rolls, label) => this.pendingDice.push({ spec, total, rolls, label }),
       hit: (m) => this.playHit(m),
       dash: (mover, from) => this.animateDash(mover, from),
+      blink: (from, to, color) => this.vfxBlink(from, to, color),
+      slash: (at, angle, size) => void this.vfxSlash('fx-slash-arc', at, angle, size),
       pull: (mover, from, to) => this.animateEdgelordPull(mover, from, to),
       lightningBolt: (from, to) => this.vfxLightningBolt(from, to),
       spellEffect: (m, kind) => this.pendingEffects.push({ mage: m, kind }),
+      drainParticles: (from, to) => this.pendingDrains.push({ from: { ...from }, to: { ...to } }),
+      boomerang: (from, to, color, size, speed) => this.vfxBoomerang(from, to, color, size, speed),
+      summonPuff: (at, size) => this.pendingSummonPuffs.push({ at: { ...at }, size }),
       combatFeedback: (mage, feedback) => this.combatFeedback?.show(mage, feedback),
       shatterBurst: (at, size) => void this.vfxSpriteAt('fx-shatter', at, { lengthPx: size }),
       wedge: (apex, angle, halfAngle, range) => this.vfxWedge(apex, angle, halfAngle, range),
       lightningTrail: (segments) => this.setLightningTrail(segments),
+      lightningDash: (from, to, color) =>
+        this.lightningFx?.dashStreak(from, to, color, FX_MOTION.dash.duration) ?? Promise.resolve(),
+      lightningImpact: (at, color) => void this.lightningFx?.impact(at, color),
+      lightningCrash: (at, color) => this.lightningFx?.crash(at, color) ?? Promise.resolve(),
       clearLightningTrail: () => this.clearLightningTrail(),
       quarterTurn: (clockwise) => this.vfxQuarterTurn(clockwise),
       twistRune: (pivot, radius, clockwise) => this.vfxTwistRune(pivot, radius, clockwise),
@@ -1313,12 +1381,14 @@ export class GameScene extends Phaser.Scene {
     this.gs.subTargeter = {
       requestPoint: (source, opts) => this.requestSubtargetPoint(source, opts),
       requestEnemy: (source, opts) => this.requestSubtargetEnemy(source, opts),
+      requestCombatant: (source, opts) => this.requestSubtargetCombatant(source, opts),
       reactionWindow: (source, label, at) => this.offerReactionWindow(source, label, { at }),
       resolveImpacts: () => this.resolveImpacts(),
     };
     for (const m of this.gs.mages) if (m.isAI) this.ais.set(m, new SimpleAI(this.gs, m));
 
     this.buildMageAnimations();
+    this.lightningFx = new LightningFxDirector(this, () => this.reducedMotion);
     this.buildHeldWeaponTextures();
     buildMineRoomTextures(this);
     this.buildStaticGraphics();
@@ -4431,6 +4501,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Per-frame: pulse the highlight rings around currently valid targets. */
   update(time: number): void {
+    this.drawArenaAmbient(time);
     this.syncMageSprites();
     this.drawMineMarkers();
     this.syncScarabSprites();
@@ -4725,6 +4796,7 @@ export class GameScene extends Phaser.Scene {
         y: Math.min(FIELD.y + FIELD.h - 20, Math.max(FIELD.y + 20, res.summonAt.y)),
       };
       this.spawnEnemy('zombie', at);
+      await this.vfxSummonPuff(at, MAGE_RADIUS * 3.2);
     }
     this.redraw();
     await this.delay(300);
@@ -4751,6 +4823,7 @@ export class GameScene extends Phaser.Scene {
                 : roll === 5
                   ? ['wisp', 'wisp', 'wisp']
                   : ['soldierDemon', 'beastDemon'];
+      const summonPuffs: Promise<void>[] = [];
       for (let index = 0; index < kinds.length; index++) {
         const angle = (Math.PI * 2 * index) / kinds.length + this.gs.rng.float() * 0.35;
         const radius = (2 + this.gs.rng.float() * 3) * RANGE_UNIT;
@@ -4759,7 +4832,9 @@ export class GameScene extends Phaser.Scene {
           y: Math.min(FIELD.y + FIELD.h - 20, Math.max(FIELD.y + 20, knight.y + Math.sin(angle) * radius)),
         };
         this.spawnEnemy(kinds[index], at);
+        summonPuffs.push(this.vfxSummonPuff(at, MAGE_RADIUS * 3.2));
       }
+      await Promise.all(summonPuffs);
       this.gs.log(
         `${knight.name} summons ${kinds.map((kind) => ENEMY_DEFS[kind].name).join(', ')} from the deep mire.`
       );
@@ -4949,18 +5024,28 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Apply a turn command — spending costs and running the stack identically on both peers. */
-  private async applyTurnCommand(cmd: TurnCommand): Promise<void> {
-    const me = this.gs.current;
+  private async applyTurnCommand(
+    cmd: TurnCommand,
+    opts: { actor?: Mage; freeBonus?: boolean; queueOnly?: boolean } = {}
+  ): Promise<void> {
+    const me = opts.actor ?? this.gs.current;
+    const freeBonus = opts.freeBonus ?? false;
+    const spend = (kind: 'move' | 'main' | 'bonus'): void => {
+      if (!(freeBonus && kind === 'bonus')) me.spend(kind);
+    };
+    const runAction = opts.queueOnly
+      ? (item: StackItem): Promise<void> => this.stageStackItem(item)
+      : (item: StackItem): Promise<void> => this.runStack(item);
     this.resetSelection();
     switch (cmd.t) {
       case 'move':
-        me.spend('move');
-        await this.runStack(this.gs.makeMoveItem(me, { x: cmd.x, y: cmd.y }));
+        spend('move');
+        await runAction(this.gs.makeMoveItem(me, { x: cmd.x, y: cmd.y }));
         break;
       case 'melee': {
         const target = this.mageBySeat(cmd.target);
-        me.spend(me.attackIsBonusAction() ? 'bonus' : 'main');
-        await this.runStack(this.gs.makeMeleeItem(me, target));
+        spend(me.attackIsBonusAction() ? 'bonus' : 'main');
+        await runAction(this.gs.makeMeleeItem(me, target));
         break;
       }
       case 'spell': {
@@ -4981,8 +5066,8 @@ export class GameScene extends Phaser.Scene {
         const point2 = cmd.x2 != null && cmd.y2 != null ? { x: cmd.x2, y: cmd.y2 } : null;
         if (cmd.angle != null) me.wallAngle = cmd.angle;
         const mods = (cmd.mods ?? []).filter(isModifierWord);
-        if (cmd.ability && this.isColorAbility(spell)) this.payForColorAbility(me, spell);
-        else this.payForSpell(me, spell, false, mods);
+        if (cmd.ability && this.isColorAbility(spell)) this.payForColorAbility(me, spell, freeBonus);
+        else this.payForSpell(me, spell, freeBonus, mods);
         // Channel and Delay hold the spell instead of resolving it now.
         if (mods.includes('channel')) {
           me.channeledCast = { spell, target, point, point2, modifiers: mods };
@@ -4997,22 +5082,28 @@ export class GameScene extends Phaser.Scene {
           this.gs.log(`${me.name} delays ${spell.name} until their next turn.`);
           break;
         }
-        await this.runStack(
-          this.gs.makeSpellItem(me, spell, target, point, undefined, point2, mods)
-        );
-        // Mutivarg's Rod: spells cast through it burn 20% of the target's mana.
-        if (
-          me.hands.includes('mutivargRod' as ItemId) &&
-          target &&
-          target !== me &&
-          target.alive
-        ) {
-          const burn = Math.floor(target.mana * 0.2);
-          if (burn > 0) {
-            target.spendMana(burn);
-            this.gs.log(`The rod burns ${burn} mana from ${target.name}.`);
-          }
+        const spellItem = this.gs.makeSpellItem(me, spell, target, point, undefined, point2, mods);
+        const rodTarget =
+          me.hands.includes('mutivargRod' as ItemId) && target && target !== me
+            ? target
+            : null;
+        const burnRodMana = (): void => {
+          if (!rodTarget?.alive) return;
+          const burn = Math.floor(rodTarget.mana * 0.2);
+          if (burn <= 0) return;
+          rodTarget.spendMana(burn);
+          this.gs.log(`The rod burns ${burn} mana from ${rodTarget.name}.`);
+        };
+        if (opts.queueOnly && rodTarget) {
+          const resolveSpell = spellItem.resolve;
+          spellItem.resolve = async (game) => {
+            await resolveSpell(game);
+            burnRodMana();
+          };
         }
+        await runAction(spellItem);
+        // Mutivarg's Rod: spells cast through it burn 20% of the target's mana.
+        if (!opts.queueOnly) burnRodMana();
         break;
       }
       case 'cast-random': {
@@ -5021,8 +5112,8 @@ export class GameScene extends Phaser.Scene {
         const sub = this.randomCastFor(me);
         if (sub) {
           this.gs.log(`${me.name} is scrambled — ${sub.spell.name} erupts instead!`);
-          this.payForSpell(me, sub.spell);
-          await this.runStack(this.gs.makeSpellItem(me, sub.spell, sub.target, sub.point));
+          this.payForSpell(me, sub.spell, freeBonus);
+          await runAction(this.gs.makeSpellItem(me, sub.spell, sub.target, sub.point));
         }
         break;
       }
@@ -5032,8 +5123,8 @@ export class GameScene extends Phaser.Scene {
           this.gs.log(`${getItem(itemId).name} is permanently bound to ${me.name}.`);
           break;
         }
-        me.spend('bonus');
-        await this.runStack(
+        spend('bonus');
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Drop',
@@ -5046,8 +5137,8 @@ export class GameScene extends Phaser.Scene {
         break;
       }
       case 'item-pickup': {
-        me.spend('bonus');
-        await this.runStack(
+        spend('bonus');
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Pick up',
@@ -5067,8 +5158,8 @@ export class GameScene extends Phaser.Scene {
           );
           break;
         }
-        me.spend('bonus');
-        await this.runStack(
+        spend('bonus');
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Use',
@@ -5083,8 +5174,8 @@ export class GameScene extends Phaser.Scene {
       }
       case 'item-equip': {
         const itemId = cmd.itemId as ItemId;
-        me.spend('bonus');
-        await this.runStack(
+        spend('bonus');
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Equip',
@@ -5105,8 +5196,8 @@ export class GameScene extends Phaser.Scene {
           this.gs.log(`${getItem(itemId).name} is permanently bound to ${me.name}.`);
           break;
         }
-        me.spend('bonus');
-        await this.runStack(
+        spend('bonus');
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Unequip',
@@ -5127,9 +5218,9 @@ export class GameScene extends Phaser.Scene {
           );
           break;
         }
-        me.spend('bonus');
+        spend('bonus');
         const target = this.mageBySeat(cmd.target);
-        await this.runStack(
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Throw',
@@ -5149,9 +5240,9 @@ export class GameScene extends Phaser.Scene {
           (!me.edgelordLanternActive &&
             (me.mana < 4 || this.gs.edgelordCaptives(me).length > 0))
         ) break;
-        me.spend('bonus');
+        spend('bonus');
         const activating = !me.edgelordLanternActive;
-        await this.runStack(
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: activating ? 'Awaken Lantern' : 'Seal Lantern',
@@ -5173,7 +5264,7 @@ export class GameScene extends Phaser.Scene {
         me.actions = { move: 0, main: 0, bonus: 0 };
         me.reactionAvailable = false;
         me.reactedThisCycle = true;
-        await this.runStack(
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Throw Edgelord Lantern',
@@ -5190,7 +5281,7 @@ export class GameScene extends Phaser.Scene {
         break;
       }
       case 'deaths-angel-wings': {
-        await this.performDeathsAngelWings(me);
+        await this.performDeathsAngelWings(me, freeBonus, runAction);
         break;
       }
       case 'eldritch': {
@@ -5198,9 +5289,9 @@ export class GameScene extends Phaser.Scene {
           this.gs.log(`${me.name} reaches for eldritch truth, but it has been stifled forever.`);
           break;
         }
-        me.spend('main');
+        spend('main');
         const target = cmd.target ? this.mageBySeat(cmd.target) : null;
-        await this.runStack(
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Eldritch',
@@ -5216,8 +5307,8 @@ export class GameScene extends Phaser.Scene {
           this.gs.log(`${me.name} reaches to charge thunder, but it has been stifled forever.`);
           break;
         }
-        me.spend('bonus');
-        await this.runStack(
+        spend('bonus');
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Charge Up',
@@ -5235,17 +5326,16 @@ export class GameScene extends Phaser.Scene {
           this.gs.log(`${me.name} reaches to discharge thunder, but it has been stifled forever.`);
           break;
         }
-        me.spend('bonus');
+        spend('bonus');
         const target = this.mageBySeat(cmd.target);
-        await this.runStack(
+        await runAction(
           this.gs.makeActionItem({
             source: me,
+            target,
             label: 'Discharge',
             description: `${me.name} discharges thunder at ${target.name}.`,
             needleBan: { kind: 'ability', key: 'thunder-discharge', label: 'Discharge' },
-            resolve: (game) => {
-              game.dischargeThunder(me, target);
-            },
+            resolve: (game) => game.dischargeThunder(me, target),
           })
         );
         break;
@@ -5263,8 +5353,8 @@ export class GameScene extends Phaser.Scene {
           this.gs.log(`${me.name}'s weapon action has been stifled forever.`);
           break;
         }
-        me.spend('bonus');
-        await this.runStack(
+        spend('bonus');
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: weaponActionLabel,
@@ -5296,13 +5386,13 @@ export class GameScene extends Phaser.Scene {
         break;
       }
       case 'leap': {
-        me.spend('bonus');
+        spend('bonus');
         me.leapsUsed += 1;
         // Roll the d6 deterministically so both peers agree on the distance.
         const roll = this.gs.rng.roll('1d6').total;
         const distPx = (roll / 6) * (1 + 0.25 * me.effectiveDex()) * RANGE_UNIT;
         const aim = { x: cmd.x, y: cmd.y };
-        await this.runStack(
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Leap',
@@ -5329,7 +5419,7 @@ export class GameScene extends Phaser.Scene {
         me.actions.bonus = 0;
         me.reactionAvailable = false;
         me.reactedThisCycle = true;
-        await this.runStack(
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Focus',
@@ -5344,7 +5434,7 @@ export class GameScene extends Phaser.Scene {
         break;
       }
       case 'cleave': {
-        me.spend('main');
+        spend('main');
         me.cleaveUsed = true;
         const aim = { x: cmd.x, y: cmd.y };
         // A broad crescent sweep in front of the swinger dresses the 180° arc.
@@ -5355,7 +5445,7 @@ export class GameScene extends Phaser.Scene {
           y: me.pos.y + Math.sin(dir) * reach * 0.55,
         };
         void this.vfxSlash('fx-slash-sweep', center, dir, reach * 2.6);
-        await this.runStack(
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Cleave',
@@ -5371,7 +5461,7 @@ export class GameScene extends Phaser.Scene {
         const owner = me;
         const summon = this.mageBySeat(cmd.summon);
         if (!summon.isSummon || !summon.alive || summon.summonOwnerIndex !== this.seatOf(owner)) break;
-        owner.spend('bonus');
+        spend('bonus');
         summon.actions = { move: 1, main: 1, bonus: 1 };
         summon.hasCastThisTurn = false;
         this.puppet = { summon, owner, savedIndex: this.gs.currentIndex };
@@ -5390,9 +5480,9 @@ export class GameScene extends Phaser.Scene {
       }
       case 'mantle-bind': {
         if (me.bindMantleCharges <= 0) break;
-        me.spend('bonus');
+        spend('bonus');
         me.bindMantleCharges -= 1;
-        await this.runStack(
+        await runAction(
           this.gs.makeActionItem({
             source: me,
             label: 'Weak Bind',
@@ -5413,7 +5503,7 @@ export class GameScene extends Phaser.Scene {
     // spent both, or is dead, or the owner releases early with End. Only the
     // controlling client issues the release, so it relays to peers like any turn
     // command.
-    if (this.puppet && this.gs.stack.length === 0 && this.isLocalTurn()) {
+    if (!opts.queueOnly && this.puppet && this.gs.stack.length === 0 && this.isLocalTurn()) {
       const s = this.puppet.summon;
       const mainSpent = s.actions.main < 1 || s.hasCastThisTurn;
       const moveSpent = s.actions.move < 1;
@@ -5422,7 +5512,13 @@ export class GameScene extends Phaser.Scene {
 
     // If the command produced no stack action (e.g. a scrambled mage with
     // nothing castable), unlock local input again so the player can still act.
-    if (!this.gs.isOver && this.isLocalTurn() && this.gs.stack.length === 0 && this.mode === 'busy') {
+    if (
+      !opts.queueOnly &&
+      !this.gs.isOver &&
+      this.isLocalTurn() &&
+      this.gs.stack.length === 0 &&
+      this.mode === 'busy'
+    ) {
       this.mode = 'idle';
       this.redraw();
     }
@@ -5632,10 +5728,10 @@ export class GameScene extends Phaser.Scene {
   //  THE STACK  (resolve with reaction windows)
   // ===========================================================================
 
-  private async runStack(initial: StackItem): Promise<void> {
+  /** Put one action on the stack and perform its pre-reaction presentation. */
+  private async stageStackItem(initial: StackItem): Promise<void> {
     this.recordLastAction(initial);
     this.busy = true;
-    const prevMode = this.mode;
     this.mode = 'busy';
     this.gs.pushStack(initial);
     // Subtle decides silence before anyone may answer the cast.
@@ -5654,6 +5750,11 @@ export class GameScene extends Phaser.Scene {
     this.redraw();
     if (initial.kind === 'spell') this.setCharging(initial.source, true);
     await this.delay(250);
+  }
+
+  private async runStack(initial: StackItem): Promise<void> {
+    const prevMode = this.mode;
+    await this.stageStackItem(initial);
 
     await this.resolveStackLoop();
 
@@ -5881,9 +5982,12 @@ export class GameScene extends Phaser.Scene {
         }
         if (choice && choice.dodge) {
           // A dodge rolls to slip aside; on a hit the whole action is negated.
-          const negated = await this.performDodge(reactor, top);
-          if (negated) {
+          const dodgeTier = await this.performDodge(reactor, top);
+          if (dodgeTier !== 'none') {
             this.gs.removeStackItem(top.id);
+            if (dodgeGrantsBonusAction(dodgeTier)) {
+              await this.offerDodgeBonusAction(reactor);
+            }
             stackChanged = true;
             break;
           }
@@ -5959,6 +6063,15 @@ export class GameScene extends Phaser.Scene {
       this.gs.log(`${item.label} fizzles — no valid target.`);
       if (item.kind === 'spell') this.setCharging(item.source, false);
       await this.delay(150);
+      return item;
+    }
+
+    // Bound after declaring: the body can no longer follow the action through.
+    const bound = this.gs.stunPrevents(item);
+    if (bound) {
+      this.gs.log(`${item.label} fails — ${item.source.name} is ${bound}.`);
+      if (item.kind === 'spell') this.setCharging(item.source, false);
+      await this.delay(220);
       return item;
     }
 
@@ -6609,7 +6722,7 @@ export class GameScene extends Phaser.Scene {
 
   /** The mage currently giving input — the reactor during a reaction window. */
   private get actor(): Mage {
-    return this.reactor ?? this.gs.current;
+    return this.dodgeBonusActor ?? this.reactor ?? this.subtargetSource ?? this.gs.current;
   }
 
   private isWorkshopMode(): boolean {
@@ -6924,16 +7037,20 @@ export class GameScene extends Phaser.Scene {
     this.submitTurn({ t: 'deaths-angel-wings' });
   }
 
-  /** Resolve Wings activation identically for human commands and local AI. */
-  private async performDeathsAngelWings(me: Mage): Promise<void> {
+  /** Resolve Wings activation identically for normal turns and dodge bonus windows. */
+  private async performDeathsAngelWings(
+    me: Mage,
+    freeBonus = false,
+    runAction: (item: StackItem) => Promise<void> = (item) => this.runStack(item)
+  ): Promise<void> {
     if (
       !me.hasDeathsAngelWings() ||
       me.isItemBanned('deathsAngelWings') ||
       me.deathsAngelEnergy <= 0 ||
-      (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      (!freeBonus && me.actions.bonus <= 0 && !Dev.infiniteActions)
     ) return;
-    me.spend('bonus');
-    await this.runStack(
+    if (!freeBonus) me.spend('bonus');
+    await runAction(
       this.gs.makeActionItem({
         source: me,
         label: 'Wings of Deaths Angel',
@@ -7759,6 +7876,10 @@ export class GameScene extends Phaser.Scene {
   private cancelAiming(): void {
     // Skipping an interactive sub-target resolves it as "no target".
     if (this.mode === 'subtarget-point' || this.mode === 'subtarget-enemy') {
+      if (this.subtargetRequired) {
+        this.flashHint('Choose a valid target for the next lightning arc.', true);
+        return;
+      }
       this.flashHint('Sub-target skipped.');
       this.finishSubtarget(null);
       return;
@@ -8160,18 +8281,11 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (this.mode === 'subtarget-enemy') {
-      const src = this.subtargetSource ?? me;
-      const origin = this.subtargetOrigin ?? src.pos;
-      const target = this.clickedMage(pt, src);
-      if (
-        target &&
-        target.team !== src.team &&
-        !this.gs.isUntargetable(target, src) &&
-        dist(origin, target.pos) <= this.subtargetRange
-      ) {
+      const target = this.clickedMage(pt, this.subtargetCandidates ? null : this.subtargetSource ?? me);
+      if (target && this.canPickSubtargetMage(target)) {
         this.finishSubtarget(target);
       } else {
-        this.flashHint('Invalid target (out of range / unseen).');
+        this.flashHint('Invalid target (out of range or unavailable).');
       }
       return;
     }
@@ -8252,7 +8366,7 @@ export class GameScene extends Phaser.Scene {
     if (this.mode === 'aiming-discharge') {
       const target = this.clickedMage(pt, null);
       const reach = this.gs.thunderDischargeRange(me.thunderStacks);
-      if (target && target !== me && target.alive && dist(me.pos, target.pos) <= reach) {
+      if (target && target.alive && dist(me.pos, target.pos) <= reach) {
         this.mode = 'busy';
         this.submitTurn({ t: 'thunder-discharge', target: this.seatOf(target) });
       } else {
@@ -8412,8 +8526,8 @@ export class GameScene extends Phaser.Scene {
     }
     if (free && mage.swamprunCurse === 'feeding') mana += 1;
     mage.spendMana(mana);
-    // A "free" cast (a dodge follow-up) costs no action and does not use up the
-    // one-spell-per-turn allowance — but still pays charges, mana and blood.
+    // A free cast costs no action and does not use the one-spell-per-turn
+    // allowance, but still pays charges, mana and blood.
     if (!free) {
       mage.hasCastThisTurn = true;
       // Focus pre-pays the action: the empowered spell doesn't spend its slot.
@@ -8753,7 +8867,15 @@ export class GameScene extends Phaser.Scene {
     if (!panel) return;
     panel.removeAll(true);
     const me = this.gs.current;
-    const foes = this.gs.mages.filter((m) => m.alive && m.team !== me.team);
+    const allCombatants =
+      this.mode === 'aiming-discharge' ||
+      (this.mode === 'subtarget-enemy' && this.subtargetCandidates !== null);
+    const foes = allCombatants
+      ? this.gs.mages.filter(
+          (mage) => mage.alive && (!this.subtargetCandidates || this.subtargetCandidates.has(mage))
+        )
+      : this.gs.mages.filter((mage) => mage.alive && mage.team !== me.team);
+    const targetHeading = allCombatants ? 'TARGETS' : 'FOES';
     const width = FIELD_OVERLAY_TR.w;
     const pageSize = 5;
     const pages = Math.max(1, Math.ceil(foes.length / pageSize));
@@ -8770,12 +8892,17 @@ export class GameScene extends Phaser.Scene {
       ? `${first + 1}-${Math.min(first + pageSize, foes.length)} / ${foes.length}`
       : `${foes.length}`;
     const header = this.add
-      .text(width / 2, 13, this.showTargetList ? `FOES  ${count}` : `FOES  ${count}  ·  CLOSED`, {
+      .text(
+        width / 2,
+        13,
+        this.showTargetList ? `${targetHeading}  ${count}` : `${targetHeading}  ${count}  ·  CLOSED`,
+        {
         fontFamily: MENU_FONT.control,
         fontSize: '12px',
         color: MENU_HEX.brassLight,
         fontStyle: 'bold',
-      })
+        }
+      )
       .setOrigin(0.5);
     headerBg.on('pointerdown', () => {
       this.showTargetList = !this.showTargetList;
@@ -8852,16 +8979,9 @@ export class GameScene extends Phaser.Scene {
       case 'aiming-eldritch':
         return m.team !== me.team;
       case 'aiming-discharge':
-        return m !== me && dist(me.pos, m.pos) <= this.gs.thunderDischargeRange(me.thunderStacks);
-      case 'subtarget-enemy': {
-        const src = this.subtargetSource ?? me;
-        const origin = this.subtargetOrigin ?? src.pos;
-        return (
-          m.team !== src.team &&
-          !this.gs.isUntargetable(m, src) &&
-          dist(origin, m.pos) <= this.subtargetRange
-        );
-      }
+        return dist(me.pos, m.pos) <= this.gs.thunderDischargeRange(me.thunderStacks);
+      case 'subtarget-enemy':
+        return this.canPickSubtargetMage(m);
       case 'aiming-spell': {
         const spell = this.reactionAiming ? this.reactionPendingSpell : this.pendingSpell;
         const src = this.reactionAiming ? this.aimingSource ?? me : me;
@@ -8900,22 +9020,16 @@ export class GameScene extends Phaser.Scene {
         return;
       case 'aiming-discharge': {
         const reach = this.gs.thunderDischargeRange(me.thunderStacks);
-        if (foe !== me && dist(me.pos, foe.pos) <= reach) {
+        if (dist(me.pos, foe.pos) <= reach) {
           this.mode = 'busy';
           this.submitTurn({ t: 'thunder-discharge', target: this.seatOf(foe) });
         } else this.flashHint('That foe is out of discharge range.');
         return;
       }
       case 'subtarget-enemy': {
-        const src = this.subtargetSource ?? me;
-        const origin = this.subtargetOrigin ?? src.pos;
-        if (
-          foe.team !== src.team &&
-          !this.gs.isUntargetable(foe, src) &&
-          dist(origin, foe.pos) <= this.subtargetRange
-        ) {
+        if (this.canPickSubtargetMage(foe)) {
           this.finishSubtarget(foe);
-        } else this.flashHint('Invalid target (out of range / unseen).');
+        } else this.flashHint('Invalid target (out of range or unavailable).');
         return;
       }
       case 'aiming-spell': {
@@ -9059,11 +9173,10 @@ export class GameScene extends Phaser.Scene {
    *  - no pair  → the dodge fails; the action lands normally.
    *  - a pair   → the whole action is negated (no damage, no hex) and the dodger
    *               slips aside up to (2 + Dex/10) range-units.
-   *  - triple   → as a pair, plus a free bonus action (offline only).
-   *  - quad     → as a triple, but the free action may be a basic attack riposte.
-   * Returns true when the strike is avoided (the caller then skips its effect).
+  *  - triple+  → as a pair, then opens one action-free bonus-action window.
+  * Returns the rolled tier; every tier except `none` avoids the strike.
    */
-  private async performDodge(reactor: Mage, top: StackItem): Promise<boolean> {
+  private async performDodge(reactor: Mage, top: StackItem): Promise<DodgeTier> {
     reactor.dodgesRemaining = Math.max(0, reactor.dodgesRemaining - 1);
     const dex = reactor.effectiveDex();
     const n = Math.max(1, Math.floor(dex / 2));
@@ -9082,7 +9195,7 @@ export class GameScene extends Phaser.Scene {
     );
     if (tier === 'none') {
       this.gs.log(`${reactor.name} fails to evade — the blow lands.`);
-      return false;
+      return tier;
     }
 
     // Success: negate the whole action and let the dodger slip aside. The
@@ -9102,13 +9215,7 @@ export class GameScene extends Phaser.Scene {
       });
     }
     if (dest) this.dodgeMove(reactor, dest);
-
-    // A strong roll grants a follow-up action. Gated to offline play so the
-    // online lockstep never diverges on an extra, unsynced decision.
-    if ((tier === 'triple' || tier === 'quad') && !this.online) {
-      await this.dodgeFollowUp(reactor, top, tier === 'quad');
-    }
-    return true;
+    return tier;
   }
 
   /** Move the dodging mage to `dest`, clamped by the field, barriers and bodies. */
@@ -9130,145 +9237,359 @@ export class GameScene extends Phaser.Scene {
     this.redraw();
   }
 
-  /**
-   * Offer the post-dodge follow-up: a free bonus action (word-spell or colour
-   * ability), or — on a quad — a basic-attack riposte instead. The cast is
-   * "free" (no action point) but still pays its mana / charges.
-   */
-  private async dodgeFollowUp(reactor: Mage, top: StackItem, allowAttack: boolean): Promise<void> {
-    const canRiposte = allowAttack && this.gs.canMelee(reactor, top.source);
-    const spells = this.affordableFollowupSpells(reactor);
-    const abilities = this.castableAbilities(reactor);
-    if (!canRiposte && spells.length === 0 && abilities.length === 0) {
-      this.gs.log(`${reactor.name} has no follow-up available.`);
-      return;
-    }
-
-    let choice: DodgeChoice | null;
-    if (this.controllerIsAI(reactor)) {
-      // Minimal AI: riposte if allowed, else fire the first affordable option.
-      if (canRiposte) choice = { kind: 'attack' };
-      else if (abilities.length) choice = { kind: 'ability', ability: abilities[0] };
-      else if (spells.length) choice = { kind: 'spell', spell: spells[0] };
-      else choice = null;
-    } else {
-      choice = await this.buildDodgeMenu(reactor, canRiposte, spells, abilities);
-    }
-    if (!choice) return;
-
-    if (choice.kind === 'attack') {
-      if (!this.gs.canMelee(reactor, top.source)) return;
-      this.gs.pushStack(this.gs.makeMeleeItem(reactor, top.source));
-      this.gs.log(`${reactor.name} ripostes!`);
-      this.redraw();
-      return;
-    }
-
-    const spell: Spell = choice.kind === 'ability' ? choice.ability : choice.spell;
-    const tgt = await this.resolveFollowupTarget(reactor, spell);
-    if (!tgt) return;
-    if (choice.kind === 'ability') this.payForColorAbility(reactor, choice.ability, true);
-    else this.payForSpell(reactor, choice.spell, true);
-    this.gs.pushStack(this.gs.makeSpellItem(reactor, spell, tgt.mage, tgt.point, top.id));
-    this.gs.log(`${reactor.name} follows up with ${spell.name}!`);
-    this.setCharging(reactor, true);
-    this.redraw();
+  /** Mage targets that remain legal for a bonus spell at this exact moment. */
+  private dodgeBonusSpellTargets(source: Mage, spell: Spell): Mage[] {
+    return this.gs.mages.filter((target) => this.gs.isValidSpellTarget(spell, source, target));
   }
 
-  /** All word-spells the mage could cast right now (charges, mana, valid target). */
-  private affordableFollowupSpells(caster: Mage): Spell[] {
-    const forgotten = caster.forgotten();
-    return allSpells(caster.mageClass).filter((s) => {
-      if (!s.words.every((w) => caster.loadout.includes(w))) return false;
-      if (!caster.hasCharges(s.words)) return false;
-      if (!caster.hasMana(this.spellManaCost(caster, s))) return false;
-      if (!this.gs.canCastSpellNow(s)) return false;
-      if (forgotten.length && s.words.some((w) => forgotten.includes(w))) return false;
-      if (s.targeting === 'enemy') {
-        return this.gs.isValidSpellTarget(s, caster, this.gs.opponentOf(caster));
-      }
-      return true;
-    });
-  }
+  /** Concrete actions shown after a triple/quad dodge; every entry costs one bonus action normally. */
+  private dodgeBonusOptions(source: Mage): DodgeBonusOption[] {
+    const options: DodgeBonusOption[] = [];
+    const add = (id: string, label: string, detail: string): void => {
+      options.push({ id, label, detail });
+    };
 
-  /** Resolve where a follow-up spell is aimed, prompting the caster if needed. */
-  private async resolveFollowupTarget(
-    caster: Mage,
-    spell: Spell
-  ): Promise<{ mage: Mage | null; point: Vec2 | null } | null> {
-    const reach = spell.range > 0 ? spell.range : Math.hypot(FIELD.w, FIELD.h);
-    switch (spell.targeting) {
-      case 'self':
-      case 'ally':
-        return { mage: caster, point: null };
-      case 'none':
-        return { mage: null, point: null };
-      case 'enemy':
-      case 'any': {
-        const foe = await this.requestSubtargetEnemy(caster, {
-          range: reach,
-          prompt: `${caster.name}: choose a target for ${spell.name} (Esc to cancel).`,
-        });
-        return foe ? { mage: foe, point: null } : null;
-      }
-      default: {
-        const pt = await this.requestSubtargetPoint(caster, {
-          maxRange: reach,
-          prompt: `${caster.name}: aim ${spell.name} (Esc to cancel).`,
-        });
-        return pt ? { mage: null, point: pt } : null;
+    // Word spells never belong in this window, even when their metadata marks
+    // them as bonus casts. Only colour abilities use the spell-shaped command.
+    for (const ability of getColorAbilitiesFor(source.profile.primary, source.mageClass)) {
+      const targeted =
+        ability.targeting === 'enemy' || ability.targeting === 'ally' || ability.targeting === 'any';
+      if (
+        source.isAbilityBanned(ability.id) ||
+        source.abilityCastsLeft(ability.id) <= 0 ||
+        !this.canAffordAbility(source, ability) ||
+        (targeted && this.dodgeBonusSpellTargets(source, ability).length === 0)
+      ) continue;
+      add(
+        `ability:${ability.id}`,
+        `Cast ${ability.name}`,
+        `${this.abilityChargeCost(source, ability)} color charges and ${this.abilityManaCost(source, ability)} mana; not a spell reaction.`
+      );
+    }
+
+    if (source.hasThunderBlessing() && !source.isActionBanned('thunder-charge')) {
+      add('thunder-charge', 'Charge Up', 'Pay the normal mana and life costs; spend no bonus-action slot.');
+    }
+    const dischargeRange = this.gs.thunderDischargeRange(source.thunderStacks);
+    if (
+      source.hasThunderBlessing() &&
+      source.thunderStacks > 0 &&
+      !source.isActionBanned('thunder-discharge') &&
+      this.gs.mages.some((target) => target.alive && dist(source.pos, target.pos) <= dischargeRange)
+    ) {
+      add('thunder-discharge', 'Discharge', `Release all ${source.thunderStacks} Thunder stacks.`);
+    }
+
+    if (
+      source.attackIsBonusAction() &&
+      !source.hasForgotten('melee') &&
+      !source.outOfAmmo() &&
+      this.gs.mages.some((target) => this.gs.canMelee(source, target))
+    ) {
+      add('melee', 'Attack', 'Make your normal bonus-action weapon strike.');
+    }
+    if (source.leapsLeft() > 0) {
+      add('leap', 'Leap', `Bound in a chosen direction; ${source.leapsLeft()} leaps remain.`);
+    }
+
+    if (source.hasWeaponAction()) {
+      const first = source.weaponAbilityItems()[0];
+      const ability = first ? getItem(first).weaponAbility : undefined;
+      const usableDagger = ability !== 'shadowDaggerTeleport' || this.gs.isInShadow(source);
+      if (ability && !source.isActionBanned(`weapon:${ability}`) && usableDagger) {
+        add('weapon-action', 'Weapon action', 'Trigger the equipped weapon ability.');
       }
     }
+    if (
+      source.hasDeathsAngelWings() &&
+      source.deathsAngelEnergy > 0 &&
+      !source.isItemBanned('deathsAngelWings')
+    ) {
+      add('deaths-angel-wings', 'Unfurl Deaths Angel Wings', 'Spend 1 Energy to begin or extend flight.');
+    }
+    if (source.bindMantleCharges > 0) {
+      add('mantle-bind', 'Weak Bind', `Root the nearest enemy; ${source.bindMantleCharges} charges remain.`);
+    }
+    if (
+      source.hasEdgelordLantern() &&
+      !source.isItemBanned('edgelordLantern') &&
+      (source.edgelordLanternActive ||
+        (this.gs.edgelordCaptives(source).length === 0 && source.mana >= 4))
+    ) {
+      add(
+        'edgelord-shake',
+        source.edgelordLanternActive ? 'Seal Edgelord Lantern' : 'Awaken Edgelord Lantern',
+        source.edgelordLanternActive ? 'Pull and capture nearby creatures.' : 'Pay 4 mana and spread Soul Rend.'
+      );
+    }
+
+    if (!source.swordFormLocked()) {
+      for (const itemId of source.bag) {
+        if (source.canEquipFromBag(itemId)) {
+          add(`item-equip:${itemId}`, `Equip ${getItem(itemId).name}`, 'Move this item from the bag into its equipment slot.');
+        }
+      }
+      for (const itemId of source.hands) {
+        if (!getItem(itemId).permanentlyBinding) {
+          add(`item-unequip:${itemId}`, `Unequip ${getItem(itemId).name}`, 'Stow this held item in the bag.');
+          add(`item-drop:${itemId}`, `Drop ${getItem(itemId).name}`, 'Drop this held item at your feet.');
+        }
+      }
+      for (const itemId of source.accessories) {
+        add(`item-drop:${itemId}`, `Take off ${getItem(itemId).name}`, 'Remove and drop this accessory.');
+      }
+      const drop = this.gs.nearestDropFor(source);
+      if (
+        drop &&
+        source.hasFreeHand() &&
+        !source.summonItemLimited(drop.itemId) &&
+        source.canCarry(getItem(drop.itemId).weight)
+      ) {
+        add(`item-pickup:${drop.id}`, `Pick up ${getItem(drop.itemId).name}`, 'Retrieve the nearby dropped item.');
+      }
+    }
+
+    for (const itemId of source.utility) {
+      const item = getItem(itemId);
+      if (source.isItemBanned(itemId) || source.swordFormLocked()) continue;
+      if (
+        item.potion &&
+        !((item.potion === 'mana' && source.mana >= source.maxMana) ||
+          (item.potion === 'health' && source.hp >= source.maxHp))
+      ) {
+        add(`item-use:${itemId}`, `Consume ${item.name}`, 'Use the item without spending your stored bonus action.');
+      }
+      if (
+        item.throwable &&
+        this.gs.mages.some((target) => target.team !== source.team && this.canThrowAt(source, target, itemId))
+      ) {
+        add(`item-throw:${itemId}`, `Throw ${item.name}`, 'Choose an enemy in throwing range.');
+      }
+    }
+    return options;
   }
 
-  /** Clickable overlay listing the post-dodge follow-up options for a human. */
-  private buildDodgeMenu(
-    reactor: Mage,
-    canRiposte: boolean,
-    spells: Spell[],
-    abilities: ColorAbility[]
-  ): Promise<DodgeChoice | null> {
+  /** Resolve the local choice overlay without leaking its input mode into stack resolution. */
+  private promptDodgeBonusOption(source: Mage, options: DodgeBonusOption[]): Promise<string | null> {
     return new Promise((resolve) => {
-      const options: { id: string; label: string; detail: string; choice: DodgeChoice | null }[] = [];
-      if (canRiposte) {
-        options.push({
-          id: 'riposte',
-          label: 'Riposte',
-          detail: 'Make an immediate basic attack against the attacker.',
-          choice: { kind: 'attack' },
-        });
-      }
-      abilities.forEach((ability, index) => options.push({
-        id: `ability-${index}`,
-        label: ability.name,
-        detail: `Colour ability / ${this.spellManaCost(reactor, ability)} mana / normal charges apply.`,
-        choice: { kind: 'ability', ability },
-      }));
-      spells.forEach((spell, index) => options.push({
-        id: `spell-${index}`,
-        label: spell.name,
-        detail: `${spell.actionType} / ${this.spellManaCost(reactor, spell)} mana / ${spell.words.map((word) => WORDS[word].label).join(' + ')}`,
-        choice: { kind: 'spell', spell },
-      }));
-      options.push({ id: 'skip', label: 'Skip Follow-up', detail: 'Keep the dodge and take no additional action.', choice: null });
-
       let settled = false;
-      let view: PagedChoiceMenuView<string>;
-      const finish = (choice: DodgeChoice | null): void => {
+      const finish = (optionId: string | null): void => {
         if (settled) return;
         settled = true;
-        view.destroy();
-        resolve(choice);
+        this.dodgeBonusMenu?.destroy();
+        this.dodgeBonusMenu = undefined;
+        this.mode = 'busy';
+        resolve(optionId);
       };
-      view = new PagedChoiceMenuView(
+      this.mode = 'dodge-bonus';
+      this.dodgeBonusMenu = new PagedChoiceMenuView(
         this,
-        'DODGE FOLLOW-UP',
-        `${reactor.name} earned an immediate counterplay. Mana and charges still apply.`,
+        'PERFECT DODGE / FREE BONUS ACTION',
+        `${source.name} may use one legal bonus action without spending the stored bonus-action slot. Normal resource costs still apply.`,
         options,
-        (id) => finish(options.find((option) => option.id === id)?.choice ?? null),
-        () => finish(null),
+        (optionId) => finish(optionId),
+        () => finish(null)
       );
+      this.flashHint(`${source.name}: choose a free bonus action, or cancel to pass.`, true);
+      this.redraw();
     });
+  }
+
+  /** Pick the same option on both peers; only a human decision crosses the wire. */
+  private async chooseDodgeBonusOption(
+    source: Mage,
+    options: DodgeBonusOption[]
+  ): Promise<string | null> {
+    if (this.controllerIsAI(source)) return options[0]?.id ?? null;
+    if (this.online && !this.isLocalDecider(source)) {
+      const msg = await this.net!.recv();
+      if (msg.k === 'bye') return null;
+      const cmd = msg.cmd as DodgeBonusChoiceCommand | undefined;
+      const optionId = cmd?.t === 'dodge-bonus' ? cmd.optionId : null;
+      return optionId && options.some((option) => option.id === optionId) ? optionId : null;
+    }
+    const optionId = await this.promptDodgeBonusOption(source, options);
+    if (this.online) {
+      this.net?.send({
+        k: 'dodge-bonus',
+        cmd: { t: 'dodge-bonus', optionId } satisfies DodgeBonusChoiceCommand,
+      });
+    }
+    return optionId;
+  }
+
+  /** Gather any target needed by the selected option, reusing the lockstep sub-target channel. */
+  private async buildDodgeBonusCommand(
+    source: Mage,
+    optionId: string
+  ): Promise<TurnCommand | null> {
+    if (optionId.startsWith('ability:')) {
+      const spellId = optionId.slice('ability:'.length);
+      const spell = this.resolveSpellId(spellId);
+      if (!spell || !this.isColorAbility(spell) || spell.actionType !== 'bonus') return null;
+      if (spell.targeting === 'self' || spell.targeting === 'none') {
+        return {
+          t: 'spell',
+          spellId: spell.id,
+          ability: true,
+          target: spell.targeting === 'self' ? this.seatOf(source) : null,
+        };
+      }
+      if (spell.targeting === 'point') {
+        const maxRange = Number.isFinite(spell.range)
+          ? spell.range
+          : Math.hypot(FIELD.w, FIELD.h);
+        const point = await this.requestSubtargetPoint(source, {
+          maxRange,
+          minRange: spell.minRange,
+          prompt: `${source.name}: choose a point for ${spell.name} (Esc to pass).`,
+        });
+        if (!point) return null;
+        let point2: Vec2 | null = null;
+        if (spell.twoPointAim) {
+          point2 = await this.requestSubtargetPoint(source, {
+            maxRange,
+            minRange: spell.minRange,
+            prompt: `${source.name}: choose the second point for ${spell.name} (Esc to pass).`,
+          });
+          if (!point2) return null;
+        }
+        return {
+          t: 'spell',
+          spellId: spell.id,
+          ability: true,
+          target: null,
+          x: point.x,
+          y: point.y,
+          x2: point2?.x,
+          y2: point2?.y,
+          angle: spell.rotatableWall ? 0 : undefined,
+        };
+      }
+      const candidates = this.dodgeBonusSpellTargets(source, spell);
+      const target = await this.requestSubtargetCombatant(source, {
+        candidates,
+        range: Infinity,
+        prompt: `${source.name}: choose a target for ${spell.name}.`,
+      });
+      return target
+        ? { t: 'spell', spellId: spell.id, ability: true, target: this.seatOf(target) }
+        : null;
+    }
+
+    if (optionId === 'thunder-discharge') {
+      const range = this.gs.thunderDischargeRange(source.thunderStacks);
+      const candidates = this.gs.mages.filter(
+        (target) => target.alive && dist(source.pos, target.pos) <= range
+      );
+      const target = await this.requestSubtargetCombatant(source, {
+        candidates,
+        range,
+        prompt: `${source.name}: choose the first Discharge target.`,
+      });
+      return target ? { t: 'thunder-discharge', target: this.seatOf(target) } : null;
+    }
+    if (optionId === 'melee') {
+      const candidates = this.gs.mages.filter((target) => this.gs.canMelee(source, target));
+      const target = await this.requestSubtargetCombatant(source, {
+        candidates,
+        range: Infinity,
+        prompt: `${source.name}: choose a target for the bonus strike.`,
+      });
+      return target ? { t: 'melee', target: this.seatOf(target) } : null;
+    }
+    if (optionId === 'leap') {
+      const point = await this.requestSubtargetPoint(source, {
+        maxRange: Math.hypot(FIELD.w, FIELD.h),
+        prompt: `${source.name}: choose a direction for Leap (Esc to pass).`,
+      });
+      return point ? { t: 'leap', x: point.x, y: point.y } : null;
+    }
+    if (optionId === 'weapon-action') {
+      const first = source.weaponAbilityItems()[0];
+      if (first && getItem(first).weaponAbility === 'shadowDaggerTeleport') {
+        let destination: Vec2 | null = null;
+        if (this.controllerIsAI(source)) {
+          const shadow = this.gs.shadows[0];
+          if (shadow) destination = { x: shadow.x, y: shadow.y };
+        } else {
+          const point = await this.requestSubtargetPoint(source, {
+            maxRange: Math.hypot(FIELD.w, FIELD.h),
+            prompt: `${source.name}: choose a destination shadow (Esc to pass).`,
+          });
+          const shadow = point ? this.gs.shadowAt(point) : undefined;
+          if (shadow) destination = { x: shadow.x, y: shadow.y };
+        }
+        return destination ? { t: 'weapon-action', x: destination.x, y: destination.y } : null;
+      }
+      return { t: 'weapon-action' };
+    }
+    if (optionId.startsWith('item-throw:')) {
+      const itemId = optionId.slice('item-throw:'.length) as ItemId;
+      const candidates = this.gs.mages.filter(
+        (target) => target.team !== source.team && this.canThrowAt(source, target, itemId)
+      );
+      const target = await this.requestSubtargetCombatant(source, {
+        candidates,
+        range: Infinity,
+        prompt: `${source.name}: choose a target for ${getItem(itemId).name}.`,
+      });
+      return target ? { t: 'item-throw', itemId, target: this.seatOf(target) } : null;
+    }
+    if (optionId.startsWith('item-use:')) {
+      return { t: 'item-use', itemId: optionId.slice('item-use:'.length) };
+    }
+    if (optionId.startsWith('item-equip:')) {
+      return { t: 'item-equip', itemId: optionId.slice('item-equip:'.length) };
+    }
+    if (optionId.startsWith('item-unequip:')) {
+      return { t: 'item-unequip', itemId: optionId.slice('item-unequip:'.length) };
+    }
+    if (optionId.startsWith('item-drop:')) {
+      return { t: 'item-drop', itemId: optionId.slice('item-drop:'.length) };
+    }
+    if (optionId.startsWith('item-pickup:')) {
+      const dropId = Number(optionId.slice('item-pickup:'.length));
+      return Number.isFinite(dropId) ? { t: 'item-pickup', dropId } : null;
+    }
+
+    switch (optionId) {
+      case 'thunder-charge': return { t: 'thunder-charge' };
+      case 'deaths-angel-wings': return { t: 'deaths-angel-wings' };
+      case 'edgelord-shake': return { t: 'edgelord-shake' };
+      case 'mantle-bind': return { t: 'mantle-bind' };
+      default: return null;
+    }
+  }
+
+  /** Open and stage one free bonus action after the avoided item leaves the stack. */
+  private async offerDodgeBonusAction(source: Mage): Promise<void> {
+    const options = this.dodgeBonusOptions(source);
+    if (options.length === 0) {
+      this.gs.log(`${source.name}'s perfect dodge finds no legal bonus action.`);
+      return;
+    }
+    this.dodgeBonusActor = source;
+    try {
+      const optionId = await this.chooseDodgeBonusOption(source, options);
+      if (!optionId) {
+        this.gs.log(`${source.name} passes the perfect-dodge bonus window.`);
+        return;
+      }
+      const cmd = await this.buildDodgeBonusCommand(source, optionId);
+      if (!cmd) {
+        this.gs.log(`${source.name} passes the perfect-dodge bonus window.`);
+        return;
+      }
+      this.gs.log(`${source.name} turns the perfect dodge into a free bonus action!`);
+      await this.applyTurnCommand(cmd, { actor: source, freeBonus: true, queueOnly: true });
+    } finally {
+      this.dodgeBonusMenu?.destroy();
+      this.dodgeBonusMenu = undefined;
+      this.dodgeBonusActor = null;
+      this.mode = 'busy';
+      this.redraw();
+    }
   }
 
   /** Choose a shield block/bash during the reaction window. */
@@ -9378,6 +9699,8 @@ export class GameScene extends Phaser.Scene {
       this.subtargetOrigin = origin;
       this.subtargetRange = opts.maxRange;
       this.subtargetMinRange = opts.minRange ?? 0;
+      this.subtargetCandidates = null;
+      this.subtargetRequired = false;
       this.mode = 'subtarget-point';
       this.flashHint(opts.prompt ?? `${source.name}: pick a point  (Esc to skip).`, true);
       this.redraw();
@@ -9408,12 +9731,54 @@ export class GameScene extends Phaser.Scene {
       this.subtargetOrigin = origin;
       this.subtargetRange = opts.range;
       this.subtargetMinRange = 0;
+      this.subtargetCandidates = null;
+      this.subtargetRequired = false;
       this.mode = 'subtarget-enemy';
       this.flashHint(opts.prompt ?? `${source.name}: pick an enemy  (Esc to skip).`, true);
       this.redraw();
     });
     if (this.online) this.sendSubEnemy(value);
     return value;
+  }
+
+  /** Ask the acting player for a compulsory pick from an explicit combatant set. */
+  private async requestSubtargetCombatant(
+    source: Mage,
+    opts: SubTargetCombatantOpts
+  ): Promise<Mage | null> {
+    const origin = opts.origin ?? source.pos;
+    const candidates = opts.candidates.filter(
+      (candidate) => candidate.alive && dist(origin, candidate.pos) <= opts.range
+    );
+    if (candidates.length === 0) return null;
+    if (this.controllerIsAI(source)) return candidates[0];
+    if (this.online && !this.isLocalDecider(source)) {
+      const picked = await this.recvSubEnemy();
+      return picked && candidates.includes(picked) ? picked : candidates[0];
+    }
+    await this.playPendingDice();
+    const value = await new Promise<Mage | null>((resolve) => {
+      this.subtargetResolve = resolve as (v: Vec2 | Mage | null) => void;
+      this.subtargetSource = source;
+      this.subtargetOrigin = origin;
+      this.subtargetRange = opts.range;
+      this.subtargetMinRange = 0;
+      this.subtargetCandidates = new Set(candidates);
+      this.subtargetRequired = true;
+      this.mode = 'subtarget-enemy';
+      this.flashHint(opts.prompt ?? `${source.name}: choose the next lightning arc.`, true);
+      this.redraw();
+    });
+    if (this.online) this.sendSubEnemy(value);
+    return value;
+  }
+
+  private canPickSubtargetMage(target: Mage): boolean {
+    const source = this.subtargetSource ?? this.gs.current;
+    const origin = this.subtargetOrigin ?? source.pos;
+    if (!target.alive || dist(origin, target.pos) > this.subtargetRange) return false;
+    if (this.subtargetCandidates) return this.subtargetCandidates.has(target);
+    return target.team !== source.team && !this.gs.isUntargetable(target, source);
   }
 
   /** Settle the pending sub-target promise and return to the busy resolution. */
@@ -9424,6 +9789,8 @@ export class GameScene extends Phaser.Scene {
     this.subtargetOrigin = null;
     this.subtargetRange = 0;
     this.subtargetMinRange = 0;
+    this.subtargetCandidates = null;
+    this.subtargetRequired = false;
     this.mode = 'busy';
     this.flashHint('', true);
     this.redraw();
@@ -9479,26 +9846,28 @@ export class GameScene extends Phaser.Scene {
   private buildStaticGraphics(): void {
     this.gfxStatic = this.add.graphics();
     const g = this.gfxStatic;
+    const theme = this.arenaTheme();
     g.fillStyle(MENU_COLOR.pitch, 1).fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-    g.fillStyle(MENU_COLOR.felt, 1).fillRect(FIELD.x, FIELD.y, FIELD.w, FIELD.h);
+    g.fillStyle(theme.floor, 1).fillRect(FIELD.x, FIELD.y, FIELD.w, FIELD.h);
     for (let x = FIELD.x; x < FIELD.x + FIELD.w; x += 60) {
       for (let y = FIELD.y; y < FIELD.y + FIELD.h; y += 60) {
         if (((x - FIELD.x) / 60 + (y - FIELD.y) / 60) % 2 === 0) {
-          g.fillStyle(MENU_COLOR.feltLight, 0.3).fillRect(x, y, 60, 60);
+          g.fillStyle(theme.tile, 0.3).fillRect(x, y, 60, 60);
         }
       }
     }
+    if (theme.kind !== 'swamp') this.drawArenaTerrain(g, theme);
     g.fillStyle(COLORS.team1, 0.055).fillRect(FIELD.x, FIELD.y, FIELD.w * 0.22, FIELD.h);
     g.fillStyle(COLORS.team2, 0.055).fillRect(FIELD.x + FIELD.w * 0.78, FIELD.y, FIELD.w * 0.22, FIELD.h);
-    g.lineStyle(1, MENU_COLOR.brassDark, 0.26);
+    g.lineStyle(1, theme.grid, 0.26);
     for (let x = FIELD.x; x <= FIELD.x + FIELD.w; x += 60) g.lineBetween(x, FIELD.y, x, FIELD.y + FIELD.h);
     for (let y = FIELD.y; y <= FIELD.y + FIELD.h; y += 60) g.lineBetween(FIELD.x, y, FIELD.x + FIELD.w, y);
 
     const centerX = FIELD.x + FIELD.w / 2;
     const centerY = FIELD.y + FIELD.h / 2;
-    g.lineStyle(1, MENU_COLOR.brass, 0.26).strokeCircle(centerX, centerY, 82);
-    g.lineStyle(2, MENU_COLOR.brassDark, 0.34).strokeCircle(centerX, centerY, 58);
-    g.lineStyle(1, MENU_COLOR.brassDark, 0.3).lineBetween(centerX - 112, centerY, centerX + 112, centerY);
+    g.lineStyle(1, theme.accent, 0.3).strokeCircle(centerX, centerY, 82);
+    g.lineStyle(2, theme.grid, 0.34).strokeCircle(centerX, centerY, 58);
+    g.lineStyle(1, theme.grid, 0.3).lineBetween(centerX - 112, centerY, centerX + 112, centerY);
     g.lineBetween(centerX, centerY - 112, centerX, centerY + 112);
     g.lineStyle(4, MENU_COLOR.woodEdge, 1).strokeRect(FIELD.x, FIELD.y, FIELD.w, FIELD.h);
     g.lineStyle(1, MENU_COLOR.brass, 0.65).strokeRect(FIELD.x + 5, FIELD.y + 5, FIELD.w - 10, FIELD.h - 10);
@@ -9527,6 +9896,9 @@ export class GameScene extends Phaser.Scene {
     drawCabinetPanel(g, DOCK_LOG, { accent: MENU_COLOR.amethyst });
     drawCabinetPanel(g, HINT_BAR, { accent: MENU_COLOR.brass, fill: MENU_COLOR.woodDeep });
 
+    if (theme.kind === 'swamp') this.swampArena = new SwampArenaView(this, FIELD, this.reducedMotion);
+    this.gfxArenaAmbient = this.add.graphics();
+    this.drawArenaAmbient(0);
     this.gfx = this.add.graphics();
     // Pulsing valid-target highlights live on their own layer, animated in update().
     this.gfxFx = this.add.graphics().setDepth(6);
@@ -9536,6 +9908,174 @@ export class GameScene extends Phaser.Scene {
     this.gfxScarab = this.add.graphics().setDepth(7);
     // Targeting overlay drawn when hovering a stack token (line + reticle).
     this.hoverGfx = this.add.graphics().setDepth(8);
+  }
+
+  private arenaTheme(): ArenaTheme {
+    if (this.arenaThemeCache) return this.arenaThemeCache;
+    let theme: ArenaTheme;
+    if (this.mineRun) {
+      theme = {
+        kind: 'mine',
+        floor: 0x171817,
+        tile: 0x292821,
+        grid: 0x6b624d,
+        accent: 0xb08452,
+        shadow: 0x080908,
+      };
+    } else if (this.raid) {
+      const accent = this.raidBoss === 'reaper'
+        ? 0xa43d55
+        : this.raidBoss === 'lich'
+          ? 0x76558e
+          : 0xa77a46;
+      theme = {
+        kind: 'raid',
+        floor: 0x181315,
+        tile: 0x2a1c20,
+        grid: 0x70444d,
+        accent,
+        shadow: 0x080507,
+      };
+    } else if (this.swamprun) {
+      theme = {
+        kind: 'swamp',
+        floor: 0x12221c,
+        tile: 0x20372c,
+        grid: 0x526b59,
+        accent: 0x82946b,
+        shadow: 0x07100d,
+      };
+    } else {
+      theme = {
+        kind: 'duel',
+        floor: MENU_COLOR.felt,
+        tile: MENU_COLOR.feltLight,
+        grid: MENU_COLOR.brassDark,
+        accent: MENU_COLOR.brass,
+        shadow: MENU_COLOR.pitch,
+      };
+    }
+    this.arenaThemeCache = theme;
+    return theme;
+  }
+
+  private drawArenaTerrain(g: Phaser.GameObjects.Graphics, theme: ArenaTheme): void {
+    const left = FIELD.x;
+    const top = FIELD.y;
+    const rightEdge = FIELD.x + FIELD.w;
+    const bottomEdge = FIELD.y + FIELD.h;
+
+    if (theme.kind === 'mine') {
+      g.lineStyle(2, 0x4b4639, 0.46);
+      for (let row = 0; row < 6; row++) {
+        const y = top + 35 + row * 72;
+        for (let column = 0; column < 8; column++) {
+          const x = left + 24 + column * 164 + (row % 2) * 38;
+          g.lineBetween(x, y, x + 94, y + (column % 3 - 1) * 8);
+        }
+      }
+      g.lineStyle(3, theme.shadow, 0.68);
+      for (let index = 0; index < 8; index++) {
+        const x = left + 70 + ((index * 191) % (FIELD.w - 140));
+        const y = top + 38 + ((index * 83) % (FIELD.h - 76));
+        g.beginPath();
+        g.moveTo(x, y);
+        g.lineTo(x + 18, y + 14);
+        g.lineTo(x + 7, y + 31);
+        g.lineTo(x + 29, y + 47);
+        g.strokePath();
+      }
+      g.lineStyle(2, theme.accent, 0.34);
+      for (let index = 0; index < 5; index++) {
+        const x = left + 46 + index * 284;
+        const y = index % 2 === 0 ? top + 22 : bottomEdge - 22;
+        const direction = index % 2 === 0 ? 1 : -1;
+        g.lineBetween(x, y, x + 48, y + direction * 13);
+        g.lineBetween(x + 15, y + direction * 4, x + 27, y + direction * 23);
+      }
+      return;
+    }
+
+    if (theme.kind === 'raid') {
+      const centerX = left + FIELD.w / 2;
+      const centerY = top + FIELD.h / 2;
+      g.fillStyle(theme.shadow, 0.42).fillCircle(centerX, centerY, 132);
+      g.lineStyle(2, theme.accent, 0.32).strokeCircle(centerX, centerY, 124);
+      g.lineStyle(1, theme.accent, 0.24).strokeCircle(centerX, centerY, 102);
+      for (let index = 0; index < 12; index++) {
+        const angle = (index / 12) * Math.PI * 2;
+        g.lineStyle(index % 3 === 0 ? 3 : 1, theme.accent, index % 3 === 0 ? 0.4 : 0.2);
+        g.lineBetween(
+          centerX + Math.cos(angle) * 86,
+          centerY + Math.sin(angle) * 86,
+          centerX + Math.cos(angle) * 122,
+          centerY + Math.sin(angle) * 122,
+        );
+      }
+      g.lineStyle(3, theme.shadow, 0.72);
+      for (let index = 0; index < 6; index++) {
+        const x = left + 90 + index * 215;
+        const y = index % 2 === 0 ? top + 72 : bottomEdge - 68;
+        const direction = index % 2 === 0 ? 1 : -1;
+        g.beginPath();
+        g.moveTo(x, y);
+        g.lineTo(x + 26, y + direction * 17);
+        g.lineTo(x + 14, y + direction * 39);
+        g.strokePath();
+      }
+      return;
+    }
+
+    g.lineStyle(1, 0xc0aa78, 0.1);
+    for (let index = 0; index < 18; index++) {
+      const x = left + 34 + ((index * 149) % (FIELD.w - 68));
+      const y = top + 24 + ((index * 71) % (FIELD.h - 48));
+      g.lineBetween(x, y, x + 18 + index % 13, y + (index % 5 - 2) * 2);
+    }
+  }
+
+  private drawArenaAmbient(time: number): void {
+    const g = this.gfxArenaAmbient;
+    if (!g) return;
+    g.clear();
+    const theme = this.arenaTheme();
+    const phase = this.reducedMotion ? 0 : time;
+    const centerX = FIELD.x + FIELD.w / 2;
+    const centerY = FIELD.y + FIELD.h / 2;
+
+    if (theme.kind === 'swamp') {
+      return;
+    }
+
+    if (theme.kind === 'mine') {
+      g.lineStyle(1, 0xd0b985, 0.15);
+      for (let index = 0; index < 18; index++) {
+        const x = FIELD.x + 18 + ((index * 137) % (FIELD.w - 36));
+        const fall = (phase * (0.012 + (index % 4) * 0.003) + index * 49) % (FIELD.h - 20);
+        const y = FIELD.y + 10 + fall;
+        g.lineBetween(x, y, x - 3, y + 7 + index % 5);
+      }
+      return;
+    }
+
+    if (theme.kind === 'raid') {
+      const pulse = this.reducedMotion ? 0.35 : 0.35 + Math.sin(phase / 430) * 0.15;
+      g.lineStyle(2, theme.accent, pulse).strokeCircle(centerX, centerY, 126);
+      g.lineStyle(1, theme.accent, pulse * 0.65).strokeCircle(centerX, centerY, 96);
+      for (let index = 0; index < 4; index++) {
+        const angle = phase / 1800 + index * Math.PI / 2;
+        g.lineBetween(
+          centerX + Math.cos(angle) * 106,
+          centerY + Math.sin(angle) * 106,
+          centerX + Math.cos(angle) * 122,
+          centerY + Math.sin(angle) * 122,
+        );
+      }
+      return;
+    }
+
+    const pulse = this.reducedMotion ? 0.12 : 0.12 + Math.sin(phase / 680) * 0.045;
+    g.lineStyle(1, theme.accent, pulse).strokeCircle(centerX, centerY, 84);
   }
 
   /** A small uppercase caption used for dock panel headers. */
@@ -11314,10 +11854,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buildDicePanel(): void {
-    this.dicePanel = this.add
-      .container(GAME_WIDTH / 2, GAME_HEIGHT - 96)
-      .setDepth(80)
-      .setVisible(false);
+    this.dicePanel = new DicePanelView(this);
   }
 
   private redraw(): void {
@@ -12048,11 +12585,13 @@ export class GameScene extends Phaser.Scene {
     // Area-of-effect footprint while aiming a point spell (cone / circle).
     if (aiming && this.mode === 'aiming-point') {
       const spell = this.reactionAiming ? this.reactionPendingSpell : this.pendingSpell;
-      if (spell?.twoPointAim && this.pendingFirstPoint) {
-        // Two-point cone: once the first edge is set, preview the wedge spanning
-        // that edge and the pointer, reaching out to the field's edge.
-        const diag = Math.hypot(FIELD.w, FIELD.h);
-        this.drawTwoPointWedge(g, me.pos, this.pendingFirstPoint, this.pointer, diag);
+      if (spell?.twoPointAim) {
+        if (this.pendingFirstPoint) {
+          // Two-point cone: once the first edge is set, preview the wedge spanning
+          // that edge and the pointer, reaching out to the field's edge.
+          const diag = Math.hypot(FIELD.w, FIELD.h);
+          this.drawTwoPointWedge(g, me.pos, this.pendingFirstPoint, this.pointer, diag);
+        }
       } else if (spell?.aoe) {
         const reach = Number.isFinite(spell.range) ? spell.range : 99999;
         const toward = stepTowards(me.pos, this.pointer, reach);
@@ -12129,14 +12668,16 @@ export class GameScene extends Phaser.Scene {
       });
     }
     // One-shot hit-effect overlays (target-anchored spell impacts).
-    const fx: { key: string; end: number; frameRate: number }[] = [
+    const fx: { key: string; end: number; frameRate: number; repeat?: number }[] = [
       { key: 'fx-dot', end: 24, frameRate: 16 },
       { key: 'fx-generic', end: 9, frameRate: 18 },
-      { key: 'fx-poison', end: 16, frameRate: 20 },
+      { key: 'fx-root', end: 7, frameRate: 16 },
+      { key: 'fx-stun', end: 15, frameRate: 14, repeat: -1 },
       { key: 'fx-vanish', end: 20, frameRate: 24 },
       { key: 'fx-shatter', end: 6, frameRate: 18 },
       { key: 'fx-disrupt', end: 30, frameRate: 30 },
       { key: 'fx-edgelord-impact', end: 9, frameRate: 22 },
+      { key: 'fx-summon-smoke', end: 9, frameRate: 18 },
     ];
     for (const f of fx) {
       if (this.anims.exists(f.key)) continue;
@@ -12144,15 +12685,20 @@ export class GameScene extends Phaser.Scene {
         key: f.key,
         frames: this.anims.generateFrameNumbers(f.key, { start: 0, end: f.end }),
         frameRate: f.frameRate,
-        repeat: 0,
+        repeat: f.repeat ?? 0,
       });
     }
-    if (!this.anims.exists('fx-lightning-loop')) {
+    registerLightningFxAnimations(this);
+    if (!this.anims.exists(SWAMP_MIST_KEY)) {
       this.anims.create({
-        key: 'fx-lightning-loop',
-        frames: this.anims.generateFrameNumbers('fx-lightning', { start: 0, end: 3 }),
-        frameRate: 16,
+        key: SWAMP_MIST_KEY,
+        frames: this.anims.generateFrameNumbers(SWAMP_MIST_KEY, {
+          start: 0,
+          end: SWAMP_MIST_FRAME.end,
+        }),
+        frameRate: SWAMP_MIST_FRAME.frameRate,
         repeat: -1,
+        yoyo: true,
       });
     }
   }
@@ -12334,7 +12880,16 @@ export class GameScene extends Phaser.Scene {
   private pendingHits: Mage[] = [];
 
   /** Queued one-shot hit-effect overlays; flushed alongside hit recoils. */
-  private pendingEffects: { mage: Mage; kind: 'generic' | 'poison' | 'dot' | 'vanish' | 'disrupt' }[] = [];
+  private pendingEffects: {
+    mage: Mage;
+    kind: 'generic' | 'corrosive' | 'vanish' | 'disrupt';
+  }[] = [];
+
+  /** Queued drain streams; flushed alongside the impact that created them. */
+  private pendingDrains: { from: Vec2; to: Vec2 }[] = [];
+
+  /** One compact puff per minion created during the resolving cast. */
+  private pendingSummonPuffs: { at: Vec2; size: number }[] = [];
 
   /** Face the closest opponent, accounting for each sheet's authored direction. */
   private creatureShouldFlipX(mage: Mage): boolean {
@@ -12370,6 +12925,8 @@ export class GameScene extends Phaser.Scene {
       if (roster.has(mage)) continue;
       rec.sprite.destroy();
       rec.held?.destroy();
+      rec.root?.destroy();
+      rec.stun?.destroy();
       this.mageAnims.delete(mage);
       this.mageLabels.get(mage)?.destroy();
       this.mageLabels.delete(mage);
@@ -12427,23 +12984,98 @@ export class GameScene extends Phaser.Scene {
         s.setVisible(showingDeath);
         if (showingDeath) s.setAlpha(1);
         rec.held?.setVisible(false);
+        rec.root?.destroy();
+        rec.root = undefined;
+        rec.stun?.destroy();
+        rec.stun = undefined;
         continue;
       }
       if (m.oniHidden) {
         s.setVisible(false);
         rec.held?.setVisible(false);
+        rec.root?.setVisible(false);
+        rec.stun?.setVisible(false);
         continue;
       }
       s.setVisible(true);
       const alpha = this.mageVisibilityAlpha(m);
       s.setAlpha(alpha);
       this.syncHeldWeapon(m, rec, alpha);
+      this.syncRootOverlay(m, rec, footY, alpha);
+      this.syncStunOverlay(m, rec, alpha);
       // Resting animation: charge while a spell is pending, otherwise idle.
       if (rec.lock === null) {
         const want = bodyAnimationKey(m, rec.charging ? 'charge' : 'idle');
         if (s.anims.currentAnim?.key !== want) s.play(want, true);
+        // Roots hold the body fast, so its resting loop stops dead.
+        if (this.isPhysicallyRooted(m)) s.anims.stop();
+        else if (!s.anims.isPlaying) s.play(want, true);
       }
     }
+  }
+
+  /** True while a physical binding — not terrain — holds this mage in place. */
+  private isPhysicallyRooted(m: Mage): boolean {
+    return m.statuses.some(
+      (s) => s.kind === 'stun' && s.stunType === 'movement' && s.physicalRoot === true
+    );
+  }
+
+  /** Keep binding roots wrapped around a mage for as long as the root holds. */
+  private syncRootOverlay(m: Mage, rec: MageAnim, footY: number, alpha: number): void {
+    if (!m.alive || m.oniHidden || !this.isPhysicallyRooted(m)) {
+      rec.root?.destroy();
+      rec.root = undefined;
+      return;
+    }
+    if (!this.anims.exists('fx-root')) return;
+    if (!rec.root) {
+      const size = MAGE_RADIUS * 4.6;
+      const roots = this.add
+        .sprite(m.x, m.y + footY, 'fx-root', 0)
+        .setOrigin(0.5, 1)
+        .setDepth(5.1)
+        .setDisplaySize(size, size);
+      // Grow once, then stay clamped on the last frame as a lasting affliction.
+      if (this.reducedMotion) roots.setFrame(7);
+      else {
+        roots.play('fx-root');
+        roots.once('animationcomplete', () => roots.setFrame(7));
+      }
+      rec.root = roots;
+    }
+    rec.root
+      .setPosition(m.x, m.y + footY + this.mineSpriteBob(m))
+      .setAlpha(alpha)
+      .setVisible(true);
+  }
+
+  /** Spin a ring of stars over a fully stunned head until the stun wears off. */
+  private syncStunOverlay(m: Mage, rec: MageAnim, alpha: number): void {
+    const stunned = m.statuses.some((s) => s.kind === 'stun' && s.stunType === 'full');
+    if (!m.alive || m.oniHidden || !stunned) {
+      rec.stun?.destroy();
+      rec.stun = undefined;
+      return;
+    }
+    if (!this.anims.exists('fx-stun')) return;
+    const size = MAGE_RADIUS * 4.2;
+    if (!rec.stun) {
+      const ring = this.add
+        .sprite(rec.sprite.x, rec.sprite.y, 'fx-stun', 0)
+        .setDepth(6)
+        .setDisplaySize(size, size);
+      ring.play('fx-stun');
+      rec.stun = ring;
+    }
+    // Track the body sprite so the ring rides along with dashes and recoils.
+    const customCreature = creatureSpriteKind(m) !== null;
+    const bodyHeight = customCreature ? CREATURE_SPRITE_HEIGHT : MAGE_RADIUS * 2.8;
+    const headTop = rec.sprite.y - bodyHeight * (customCreature ? 0.9 : 1);
+    rec.stun
+      .setPosition(rec.sprite.x, headTop - size * 0.08)
+      .setAlpha(alpha)
+      .setVisible(true);
   }
 
   private setCharging(m: Mage, on: boolean): void {
@@ -12467,17 +13099,31 @@ export class GameScene extends Phaser.Scene {
 
   /** Play every queued hit recoil and clear the queue. */
   private flushHits(): void {
+    void this.flushHitsAndEffects();
+  }
+
+  /** Start queued recoils and await every associated overlay and drain stream. */
+  private async flushHitsAndEffects(): Promise<void> {
     const queued = this.pendingHits;
     this.pendingHits = [];
     for (const m of queued) this.triggerHit(m);
-    this.flushEffects();
+    await this.flushEffects();
   }
 
   /** Spawn every queued hit-effect overlay and clear the queue. */
-  private flushEffects(): void {
+  private async flushEffects(): Promise<void> {
     const queued = this.pendingEffects;
+    const drains = this.pendingDrains;
+    const summonPuffs = this.pendingSummonPuffs;
     this.pendingEffects = [];
-    for (const e of queued) this.triggerEffect(e.mage, e.kind);
+    this.pendingDrains = [];
+    this.pendingSummonPuffs = [];
+    if (summonPuffs.length > 0) this.redraw();
+    await Promise.all([
+      ...queued.map((effect) => this.triggerEffect(effect.mage, effect.kind)),
+      ...drains.map((drain) => this.vfxDrainParticles(drain.from, drain.to)),
+      ...summonPuffs.map((puff) => this.vfxSummonPuff(puff.at, puff.size)),
+    ]);
   }
 
   /**
@@ -12486,19 +13132,33 @@ export class GameScene extends Phaser.Scene {
    */
   private async resolveImpacts(): Promise<void> {
     await this.playPendingDice();
-    this.flushHits();
+    await this.flushHitsAndEffects();
   }
 
   /** Play a one-shot hit-effect overlay centred on a mage's body. */
-  private triggerEffect(m: Mage, kind: 'generic' | 'poison' | 'dot' | 'vanish' | 'disrupt'): void {
-    if (!m.alive && kind !== 'vanish') return;
-    const key = `fx-${kind}`;
-    if (!this.anims.exists(key)) return;
-    const spr = this.add.sprite(m.x, m.y, key).setDepth(9);
-    const srcH = spr.height || 1;
-    spr.setScale((MAGE_RADIUS * 3) / srcH);
-    spr.play(key);
-    spr.once('animationcomplete', () => spr.destroy());
+  private triggerEffect(
+    m: Mage,
+    kind: 'generic' | 'corrosive' | 'vanish' | 'disrupt'
+  ): Promise<void> {
+    if (!m.alive && kind !== 'vanish' && kind !== 'corrosive') return Promise.resolve();
+    const key = kind === 'corrosive' ? 'fx-dot' : `fx-${kind}`;
+    if (!this.anims.exists(key)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const spr = this.add.sprite(m.x, m.y, key).setDepth(9);
+      const srcH = spr.height || 1;
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        if (spr.active) spr.destroy();
+        resolve();
+      };
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+      spr.setScale((MAGE_RADIUS * 3) / srcH);
+      spr.play(key);
+      spr.once('animationcomplete', finish);
+    });
   }
 
   /** Brief recoil when a mage takes damage; never interrupts movement/attack. */
@@ -12729,143 +13389,17 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  /** Create one animated bolt layer whose visible endpoints align with a segment. */
-  private lightningSprite(
-    from: Vec2,
-    to: Vec2,
-    depth: number,
-    options: { color?: number; alpha?: number; thickness?: number; startFrame?: number } = {},
-  ): Phaser.GameObjects.Sprite {
-    const length = Math.max(1, dist(from, to));
-    const sprite = this.add
-      .sprite((from.x + to.x) / 2, (from.y + to.y) / 2, 'fx-lightning', 0)
-      .setDepth(depth)
-      .setRotation(Math.atan2(to.y - from.y, to.x - from.x))
-      .setScale(length / 210, 0.5 * (options.thickness ?? 1))
-      .setAlpha(options.alpha ?? 1)
-      .setBlendMode(Phaser.BlendModes.ADD);
-    if (options.color != null) sprite.setTint(options.color);
-    sprite.play({ key: 'fx-lightning-loop', startFrame: options.startFrame ?? 0 });
-    return sprite;
-  }
-
-  /** Show one complete layered lightning cycle between consecutive chain targets. */
   private vfxLightningBolt(
     from: Vec2,
     to: Vec2,
     color = 0xa8dcff,
     thickness = 1,
   ): Promise<void> {
-    const distance = dist(from, to);
-    if (distance < 3) return this.vfxLightningNova(from, color, thickness);
-
-    return new Promise((resolve) => {
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
-      const inverseLength = 1 / Math.max(1, Math.hypot(dx, dy));
-      const perpendicular = { x: -dy * inverseLength, y: dx * inverseLength };
-      const offset = Math.min(4, Math.max(1.5, thickness * 1.4));
-      const layers = [
-        this.lightningSprite(from, to, 30, {
-          color,
-          alpha: 0.34,
-          thickness: thickness * 1.9,
-          startFrame: 1,
-        }),
-        this.lightningSprite(from, to, 31, {
-          color,
-          alpha: 0.96,
-          thickness,
-          startFrame: 0,
-        }),
-        this.lightningSprite(
-          { x: from.x + perpendicular.x * offset, y: from.y + perpendicular.y * offset },
-          { x: to.x - perpendicular.x * offset, y: to.y - perpendicular.y * offset },
-          31.2,
-          {
-            color: 0xffffff,
-            alpha: 0.7,
-            thickness: Math.max(0.42, thickness * 0.48),
-            startFrame: 2,
-          },
-        ),
-      ];
-      const sourceFlare = this.add
-        .circle(from.x, from.y, 8 + thickness * 2.5, color, 0.26)
-        .setStrokeStyle(Math.max(1, thickness), 0xffffff, 0.72)
-        .setBlendMode(Phaser.BlendModes.ADD)
-        .setDepth(31.4);
-      const impactFlare = this.add
-        .circle(to.x, to.y, 11 + thickness * 3, color, 0.3)
-        .setStrokeStyle(Math.max(1.5, thickness * 1.2), 0xffffff, 0.86)
-        .setBlendMode(Phaser.BlendModes.ADD)
-        .setDepth(31.4)
-        .setScale(0.35);
-      const duration = this.reducedMotion ? 100 : FX_TWEEN.lightningLifetime;
-      let settled = false;
-      const finish = (): void => {
-        if (settled) return;
-        settled = true;
-        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
-        for (const object of [...layers, sourceFlare, impactFlare]) {
-          this.tweens.killTweensOf(object);
-          if (object.active) object.destroy();
-        }
-        resolve();
-      };
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
-
-      if (!this.reducedMotion) {
-        layers.forEach((layer, index) => {
-          this.tweens.add({
-            targets: layer,
-            alpha: { from: layer.alpha * 0.35, to: layer.alpha },
-            scaleY: layer.scaleY * (index === 0 ? 1.12 : 0.92),
-            duration: 54 + index * 17,
-            yoyo: true,
-            repeat: 2,
-            ease: 'Sine.InOut',
-          });
-        });
-        this.tweens.add({
-          targets: sourceFlare,
-          scale: 1.5,
-          alpha: 0,
-          duration,
-          ease: 'Cubic.Out',
-        });
-        this.tweens.add({
-          targets: impactFlare,
-          scale: 1.65,
-          alpha: 0,
-          duration,
-          ease: 'Back.Out',
-        });
-      } else {
-        impactFlare.setScale(1);
-      }
-
-      this.time.delayedCall(duration, finish);
-    });
+    return this.lightningFx?.bolt(from, to, color, thickness) ?? Promise.resolve();
   }
 
   private vfxLightningNova(at: Vec2, color: number, thickness = 1): Promise<void> {
-    const radius = 34 + thickness * 7;
-    const directions = [
-      -Math.PI * 0.12,
-      Math.PI * 0.38,
-      Math.PI * 0.88,
-      Math.PI * 1.38,
-    ];
-    return Promise.all(directions.map((angle, index) => this.vfxLightningBolt(
-      at,
-      {
-        x: at.x + Math.cos(angle) * radius * (index % 2 ? 0.82 : 1),
-        y: at.y + Math.sin(angle) * radius * (index % 2 ? 0.82 : 1),
-      },
-      color,
-      Math.max(0.55, thickness * 0.72),
-    ))).then(() => undefined);
+    return this.lightningFx?.nova(at, color, thickness) ?? Promise.resolve();
   }
 
   private vfxEdgelordImpact(at: Vec2): Promise<void> {
@@ -12889,15 +13423,11 @@ export class GameScene extends Phaser.Scene {
 
   /** Rebuild the persistent animated Lightning Fire Pierce trail. */
   private setLightningTrail(segments: readonly { from: Vec2; to: Vec2 }[]): void {
-    this.clearLightningTrail();
-    this.lightningTrailSprites = segments.map((segment) =>
-      this.lightningSprite(segment.from, segment.to, 7.5)
-    );
+    this.lightningFx?.setTrail(segments);
   }
 
   private clearLightningTrail(): void {
-    for (const sprite of this.lightningTrailSprites) sprite.destroy();
-    this.lightningTrailSprites = [];
+    this.lightningFx?.clearTrail();
   }
 
   private mineSpriteBob(m: Mage): number {
@@ -13584,6 +14114,7 @@ export class GameScene extends Phaser.Scene {
       return this.vfxBurst(at, 0xffffff, 34, 1.6);
     }
 
+    if (item.kind === 'spell' && item.spell?.manualCastVisual) return Promise.resolve();
     const v = item.spell?.visual ?? this.defaultVisual(item);
     const lightningSpell = item.spell && (
       item.spell.words.includes('lightning') || item.spell.id === 'ability:lightning-bolt'
@@ -13622,7 +14153,7 @@ export class GameScene extends Phaser.Scene {
               });
         }
         if (spell.words.includes('corrode')) {
-          return this.vfxSpriteAt('fx-poison', point, {
+          return this.vfxSpriteAt('fx-dot', point, {
             lengthPx: (spell.aoe?.radius ?? 40) * 2.4,
           });
         }
@@ -13819,6 +14350,259 @@ export class GameScene extends Phaser.Scene {
         onUpdate: render,
         onComplete: finish,
       });
+    });
+  }
+
+  private vfxDrainParticles(from: Vec2, to: Vec2): Promise<void> {
+    const distance = dist(from, to);
+    if (distance < 3) return Promise.resolve();
+
+    return new Promise((resolve) => {
+      const count = this.reducedMotion ? 12 : 34;
+      const duration = this.reducedMotion ? 220 : Phaser.Math.Clamp(distance * 1.55, 460, 760);
+      const midpointY = (from.y + to.y) * 0.5;
+      const arcHeight = this.reducedMotion ? 28 : Phaser.Math.Clamp(distance * 0.3, 58, 138);
+      const upwardRoom = Math.max(18, midpointY - FIELD.y - 16);
+      const downwardRoom = Math.max(18, FIELD.y + FIELD.h - midpointY - 16);
+      const colors = [0x153d29, 0x1e5636, 0x2b6f42, 0x3f8752];
+      const particles: { root: Phaser.GameObjects.Container; progress: { value: number } }[] = [];
+      let remaining = count;
+      let settled = false;
+
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        for (const particle of particles) {
+          this.tweens.killTweensOf(particle.progress);
+          if (particle.root.active) particle.root.destroy(true);
+        }
+        resolve();
+      };
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+
+      for (let index = 0; index < count; index++) {
+        const phase = index * 2.39996;
+        const sourceSpread = 5 + (index % 7) * 1.8;
+        const start = {
+          x: from.x + Math.cos(phase) * sourceSpread,
+          y: from.y + Math.sin(phase) * sourceSpread,
+        };
+        const radius = 2.6 + (index % 4) * 0.55;
+        const root = this.add.container(start.x, start.y).setDepth(32);
+        const halo = this.add
+          .circle(0, 0, radius * 2.25, 0x4c9d61, 0.2)
+          .setBlendMode(Phaser.BlendModes.ADD);
+        const ball = this.add
+          .circle(0, 0, radius, colors[index % colors.length], 0.98)
+          .setStrokeStyle(1, 0x8fc99b, 0.82);
+        const glint = this.add.circle(-radius * 0.28, -radius * 0.28, Math.max(0.8, radius * 0.26), 0xc5e3bd, 0.78);
+        root.add([halo, ball, glint]);
+        root.setAlpha(0);
+        const progress = { value: 0 };
+        particles.push({ root, progress });
+        const laneDirection = index % 2 === 0 ? -1 : 1;
+        const laneRoom = laneDirection < 0 ? upwardRoom : downwardRoom;
+        const laneArc = Math.min(arcHeight * (0.78 + (index % 6) * 0.065), laneRoom);
+        const sidewaysDrift = ((index % 7) - 3) * 1.8;
+        this.tweens.add({
+          targets: progress,
+          value: 1,
+          delay: index * (this.reducedMotion ? 7 : 14),
+          duration: duration + (index % 5) * 24,
+          ease: 'Sine.In',
+          onUpdate: () => {
+            const amount = progress.value;
+            const parabola = 4 * amount * (1 - amount);
+            const fadeIn = Phaser.Math.Clamp(amount / 0.08, 0, 1);
+            const fadeOut = Phaser.Math.Clamp((1 - amount) / 0.1, 0, 1);
+            root
+              .setPosition(
+                Phaser.Math.Linear(start.x, to.x, amount) + sidewaysDrift * parabola,
+                Phaser.Math.Linear(start.y, to.y, amount) + laneDirection * laneArc * parabola
+              )
+              .setAlpha(fadeIn * fadeOut)
+              .setScale(0.82 + Math.sin(Math.PI * amount) * 0.28 - amount * 0.24);
+          },
+          onComplete: () => {
+            if (root.active) root.destroy(true);
+            remaining -= 1;
+            if (remaining === 0) finish();
+          },
+        });
+      }
+    });
+  }
+
+  /** Implode at a departure point and bloom at an arrival point. */
+  private vfxBlink(from: Vec2, to: Vec2, color: number): void {
+    if (dist(from, to) < 2) return;
+    this.vfxBlinkGate(from, color, 'out');
+    this.vfxBlinkGate(to, color, 'in');
+  }
+
+  private vfxBlinkGate(at: Vec2, color: number, phase: 'out' | 'in'): void {
+    const leaving = phase === 'out';
+    const duration = this.reducedMotion ? 120 : leaving ? 200 : 270;
+    const parts: Phaser.GameObjects.GameObject[] = [];
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+      for (const part of parts) {
+        this.tweens.killTweensOf(part);
+        if (part.active) part.destroy();
+      }
+    };
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+
+    const ring = this.add
+      .circle(at.x, at.y, MAGE_RADIUS * (leaving ? 1.6 : 0.4))
+      .setStrokeStyle(3, color, 0.9)
+      .setDepth(30.5)
+      .setBlendMode(Phaser.BlendModes.ADD);
+    const core = this.add
+      .circle(at.x, at.y, MAGE_RADIUS * 0.55, color, leaving ? 0.45 : 0.7)
+      .setDepth(30.4)
+      .setBlendMode(Phaser.BlendModes.ADD);
+    parts.push(ring, core);
+    this.tweens.add({
+      targets: ring,
+      scale: leaving ? 0.15 : 3.1,
+      alpha: 0,
+      duration,
+      ease: leaving ? 'Cubic.In' : 'Cubic.Out',
+    });
+    this.tweens.add({
+      targets: core,
+      scale: leaving ? 0.1 : 1.9,
+      alpha: 0,
+      duration: duration * 0.85,
+      ease: 'Sine.Out',
+    });
+
+    const shardCount = this.reducedMotion ? 0 : 8;
+    for (let index = 0; index < shardCount; index++) {
+      const angle = (Math.PI * 2 * index) / shardCount + (leaving ? 0.35 : 0);
+      const near = MAGE_RADIUS * 0.35;
+      const far = MAGE_RADIUS * 2.1;
+      const shard = this.add
+        .rectangle(
+          at.x + Math.cos(angle) * (leaving ? far : near),
+          at.y + Math.sin(angle) * (leaving ? far : near),
+          11,
+          2.6,
+          color,
+          0.95
+        )
+        .setRotation(angle)
+        .setDepth(30.6)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      parts.push(shard);
+      this.tweens.add({
+        targets: shard,
+        x: at.x + Math.cos(angle) * (leaving ? near : far),
+        y: at.y + Math.sin(angle) * (leaving ? near : far),
+        alpha: 0,
+        duration,
+        ease: leaving ? 'Cubic.In' : 'Cubic.Out',
+      });
+    }
+    this.time.delayedCall(duration + 40, finish);
+  }
+
+  private vfxBoomerang(
+    from: Vec2,
+    to: Vec2,
+    color: number,
+    size: number,
+    speed: number
+  ): Promise<void> {
+    const distance = dist(from, to);
+    if (distance < 3) return Promise.resolve();
+
+    return new Promise((resolve) => {
+      const unit = { x: (to.x - from.x) / distance, y: (to.y - from.y) / distance };
+      const perpendicular = { x: -unit.y, y: unit.x };
+      const arc = this.reducedMotion ? 0 : Math.min(74, Math.max(24, distance * 0.16));
+      const duration = this.reducedMotion
+        ? 110
+        : Phaser.Math.Clamp((distance / (760 * Math.max(0.25, speed))) * 1000, 220, 620);
+      const root = this.add.container(from.x, from.y).setDepth(32);
+      const glow = this.add
+        .circle(0, 0, size * 1.15, color, 0.2)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      const shard = this.add
+        .polygon(
+          0,
+          0,
+          [
+            -size * 1.35, 0,
+            -size * 0.2, -size * 0.55,
+            size * 1.4, 0,
+            -size * 0.2, size * 0.55,
+          ],
+          color,
+          1
+        )
+        .setStrokeStyle(Math.max(1, size * 0.14), 0xf4eaff, 0.92);
+      const core = this.add
+        .circle(size * 0.15, 0, Math.max(1.5, size * 0.18), 0xffffff, 0.9)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      root.add([glow, shard, core]);
+
+      const progress = { value: 0 };
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        this.tweens.killTweensOf(progress);
+        if (root.active) root.destroy(true);
+        resolve();
+      };
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+      this.tweens.add({
+        targets: progress,
+        value: 1,
+        duration,
+        ease: 'Sine.InOut',
+        onUpdate: () => {
+          const amount = progress.value;
+          const lift = Math.sin(Math.PI * amount) * arc;
+          root
+            .setPosition(
+              Phaser.Math.Linear(from.x, to.x, amount) + perpendicular.x * lift,
+              Phaser.Math.Linear(from.y, to.y, amount) + perpendicular.y * lift
+            )
+            .setRotation(Math.atan2(unit.y, unit.x) + amount * Math.PI * 7);
+          glow.setAlpha(0.14 + Math.sin(amount * Math.PI * 6) * 0.08);
+        },
+        onComplete: finish,
+      });
+    });
+  }
+
+  private vfxSummonPuff(at: Vec2, size: number): Promise<void> {
+    const key = 'fx-summon-smoke';
+    if (!this.anims.exists(key)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const sprite = this.add
+        .sprite(at.x, at.y, key, 0)
+        .setDepth(10)
+        .setDisplaySize(size, size);
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        if (sprite.active) sprite.destroy();
+        resolve();
+      };
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+      sprite.play(key);
+      sprite.once('animationcomplete', finish);
     });
   }
 
@@ -14150,183 +14934,10 @@ export class GameScene extends Phaser.Scene {
     this.pendingDice = [];
     // Skip-dice option: drop the rolling popup entirely (results already apply).
     if (Dev.skipDice) {
-      this.dicePanel.setVisible(false);
+      this.dicePanel.hide();
       return;
     }
-    for (const roll of queued) await this.playOneDice(roll);
-  }
-
-  private parseSides(spec: string): number {
-    const m = /d(\d+)/i.exec(spec);
-    return m ? parseInt(m[1], 10) : 6;
-  }
-
-  private drawDieFace(
-    graphics: Phaser.GameObjects.Graphics,
-    label: Phaser.GameObjects.Text,
-    size: number,
-    value: number,
-    sides: number,
-  ): void {
-    const half = size / 2;
-    graphics.clear();
-    graphics.fillStyle(MENU_COLOR.pitch, 1).fillRect(-half + 3, -half + 4, size, size);
-    graphics.fillStyle(MENU_COLOR.bone, 1).fillRect(-half, -half, size, size);
-    graphics.lineStyle(2, MENU_COLOR.brassDark, 1).strokeRect(-half + 1, -half + 1, size - 2, size - 2);
-    graphics.lineStyle(1, MENU_COLOR.brassLight, 0.7);
-    graphics.lineBetween(-half + 5, -half + 5, half - 5, -half + 5);
-    graphics.lineBetween(-half + 5, -half + 5, -half + 5, half - 5);
-
-    if (sides !== 6 || value < 1 || value > 6) {
-      label.setText(String(value)).setVisible(true);
-      return;
-    }
-
-    label.setVisible(false);
-    const inset = size * 0.23;
-    const pips: Record<number, [number, number][]> = {
-      1: [[0, 0]],
-      2: [[-inset, -inset], [inset, inset]],
-      3: [[-inset, -inset], [0, 0], [inset, inset]],
-      4: [[-inset, -inset], [inset, -inset], [-inset, inset], [inset, inset]],
-      5: [[-inset, -inset], [inset, -inset], [0, 0], [-inset, inset], [inset, inset]],
-      6: [[-inset, -inset], [-inset, 0], [-inset, inset], [inset, -inset], [inset, 0], [inset, inset]],
-    };
-    graphics.fillStyle(MENU_COLOR.ink, 1);
-    for (const [x, y] of pips[value]) graphics.fillCircle(x, y, Math.max(2.5, size * 0.07));
-  }
-
-  /** Show one roll: tumble for ~1s, settle on the result, linger ~1s, fade. */
-  private playOneDice(roll: DiceRoll): Promise<void> {
-    return new Promise((resolve) => {
-      const sides = this.parseSides(roll.spec);
-      const n = Math.max(1, roll.rolls.length);
-      const gap = n > 12 ? 5 : 10;
-      const dieSize = Phaser.Math.Clamp(Math.floor((960 - gap * (n - 1)) / n), 30, 46);
-      const diceW = n * dieSize + (n - 1) * gap;
-      const titleText = roll.label ?? roll.spec;
-      const panelW = Math.min(1160, Math.max(diceW + 184, titleText.length * 10 + 60));
-      const panelH = 154;
-      const reducedMotion = this.reducedMotion;
-
-      this.dicePanel.removeAll(true);
-      const shadow = this.add.rectangle(7, 9, panelW + 8, panelH + 8, MENU_COLOR.pitch, 1);
-      const bg = this.add.rectangle(0, 0, panelW, panelH, MENU_COLOR.woodDeep, 1)
-        .setStrokeStyle(2, MENU_COLOR.brassDark);
-      const bed = this.add.rectangle(0, 20, panelW - 24, 82, MENU_COLOR.felt, 1)
-        .setStrokeStyle(1, MENU_COLOR.woodEdge);
-      const rail = this.add.rectangle(0, -panelH / 2 + 9, panelW - 18, 5, MENU_COLOR.brass, 1);
-      const title = this.add
-        .text(0, -52, titleText.toUpperCase(), {
-          fontFamily: MENU_FONT.display,
-          fontSize: '18px',
-          color: MENU_HEX.bone,
-          fontStyle: 'bold',
-          fixedWidth: panelW - 180,
-          align: 'center',
-        })
-        .setOrigin(0.5);
-      const label = this.add
-        .text(-panelW / 2 + 16, -35, roll.spec.toUpperCase(), {
-          fontFamily: MENU_FONT.control,
-          fontSize: '12px',
-          color: MENU_HEX.brassLight,
-        })
-        .setOrigin(0, 0.5);
-      this.dicePanel.add([shadow, bg, bed, rail, title, label]);
-
-      const dice: { root: Phaser.GameObjects.Container; face: Phaser.GameObjects.Graphics; label: Phaser.GameObjects.Text }[] = [];
-      const startX = -diceW / 2 + dieSize / 2;
-      for (let i = 0; i < n; i++) {
-        const dx = startX + i * (dieSize + gap);
-        const root = this.add.container(dx, 20);
-        const face = this.add.graphics();
-        const dieLabel = this.add
-          .text(0, 0, '?', {
-            fontFamily: MENU_FONT.control,
-            fontSize: `${Math.max(18, Math.floor(dieSize * 0.52))}px`,
-            color: MENU_HEX.ink,
-            fontStyle: 'bold',
-          })
-          .setOrigin(0.5);
-        root.add([face, dieLabel]);
-        this.drawDieFace(face, dieLabel, dieSize, 1, sides);
-        this.dicePanel.add(root);
-        dice.push({ root, face, label: dieLabel });
-        if (!reducedMotion) {
-          root.setY(-4).setAngle(i % 2 === 0 ? -5 : 5);
-          this.tweens.add({
-            targets: root,
-            y: 20,
-            angle: 0,
-            duration: 180,
-            delay: i * 18,
-            ease: 'Bounce.Out',
-          });
-        }
-      }
-      const totalPlate = this.add
-        .rectangle(diceW / 2 + 52, 20, 76, 52, MENU_COLOR.brass, 1)
-        .setStrokeStyle(2, MENU_COLOR.brassLight);
-      const totalTxt = this.add
-        .text(diceW / 2 + 52, 20, '', {
-          fontFamily: MENU_FONT.display,
-          fontSize: '25px',
-          color: MENU_HEX.ink,
-          fontStyle: 'bold',
-        })
-        .setOrigin(0.5);
-      this.dicePanel.add([totalPlate, totalTxt]);
-
-      this.dicePanel.setVisible(true).setAlpha(reducedMotion ? 1 : 0).setScale(reducedMotion ? 1 : 0.96);
-      if (!reducedMotion) {
-        this.tweens.add({ targets: this.dicePanel, alpha: 1, scale: 1, duration: 140, ease: 'Sine.Out' });
-      }
-
-      // Tumble.
-      const tumble = reducedMotion ? null : this.time.addEvent({
-        delay: 70,
-        loop: true,
-        callback: () => dice.forEach((die) => {
-          this.drawDieFace(die.face, die.label, dieSize, 1 + Math.floor(Math.random() * sides), sides);
-        }),
-      });
-
-      this.time.delayedCall(reducedMotion ? 0 : 900, () => {
-        tumble?.remove();
-        roll.rolls.forEach((value, i) => {
-          const die = dice[i];
-          if (die) this.drawDieFace(die.face, die.label, dieSize, value, sides);
-        });
-        if (roll.rolls.length === 0 && dice[0]) {
-          this.drawDieFace(dice[0].face, dice[0].label, dieSize, roll.total, sides);
-        }
-        totalTxt.setText(String(roll.total));
-        if (!reducedMotion) {
-          this.tweens.add({ targets: totalPlate, scale: 1.08, duration: 100, yoyo: true });
-          this.tweens.add({ targets: totalTxt, scale: 1.08, duration: 100, yoyo: true });
-        }
-
-        this.time.delayedCall(reducedMotion ? 550 : 900, () => {
-          if (reducedMotion) {
-            this.dicePanel.setVisible(false);
-            this.dicePanel.removeAll(true);
-            resolve();
-            return;
-          }
-          this.tweens.add({
-            targets: this.dicePanel,
-            alpha: 0,
-            duration: 160,
-            onComplete: () => {
-              this.dicePanel.setVisible(false);
-              this.dicePanel.removeAll(true);
-              resolve();
-            },
-          });
-        });
-      });
-    });
+    for (const roll of queued) await this.dicePanel.play(roll, this.reducedMotion);
   }
 
   private delay(ms: number): Promise<void> {

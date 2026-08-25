@@ -62,12 +62,22 @@ export interface VfxSink {
   hit?(mage: Mage): void;
   /** Animate a gradual dash for `mover`, which has just jumped from `from`. */
   dash?(mover: Mage, from: Vec2): void;
+  /** Phase a body out at `from` and back in at `to` (teleports and blinks). */
+  blink?(from: Vec2, to: Vec2, color: number): void;
+  /** Sweep a blade arc centred at `at`, aimed along `angle`, spanning `size` px. */
+  slash?(at: Vec2, angle: number, size: number): void;
   /** Glide one logically-repositioned unit inward and resolve when it arrives. */
   pull?(mover: Mage, from: Vec2, to: Vec2): Promise<void>;
   /** Animate a lightning arc between two points and resolve after one loop. */
   lightningBolt?(from: Vec2, to: Vec2): Promise<void>;
-  /** Play a one-shot hit-effect overlay on `mage` (spell impact / DoT / vanish). */
-  spellEffect?(mage: Mage, kind: 'generic' | 'poison' | 'dot' | 'vanish'): void;
+  /** Play a one-shot hit-effect overlay on `mage`. */
+  spellEffect?(mage: Mage, kind: 'generic' | 'corrosive' | 'vanish'): void;
+  /** Pull a stream of life particles from `from` into `to`. */
+  drainParticles?(from: Vec2, to: Vec2): void;
+  /** Throw one curved, spinning shard leg and resolve when it reaches `to`. */
+  boomerang?(from: Vec2, to: Vec2, color: number, size: number, speed: number): Promise<void>;
+  /** Puff smoke at one newly created minion. */
+  summonPuff?(at: Vec2, size: number): void;
   /** Show one outcome-aware floating combat readout over `mage`. */
   combatFeedback?(mage: Mage, feedback: CombatFeedback): void;
   /** Play a compact shatter-sheet burst at an exact impact point. */
@@ -79,6 +89,12 @@ export interface VfxSink {
   wedge?(apex: Vec2, angle: number, halfAngle: number, range: number): void;
   /** Draw or replace the animated trail for Lightning Fire Pierce. */
   lightningTrail?(segments: readonly { from: Vec2; to: Vec2 }[]): void;
+  /** Rip a bolt along one dash path; resolves as the mover lands. */
+  lightningDash?(from: Vec2, to: Vec2, color: number): Promise<void>;
+  /** Punch a lightning impact through a body the trail has caught. */
+  lightningImpact?(at: Vec2, color: number): void;
+  /** Blast the point where the caster slammed into their own trail. */
+  lightningCrash?(at: Vec2, color: number): Promise<void>;
   /** Clear the temporary Lightning Fire Pierce trail. */
   clearLightningTrail?(): void;
   /** Cue a logical full-field quarter-turn without owning any movement state. */
@@ -109,6 +125,18 @@ export interface SubTargetEnemyOpts {
   prompt?: string;
 }
 
+/** Options for a mandatory mid-resolution pick from an explicit combatant set. */
+export interface SubTargetCombatantOpts {
+  /** The combatants that may be picked; allies and the source are allowed. */
+  candidates: readonly Mage[];
+  /** Maximum distance (px) from `origin` the combatant may be. */
+  range: number;
+  /** Origin the range is measured from (defaults to the caster). */
+  origin?: Vec2;
+  /** Hint shown to the player while picking. */
+  prompt?: string;
+}
+
 /**
  * Optional bridge the scene supplies so a spell can ask for *additional* targets
  * while it resolves (e.g. "now pick a point, then an enemy"). Because these run
@@ -119,6 +147,7 @@ export interface SubTargetEnemyOpts {
 export interface SubTargeter {
   requestPoint(source: Mage, opts: SubTargetPointOpts): Promise<Vec2 | null>;
   requestEnemy(source: Mage, opts: SubTargetEnemyOpts): Promise<Mage | null>;
+  requestCombatant(source: Mage, opts: SubTargetCombatantOpts): Promise<Mage | null>;
   /**
    * Open a reaction window mid-resolution so opponents may spend their reaction
    * in response to the current step (e.g. one blink of a multi-step flurry).
@@ -245,19 +274,21 @@ export function rollDice(ctx: EffectContext, spec: string, reason?: string): num
  * Set opts.canMiss = false for guaranteed effects (e.g. damage-over-time ticks).
  * Set opts.aoe = true for area effects that bypass the dodge entirely.
  */
+export interface DealDamageOptions {
+  canMiss?: boolean;
+  aoe?: boolean;
+  ignoreResist?: boolean;
+  ignoreArmor?: boolean;
+  trueDamage?: boolean;
+  /** Suppress the automatic spell hit-effect overlay (basic attacks, DoT ticks). */
+  noImpactFx?: boolean;
+}
+
 export function dealDamage(
   ctx: EffectContext,
   target: Mage,
   damage: DamageInstance,
-  opts: {
-    canMiss?: boolean;
-    aoe?: boolean;
-    ignoreResist?: boolean;
-    ignoreArmor?: boolean;
-    trueDamage?: boolean;
-    /** Suppress the automatic spell hit-effect overlay (basic attacks, DoT ticks). */
-    noImpactFx?: boolean;
-  } = {}
+  opts: DealDamageOptions = {}
 ): number {
   const targetWasAlive = target.alive;
   ctx.game.triggerOniAmbush(ctx.caster, target);
@@ -536,7 +567,7 @@ export function dealDamage(
     // anything else → the generic impact. Suppressed for basic attacks and DoT
     // ticks (which drive their own 'dot' overlay).
     if (!opts.noImpactFx) {
-      ctx.vfx?.spellEffect?.(target, damage.type === 'corrosive' ? 'poison' : 'generic');
+      ctx.vfx?.spellEffect?.(target, damage.type === 'corrosive' ? 'corrosive' : 'generic');
     }
     breakVeilOnStruck(ctx, target, damage.damageClass, amount);
     if (canMiss) breakVeilOnStrike(ctx, ctx.caster, amount);
@@ -753,6 +784,7 @@ export function applyStun(
       kind: 'stun',
       duration,
       stunType: opts.type,
+      physicalRoot: opts.type === 'movement',
     },
     !!opts.extend
   );
@@ -769,6 +801,10 @@ export function applyStun(
 // -----------------------------------------------------------------------------
 //  DASH / FORCED MOVEMENT
 // -----------------------------------------------------------------------------
+
+/** Phase colours: arcane for a raw blink, shadow for a pool-to-pool step. */
+const BLINK_ARCANE = 0xbfa8ff;
+const BLINK_SHADOW = 0x8a6bff;
 
 /**
  * Move a mage. Provide either:
@@ -841,7 +877,7 @@ export function blinkstep(
   mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x));
   mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y));
   ctx.game.notifyMageRelocation(mover, from, mover.pos, false);
-  ctx.vfx?.dash?.(mover, from);
+  ctx.vfx?.blink?.(from, mover.pos, BLINK_ARCANE);
   ctx.game.triggerNeedlepointDomains(mover);
   ctx.log(`${mover.name} blinksteps ${Math.round(opts.distance)} away.`);
 }
@@ -856,6 +892,7 @@ export function teleport(ctx: EffectContext, mover: Mage, at: Vec2): void {
   mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x));
   mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y));
   ctx.game.notifyMageRelocation(mover, from, mover.pos, false);
+  ctx.vfx?.blink?.(from, mover.pos, BLINK_SHADOW);
   ctx.game.triggerNeedlepointDomains(mover);
   ctx.log(`${mover.name} slips through the shadows.`);
 }
@@ -1113,12 +1150,12 @@ export function areaDamage(
   at: Vec2,
   radius: number,
   damage: DamageInstance,
-  opts: { canMiss?: boolean } = {}
+  opts: { canMiss?: boolean; noImpactFx?: boolean } = {}
 ): Mage[] {
   const hits = ctx.game
     .magesInRadius(at, radius, ctx.caster)
     .filter((m) => m.team !== ctx.caster.team);
-  for (const m of hits) dealDamage(ctx, m, { ...damage }, { ...opts, aoe: true, noImpactFx: true });
+  for (const m of hits) dealDamage(ctx, m, { ...damage }, { ...opts, aoe: true });
   ctx.game.damageScarabsInRadius(
     at,
     radius,
@@ -1140,7 +1177,7 @@ export function coneDamage(
   range: number,
   degrees: number,
   damage: DamageInstance,
-  opts: { canMiss?: boolean; strictRange?: boolean } = {}
+  opts: { canMiss?: boolean; strictRange?: boolean; noImpactFx?: boolean } = {}
 ): Mage[] {
   const { strictRange = false, ...damageOpts } = opts;
   let hits = ctx.game
@@ -1150,7 +1187,7 @@ export function coneDamage(
     hits = hits.filter((m) => dist(ctx.caster.pos, m.pos) <= range + 0.5);
   }
   for (const m of hits) {
-    dealDamage(ctx, m, { ...damage }, { ...damageOpts, aoe: true, noImpactFx: true });
+    dealDamage(ctx, m, { ...damage }, { ...damageOpts, aoe: true });
   }
   if (damage.type === 'heat') {
     ctx.game.destroyScarabsByFireInCone(
@@ -1198,10 +1235,14 @@ export function drainDamage(
   ctx: EffectContext,
   target: Mage,
   damage: DamageInstance,
-  opts: { canMiss?: boolean; aoe?: boolean } = {}
+  opts: DealDamageOptions = {}
 ): number {
-  const dealt = dealDamage(ctx, target, damage, opts);
-  if (dealt > 0 && ctx.caster.alive) heal(ctx, ctx.caster, dealt);
+  const dealt = dealDamage(ctx, target, damage, { ...opts, noImpactFx: true });
+  if (dealt > 0 && ctx.caster.alive) {
+    if (!opts.noImpactFx) ctx.vfx?.spellEffect?.(target, 'corrosive');
+    ctx.vfx?.drainParticles?.(target.pos, ctx.caster.pos);
+    heal(ctx, ctx.caster, dealt);
+  }
   return dealt;
 }
 
@@ -1408,7 +1449,7 @@ export function placeRealityWedge(
   cornerA: Vec2,
   cornerB: Vec2 | null,
   opts: { ttl: number; length: number }
-): void {
+): { apex: Vec2; angle: number; halfAngle: number; range: number } {
   const apex = { x: ctx.caster.x, y: ctx.caster.y };
   const angA = Math.atan2(cornerA.y - apex.y, cornerA.x - apex.x);
   let angle: number;
@@ -1435,6 +1476,7 @@ export function placeRealityWedge(
   });
   ctx.vfx?.wedge?.(apex, angle, halfAngle, range);
   ctx.log(`${ctx.caster.name} tears a wedge of reality open — no one may pass.`);
+  return { apex, angle, halfAngle, range };
 }
 
 /**

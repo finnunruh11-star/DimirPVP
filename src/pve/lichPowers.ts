@@ -60,6 +60,7 @@ const LICH_DRAIN: Spell = {
   targeting: 'enemy',
   description: 'A siphon: 1d6 corrosive damage that heals the Lich for the full amount dealt.',
   visual: { preset: 'projectile', color: 0x57d6a0, size: 10, speed: 1.5 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
     drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Drain'), 'corrosive', 'physical'));
@@ -143,14 +144,14 @@ const LICH_DRAIN_VOID: Spell = {
   description:
     'Void-fed hunger: greater unstoppable damage that heals the Lich for everything it devours, and rends the mind besides.',
   visual: { preset: 'beam', color: 0x2a0f4a, size: 12, speed: 1.1 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
     // Void, but bigger — and every point torn from the body heals the Lich.
-    const dealt = dealDamage(ctx, ctx.target, dmg(8, 'shadow', 'physical'), {
+    drainDamage(ctx, ctx.target, dmg(8, 'shadow', 'physical'), {
       canMiss: false,
       trueDamage: true,
     });
-    if (dealt > 0 && ctx.caster.alive) heal(ctx, ctx.caster, dealt);
     dealDamage(ctx, ctx.target, dmg(4, 'shadow', 'sanity'), { canMiss: false, trueDamage: true });
   },
 };
@@ -209,15 +210,22 @@ const LICH_ANNIHILATION: Spell = {
   description:
     'The grave opens wide: every living foe suffers unstoppable ruin, is doomed and cursed, and feeds the Lich.',
   visual: { preset: 'burst', color: 0x120024, size: 26, speed: 1.3 },
+  manualCastVisual: true,
   cast(ctx) {
     const foes = ctx.game.livingEnemiesOf(ctx.caster);
     let leech = 0;
     for (const foe of foes) {
-      leech += dealDamage(ctx, foe, dmg(7, 'shadow', 'physical'), {
+      const dealt = dealDamage(ctx, foe, dmg(7, 'shadow', 'physical'), {
         canMiss: false,
         aoe: true,
         trueDamage: true,
+        noImpactFx: true,
       });
+      if (dealt > 0) {
+        leech += dealt;
+        ctx.vfx?.spellEffect?.(foe, 'corrosive');
+        ctx.vfx?.drainParticles?.(foe.pos, ctx.caster.pos);
+      }
       dealDamage(ctx, foe, dmg(4, 'shadow', 'sanity'), { canMiss: false, aoe: true, trueDamage: true });
       applyDebuff(ctx, foe, {
         name: 'Doomed',
@@ -227,7 +235,6 @@ const LICH_ANNIHILATION: Spell = {
       });
       lichCurseDot(ctx, foe);
     }
-    // Every point torn from the foes' bodies feeds the Lich.
     if (leech > 0 && ctx.caster.alive) heal(ctx, ctx.caster, leech);
   },
 };

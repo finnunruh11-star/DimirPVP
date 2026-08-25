@@ -48,6 +48,8 @@ export interface InvisibilityStatus extends BaseStatus {
 export interface StunStatus extends BaseStatus {
   kind: 'stun';
   stunType: StunType;
+  /** A physical binding (roots, shackles) rather than terrain like a reality break. */
+  physicalRoot?: boolean;
 }
 
 export interface DotStatus extends BaseStatus {

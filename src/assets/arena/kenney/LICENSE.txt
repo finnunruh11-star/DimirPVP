@@ -1,0 +1,12 @@
+Roguelike/RPG Pack
+by Kenney Vleugels for Kenney (https://kenney.nl)
+with help by Lynn Evers (@EversLynn)
+
+Source:
+https://kenney.nl/assets/roguelike-rpg-pack
+
+License: Creative Commons Zero (CC0 1.0 Universal)
+https://creativecommons.org/publicdomain/zero/1.0/
+
+These graphics may be used in personal and commercial projects.
+Credit is appreciated but is not required.

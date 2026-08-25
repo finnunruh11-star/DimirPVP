@@ -135,6 +135,7 @@ registerClassSpell({
       dc: 12,
       noCrit: true,
       noCastSprite: true,
+      manualCastVisual: true,
       description:
         'Summon a ghost (aimed within range 6). It deals "mill" (sanity) damage, ' +
         'can hold and use one item, and obeys your Command bonus action. HP 7; ' +
@@ -194,6 +195,7 @@ registerClassSpellVariants({
       dc: 12,
       noCrit: true,
       noCastSprite: true,
+      manualCastVisual: true,
       description:
         'Raise a Neural Leech within range 6. Its bite deals 1d3 corrosive sanity ' +
         'damage and inflicts Neural Rot for 3 turns: 1 corrosive sanity damage each ' +
@@ -259,6 +261,7 @@ registerClassSpellVariants({
       dc: 12,
       noCrit: true,
       noCastSprite: true,
+      manualCastVisual: true,
       description:
         'Raise a Thought Leech within range 6. Its bite deals 1d3 sanity damage and ' +
         'drains one random charged word from the victim. If you know that word, its ' +
@@ -375,6 +378,7 @@ registerClassSpell({
       dc: 12,
       noCrit: true,
       noCastSprite: true,
+      manualCastVisual: true,
       description:
         'Raise a Rot Sentry within range 5. It cannot attack, but at the start of each of ' +
         'your turns its range-3 aura deals 1d3 corrosive damage to everyone except you ' +
@@ -529,6 +533,7 @@ registerClassSpell({
       dc: 12,
       noCrit: true,
       noCastSprite: true,
+      manualCastVisual: true,
       description:
         'Raise a Binder (aimed within range 6): a fragile, ranged minion (reach 10) that ' +
         'roots what it strikes for 2 turns. HP 6; obeys your Command bonus action. Its ' +
@@ -622,6 +627,7 @@ registerClassSpell({
       dc: 13,
       noCrit: true,
       noCastSprite: true,
+      manualCastVisual: true,
       description:
         'Raise a Corroding Archer (aimed within range 6): a ranged minion that fires acid ' +
         'bolts (reach 15, but never point-blank under 10). Its shots reveal the hidden and ' +

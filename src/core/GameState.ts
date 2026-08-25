@@ -3,7 +3,7 @@ import { Mage } from './Mage';
 import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
 import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
-import { dealDamage, heal, applyDot, applyDebuff, applyInvisibility, applyStun, rollDice, teleport } from '../effects/effects';
+import { dealDamage, drainDamage, heal, applyDot, applyDebuff, applyInvisibility, applyStun, rollDice, teleport } from '../effects/effects';
 import { dmg } from './Damage';
 import type { DamageType, DamageClass } from './Damage';
 import type { ItemId, ItemDef } from './Items';
@@ -344,6 +344,7 @@ export class GameState {
     m.summonMoveMultiplier = owner.redSummonHaste ? 2 : 1;
     this.mages.push(m);
     this.initiativeRolls[this.mages.length - 1] = 0;
+    this.vfxSink?.summonPuff?.(m.pos, Math.max(42, m.bodyRadius() * 3.2));
     return m;
   }
 
@@ -957,7 +958,7 @@ export class GameState {
     return { dest: last, wallSlam: false, path };
   }
 
-  turnBattlefield(clockwise: boolean): void {
+  turnBattlefield(clockwise: boolean, source?: Mage): void {
     this.vfxSink?.quarterTurn?.(clockwise);
     const pivot = { x: FIELD.x + FIELD.w / 2, y: FIELD.y + FIELD.h / 2 };
     for (const mage of this.mages) {
@@ -967,6 +968,16 @@ export class GameState {
       mage.x = turn.dest.x;
       mage.y = turn.dest.y;
       this.notifyMageRelocation(mage, origin, turn.dest, true, turn.path);
+      if (source && turn.wallSlam && mage.alive && mage.team !== source.team) {
+        const ctx = this.effectContext(source, mage, mage.pos);
+        dealDamage(
+          ctx,
+          mage,
+          dmg(rollDice(ctx, '2d6', 'Twist Reality collision'), 'typeless', 'physical'),
+          { canMiss: false }
+        );
+        this.log(`${mage.name} is crushed against the edge of reality!`);
+      }
     }
     for (const scarab of [...this.scarabs].sort((a, b) => a.id - b.id)) {
       if (!scarabAlive(scarab) || !scarabFlying(scarab)) continue;
@@ -977,7 +988,12 @@ export class GameState {
       );
       scarab.x = turn.dest.x;
       scarab.y = turn.dest.y;
+      if (source && turn.wallSlam && scarab.owner !== source.team) {
+        const ctx = this.effectContext(source, null, { x: scarab.x, y: scarab.y });
+        scarab.hp -= rollDice(ctx, '2d6', 'Twist Reality collision');
+      }
     }
+    this.scarabs = this.scarabs.filter(scarabAlive);
     this.updateAttachedScarabs();
     this.log(`The battlefield turns 90 degrees ${clockwise ? 'clockwise' : 'counterclockwise'}!`);
   }
@@ -1580,12 +1596,14 @@ export class GameState {
       const owner = (caster && caster.alive ? caster : this.mages.find((g) => g.team === t.owner)) ?? m;
       const ctx = this.effectContext(owner, m, null);
       const amount = this.rng.roll(t.damageSpec).total;
-      const dealt = dealDamage(ctx, m, dmg(amount, 'corrosive', 'physical'), {
-        canMiss: false,
-        noImpactFx: true,
-      });
-      if (dealt > 0) this.vfxSink?.spellEffect?.(m, 'dot');
-      if (t.lifesteal && dealt > 0 && owner !== m && owner.alive) heal(ctx, owner, dealt);
+      if (t.lifesteal && owner !== m) {
+        drainDamage(ctx, m, dmg(amount, 'corrosive', 'physical'), { canMiss: false });
+      } else {
+        dealDamage(ctx, m, dmg(amount, 'corrosive', 'physical'), {
+          canMiss: false,
+          noImpactFx: true,
+        });
+      }
       if (t.slow > 0) {
         addOrExtendStatus(
           m.statuses,
@@ -1666,6 +1684,7 @@ export class GameState {
         state: 'seeking',
         target: null,
       });
+      this.vfxSink?.summonPuff?.({ x, y }, 30);
     }
   }
 
@@ -1909,7 +1928,6 @@ export class GameState {
           canMiss: false,
           noImpactFx: true,
         });
-        if (dealt > 0) this.vfxSink?.spellEffect?.(victim, 'dot');
         if (this.hasHexcraftGlobal('curseCorrode') && victim.alive) {
           const corrosive = this.rng.roll('1d3').total;
           victim.hp = Math.max(0, victim.hp - corrosive);
@@ -1946,10 +1964,7 @@ export class GameState {
           canMiss: false,
           noImpactFx: true,
         });
-        if (dealt > 0) {
-          this.log(`${summon.name}'s rot aura corrodes ${victim.name} for ${dealt}.`);
-          this.vfxSink?.spellEffect?.(victim, 'dot');
-        }
+        if (dealt > 0) this.log(`${summon.name}'s rot aura corrodes ${victim.name} for ${dealt}.`);
       }
     }
   }
@@ -2013,7 +2028,6 @@ export class GameState {
         dmg(amount, 'typeless', 'physical'),
         { canMiss: false, aoe: true, trueDamage: true, noImpactFx: true }
       );
-      this.vfxSink?.spellEffect?.(target, 'dot');
     }
     this.log(
       `${source.name}'s Wings restore ${healing} HP and drain ${enemies.length} nearby enem${enemies.length === 1 ? 'y' : 'ies'}.`
@@ -2173,7 +2187,7 @@ export class GameState {
         dmg(this.rng.roll('3d3').total, 'corrosive', 'physical'),
         { canMiss: false, aoe: true, noImpactFx: true }
       );
-      if (dealt > 0) this.vfxSink?.spellEffect?.(m, 'poison');
+      if (dealt > 0) this.vfxSink?.spellEffect?.(m, 'corrosive');
       this.applyCorrosionPoolSlow(m);
       this.log(`${m.name} is eaten by the corrosion pool.`);
     }
@@ -2210,7 +2224,6 @@ export class GameState {
     });
     if (dealt > 0) {
       this.log(`${m.name} sears in the light for ${dealt}.`);
-      this.vfxSink?.spellEffect?.(m, 'dot');
     }
   }
 
@@ -2228,7 +2241,6 @@ export class GameState {
       canMiss: false,
       noImpactFx: true,
     });
-    this.vfxSink?.spellEffect?.(m, 'dot');
     if (highFire) {
       const nearby = this.mages.filter(
         (other) => other !== m && other.alive && dist(other.pos, m.pos) <= 2 * RANGE_UNIT
@@ -2300,7 +2312,6 @@ export class GameState {
       dmg(this.rng.roll(spec).total, 'heat', 'physical'),
       { canMiss: false, noImpactFx: true }
     );
-    this.vfxSink?.spellEffect?.(m, 'dot');
     if (highFire) {
       for (const other of this.mages) {
         if (other !== m && other.alive && dist(other.pos, m.pos) <= 2 * RANGE_UNIT) {
@@ -2377,7 +2388,6 @@ export class GameState {
       canMiss: false,
       noImpactFx: true,
     });
-    this.vfxSink?.spellEffect?.(m, 'dot');
     if (highFlare) {
       for (const other of this.mages) {
         if (other === m || !other.alive || dist(other.pos, m.pos) > 3 * RANGE_UNIT) continue;
@@ -2471,7 +2481,6 @@ export class GameState {
       target.sanity = Math.max(target.unkillable ? 1 : 0, target.sanity - rend.stacks);
     }
     this.log(`${target.name}'s Soul Rend tears away ${rend.stacks} health and mill.`);
-    this.vfxSink?.spellEffect?.(target, 'dot');
     if (wasAlive && !target.alive) this.notifyMageDefeated(target, owner);
   }
 
@@ -2493,7 +2502,6 @@ export class GameState {
     }
     reap.stacks += count;
     this.log(`${target.name} is marked with ${reap.stacks} Reap.`);
-    this.vfxSink?.spellEffect?.(target, 'dot');
     this.checkReapDeath(target, source);
     return reap.stacks;
   }
@@ -2884,12 +2892,13 @@ export class GameState {
       if (s.lifestealToIndex !== undefined && total > 0) {
         const owner = this.mages[s.lifestealToIndex];
         if (owner && owner.alive && owner !== m) {
+          this.vfxSink?.spellEffect?.(m, 'corrosive');
+          this.vfxSink?.drainParticles?.(m.pos, owner.pos);
           heal(this.effectContext(owner, m, null), owner, total, s.lifestealPool ?? 'hp');
         }
       }
       if (total > 0) {
         this.vfxSink?.hit?.(m);
-        this.vfxSink?.spellEffect?.(m, 'dot');
       }
       this.log(`${m.name} suffers ${total} ${s.damage.type} from ${s.name}.`);
       if (s.reapPerTick) this.applyReap(m, s.reapPerTick, source ?? m);
@@ -2909,7 +2918,6 @@ export class GameState {
           }
           if (splash > 0) {
             this.vfxSink?.hit?.(victim);
-            this.vfxSink?.spellEffect?.(victim, 'dot');
           }
           this.log(`${s.name} splashes ${victim.name} for ${splash} ${s.splash.damage.type}.`);
         }
@@ -3385,8 +3393,8 @@ export class GameState {
     return this.thunderDischargeSchedule(stacks)[0].rangePx;
   }
 
-  /** Discharge (bonus): dump all stacks as a bouncing lightning chain from `primary`. */
-  dischargeThunder(source: Mage, primary: Mage): void {
+  /** Discharge (bonus): dump all stacks as a player-directed bouncing lightning chain. */
+  async dischargeThunder(source: Mage, primary: Mage): Promise<void> {
     if (!source.hasThunderBlessing()) return;
     const stacks = source.thunderStacks;
     if (stacks <= 0) {
@@ -3399,29 +3407,43 @@ export class GameState {
     const struck = new Set<Mage>();
     let fromPos = source.pos;
     let preferred: Mage | null = primary;
-    for (const hop of schedule) {
-      let target: Mage | null = null;
-      if (
-        preferred &&
-        preferred.alive &&
-        !struck.has(preferred) &&
-        dist(fromPos, preferred.pos) <= hop.rangePx
-      ) {
-        target = preferred;
-      } else {
-        const candidates = this.mages
-          .filter((g) => g !== source && g.alive && !struck.has(g) && dist(fromPos, g.pos) <= hop.rangePx)
-          .sort((a, b) => dist(fromPos, a.pos) - dist(fromPos, b.pos));
-        target = candidates[0] ?? null;
+    for (let hopIndex = 0; hopIndex < schedule.length; hopIndex++) {
+      const hop = schedule[hopIndex];
+      const candidates = this.mages
+        .filter((mage) => mage.alive && !struck.has(mage) && dist(fromPos, mage.pos) <= hop.rangePx)
+        .sort((a, b) => {
+          const distanceDelta = dist(fromPos, a.pos) - dist(fromPos, b.pos);
+          return distanceDelta || this.mages.indexOf(a) - this.mages.indexOf(b);
+        });
+      if (candidates.length === 0) break;
+
+      let target = preferred && candidates.includes(preferred) ? preferred : null;
+      if (!target) {
+        const picked = this.subTargeter
+          ? await this.subTargeter.requestCombatant(source, {
+              candidates,
+              range: hop.rangePx,
+              origin: fromPos,
+              prompt: `${source.name}: choose lightning arc ${hopIndex + 1}/${schedule.length}.`,
+            })
+          : candidates[0];
+        target = picked && candidates.includes(picked) ? picked : candidates[0];
       }
       if (!target) break;
+
+      await this.vfxSink?.lightningBolt?.(fromPos, target.pos);
       this.dealThunderBolt(source, target, stacks, hop.pct);
+      await this.subTargeter?.resolveImpacts();
       struck.add(target);
       fromPos = target.pos;
       preferred = null;
     }
     // A 14-stack overcharge also arcs back into the caster (51%).
-    if (stacks >= 14 && source.alive) this.dealThunderBolt(source, source, stacks, 0.51);
+    if (stacks >= 14 && source.alive) {
+      await this.vfxSink?.lightningBolt?.(fromPos, source.pos);
+      this.dealThunderBolt(source, source, stacks, 0.51);
+      await this.subTargeter?.resolveImpacts();
+    }
     this.checkThunderDeath(source);
   }
 
@@ -3456,13 +3478,12 @@ export class GameState {
       curse.triggeredItemIds.push(item.id);
       const owner = this.mages[curse.ownerIndex];
       if (!owner?.alive || !item.source.alive) continue;
-      const dealt = dealDamage(
+      drainDamage(
         this.effectContext(owner, item.source, null),
         item.source,
         dmg(this.rng.roll('1d6').total, 'corrosive', 'physical'),
         { canMiss: false }
       );
-      if (dealt > 0 && owner.alive) heal(this.effectContext(owner, owner, null), owner, dealt);
       this.log(`${item.source.name} targets ${item.target.name} and pays ${owner.name}'s due.`);
     }
     this.stack.push(item);
@@ -3918,12 +3939,11 @@ export class GameState {
             noImpactFx: true,
           });
         }
-        this.vfxSink?.spellEffect?.(m, 'dot');
       }
       // Slow past 100% — the field pins them in place this turn.
       addOrExtendStatus(
         m.statuses,
-        { key: 'stun:movement', name: 'Crushing Field', kind: 'stun', duration: 2, stunType: 'movement' },
+        { key: 'stun:movement', name: 'Crushing Field', kind: 'stun', duration: 2, stunType: 'movement', physicalRoot: false },
         false,
       );
       this.log(`${m.name} is ground down by the crushing field.`);
@@ -4247,6 +4267,20 @@ export class GameState {
     );
   }
 
+  /**
+   * Why a declared action can no longer be carried out when it finally
+   * resolves, or null if it still can. Being bound after declaring — by a
+   * reaction, say — stops the action dead rather than letting it land.
+   */
+  stunPrevents(item: StackItem): string | null {
+    const source = item.source;
+    if (source.isStunned('full')) return 'stunned';
+    if (item.kind === 'move') return source.isStunned('movement') ? 'rooted in place' : null;
+    const usesMain =
+      item.kind === 'melee' || (item.kind === 'spell' && item.spell?.actionType !== 'bonus');
+    return usesMain && source.isStunned('main') ? 'disarmed' : null;
+  }
+
   makeMoveItem(source: Mage, destination: Vec2): StackItem {
     const fieldDest = {
       x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, destination.x)),
@@ -4283,7 +4317,7 @@ export class GameState {
           const ttl = Math.max(1, game.barrierTtlAt({ x: dest.x, y: dest.y }) + 1);
           addOrExtendStatus(
             source.statuses,
-            { key: 'stun:movement', name: 'Stuck', kind: 'stun', duration: ttl, stunType: 'movement' },
+            { key: 'stun:movement', name: 'Stuck', kind: 'stun', duration: ttl, stunType: 'movement', physicalRoot: false },
             false
           );
           game.log(`${source.name} is caught in the reality break and cannot move!`);

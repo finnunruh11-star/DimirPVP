@@ -173,6 +173,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     weakTypes: ['light'],
     resistTypes: ['heat'],
     physicalImmune: true,
+    debuffImmune: true,
     tint: 0xb7a8ff,
   },
   // Hulking bulwark: a wall of armour that blocks passage and crushes with blunt.

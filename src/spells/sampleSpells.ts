@@ -80,6 +80,21 @@ interface TrailSegment {
   to: Vec2;
 }
 
+const RED_TRAIL_COLOR = 0xff4c15;
+
+/** Sweep a blade arc down the axis of a cone aimed at `toward`. */
+function slashCone(ctx: EffectContext, toward: Vec2, range: number): void {
+  const angle = Math.atan2(toward.y - ctx.caster.y, toward.x - ctx.caster.x);
+  ctx.vfx?.slash?.(
+    {
+      x: ctx.caster.x + Math.cos(angle) * range * 0.5,
+      y: ctx.caster.y + Math.sin(angle) * range * 0.5,
+    },
+    angle,
+    range * 1.7
+  );
+}
+
 /** Kept d20 plus the modifiers represented by assigned INT and remaining Luck. */
 function lightningPower(ctx: EffectContext): number {
   const natural = ctx.spellRoll ?? 1;
@@ -990,12 +1005,12 @@ registerSpell({
   reaction: true,
   counters: true,
   description:
-    'Turn every living entity 90 degrees around the battlefield centre while all terrain remains fixed. Aim right of centre for clockwise or left for counterclockwise. As a reaction, also cancel the answered action.',
+    'Turn every living entity 90 degrees around the battlefield centre while all terrain remains fixed. Enemies that hit a wall or field border take 2d6 typeless physical damage. Aim right of centre for clockwise or left for counterclockwise. As a reaction, also cancel the answered action.',
   visual: { preset: 'nova', color: 0x88d8b8, size: 120, speed: 0.8 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const centreX = FIELD.x + FIELD.w / 2;
-    ctx.game.turnBattlefield(ctx.targetPoint.x >= centreX);
+    ctx.game.turnBattlefield(ctx.targetPoint.x >= centreX, ctx.caster);
   },
 });
 
@@ -1102,14 +1117,28 @@ registerSpell({
   aoe: { kind: 'cone', radius: 1400, degrees: 45 },
   twoPointAim: true,
   description:
-    'Aim two points (both chosen before the roll) to set where a wedge opens and how wide it is; it extends to the edge of the field. For 3 rounds no one can move into it: walk in and you are rooted until it ends; dash in and your dash stops at its edge.',
+    'Aim two points (both chosen before the roll) to set where a wedge opens and how wide it is. Enemies caught inside take 2d6 shatter damage. The wedge extends to the field edge and blocks movement for 3 rounds.',
   visual: { preset: 'burst', color: 0xff5599, size: 70, speed: 1.2 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const diag = Math.hypot(FIELD.w, FIELD.h);
     // Both cone edges were chosen up-front (before the DC roll): targetPoint is
     // one edge, targetPoint2 the other. The wedge reaches to the field's edge.
-    placeRealityWedge(ctx, ctx.targetPoint, ctx.targetPoint2 ?? null, { ttl: 3, length: diag });
+    const wedge = placeRealityWedge(ctx, ctx.targetPoint, ctx.targetPoint2 ?? null, {
+      ttl: 3,
+      length: diag,
+    });
+    const toward = {
+      x: wedge.apex.x + Math.cos(wedge.angle) * wedge.range,
+      y: wedge.apex.y + Math.sin(wedge.angle) * wedge.range,
+    };
+    coneDamage(
+      ctx,
+      toward,
+      wedge.range,
+      (wedge.halfAngle * 360) / Math.PI,
+      dmg(rollDice(ctx, '2d6', 'Reality Shatter'), 'shatter', 'physical')
+    );
   },
 });
 
@@ -1118,20 +1147,24 @@ registerSpell({
   words: ['shatter', 'mind', 'reality'],
   actionType: 'main',
   range: R(20),
-  targeting: 'enemy',
+  targeting: 'any',
   dc: 15,
   description:
-    'Take an extra turn after this one. The target takes 3d3 sanity damage and cannot move for 1 turn (range 20).',
+    'Choose any living target within range 20; it takes an extra turn after this one. Then every enemy takes 3d3 mental damage.',
   visual: { preset: 'beam', color: 0xff5599, size: 7, speed: 1.1 },
   cast(ctx) {
-    grantExtraTurn(ctx, ctx.caster);
-    if (ctx.target) {
-      dealDamage(
-        ctx,
-        ctx.target,
-        dmg(rollDice(ctx, '3d3', 'Shatter Mind Reality'), 'shadow', 'sanity')
-      );
-      applyStun(ctx, ctx.target, { duration: 2, type: 'movement' });
+    if (!ctx.target) return;
+    grantExtraTurn(ctx, ctx.target);
+    const amount = rollDice(ctx, '3d3', 'Shatter Mind Reality');
+    for (const enemy of ctx.game.mages) {
+      if (enemy.alive && enemy.team !== ctx.caster.team) {
+        dealDamage(
+          ctx,
+          enemy,
+          dmg(amount, 'shadow', 'sanity'),
+          { aoe: true }
+        );
+      }
     }
   },
 });
@@ -1213,16 +1246,16 @@ registerSpell({
   description:
     'Mark one enemy with 1d4 Reap and deal 1d6 corrosive health damage, healing yourself for the corrosive damage dealt (range 10).',
   visual: { preset: 'projectile', color: 0x8fa88f, size: 11, speed: 1.4 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
     ctx.game.applyReap(ctx.target, rollDice(ctx, '1d4', 'Death Drain — Reap'), ctx.caster);
     if (!ctx.target.alive) return;
-    const dealt = dealDamage(
+    drainDamage(
       ctx,
       ctx.target,
       dmg(rollDice(ctx, '1d6', 'Death Drain'), 'corrosive', 'physical')
     );
-    if (dealt > 0 && ctx.caster.alive) heal(ctx, ctx.caster, dealt, 'hp');
   },
 });
 
@@ -1283,6 +1316,7 @@ registerSpell({
   description:
     'Deal 1d6 corrosive damage to enemies in a range-2 area aimed within range 10, healing for all damage dealt. Each target has a 25% chance to be slowed by 30% for 2 turns.',
   visual: { preset: 'burst', color: 0x70c880, size: 64, speed: 1.2 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const foes = ctx.game
@@ -1368,6 +1402,7 @@ registerSpell({
   description:
     'Drain 2d6 corrosive and 2d6 shadow damage, then slow the target by 50% for 2 turns. Targets in your shadows can be reached globally.',
   visual: { preset: 'projectile', color: 0x579b80, size: 13, speed: 1.3 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
     drainDamage(
@@ -1429,16 +1464,16 @@ registerSpell({
   description:
     'Corrosion twice over: two separate surges of 2d6 corrosive damage, each healing you for everything it deals and each feeding the mark 1d4 Reap. The feast closes with an execution for 4.',
   visual: { preset: 'projectile', color: 0x7fa06a, size: 14, speed: 1.4 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
     // Corrode and Drain are the same bite, so stacking them lands it twice.
     for (let surge = 0; surge < 2 && ctx.target.alive; surge++) {
-      const dealt = dealDamage(
+      drainDamage(
         ctx,
         ctx.target,
         dmg(rollDice(ctx, '2d6', 'Rotfeast'), 'corrosive', 'physical')
       );
-      if (dealt > 0 && ctx.caster.alive) heal(ctx, ctx.caster, dealt, 'hp');
       if (!ctx.target.alive) break;
       ctx.game.applyReap(ctx.target, rollDice(ctx, '1d4', 'Rotfeast — Reap'), ctx.caster);
     }
@@ -1534,23 +1569,29 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Hurl a shard of grave-glass: 1d6 Reap, an execution for 2, and 2d6 corrosive damage that heals you for the amount dealt. If the shard kills, it flies back to your hand and you may spend 5 mana to throw it again at any enemy in range 15 — as long as it keeps killing. Targets in your shadows can be reached globally.',
+    'Hurl a returning shard of grave-glass: 1d6 Reap, an execution for 2, and 2d6 corrosive damage that heals you for the amount dealt. If the shard kills, you may spend 5 mana to throw it again at any enemy in range 15 — as long as it keeps killing. Targets in your shadows can be reached globally.',
   visual: { preset: 'projectile', color: 0x7d6f8c, size: 12, speed: 1.5 },
+  manualCastVisual: true,
   async cast(ctx) {
     let foe = ctx.target;
     // Each re-throw costs mana and must kill again, so the loop always ends.
     for (let throwCount = 0; foe && ctx.caster.alive; throwCount++) {
+      const impactPoint = { ...foe.pos };
+      await ctx.vfx?.boomerang?.(ctx.caster.pos, impactPoint, 0x7d6f8c, 12, 1.5);
       ctx.game.applyReap(foe, rollDice(ctx, "1d6", "Reaper's Shard — Reap"), ctx.caster);
       if (foe.alive) ctx.game.executeTarget(ctx.caster, foe, 2);
       if (foe.alive) {
-        const dealt = dealDamage(
+        drainDamage(
           ctx,
           foe,
           dmg(rollDice(ctx, '2d6', "Reaper's Shard"), 'corrosive', 'physical')
         );
-        if (dealt > 0 && ctx.caster.alive) heal(ctx, ctx.caster, dealt, 'hp');
+      } else {
+        ctx.vfx?.spellEffect?.(foe, 'corrosive');
+        ctx.vfx?.drainParticles?.(impactPoint, ctx.caster.pos);
       }
       await ctx.resolveImpacts?.();
+      await ctx.vfx?.boomerang?.(impactPoint, ctx.caster.pos, 0x7d6f8c, 12, 1.5);
       if (foe.alive || !ctx.caster.alive) return;
 
       ctx.log(`The shard tears free of ${foe.name} and returns to ${ctx.caster.name}.`);
@@ -1598,9 +1639,10 @@ registerSpell({
   range: R(15),
   targeting: 'enemy',
   dc: 8,
-  description: 'Strike for 1d6 plus power scaling. An overload mirrors the hit into you; a surge arcs it into a random nearby unit. A natural 20 magnifies either outcome.',
+  description:
+    'Strike one enemy for 1d6 plus power scaling, then fork onward to fresh enemies — never the same body twice — until nothing is left in reach. Lightning power sets the bounce range, which halves with every jump. An overload also mirrors the first hit into you; a surge widens every bounce. A natural 20 doubles the reach.',
   visual: { preset: 'beam', color: 0xffe45c, size: 7, speed: 1.7 },
-  cast(ctx) {
+  async cast(ctx) {
     if (!ctx.target) return;
     const power = lightningPower(ctx);
     const gamble = lightningGamble(ctx);
@@ -1608,13 +1650,29 @@ registerSpell({
     dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
     if (gamble === 'overload' && ctx.caster.alive) {
       dealDamage(ctx, ctx.caster, dmg(amount, 'heat', 'physical'), { canMiss: false });
-    } else if (gamble === 'surge') {
-      const candidates = ctx.game.magesInRadius(ctx.target.pos, R(Math.min(12, 3 + Math.floor(power / 3))), ctx.target);
-      if (candidates.length > 0) {
-        const arcTarget = ctx.rng.pick(candidates);
-        ctx.vfx?.lightningBolt?.(ctx.target.pos, arcTarget.pos);
-        dealDamage(ctx, arcTarget, dmg(amount, 'heat', 'physical'), { canMiss: false });
-      }
+    }
+    // Grounding into yourself is what overload is for, so the fork only ever
+    // leaps to fresh enemy bodies and dies out once none are left in reach.
+    const struck = new Set<Mage>([ctx.target]);
+    let from = ctx.target;
+    let reach = R(Math.min(12, 3 + Math.floor(power / 3))) * (ctx.crit ? 2 : 1);
+    if (gamble === 'surge') reach *= 1.5;
+    let bounces = 0;
+    while (reach >= R(1)) {
+      const candidates = ctx.game
+        .magesInRadius(from.pos, reach)
+        .filter((mage) => !struck.has(mage) && mage.team !== ctx.caster.team);
+      if (candidates.length === 0) break;
+      const next = ctx.rng.pick(candidates);
+      await ctx.vfx?.lightningBolt?.(from.pos, next.pos);
+      dealDamage(ctx, next, dmg(amount, 'heat', 'physical'), { canMiss: false });
+      struck.add(next);
+      from = next;
+      reach /= 2;
+      bounces += 1;
+    }
+    if (bounces > 0) {
+      ctx.log(`The bolt forks through ${bounces} more ${bounces === 1 ? 'body' : 'bodies'}.`);
     }
   },
 });
@@ -1938,11 +1996,13 @@ registerSpell({
       applyBlueflareStacks(ctx, ctx.target, Math.min(4, 2 + Math.floor(power / 12)));
     }
     if (gamble === 'surge') {
-      const candidates = ctx.game.magesInRadius(
-        ctx.target.pos,
-        R(Math.min(12, 3 + Math.floor(power / 3))),
-        ctx.target
-      );
+      const candidates = ctx.game
+        .magesInRadius(
+          ctx.target.pos,
+          R(Math.min(12, 3 + Math.floor(power / 3))),
+          ctx.target
+        )
+        .filter((mage) => mage !== ctx.caster);
       if (candidates.length > 0) {
         const arcTarget = ctx.rng.pick(candidates);
         ctx.vfx?.lightningBolt?.(ctx.target.pos, arcTarget.pos);
@@ -2305,14 +2365,17 @@ registerSpell({
         const segment = { from, to: { ...ctx.caster.pos } };
         trail.push(segment);
         ctx.vfx?.lightningTrail?.(trail);
+        await ctx.vfx?.lightningDash?.(segment.from, segment.to, RED_TRAIL_COLOR);
         for (const entity of ctx.game.mages) {
           if (entity === ctx.caster || !entity.alive || !segmentHitsMage(segment, entity)) continue;
+          ctx.vfx?.lightningImpact?.(entity.pos, RED_TRAIL_COLOR);
           dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail') + Math.floor(power / 5), 'heat', 'physical'), {
             canMiss: false,
           });
         }
         if (collision) {
           ctx.log(`${ctx.caster.name} crosses the red trail and the spell collapses!`);
+          await ctx.vfx?.lightningCrash?.(segment.to, RED_TRAIL_COLOR);
           dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '4d6', 'Red trail collision') + Math.floor(power / 5), 'heat', 'physical'), {
             canMiss: false,
           });
@@ -2744,6 +2807,7 @@ registerSpell({
   description:
     '1d6 corrosive damage (range 10) that heals you for the full amount dealt.',
   visual: { preset: 'projectile', color: 0x57d6a0, size: 10, speed: 1.5 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
     drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Drain'), 'corrosive', 'physical'));
@@ -2778,6 +2842,7 @@ registerSpell({
   description:
     '1d6 corrosive damage + 2d6 shadow damage to one enemy (range 10), healing you for the full amount dealt. If the target is standing in one of your shadow pools, you can hit it from anywhere on the field.',
   visual: { preset: 'projectile', color: 0x57d6a0, size: 11, speed: 1.4 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
     drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Shadow Drain'), 'corrosive', 'physical'));
@@ -2796,6 +2861,7 @@ registerSpell({
   description:
     'Summon 5 scarabs around a point (range 5). Each turn they move toward the nearest enemy (up to 3 per enemy, staying within range 8 of you), bite for 1d3, then return to heal you for 1d3. Each scarab has 5 health and 5 sanity and can be killed by area effects.',
   visual: { preset: 'burst', color: 0x57d6a0, size: 70, speed: 1.1 },
+  manualCastVisual: true,
   // CLASS SPELL (all verbs). Currently hard-wired to the Life alignment (summon);
   // future Objects / Hexcraft variants plug in through byClass().
   cast(ctx) {
@@ -2824,9 +2890,11 @@ registerSpell({
   description:
     '1d8 slashing damage in a 100° cone (range 5), then dash 2 in the aimed direction.',
   visual: { preset: 'burst', color: 0xffe08a, size: 60, speed: 1.3 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const amount = rollDice(ctx, '1d8', 'Slash');
+    slashCone(ctx, ctx.targetPoint, R(5));
     coneDamage(ctx, ctx.targetPoint, R(5), 100, dmg(amount, 'slashing', 'physical'));
     dash(ctx, ctx.caster, { toPoint: ctx.targetPoint, distance: R(2) });
   },
@@ -2875,9 +2943,11 @@ registerSpell({
   description:
     '1d8 slashing damage in a 120° cone (range 5). Every enemy hit gains a bleed stack that deals 1d3 per stack each turn (stacks up to 6), lasting 3 turns.',
   visual: { preset: 'burst', color: 0xff6b8a, size: 64, speed: 1.2 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const amount = rollDice(ctx, '1d8', 'Curse Slash');
+    slashCone(ctx, ctx.targetPoint, R(5));
     const hits = coneDamage(ctx, ctx.targetPoint, R(5), 120, dmg(amount, 'slashing', 'physical'));
     for (const h of hits) {
       applyStackingDot(ctx, h, {
@@ -2903,9 +2973,11 @@ registerSpell({
   description:
     '80° cone (range 5). Enemies in the narrow 5° center take 1d8 slashing damage and you dash 2 toward them; enemies elsewhere in the cone take 1d6 corrosive damage. All damage heals you for the amount dealt.',
   visual: { preset: 'burst', color: 0x9ad67a, size: 66, speed: 1.2 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const p = ctx.targetPoint;
+    slashCone(ctx, p, R(5));
     const inner = ctx.game
       .magesInCone(ctx.caster.pos, p, R(5), 5, ctx.caster)
       .filter((m) => m.team !== ctx.caster.team);
@@ -2964,9 +3036,11 @@ registerSpell({
   description:
     '1d8 slashing damage in a 120° cone (range 5). Every enemy hit is forced to repeat its action for 2 turns.',
   visual: { preset: 'burst', color: 0xf3d08a, size: 64, speed: 1.2 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const amount = rollDice(ctx, '1d8', 'Order Slash');
+    slashCone(ctx, ctx.targetPoint, R(5));
     const hits = coneDamage(ctx, ctx.targetPoint, R(5), 120, dmg(amount, 'slashing', 'physical'));
     for (const h of hits) {
       // The "must hit a target you specify" compulsion is labelled as control;
@@ -3039,9 +3113,11 @@ registerSpell({
     '1d6 slashing damage then 1d6 corrosive damage in a 120° cone (range 5). Every enemy hit gains 2 ' +
     'bleed stacks (1d3 per stack each turn). You then heal 1d3 for each bleed stack on those enemies.',
   visual: { preset: 'burst', color: 0xd66a9a, size: 66, speed: 1.2 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const slash = rollDice(ctx, '1d6', 'Curse Drain Slash');
+    slashCone(ctx, ctx.targetPoint, R(5));
     const hits = coneDamage(ctx, ctx.targetPoint, R(5), 120, dmg(slash, 'slashing', 'physical'));
     let leech = 0;
     for (const h of hits) {
@@ -3061,7 +3137,12 @@ registerSpell({
       }
       const bleed = h.statuses.find((s) => s.key === 'dot:bleed') as DotStatus | undefined;
       const stacks = bleed?.stacks ?? 0;
-      for (let i = 0; i < stacks; i++) leech += rollDice(ctx, '1d3', 'Curse Drain Slash — leech');
+      let targetLeech = 0;
+      for (let i = 0; i < stacks; i++) {
+        targetLeech += rollDice(ctx, '1d3', 'Curse Drain Slash — leech');
+      }
+      leech += targetLeech;
+      if (targetLeech > 0) ctx.vfx?.drainParticles?.(h.pos, ctx.caster.pos);
     }
     if (leech > 0) heal(ctx, ctx.caster, leech);
   },
@@ -3079,9 +3160,11 @@ registerSpell({
     'Every enemy in a 120° cone (range 5) is set to the lowest HP among them. ' +
     'You heal for the largest amount of HP removed from any single enemy, then dash 2 toward them.',
   visual: { preset: 'nova', color: 0x8ad0c4, size: 60, speed: 1.1 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const p = ctx.targetPoint;
+    slashCone(ctx, p, R(5));
     const foes = ctx.game
       .magesInCone(ctx.caster.pos, p, R(5), 120, ctx.caster)
       .filter((m) => m.alive && m.team !== ctx.caster.team);
@@ -3090,10 +3173,12 @@ registerSpell({
       let mostEqualized = 0;
       for (const f of foes) {
         if (f.hp > minHp) {
-          mostEqualized = Math.max(mostEqualized, f.hp - minHp);
+          const removed = f.hp - minHp;
+          mostEqualized = Math.max(mostEqualized, removed);
           f.hp = minHp;
           ctx.vfx?.hit?.(f);
-          ctx.vfx?.spellEffect?.(f, 'generic');
+          ctx.vfx?.spellEffect?.(f, 'corrosive');
+          ctx.vfx?.drainParticles?.(f.pos, ctx.caster.pos);
         }
       }
       ctx.log(`${ctx.caster.name} equalizes the cone to ${minHp} HP.`);
