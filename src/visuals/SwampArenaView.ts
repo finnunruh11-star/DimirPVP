@@ -38,6 +38,8 @@ const MUD_VARIANT_FRAME = 63;
 const MUD_TINT = 0x293845;
 const MUD_VARIANT_TINT = 0x19262d;
 const MIST_MIN_DRIFT_PX_PER_SECOND = 30;
+/** Mist is scenery, never information — one knob to keep it under the play layer. */
+const MIST_ALPHA_SCALE = 0.5;
 
 export class SwampArenaView {
   private readonly root: Phaser.GameObjects.Container;
@@ -45,6 +47,8 @@ export class SwampArenaView {
   private readonly rootMaskShape: Phaser.GameObjects.Graphics;
   private readonly foregroundMaskShape: Phaser.GameObjects.Graphics;
   private readonly mistSprites: Phaser.GameObjects.Sprite[] = [];
+  private readonly mistTweens: Phaser.Tweens.Tween[] = [];
+  private combatSpeed = 1;
   private destroyed = false;
 
   constructor(
@@ -64,6 +68,7 @@ export class SwampArenaView {
     if (this.destroyed) return;
     this.destroyed = true;
     this.scene.events.off(Phaser.Scenes.Events.SHUTDOWN, this.destroy, this);
+    for (const tween of this.mistTweens) tween.remove();
     for (const mist of this.mistSprites) this.scene.tweens.killTweensOf(mist);
     if (this.root.active) this.root.destroy(true);
     if (this.foreground.active) this.foreground.destroy(true);
@@ -124,9 +129,9 @@ export class SwampArenaView {
       { x: 0.31, y: 0.79, scale: 8, alpha: 0.15, duration: 25000, drift: -180, start: 5 },
       { x: 0.63, y: 0.85, scale: 8.7, alpha: 0.13, duration: 31000, drift: 230, start: 16 },
       { x: 0.94, y: 0.8, scale: 8.2, alpha: 0.14, duration: 27000, drift: -210, start: 9 },
-      { x: 0.12, y: 0.87, scale: 8.2, alpha: 0.06, duration: 28000, drift: 170, start: 6, foreground: true },
-      { x: 0.5, y: 0.84, scale: 8.8, alpha: 0.065, duration: 32000, drift: -190, start: 13, foreground: true },
-      { x: 0.88, y: 0.88, scale: 8.4, alpha: 0.06, duration: 30000, drift: 180, start: 3, foreground: true },
+      { x: 0.12, y: 0.87, scale: 8.2, alpha: 0.035, duration: 28000, drift: 170, start: 6, foreground: true },
+      { x: 0.5, y: 0.84, scale: 8.8, alpha: 0.04, duration: 32000, drift: -190, start: 13, foreground: true },
+      { x: 0.88, y: 0.88, scale: 8.4, alpha: 0.035, duration: 30000, drift: 180, start: 3, foreground: true },
     ];
     for (const placement of placements) {
       const mist = this.scene.add
@@ -137,7 +142,7 @@ export class SwampArenaView {
           placement.start,
         )
         .setScale(placement.scale, placement.scale * 0.32)
-        .setAlpha(placement.alpha)
+        .setAlpha(placement.alpha * MIST_ALPHA_SCALE)
         .setTint(0x707977);
       (placement.foreground ? this.foreground : this.root).add(mist);
       this.mistSprites.push(mist);
@@ -145,15 +150,29 @@ export class SwampArenaView {
       mist.play({ key: SWAMP_MIST_KEY, startFrame: placement.start });
       const minimumDrift = (placement.duration / 1000) * MIST_MIN_DRIFT_PX_PER_SECOND;
       const drift = Math.sign(placement.drift) * Math.max(Math.abs(placement.drift), minimumDrift);
-      this.scene.tweens.add({
-        targets: mist,
-        x: mist.x + drift,
-        duration: placement.duration,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.InOut',
-      });
+      this.mistTweens.push(
+        this.scene.tweens.add({
+          targets: mist,
+          x: mist.x + drift,
+          duration: placement.duration,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.InOut',
+        })
+      );
     }
+    this.setCombatSpeed(this.combatSpeed);
+  }
+
+  /**
+   * Fast-forwarding combat must not fast-forward the weather: counter-scale the
+   * mist so it keeps drifting and billowing at its ambient real-time pace.
+   */
+  setCombatSpeed(speed: number): void {
+    this.combatSpeed = Math.max(0.01, speed);
+    const inverse = 1 / this.combatSpeed;
+    for (const mist of this.mistSprites) mist.anims.timeScale = inverse;
+    for (const tween of this.mistTweens) tween.timeScale = inverse;
   }
 
   private applyFieldMask(target: Phaser.GameObjects.Container): Phaser.GameObjects.Graphics {

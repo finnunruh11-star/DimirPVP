@@ -53,10 +53,9 @@ export const MAX_ABILITY_CASTS_PER_COMBAT = 3;
 export const MAX_WEAPON_REACTIONS = 2;
 
 // Shadow zones (placed by the Shadow word). Spells gain reach through your own
-// shadows, and damage is boosted when the caster or target stands in a shadow.
+// shadows; standing in one carries no blanket damage bonus of its own.
 export const SHADOW_RADIUS = 95;
 export const SHADOW_TTL = 3; // rounds before a shadow fades
-export const SHADOW_DAMAGE_BONUS = 2;
 
 // Abstract spell range. Designers pick a comparison number (5 = poor, 10 =
 // average, 15 = good) and the engine converts it to pixels with RANGE_UNIT.

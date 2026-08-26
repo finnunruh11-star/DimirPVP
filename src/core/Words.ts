@@ -219,6 +219,11 @@ export function comboKey(words: WordId[]): string {
   return [...words].sort().join('+');
 }
 
+/** Player-facing spell name: always the words themselves, in authored order. */
+export function spellDisplayName(words: WordId[]): string {
+  return words.map((word) => WORDS[word].label).join(' ');
+}
+
 // =============================================================================
 //  WORD GRAMMAR  (nouns / verbs)
 // -----------------------------------------------------------------------------

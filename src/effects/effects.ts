@@ -24,7 +24,7 @@ import {
   type StunType,
 } from '../core/Status';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
-import { FIELD, RANGE_UNIT, SCARAB, SHADOW_DAMAGE_BONUS, VEIL } from '../config/constants';
+import { FIELD, RANGE_UNIT, SCARAB, VEIL } from '../config/constants';
 import { Dev } from '../config/dev';
 
 /**
@@ -226,6 +226,18 @@ export function castPotencyScale(ctx: EffectContext, value: number): number {
 }
 
 /**
+ * Duration of an affliction (debuff / DoT / stun / control) landing on `target`,
+ * after crit + modifier scaling and the target's own debuff resistance. Warded
+ * gear can shorten an affliction but never erase it: the floor is one cycle.
+ */
+export function afflictDuration(ctx: EffectContext, target: Mage, value: number): number {
+  const scaled = critScale(ctx, value);
+  const resisted = target.debuffDurationMult();
+  if (resisted === 1 || !Number.isFinite(scaled)) return scaled;
+  return Math.max(1, Math.round(scaled * resisted));
+}
+
+/**
  * CLASS-SPELL DISPATCH. Pick the effect variant that matches the caster's class
  * (Objects / Life / Hexcraft). "Class spells" — word combos of only nouns or
  * only verbs (see {@link isClassSpell}) — resolve their effect toward the
@@ -301,8 +313,8 @@ export function dealDamage(
     ? ctx.game.prepareVeilCorrodePierce(ctx.caster)
     : 0;
 
-  // Second Ring of Lareneg: untouchable to all hostile damage in cycles 3 & 4.
-  if (ctx.game.isLaranegUntouchable(target)) {
+  // Second Ring of Lareneg / phased into the dark: nothing hostile reaches them.
+  if (ctx.game.isUnreachable(target)) {
     ctx.vfx?.combatFeedback?.(target, { kind: 'immune', label: 'UNTOUCHABLE' });
     return 0;
   }
@@ -358,23 +370,15 @@ export function dealDamage(
   let amount =
     castPotencyScale(ctx, ctx.crit ? damage.amount * 2 : damage.amount) +
     ctx.caster.modifier('damageDealt') +
-    target.modifier('damageTaken');
+    target.modifier('damageTaken') -
+    ctx.game.swornRepetitionStacks(ctx.caster) +
+    ctx.game.swornRepetitionStacks(target);
   let feedbackLabel: string | undefined;
 
   const globalHexcraftBonus = ctx.game.hexcraftDamageBonus(damage.type, damage.damageClass);
   if (globalHexcraftBonus > 0) {
     amount += globalHexcraftBonus;
     ctx.log(`Mind Shadow deepens the attack (+${globalHexcraftBonus}).`);
-  }
-
-  // Shadow empowerment: casting from within a shadow, or striking a target that
-  // stands in one, deals extra damage.
-  let shadowBonus = 0;
-  if (ctx.game.isInShadow(ctx.caster)) shadowBonus += SHADOW_DAMAGE_BONUS;
-  if (ctx.game.isInShadow(target)) shadowBonus += SHADOW_DAMAGE_BONUS;
-  if (shadowBonus > 0) {
-    amount += shadowBonus;
-    ctx.log(`The shadows deepen the wound (+${shadowBonus}).`);
   }
 
   amount = Math.max(0, Math.round(amount));
@@ -563,6 +567,7 @@ export function dealDamage(
       | OrderJudgmentStatus
       | undefined;
     if (oj && ctx.game.mages[oj.targetIndex] === target) oj.attackedTarget = true;
+    ctx.game.echoThreadMark(ctx.caster, target, amount);
     // Spell impact overlay on the afflicted target: corrosive → poison splash,
     // anything else → the generic impact. Suppressed for basic attacks and DoT
     // ticks (which drive their own 'dot' overlay).
@@ -761,12 +766,12 @@ export function applyStun(
   target: Mage,
   opts: { duration: number; type: StunType; extend?: boolean; veilBindLinked?: boolean }
 ): void {
-  if (ctx.game.isLaranegUntouchable(target)) return;
+  if (ctx.game.isUnreachable(target)) return;
   if (target.slowStunImmune) {
     ctx.log(`${target.name} cannot be slowed or stunned.`);
     return;
   }
-  if (target.debuffImmune) {
+  if (target.isDebuffImmune()) {
     ctx.log(`${target.name} cannot be stayed — it shrugs off the binding.`);
     return;
   }
@@ -775,7 +780,7 @@ export function applyStun(
     movement: 'Rooted',
     full: 'Stunned',
   };
-  const duration = critScale(ctx, opts.duration);
+  const duration = afflictDuration(ctx, target, opts.duration);
   addOrExtendStatus(
     target.statuses,
     {
@@ -975,11 +980,11 @@ export function applyDot(
     extend?: boolean;
   }
 ): void {
-  if (target.debuffImmune) {
+  if (target.isDebuffImmune()) {
     ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
     return;
   }
-  const duration = critScale(ctx, opts.duration);
+  const duration = afflictDuration(ctx, target, opts.duration);
   addOrExtendStatus(
     target.statuses,
     {
@@ -1032,12 +1037,12 @@ export function applyStackingDot(
     infectRadius?: number;
   }
 ): void {
-  if (target.debuffImmune) {
+  if (target.isDebuffImmune()) {
     ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
     return;
   }
   const key = opts.key ?? `dot:${opts.name}`;
-  const refreshDuration = critScale(ctx, opts.refreshDuration);
+  const refreshDuration = afflictDuration(ctx, target, opts.refreshDuration);
   const existing = target.statuses.find(
     (s) => s.key === key && s.kind === 'dot'
   ) as DotStatus | undefined;
@@ -1101,17 +1106,17 @@ export function applyDebuff(
     extend?: boolean;
   }
 ): void {
-  if (ctx.game.isLaranegUntouchable(target)) return;
+  if (ctx.game.isUnreachable(target)) return;
   if (target.slowStunImmune && (opts.mods.moveRange ?? 0) < 0) {
     ctx.log(`${target.name} ignores the slowing curse.`);
     return;
   }
-  if (target.debuffImmune) {
+  if (target.isDebuffImmune()) {
     ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
     return;
   }
   // A Witch Wand makes every debuff the caster lands last twice as long.
-  const duration = critScale(ctx, ctx.caster.hasWitchWand() ? opts.duration * 2 : opts.duration);
+  const duration = afflictDuration(ctx, target, ctx.caster.hasWitchWand() ? opts.duration * 2 : opts.duration);
   addOrExtendStatus(
     target.statuses,
     {
@@ -1154,7 +1159,7 @@ export function areaDamage(
 ): Mage[] {
   const hits = ctx.game
     .magesInRadius(at, radius, ctx.caster)
-    .filter((m) => m.team !== ctx.caster.team);
+    .filter((m) => m.team !== ctx.caster.team || ctx.game.isFoeBlind(ctx.caster));
   for (const m of hits) dealDamage(ctx, m, { ...damage }, { ...opts, aoe: true });
   ctx.game.damageScarabsInRadius(
     at,
@@ -1182,7 +1187,7 @@ export function coneDamage(
   const { strictRange = false, ...damageOpts } = opts;
   let hits = ctx.game
     .magesInCone(ctx.caster.pos, toward, range, degrees, ctx.caster)
-    .filter((m) => m.team !== ctx.caster.team);
+    .filter((m) => m.team !== ctx.caster.team || ctx.game.isFoeBlind(ctx.caster));
   if (strictRange) {
     hits = hits.filter((m) => dist(ctx.caster.pos, m.pos) <= range + 0.5);
   }
@@ -1269,18 +1274,19 @@ export function applyAuraDot(
     damageClass?: DamageClass;
   }
 ): void {
-  if (ctx.game.isLaranegUntouchable(target)) return;
-  if (target.debuffImmune) {
+  if (ctx.game.isUnreachable(target)) return;
+  if (target.isDebuffImmune()) {
     ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
     return;
   }
+  const duration = afflictDuration(ctx, target, opts.duration);
   addOrExtendStatus(
     target.statuses,
     {
       key: `auraDot:${opts.name}`,
       name: opts.name,
       kind: 'auraDot',
-      duration: critScale(ctx, opts.duration),
+      duration,
       radius: critScale(ctx, opts.radius),
       damageSpec: opts.damageSpec,
       type: opts.type,
@@ -1289,7 +1295,7 @@ export function applyAuraDot(
     false
   );
   ctx.game.syncCurseCorrodeSlow(target);
-  ctx.log(`${target.name} is wreathed in ${opts.name} (${critScale(ctx, opts.duration)} cycles).`);
+  ctx.log(`${target.name} is wreathed in ${opts.name} (${duration} cycles).`);
 }
 
 /** Grant a consumable ward that negates the next matching hit. */
@@ -1318,8 +1324,8 @@ export function applyControl(
   target: Mage,
   opts: { name: string; mode: ControlMode; duration: number }
 ): void {
-  if (ctx.game.isLaranegUntouchable(target)) return;
-  if (target.debuffImmune) {
+  if (ctx.game.isUnreachable(target)) return;
+  if (target.isDebuffImmune()) {
     ctx.log(`${target.name}'s will is unassailable — the compulsion fails.`);
     return;
   }
@@ -1327,7 +1333,7 @@ export function applyControl(
     ctx.log(`${target.name}'s Mind Dodge shrugs off the compulsion.`);
     return;
   }
-  const duration = critScale(ctx, opts.duration);
+  const duration = afflictDuration(ctx, target, opts.duration);
   addOrExtendStatus(
     target.statuses,
     {

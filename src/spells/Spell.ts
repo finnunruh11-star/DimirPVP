@@ -30,7 +30,10 @@ export interface SpellVisual {
 export interface Spell {
   /** Stable id; by convention the sorted combo key, e.g. "pierce+shatter". */
   id: string;
+  /** Player-facing name. Always derived from `words` — never authored. */
   name: string;
+  /** Authoring flavour label kept for readability in source; never shown in game. */
+  codename?: string;
   /** The 1-3 words that compose this spell. */
   words: WordId[];
   actionType: ActionType;
@@ -49,6 +52,8 @@ export interface Spell {
   targeting: Targeting;
   /** This spell may select only a mage currently protected by a stealth effect. */
   requiresInvisibleTarget?: boolean;
+  /** The target must stand within this many pixels of one of the caster's own shadows. */
+  requiresTargetNearOwnShadow?: number;
   description: string;
 
   /**

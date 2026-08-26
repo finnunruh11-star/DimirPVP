@@ -14,6 +14,12 @@ export interface ShadowZone {
   owner: number;
   /** Rounds remaining before the shadow fades. */
   ttl: number;
+  /** Bind Shadow Corrode: enemies swallowed so far, each adding a corrosive die. */
+  feedStacks?: number;
+  /** Round the meal counter was last reset. */
+  feedRound?: number;
+  /** Meals eaten during `feedRound`. */
+  feedMeals?: number;
 }
 
 export function shadowCenter(s: ShadowZone): Vec2 {

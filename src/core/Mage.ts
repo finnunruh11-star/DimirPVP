@@ -989,6 +989,30 @@ export class Mage {
     return this.hasItemWhere((d) => !!d.doubleDebuffs);
   }
 
+  /** Intrinsic creature immunity or worn gear that refuses every status effect. */
+  isDebuffImmune(): boolean {
+    return this.debuffImmune || this.hasItemWhere((d) => !!d.debuffImmunity);
+  }
+
+  /** Combined multiplier on the duration of afflictions landed on this mage. */
+  debuffDurationMult(): number {
+    let mult = 1;
+    for (const id of this.equippedItems()) {
+      const m = getItem(id).debuffDurationMult;
+      if (m != null) mult *= m;
+    }
+    return mult;
+  }
+
+  /** Mana price of the Cleanse bonus action, or null without the gear that grants it. */
+  cleanseManaCost(): number | null {
+    const costs = this.equippedItems()
+      .filter((id) => !this.isItemBanned(id))
+      .map((id) => getItem(id).cleanseManaCost)
+      .filter((cost): cost is number => cost != null);
+    return costs.length > 0 ? Math.min(...costs) : null;
+  }
+
   /** Mana restored each time this mage takes damage (Channeling Ring). */
   manaOnHit(): number {
     return this.itemSum((d) => d.manaOnHit ?? 0);
@@ -1663,6 +1687,7 @@ export class Mage {
         s.kind !== 'blueflare' &&
         s.kind !== 'soulRend' &&
         s.kind !== 'reap' &&
+        s.kind !== 'phaseOut' &&
         s.kind !== 'deathCurse'
       ) s.duration -= 1;
     }

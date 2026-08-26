@@ -3,7 +3,7 @@ import { Mage } from './Mage';
 import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
 import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
-import { dealDamage, drainDamage, heal, applyDot, applyDebuff, applyInvisibility, applyStun, rollDice, teleport } from '../effects/effects';
+import { dealDamage, drainDamage, heal, applyDot, applyDebuff, applyForget, applyInvisibility, applyStun, dash, rollDice, teleport } from '../effects/effects';
 import { dmg } from './Damage';
 import type { DamageType, DamageClass } from './Damage';
 import type { ItemId, ItemDef } from './Items';
@@ -26,6 +26,7 @@ import {
   VEIL,
 } from '../config/constants';
 import { WORDS } from './Words';
+import { splitModifiers } from './Words';
 import type { WordId } from './Words';
 import type { ShadowZone } from './Shadow';
 import type { Totem } from './Totem';
@@ -47,11 +48,41 @@ import {
   type SentinelFireStatus,
   type BlueflareStatus,
   type SoulRendStatus,
+  type ShadowAnchorStatus,
+  type MemoryShackleStatus,
+  type ShadowHookStatus,
+  type PhaseOutStatus,
+  type ThreadMarkStatus,
+  type SwornRepetitionStatus,
+  type WoundShadeStatus,
+  type MindFuseStatus,
+  type ReactionNeedleStatus,
+  type FoeBlindStatus,
+  type ForgetStatus,
   type OrderJudgmentStatus,
   type ShadowTrailStatus,
   type TwistRuneStatus,
   type Status,
 } from './Status';
+
+/** Reach of an active Edgelord dark light; it counts as a shadow zone. */
+const EDGELORD_DARK_LIGHT_RADIUS = 15 * RANGE_UNIT;
+/** Bind Shadow Corrode: how many enemies one pool may swallow each round. */
+const FEEDING_DARK_MEALS_PER_ROUND = 2;
+
+/** Bind Shadow Corrode: a standing law that makes one team's pools hungry. */
+export interface FeedingDark {
+  ownerIndex: number;
+  ownerTeam: number;
+  roundsLeft: number;
+}
+
+/** Shadow Mind Curse: a standing law that makes one team's pools rot whoever stands in them. */
+export interface RottingDark {
+  ownerIndex: number;
+  ownerTeam: number;
+  roundsLeft: number;
+}
 
 /**
  * A board-wide escalating damage effect (Necrosis): on each round rollover every
@@ -171,6 +202,12 @@ export class GameState {
   private turnPtr = 0;
   /** The initiative roll each mage made (for display / logging). */
   initiativeRolls: number[] = [];
+  /** Bind Shadow Corrode: teams whose shadow pools are currently feeding. */
+  feedingDarks: FeedingDark[] = [];
+  /** Shadow Mind Curse: teams whose shadow pools currently rot what stands in them. */
+  rottingDarks: RottingDark[] = [];
+  /** Guard so a threaded echo can never re-enter and chain into itself. */
+  private threadEchoing = false;
 
   /**
    * Set true for the duration of a single spell resolution when that spell's
@@ -842,7 +879,26 @@ export class GameState {
     this.turnSeq += 1;
     // Keep latched scarabs glued to whoever they bit before anything else runs.
     this.updateAttachedScarabs();
+    // A phased mage does not exist: nothing reaches it and it may only walk.
+    if (this.isPhasedOut(m)) {
+      this.tickPhaseOut(m);
+      // Phasing in skips upkeep entirely — no DoT ticks, no costs — but every
+      // status still ages, so nothing is prolonged by hiding in the dark.
+      for (const line of m.tickStatuses()) this.log(line);
+      m.beginTurn();
+      if (this.isPhasedOut(m)) {
+        m.actions.main = 0;
+        m.actions.bonus = 0;
+      }
+      return;
+    }
     this.applyTwistRunes(m);
+    this.applyShadowAnchors(m);
+    this.applyShadowHooks(m);
+    this.applyFeedingDarks(m);
+    this.applyRottingDarks(m);
+    this.applyWoundShades(m);
+    this.applyFoeBlind(m);
     // Ground hazards and shadow-curse auras strike before the mage's own turn.
     this.applyTotemAuras(m);
     this.applyOwnedSummonAuras(m);
@@ -864,6 +920,8 @@ export class GameState {
     this.applyEdgelordLanternUpkeep(m);
     this.tickScarabs(m);
     this.tickOrderJudgments(m);
+    this.tickSwornRepetition(m);
+    this.tickMindFuse(m);
     const ticks = m.tickStatuses();
     for (const line of ticks) this.log(line);
     this.syncCurseCorrodeSlow(m);
@@ -1099,6 +1157,455 @@ export class GameState {
     this.log(`${m.name}'s binding mantle roots ${best.name} in place.`);
   }
 
+  /**
+   * Bind Shadow Mind: drag the bearer toward its anchor FIRST, then judge where
+   * it landed — inside the anchoring team's dark it loses a word, outside the
+   * chain bites. Physical travel, so a barrier can stop the pull short.
+   */
+  private applyShadowAnchors(bearer: Mage): void {
+    if (!bearer.alive) return;
+    const anchors = bearer.statuses.filter(
+      (status) => status.kind === 'shadowAnchor'
+    ) as ShadowAnchorStatus[];
+    for (const anchor of anchors) {
+      const owner = this.mages[anchor.ownerIndex] ?? bearer;
+      const ctx = this.effectContext(owner, bearer, { x: anchor.x, y: anchor.y });
+      dash(ctx, bearer, { toPoint: { x: anchor.x, y: anchor.y }, distance: anchor.pullPx });
+      if (!bearer.alive) return;
+      const swallowed = this.shadowsOf(anchor.ownerTeam).some(
+        (shadow) => dist(bearer.pos, { x: shadow.x, y: shadow.y }) <= shadow.radius
+      );
+      if (swallowed) {
+        // Duration 2: this runs before tickStatuses, so 1 would expire the same turn.
+        applyForget(ctx, bearer, { count: 1, duration: 2 });
+        this.log(`The dark closes over ${bearer.name} and eats a word.`);
+      } else {
+        dealDamage(ctx, bearer, dmg(this.rng.roll('1d4').total, 'shadow', 'sanity'), {
+          canMiss: false,
+        });
+        this.log(`${bearer.name} strains against the chain and it bites.`);
+      }
+    }
+  }
+
+  /**
+   * Bind Shadow Pierce: reel the hooked bearer in, bleed it, and leave one of
+   * the hooker's shadows where it comes to rest — a trail in its own wake.
+   */
+  private applyShadowHooks(bearer: Mage): void {
+    if (!bearer.alive) return;
+    const hooks = bearer.statuses.filter(
+      (status) => status.kind === 'shadowHook'
+    ) as ShadowHookStatus[];
+    for (const hook of hooks) {
+      const owner = this.mages[hook.ownerIndex];
+      if (!owner?.alive) continue;
+      const ctx = this.effectContext(owner, bearer, owner.pos);
+      const toOwner = stepTowards(bearer.pos, owner.pos, hook.pullPx);
+      this.log(`${owner.name}'s hook reels ${bearer.name} in.`);
+      this.forceMove(owner, bearer, toOwner);
+      if (!bearer.alive) return;
+      dealDamage(ctx, bearer, dmg(this.rng.roll(hook.damageSpec).total, 'pierce', 'physical'), {
+        canMiss: false,
+      });
+      if (!bearer.alive) return;
+      this.addShadow(bearer.pos, hook.ownerTeam, hook.shadowTtl);
+    }
+  }
+
+  /**
+   * Phased into the dark. A phased mage does not exist: nothing may target,
+   * damage or afflict it, and it may do nothing on its turn but walk.
+   */
+  isPhasedOut(m: Mage): boolean {
+    return m.statuses.some((status) => status.kind === 'phaseOut');
+  }
+
+  /** A self-phased mage walks through walls, zones and bodies alike. */
+  isPhaseWalking(m: Mage): boolean {
+    return m.statuses.some((status) => status.kind === 'phaseOut' && status.mode === 'self');
+  }
+
+  /**
+   * Shadow Veil Corrode: a phase-walker dissolves whatever it drifts through.
+   * Every hostile body the path crosses takes the phase's corrosive toll once.
+   */
+  burnPhaseWalkPath(walker: Mage, from: Vec2, to: Vec2): void {
+    const phase = walker.statuses.find(
+      (status) => status.kind === 'phaseOut' && status.mode === 'self'
+    ) as PhaseOutStatus | undefined;
+    if (!phase?.passThroughSpec) return;
+    const travelled = dist(from, to);
+    if (travelled < 1) return;
+    const steps = Math.max(2, Math.ceil(travelled / 8));
+    const burned = new Set<Mage>();
+    for (let i = 0; i <= steps; i++) {
+      const point = stepTowards(from, to, (travelled * i) / steps);
+      for (const victim of this.mages) {
+        if (victim === walker || !victim.alive || burned.has(victim)) continue;
+        if (victim.team === walker.team) continue;
+        if (dist(point, victim.pos) > victim.bodyRadius()) continue;
+        burned.add(victim);
+        dealDamage(
+          this.effectContext(walker, victim, victim.pos),
+          victim,
+          dmg(this.rng.roll(phase.passThroughSpec).total, 'corrosive', 'physical'),
+          { canMiss: false }
+        );
+        this.log(`${walker.name} drifts through ${victim.name} and it dissolves.`);
+      }
+    }
+  }
+
+  /**
+   * Age a phase at its bearer's turn start, releasing it when it runs out. A
+   * banishment detonates around the spot it was held in.
+   */
+  private tickPhaseOut(bearer: Mage): void {
+    const phase = bearer.statuses.find((status) => status.kind === 'phaseOut') as
+      | PhaseOutStatus
+      | undefined;
+    if (!phase) return;
+    phase.duration -= 1;
+    if (phase.duration > 0) {
+      this.log(`${bearer.name} is still elsewhere (${phase.duration} left).`);
+      return;
+    }
+    bearer.statuses = bearer.statuses.filter((status) => status !== phase);
+    this.log(`${bearer.name} snaps back into the world.`);
+    if (phase.mode !== 'banished' || !phase.burstSpec) return;
+    const owner = this.mages[phase.ownerIndex] ?? bearer;
+    const radius = phase.burstRadius ?? 4 * RANGE_UNIT;
+    const amount = this.rng.roll(phase.burstSpec).total;
+    for (const victim of this.mages) {
+      if (!victim.alive || victim.team === phase.ownerTeam) continue;
+      if (dist(victim.pos, bearer.pos) > radius + victim.bodyRadius()) continue;
+      dealDamage(this.effectContext(owner, victim, bearer.pos), victim, dmg(amount, 'shadow', 'physical'), {
+        canMiss: false,
+        aoe: true,
+      });
+    }
+    this.log(`The dark releases ${bearer.name} in a burst.`);
+  }
+
+  /**
+   * Bind Shadow Corrode: for a few rounds the owner's pools feed. A pool that
+   * swallows an enemy grows and gains a permanent extra corrosive die, capped at
+   * two meals per pool per round.
+   */
+  private applyFeedingDarks(prey: Mage): void {
+    if (!prey.alive || this.feedingDarks.length === 0) return;
+    for (const law of this.feedingDarks) {
+      if (prey.team === law.ownerTeam) continue;
+      const owner = this.mages[law.ownerIndex];
+      if (!owner?.alive) continue;
+      const pool = this.shadows.find(
+        (shadow) =>
+          shadow.owner === law.ownerTeam && dist(prey.pos, { x: shadow.x, y: shadow.y }) <= shadow.radius
+      );
+      if (!pool) continue;
+      if (pool.feedRound !== this.round) {
+        pool.feedRound = this.round;
+        pool.feedMeals = 0;
+      }
+      if ((pool.feedMeals ?? 0) >= FEEDING_DARK_MEALS_PER_ROUND) continue;
+      const ctx = this.effectContext(owner, prey, prey.pos);
+      applyStun(ctx, prey, { duration: 1, type: 'movement' });
+      dealDamage(ctx, prey, dmg(this.rng.roll('1d3').total, 'shadow', 'physical'), { canMiss: false });
+      const stacks = pool.feedStacks ?? 0;
+      if (stacks > 0 && prey.alive) {
+        dealDamage(ctx, prey, dmg(this.rng.roll(`${stacks}d3`).total, 'corrosive', 'physical'), {
+          canMiss: false,
+        });
+      }
+      pool.feedStacks = stacks + 1;
+      pool.feedMeals = (pool.feedMeals ?? 0) + 1;
+      pool.radius += RANGE_UNIT;
+      this.log(`The hungry dark swallows ${prey.name} and swells (${pool.feedStacks} fed).`);
+    }
+  }
+
+  /** Age the feeding law once per round and drop it when it is spent. */
+  private tickFeedingDarks(): void {
+    if (this.feedingDarks.length === 0) return;
+    for (const law of this.feedingDarks) law.roundsLeft -= 1;
+    this.feedingDarks = this.feedingDarks.filter((law) => law.roundsLeft > 0);
+  }
+
+  /**
+   * Shadow Mind Curse: while the law stands, any enemy starting its turn in one of
+   * the owner's pools rots in mind and body and is mired to a quarter pace.
+   */
+  private applyRottingDarks(prey: Mage): void {
+    if (!prey.alive || this.rottingDarks.length === 0) return;
+    for (const law of this.rottingDarks) {
+      if (prey.team === law.ownerTeam) continue;
+      const owner = this.mages[law.ownerIndex];
+      if (!owner?.alive) continue;
+      const inside = this.shadowsOf(law.ownerTeam).some(
+        (shadow) => dist(prey.pos, { x: shadow.x, y: shadow.y }) <= shadow.radius
+      );
+      if (!inside) continue;
+      const ctx = this.effectContext(owner, prey, prey.pos);
+      dealDamage(ctx, prey, dmg(this.rng.roll('1d3').total, 'shadow', 'sanity'), {
+        canMiss: false,
+        noImpactFx: true,
+      });
+      if (!prey.alive) return;
+      dealDamage(ctx, prey, dmg(this.rng.roll('1d6').total, 'corrosive', 'physical'), {
+        canMiss: false,
+      });
+      if (!prey.alive) return;
+      applyDebuff(ctx, prey, {
+        name: 'Rotting Dark',
+        duration: 1,
+        mods: { moveRange: -Math.round(MOVE_RANGE * 0.75) },
+      });
+      this.log(`${prey.name} rots in the standing dark.`);
+    }
+  }
+
+  /** Age the rotting law once per round and drop it when it is spent. */
+  private tickRottingDarks(): void {
+    if (this.rottingDarks.length === 0) return;
+    for (const law of this.rottingDarks) law.roundsLeft -= 1;
+    this.rottingDarks = this.rottingDarks.filter((law) => law.roundsLeft > 0);
+  }
+
+  /** Shadow Curse Pierce: the shade riding the bearer bites at its turn start. */
+  private applyWoundShades(bearer: Mage): void {
+    if (!bearer.alive) return;
+    const shade = bearer.statuses.find((status) => status.kind === 'woundShade') as
+      | WoundShadeStatus
+      | undefined;
+    if (!shade) return;
+    const owner = this.mages[shade.ownerIndex] ?? bearer;
+    if (!shade.damageSpec) return;
+    dealDamage(
+      this.effectContext(owner, bearer, bearer.pos),
+      bearer,
+      dmg(this.rng.roll(shade.damageSpec).total, 'shadow', 'physical'),
+      { canMiss: false, noImpactFx: true }
+    );
+  }
+
+  /**
+   * Mind Shatter Curse: the fuse swells every turn it survives. It burns down one
+   * extra step whenever the victim spends a main action, so rushing means a
+   * smaller blast and stalling means a far larger one.
+   */
+  private tickMindFuse(bearer: Mage): void {
+    if (!bearer.alive) return;
+    const fuse = bearer.statuses.find((status) => status.kind === 'mindFuse') as
+      | MindFuseStatus
+      | undefined;
+    if (!fuse) return;
+    fuse.ticks += 1;
+    if (fuse.duration > 1) {
+      this.log(`${bearer.name}'s fuse swells (${fuse.duration - 1} turns, ${fuse.ticks} charges).`);
+      return;
+    }
+    this.detonateMindFuse(bearer, fuse);
+  }
+
+  /** Blow the fuse now, for its accumulated charge. */
+  private detonateMindFuse(bearer: Mage, fuse: MindFuseStatus): void {
+    bearer.statuses = bearer.statuses.filter((status) => status !== fuse);
+    const owner = this.mages[fuse.ownerIndex] ?? bearer;
+    let total = this.rng.roll(fuse.baseSpec).total;
+    for (let i = 0; i < fuse.ticks; i++) total += this.rng.roll(fuse.growthSpec).total;
+    this.log(`${bearer.name}'s fuse blows for ${total} after ${fuse.ticks} charges.`);
+    dealDamage(this.effectContext(owner, bearer, null), bearer, dmg(total, 'shadow', 'sanity'), {
+      canMiss: false,
+    });
+  }
+
+  /** Any declared action — main, bonus or reaction — burns the fuse one step early. */
+  burnMindFuse(bearer: Mage): void {
+    const fuse = bearer.statuses.find((status) => status.kind === 'mindFuse') as
+      | MindFuseStatus
+      | undefined;
+    if (!fuse) return;
+    fuse.duration -= 1;
+    if (fuse.duration <= 0) this.detonateMindFuse(bearer, fuse);
+    else this.log(`${bearer.name} burns the fuse down to ${fuse.duration}.`);
+  }
+
+  /**
+   * Bind Mind Curse: obeying the compulsion deepens the rot; failing to repeat
+   * detonates it. Surviving to the end costs no blood but the stacks linger.
+   */
+  private tickSwornRepetition(bearer: Mage): void {
+    if (!bearer.alive) return;
+    const sworn = bearer.statuses.find((status) => status.kind === 'swornRepetition') as
+      | SwornRepetitionStatus
+      | undefined;
+    if (!sworn) return;
+    if (sworn.lingering) return;
+    const compelled = bearer.statuses.some(
+      (status) => status.kind === 'control' && status.mode === 'repeat'
+    );
+    if (!compelled) {
+      // The compulsion broke early: the oath collects.
+      bearer.statuses = bearer.statuses.filter((status) => status !== sworn);
+      if (sworn.stacks <= 0) return;
+      const owner = this.mages[sworn.ownerIndex] ?? bearer;
+      const total = this.rng.roll(`${sworn.stacks}${sworn.perStackSpec}`).total;
+      this.log(`${bearer.name} breaks the oath — it collects ${total}.`);
+      dealDamage(this.effectContext(owner, bearer, null), bearer, dmg(total, 'shadow', 'sanity'), {
+        canMiss: false,
+      });
+      return;
+    }
+    sworn.stacks += 1;
+    if (sworn.duration <= 1) {
+      // Rode it out: no blood, but the rot outlives the compulsion.
+      sworn.lingering = true;
+      sworn.duration = sworn.lingerTurns + 1;
+      this.log(`${bearer.name} keeps the oath — the rot settles in for good.`);
+      return;
+    }
+    this.log(`${bearer.name} obeys; the oath deepens to ${sworn.stacks}.`);
+  }
+
+  /** Damage-dealt / taken shift from an unbroken oath. */
+  swornRepetitionStacks(m: Mage): number {
+    const sworn = m.statuses.find((status) => status.kind === 'swornRepetition') as
+      | SwornRepetitionStatus
+      | undefined;
+    return sworn?.stacks ?? 0;
+  }
+
+  /**
+   * Bind Mind Pierce: a wound on one threaded victim echoes to the rest as mill.
+   * Only direct damage propagates, so the echo can never chain into itself.
+   */
+  echoThreadMark(source: Mage, struck: Mage, amount: number): void {
+    if (amount <= 0 || this.threadEchoing) return;
+    const mark = struck.statuses.find((status) => status.kind === 'threadMark') as
+      | ThreadMarkStatus
+      | undefined;
+    if (!mark) return;
+    const echo = Math.max(1, Math.round(amount * mark.sharePct));
+    this.threadEchoing = true;
+    try {
+      for (const other of this.mages) {
+        if (other === struck || !other.alive) continue;
+        const theirs = other.statuses.find((status) => status.kind === 'threadMark') as
+          | ThreadMarkStatus
+          | undefined;
+        if (!theirs || theirs.ownerTeam !== mark.ownerTeam) continue;
+        dealDamage(this.effectContext(source, other, null), other, dmg(echo, 'shadow', 'sanity'), {
+          canMiss: false,
+          noImpactFx: true,
+        });
+      }
+    } finally {
+      this.threadEchoing = false;
+    }
+  }
+
+  /** Mind Curse Pierce: taking a reaction twists the needle, but the reaction still resolves. */
+  twistReactionNeedle(reactor: Mage): void {
+    const needle = reactor.statuses.find((status) => status.kind === 'reactionNeedle') as
+      | ReactionNeedleStatus
+      | undefined;
+    if (!needle || !reactor.alive) return;
+    const owner = this.mages[needle.ownerIndex] ?? reactor;
+    this.log(`${reactor.name} reacts, and the needle twists.`);
+    dealDamage(
+      this.effectContext(owner, reactor, null),
+      reactor,
+      dmg(this.rng.roll(needle.damageSpec).total, 'shadow', 'sanity'),
+      { canMiss: false }
+    );
+  }
+
+  /** Veil Mind Curse: this mage reads every other entity as an enemy. */
+  isFoeBlind(m: Mage): boolean {
+    return m.statuses.some((status) => status.kind === 'foeBlind');
+  }
+
+  /** Foe-blind victims pick their target at random from everything but themselves. */
+  randomFoeBlindTarget(m: Mage, candidates: readonly Mage[]): Mage | null {
+    const pool = candidates.filter((other) => other !== m && other.alive);
+    return pool.length > 0 ? pool[this.rng.die(pool.length) - 1] : null;
+  }
+
+  private applyFoeBlind(bearer: Mage): void {
+    if (!bearer.alive) return;
+    const blind = bearer.statuses.find((status) => status.kind === 'foeBlind') as
+      | FoeBlindStatus
+      | undefined;
+    if (!blind) return;
+    const owner = this.mages[blind.ownerIndex] ?? bearer;
+    dealDamage(
+      this.effectContext(owner, bearer, null),
+      bearer,
+      dmg(this.rng.roll(blind.damageSpec).total, 'shadow', 'sanity'),
+      { canMiss: false, noImpactFx: true }
+    );
+  }
+
+  /**
+   * Bind Mind Corrode: a shackled mage forgets whatever it just declared — a
+   * spell costs it every word it used, anything else costs it the swing.
+   */
+  private consumeMemoryShackle(item: StackItem): void {
+    const bearer = item.source;
+    const shackle = bearer.statuses.find((status) => status.kind === 'memoryShackle') as
+      | MemoryShackleStatus
+      | undefined;
+    if (!shackle || !bearer.alive) return;
+    const tokens = item.spell
+      ? splitModifiers(item.spell.words).base.map(String)
+      : item.kind === 'melee'
+        ? ['melee']
+        : [];
+    if (tokens.length === 0) return;
+    const forget = bearer.statuses.find((status) => status.kind === 'forget') as
+      | ForgetStatus
+      | undefined;
+    if (forget) {
+      for (const token of tokens) {
+        if (!forget.forgotten.includes(token)) forget.forgotten.push(token);
+      }
+      forget.duration = Math.max(forget.duration, shackle.forgetDuration);
+    } else {
+      bearer.statuses.push({
+        key: 'forget',
+        name: 'Forgotten',
+        kind: 'forget',
+        duration: shackle.forgetDuration,
+        forgotten: [...tokens],
+      });
+    }
+    this.log(`The shackle eats ${bearer.name}'s ${tokens.join(' & ')}.`);
+  }
+
+  /**
+   * Chalice of Clear Water: pay the gear's mana toll to strip every affliction
+   * from `m`. Veils and stealth survive; wards and buffs are washed away with
+   * the rest. Returns false when the toll cannot be paid.
+   */
+  cleanseAfflictions(m: Mage): boolean {
+    const cost = m.cleanseManaCost();
+    if (cost == null || m.mana < cost) return false;
+    m.spendMana(cost);
+    const before = m.statuses.length;
+    m.statuses = m.statuses.filter(
+      (status) => status.kind === 'invisibility' || status.kind === 'shadowVeil'
+    );
+    const washed = before - m.statuses.length;
+    this.syncCurseCorrodeSlow(m);
+    this.log(
+      washed > 0
+        ? `${m.name} drinks deep and washes away ${washed} affliction${washed === 1 ? '' : 's'} for ${cost} mana.`
+        : `${m.name} drinks deep for ${cost} mana, but carries nothing to wash away.`
+    );
+    return true;
+  }
+
   /** Age a Lich life-link on `m`; drop it when it expires or its Lich dies. */
   private tickDrainLink(m: Mage): void {
     if (!m.drainLinkTo) return;
@@ -1158,6 +1665,8 @@ export class GameState {
         this.tickHexcraftGlobals();
         this.tickVeilBindZones();
         this.tickCorrosionPools();
+        this.tickFeedingDarks();
+        this.tickRottingDarks();
         this.startRound();
       }
       const idx = this.initiativeOrder[this.turnPtr];
@@ -1389,7 +1898,7 @@ export class GameState {
         if (!enemy.alive || enemy.team === bearer.team) continue;
         if (dist(enemy.pos, bearer.pos) > aura.radius + enemy.bodyRadius()) continue;
         if ((aura.boundCounts[index] ?? 0) >= 2) continue;
-        if (enemy.debuffImmune || this.isLaranegUntouchable(enemy)) continue;
+        if (enemy.isDebuffImmune() || this.isLaranegUntouchable(enemy)) continue;
         applyStun(ctx, enemy, { duration: 2, type: 'movement' });
         aura.boundCounts[index] = (aura.boundCounts[index] ?? 0) + 1;
         boundAny = true;
@@ -1409,6 +1918,11 @@ export class GameState {
       invisibility?.duration ?? 0,
       shadowVeil && this.isInShadow(mage) ? shadowVeil.duration : 0
     );
+  }
+
+  /** Hidden by ANY form of stealth — a veil, a Shadow Veil in shadow, or the dagger. */
+  isVeiled(mage: Mage): boolean {
+    return this.stealthDuration(mage) > 0;
   }
 
   /** Arm an invisible mage to turn the veil lost on its next attack into damage. */
@@ -1493,11 +2007,44 @@ export class GameState {
   }
 
   shadowsOf(team: number): ShadowZone[] {
-    return this.shadows.filter((s) => s.owner === team);
+    return this.allShadows().filter((s) => s.owner === team);
   }
   /** The shadow zone containing `pos`, if any. */
   shadowAt(pos: Vec2): ShadowZone | undefined {
-    return this.shadows.find((s) => dist(pos, { x: s.x, y: s.y }) <= s.radius);
+    return this.allShadows().find((s) => dist(pos, { x: s.x, y: s.y }) <= s.radius);
+  }
+
+  /** Conjured pools plus every active Edgelord dark light, which counts as shadow. */
+  private allShadows(): ShadowZone[] {
+    const extra: ShadowZone[] = [];
+    this.mages.forEach((mage, index) => {
+      if (!mage.alive) return;
+      if (mage.hasEdgelordLantern() && mage.edgelordLanternActive) {
+        // Negative ids keep synthetic zones distinct from conjured pools.
+        extra.push({
+          id: -(index + 1),
+          x: mage.x,
+          y: mage.y,
+          radius: EDGELORD_DARK_LIGHT_RADIUS,
+          owner: mage.team,
+          ttl: Infinity,
+        });
+      }
+      const shade = mage.statuses.find((status) => status.kind === 'woundShade') as
+        | WoundShadeStatus
+        | undefined;
+      if (shade) {
+        extra.push({
+          id: -(this.mages.length + index + 1),
+          x: mage.x,
+          y: mage.y,
+          radius: shade.radius,
+          owner: shade.ownerTeam,
+          ttl: shade.duration,
+        });
+      }
+    });
+    return extra.length > 0 ? [...this.shadows, ...extra] : this.shadows;
   }
 
   /** Whether a mage is currently standing in any shadow. */
@@ -2258,7 +2805,7 @@ export class GameState {
   applyFireStacks(target: Mage, count: number, owner: Mage): void {
     if (!target.alive || count <= 0) return;
     if (this.defeatPftlhbByIllumination(target, owner)) return;
-    if (target.debuffImmune) {
+    if (target.isDebuffImmune()) {
       this.log(`${target.name} is beyond affliction — Fire finds no purchase.`);
       return;
     }
@@ -2330,7 +2877,7 @@ export class GameState {
   applySentinelFireStacks(target: Mage, count: number, owner: Mage): void {
     if (!target.alive || count <= 0) return;
     if (this.defeatPftlhbByIllumination(target, owner)) return;
-    if (target.debuffImmune) {
+    if (target.isDebuffImmune()) {
       this.log(`${target.name} is beyond affliction — Sentinel Fire finds no purchase.`);
       return;
     }
@@ -2406,7 +2953,7 @@ export class GameState {
 
   applyBlueflareStacks(target: Mage, count: number, owner: Mage): void {
     if (!target.alive || count <= 0) return;
-    if (target.debuffImmune) {
+    if (target.isDebuffImmune()) {
       this.log(`${target.name} is beyond affliction — Blueflare finds no purchase.`);
       return;
     }
@@ -2446,9 +2993,13 @@ export class GameState {
     this.log(`${target.name} has ${flare.stacks} Blueflare stack${flare.stacks === 1 ? '' : 's'}.`);
   }
 
-  /** Add permanent Soul Rend stacks; each stack deals 1 true HP and mill per bearer turn. */
+  /** Add Soul Rend stacks; each stack tears 1d3 true health and mill per bearer turn. */
   applySoulRend(target: Mage, count: number, owner: Mage): void {
     if (!target.alive || count <= 0) return;
+    if (target.isDebuffImmune()) {
+      this.log(`${target.name} is beyond affliction — Soul Rend finds no purchase.`);
+      return;
+    }
     let rend = target.statuses.find((status) => status.kind === 'soulRend') as
       | SoulRendStatus
       | undefined;
@@ -2476,11 +3027,22 @@ export class GameState {
     if (!rend || rend.stacks <= 0) return;
     const owner = this.mages[rend.ownerIndex] ?? target;
     const wasAlive = target.alive;
-    target.hp = Math.max(target.unkillable ? 1 : 0, target.hp - rend.stacks);
+    const hpLoss = this.rng.roll(`${rend.stacks}d3`).total;
+    target.hp = Math.max(target.unkillable ? 1 : 0, target.hp - hpLoss);
+    let millLoss = 0;
     if (!target.sanityImmune) {
-      target.sanity = Math.max(target.unkillable ? 1 : 0, target.sanity - rend.stacks);
+      millLoss = this.rng.roll(`${rend.stacks}d3`).total;
+      target.sanity = Math.max(target.unkillable ? 1 : 0, target.sanity - millLoss);
     }
-    this.log(`${target.name}'s Soul Rend tears away ${rend.stacks} health and mill.`);
+    this.log(
+      `${target.name}'s Soul Rend (${rend.stacks}) tears away ${hpLoss} health and ${millLoss} mill.`
+    );
+    // The wound closes a little every time it bites.
+    rend.stacks -= 1;
+    if (rend.stacks <= 0) {
+      target.statuses = target.statuses.filter((status) => status !== rend);
+      this.log(`Soul Rend closes over on ${target.name}.`);
+    }
     if (wasAlive && !target.alive) this.notifyMageDefeated(target, owner);
   }
 
@@ -2641,7 +3203,7 @@ export class GameState {
         mage.alive &&
         mage.hasEdgelordLantern() &&
         mage.edgelordLanternActive &&
-        dist(mage.pos, point) <= 15 * RANGE_UNIT
+        dist(mage.pos, point) <= EDGELORD_DARK_LIGHT_RADIUS
     );
   }
 
@@ -2651,20 +3213,35 @@ export class GameState {
     return radius > 0 && !this.isInEdgelordDarkLight(source.pos) ? radius : 0;
   }
 
+  /**
+   * Dagger of Shadow: an ABSOLUTE veil while the blade is held in shadow and the
+   * round's toll is paid. Untargetable at any range and immune to dark light — and
+   * because it is derived rather than stored, no strike, proximity or dispel can
+   * tear it away.
+   */
+  hasShadowDaggerVeil(m: Mage): boolean {
+    return (
+      m.alive &&
+      !!m.shadowDaggerTraits() &&
+      !m.thunderGlowing() &&
+      this.isInShadow(m) &&
+      m.shadowDaggerStealthRound === this.round
+    );
+  }
+
   /** Ordinary veil is suppressed inside dark light; Shadow Veil is handled separately. */
   effectiveInvisibility(target: Mage): InvisibilityStatus | undefined {
+    if (this.hasShadowDaggerVeil(target)) {
+      return {
+        key: 'item:shadow-dagger-stealth',
+        name: 'Dagger of Shadow',
+        kind: 'invisibility',
+        duration: 1,
+        mode: 'full',
+      };
+    }
     if (this.isInEdgelordDarkLight(target.pos)) return undefined;
-    const status = target.getInvisibility();
-    if (status) return status;
-    const traits = target.shadowDaggerTraits();
-    if (!traits || target.thunderGlowing() || !this.isInShadow(target) || target.shadowDaggerStealthRound !== this.round) return undefined;
-    return {
-      key: 'item:shadow-dagger-stealth',
-      name: 'Dagger of Shadow',
-      kind: 'invisibility',
-      duration: 1,
-      mode: 'partial',
-    };
+    return target.getInvisibility();
   }
 
   private pullTowardLantern(
@@ -2683,7 +3260,7 @@ export class GameState {
 
   private async pullEdgelordUnits(bearer: Mage): Promise<void> {
     const targets = this.mages.filter(
-      (mage) => mage.alive && mage !== bearer && dist(mage.pos, bearer.pos) <= 15 * RANGE_UNIT
+      (mage) => mage.alive && mage !== bearer && dist(mage.pos, bearer.pos) <= EDGELORD_DARK_LIGHT_RADIUS
     );
     const motions = targets.flatMap((target) => {
       const motion = this.pullTowardLantern(target, bearer, 6 * RANGE_UNIT);
@@ -2709,7 +3286,7 @@ export class GameState {
       bearer.edgelordLanternActive = true;
       bearer.edgelordLanternJustDeactivated = false;
       const afflicted = this.mages.filter(
-        (mage) => mage.alive && dist(mage.pos, bearer.pos) <= 15 * RANGE_UNIT
+        (mage) => mage.alive && dist(mage.pos, bearer.pos) <= EDGELORD_DARK_LIGHT_RADIUS
       );
       for (const mage of afflicted) this.applySoulRend(mage, 3, bearer);
       this.log(`${bearer.name} awakens the Edgelord Lantern for 4 mana.`);
@@ -2804,7 +3381,7 @@ export class GameState {
     if (!source.alive || !source.hasEdgelordLantern() || !source.edgelordLanternActive) return;
     await this.pullEdgelordUnits(source);
     const targets = this.mages.filter(
-      (mage) => mage.alive && dist(mage.pos, source.pos) <= 15 * RANGE_UNIT
+      (mage) => mage.alive && dist(mage.pos, source.pos) <= EDGELORD_DARK_LIGHT_RADIUS
     );
     for (const target of targets) {
       dealDamage(this.effectContext(source, target, null), target, dmg(2, 'shadow', 'physical'), {
@@ -3069,25 +3646,48 @@ export class GameState {
    */
   knockbackMage(source: Mage, target: Mage, units: number): void {
     if (!target.alive) return;
-    const origin = target.pos;
     const dx = target.x - source.x;
     const dy = target.y - source.y;
     const len = Math.hypot(dx, dy) || 1;
     const reach = units * RANGE_UNIT;
-    const raw = { x: target.x + (dx / len) * reach, y: target.y + (dy / len) * reach };
+    this.log(`${target.name} is knocked back!`);
+    this.forceMove(source, target, {
+      x: target.x + (dx / len) * reach,
+      y: target.y + (dy / len) * reach,
+    });
+  }
+
+  /**
+   * Displace an unwilling `target` toward `rawDest`. Barriers, Mutivarg zones
+   * and bodies all stop the slide, but only a wall or the field edge counts as
+   * an immovable obstacle: being stopped by one slams the target for 2d6
+   * shatter, matching Twist's quarter-turn rule. Returns whether it slammed.
+   */
+  forceMove(source: Mage, target: Mage, rawDest: Vec2): boolean {
+    if (!target.alive) return false;
+    const origin = target.pos;
     const fieldDest = {
-      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, raw.x)),
-      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, raw.y)),
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, rawDest.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, rawDest.y)),
     };
-    const clamp = this.clampToBarriers(target.pos, fieldDest);
-    const mut = this.clampToMutivargZones(target, target.pos, clamp.dest);
-    const dest = this.clampToMages(target, target.pos, mut.dest);
+    const hitBorder = dist(fieldDest, rawDest) > 0.5;
+    const barrier = this.clampToBarriers(origin, fieldDest);
+    const mut = this.clampToMutivargZones(target, origin, barrier.dest);
+    const dest = this.clampToMages(target, origin, mut.dest);
     target.x = dest.x;
     target.y = dest.y;
     this.notifyMageRelocation(target, origin, dest, true);
     this.updateAttachedScarabs();
     this.dropTrailShadows(target);
-    this.log(`${target.name} is knocked back!`);
+    if (!hitBorder && !barrier.blocked) return false;
+    this.log(`${target.name} is slammed into something immovable!`);
+    dealDamage(
+      this.effectContext(source, target, null),
+      target,
+      dmg(this.rng.roll('2d6').total, 'shatter', 'physical'),
+      { canMiss: false }
+    );
+    return true;
   }
 
   /**
@@ -3180,6 +3780,10 @@ export class GameState {
    * is always targetable (its protection is the dodge, resolved on the hit).
    */
   isUntargetable(m: Mage, from?: Mage): boolean {
+    // Phased into the dark: it does not exist for anyone, friend or foe.
+    if (this.isPhasedOut(m)) return true;
+    // The dagger's veil is absolute — no distance rule softens it.
+    if (this.hasShadowDaggerVeil(m)) return true;
     // Second Ring of Lareneg: untouchable to hostiles during turn cycles 3 & 4.
     if (from && from.team !== m.team && this.isLaranegUntouchable(m)) return true;
     if (m.oniHidden) return true;
@@ -3199,6 +3803,11 @@ export class GameState {
    */
   isLaranegUntouchable(m: Mage): boolean {
     return m.hasLaranegRing() && (this.round === 3 || this.round === 4);
+  }
+
+  /** Nothing hostile may reach this mage right now, whatever the source. */
+  isUnreachable(m: Mage): boolean {
+    return this.isPhasedOut(m) || this.isLaranegUntouchable(m);
   }
 
   /**
@@ -3463,6 +4072,10 @@ export class GameState {
   pushStack(item: StackItem): void {
     const declaredTarget = item.target;
     this.markTargetOrigin(item);
+    this.consumeMemoryShackle(item);
+    // Anything but walking burns the fuse. A reaction is counted at its window,
+    // so a reaction spell must not be charged twice here.
+    if (item.kind !== 'move' && item.respondingTo == null) this.burnMindFuse(item.source);
     if (
       declaredTarget?.alive &&
       declaredTarget.team !== item.source.team &&
@@ -3606,6 +4219,14 @@ export class GameState {
   isValidSpellTarget(spell: Spell, source: Mage, target: Mage): boolean {
     if (!target.alive) return false;
     if (spell.requiresInvisibleTarget && this.stealthDuration(target) <= 0) return false;
+    if (
+      spell.requiresTargetNearOwnShadow != null &&
+      !this.shadowsOf(source.team).some(
+        (shadow) =>
+          dist({ x: shadow.x, y: shadow.y }, target.pos) <=
+          shadow.radius + spell.requiresTargetNearOwnShadow!
+      )
+    ) return false;
     switch (spell.targeting) {
       case 'self':
         return target === source;
@@ -4287,7 +4908,7 @@ export class GameState {
       y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, destination.y)),
     };
     // A reality-break barrier halts a runner at its edge and roots them.
-    const phased = this.edgelordCanPhaseWalk(source);
+    const phased = this.edgelordCanPhaseWalk(source) || this.isPhaseWalking(source);
     const clamp = phased ? { dest: fieldDest, blocked: false } : this.clampToBarriers(source.pos, fieldDest);
     // A Mutivarg crushing field is a wall — you cannot dash through it.
     const mut = phased ? { dest: clamp.dest } : this.clampToMutivargZones(source, source.pos, clamp.dest);
@@ -4313,6 +4934,7 @@ export class GameState {
         source.distMovedThisTurn += step;
         game.updateAttachedScarabs();
         game.log(`${source.name} repositions.`);
+        game.burnPhaseWalkPath(source, origin, dest);
         if (clamp.blocked) {
           const ttl = Math.max(1, game.barrierTtlAt({ x: dest.x, y: dest.y }) + 1);
           addOrExtendStatus(
@@ -4500,8 +5122,8 @@ export class GameState {
               total += Math.max(0, Math.floor((roll + dex + bonus - 10) / 2));
             }
           }
-          // Assassin's Cloak: Dex strikes hit harder while veiled.
-          if (!missed && game.effectiveInvisibility(source) && source.veiledDaggerBonus() > 0) {
+          // Assassin's Cloak: Dex strikes hit harder from any form of stealth.
+          if (!missed && game.isVeiled(source) && source.veiledDaggerBonus() > 0) {
             total = Math.round(total * (1 + source.veiledDaggerBonus()));
           }
           amount = total;

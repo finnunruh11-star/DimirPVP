@@ -18,7 +18,7 @@
 
 import { dmg } from '../core/Damage';
 import { addOrExtendStatus } from '../core/Status';
-import { CONE_DEGREES, FIELD, MOVE_RANGE, RANGE_UNIT } from '../config/constants';
+import { CONE_DEGREES, FIELD, MOVE_RANGE, RANGE_UNIT, SHADOW_RADIUS } from '../config/constants';
 import {
   applyAuraDot,
   applyBlueflareStacks,
@@ -37,6 +37,7 @@ import {
   areaDamage,
   blinkstep,
   coneDamage,
+  critScale,
   dash,
   dealDamage,
   dispelVeil,
@@ -46,6 +47,7 @@ import {
   placeRealityWedge,
   placeShadow,
   placeTotem,
+  placeWall,
   rollDice,
   summonScarabs,
   swapMinds,
@@ -1930,7 +1932,7 @@ registerSpell({
   targeting: 'self',
   dc: 12,
   description:
-    'Use the modified cast roll as range (doubled on a critical). Teleport-dash to each random ally or enemy in range at most once and deal 2d6 Fire, losing 1 range each jump. Every jump has a 1/roll misfire chance that deals 2d4 Fire to you and ends the chain.',
+    'Use the modified cast roll as range (doubled on a critical). Teleport-dash to each random ally or enemy in range at most once and deal 2d6 Fire; the range halves with every jump. Every jump has a 1/roll misfire chance that deals 2d4 Fire to you and ends the chain.',
   visual: { preset: 'nova', color: 0xffe45c, size: 70, speed: 1.4 },
   async cast(ctx) {
     const power = lightningPower(ctx);
@@ -1960,7 +1962,7 @@ registerSpell({
       dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Pierce') + Math.floor(power / 8), 'heat', 'physical'), {
         canMiss: false,
       });
-      range -= R(1);
+      range /= 2;
     }
   },
 });
@@ -2146,7 +2148,7 @@ registerSpell({
   targeting: 'self',
   dc: 14,
   description:
-    'Chain through random unvisited allies or enemies within Lightning-power range. Each jump deals 1d6 Pierce, 1d6 sanity, and applies 1 Blueflare; range falls by 2 each jump.',
+    'Chain through random unvisited allies or enemies within Lightning-power range. Each jump deals 1d6 Pierce, 1d6 sanity, and applies 1 Blueflare; the range is divided by 3 each jump.',
   visual: { preset: 'nova', color: 0x65b8ff, size: 76, speed: 1.6 },
   async cast(ctx) {
     const power = lightningPower(ctx);
@@ -2201,7 +2203,7 @@ registerSpell({
           visited.add(fork);
         }
       }
-      range -= R(2);
+      range /= 3;
     }
   },
 });
@@ -2262,7 +2264,7 @@ registerSpell({
   targeting: 'self',
   dc: 14,
   description:
-    'A stronger Lightning Pierce: chain up to power/3 times (rounded down) into random other allies or enemies with 5 additional range and no misfire, dealing 2d6 Fire each hit. The bolt always prefers a fresh body; when it has to strike the same mage twice in a row that repeat hit only deals 2d3. The caster cannot be hit. Then roll d6, dash that far, and become invisible for 6 minus the roll turns.',
+    'A stronger Lightning Pierce: chain up to power/3 times (rounded down) into random other allies or enemies with 5 additional range and no misfire, dealing 2d6 Fire each hit. The reach halves after every jump. The bolt always prefers a fresh body; when it has to strike the same mage twice in a row that repeat hit only deals 2d3. The caster cannot be hit. Then roll d6, dash that far, and become invisible for 6 minus the roll turns.',
   visual: { preset: 'nova', color: 0xffc95c, size: 78, speed: 1.5 },
   async cast(ctx) {
     const power = lightningPower(ctx);
@@ -2290,7 +2292,7 @@ registerSpell({
         canMiss: false,
       });
       previous = target;
-      range -= R(1);
+      range /= 2;
     }
     if (!ctx.caster.alive) return;
     const finalRoll = rollDice(ctx, '1d6', 'Lightning Veil Pierce escape');
@@ -2321,7 +2323,7 @@ registerSpell({
   targeting: 'self',
   dc: 15,
   description:
-    'Dash roll/3 times, starting at roll/3 range and losing 1 range each dash (critical doubles the starting range and damage). Choose each direction, then roll d6 accuracy with up to 30° error. The animated lightning trail deals 4d6 Fire whenever crossed; touching your own earlier trail stops you there and deals 4d6 Fire to you.',
+    'Dash roll/3 times, starting at roll/3 range and halving the range with every dash (critical doubles the starting range and damage). Choose each direction, then roll d6 accuracy with up to 30° error. The animated lightning trail deals 4d6 Fire whenever crossed; touching your own earlier trail stops you there and deals 4d6 Fire to you.',
   visual: { preset: 'nova', color: 0xff3d24, size: 80, speed: 1.5 },
   async cast(ctx) {
     const power = lightningPower(ctx);
@@ -2330,7 +2332,7 @@ registerSpell({
     const trail: TrailSegment[] = [];
     try {
       for (let step = 0; step < dashCount && ctx.caster.alive; step++) {
-        const currentDashDistance = Math.max(R(1), dashDistance - R(step));
+        const currentDashDistance = Math.max(R(1), dashDistance / 2 ** step);
         let chosen: Vec2 | null;
         if (ctx.requestPoint) {
           chosen = await ctx.requestPoint({
@@ -2674,7 +2676,7 @@ registerSpell({
   targeting: 'self',
   dc: 14,
   description:
-    'Chain through random unvisited allies or enemies within Lightning-power range. Each jump deals 1d6 pierce damage and roots the target (movement stun) for 2 turns; range falls by 2 each jump.',
+    'Chain through random unvisited allies or enemies within Lightning-power range. Each jump deals 1d6 pierce damage and roots the target (movement stun) for 2 turns; the range is divided by 3 each jump.',
   visual: { preset: 'nova', color: 0x8ad1ff, size: 76, speed: 1.6 },
   async cast(ctx) {
     const power = lightningPower(ctx);
@@ -2698,7 +2700,7 @@ registerSpell({
         canMiss: false,
       });
       if (target.alive) applyStun(ctx, target, { duration: 2, type: 'movement' });
-      range -= R(2);
+      range /= 3;
     }
   },
 });
@@ -3611,6 +3613,761 @@ registerSpell({
     });
   },
 });
+
+// ===========================================================================
+//  DIMIR FAITHFUL DLC SPELLS   (set: 'dlc')
+// ===========================================================================
+
+/** Caster-team shadow nearest to `at`, if the team owns one. */
+function ownShadowNear(ctx: EffectContext, at: Vec2): Vec2 | null {
+  const pools = ctx.game.shadowsOf(ctx.caster.team);
+  if (pools.length === 0) return null;
+  let best = pools[0];
+  for (const pool of pools) {
+    if (
+      Math.hypot(pool.x - at.x, pool.y - at.y) < Math.hypot(best.x - at.x, best.y - at.y)
+    ) best = pool;
+  }
+  return { x: best.x, y: best.y };
+}
+
+// ---------------------------------------------------------------------------
+//  BIND + SHADOW + MIND
+//  Chain a mind to the dark: dragged in every turn, then judged on where it
+//  landed — swallowed costs it a word, stranded costs it sanity.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Chain of the Drowned Mind',
+  words: ['bind', 'shadow', 'mind'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Chain one enemy to your nearest shadow for 3 turns (range 12). At the start of each of its turns it is first dragged 5 range toward that pool, and only then judged: swallowed by the dark it forgets a random word or action for the turn, left outside it takes 1d4 sanity. With no shadow of yours on the field, one opens beneath the target.',
+  visual: { preset: 'beam', color: 0x8a6bff, size: 8, speed: 1.1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    let anchor = ownShadowNear(ctx, ctx.target.pos);
+    if (!anchor) {
+      placeShadow(ctx, ctx.target.pos, 4);
+      anchor = { ...ctx.target.pos };
+    }
+    addOrExtendStatus(
+      ctx.target.statuses,
+      {
+        key: 'shadowAnchor',
+        name: 'Chained to the Dark',
+        kind: 'shadowAnchor',
+        duration: critScale(ctx, 3),
+        x: anchor.x,
+        y: anchor.y,
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        ownerTeam: ctx.caster.team,
+        pullPx: R(5),
+      },
+      false
+    );
+    ctx.log(`${ctx.target.name} is chained to the dark.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + SHADOW + SHATTER
+//  Shatter the ground into a sealed cage around a shadow. Nothing crosses —
+//  including you.
+// ---------------------------------------------------------------------------
+const CAGE_SEGMENTS = 8;
+
+registerSpell({
+  name: 'Sealing Cage',
+  words: ['bind', 'shadow', 'shatter'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(10),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'circle', radius: R(4) },
+  description:
+    'Shatter the ground into a sealed ring of reality breaks, radius 4, for 3 rounds — nothing crosses it, including you. Every enemy caught inside takes 2d6 shatter as the walls slam up, and a shadow pool opens at its centre.',
+  visual: { preset: 'burst', color: 0xffd166, size: R(4), speed: 1.2 },
+  noCastSprite: true,
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const centre = { ...ctx.targetPoint };
+    const radius = critScale(ctx, R(4));
+    areaDamage(
+      ctx,
+      centre,
+      radius,
+      dmg(rollDice(ctx, '2d6', 'Sealing Cage'), 'shatter', 'physical'),
+      { canMiss: false }
+    );
+    // Regular polygon of wall segments; each is over-long so the corners overlap.
+    const apothem = radius * Math.cos(Math.PI / CAGE_SEGMENTS);
+    const side = 2 * radius * Math.sin(Math.PI / CAGE_SEGMENTS);
+    for (let i = 0; i < CAGE_SEGMENTS; i++) {
+      const outward = (i / CAGE_SEGMENTS) * Math.PI * 2;
+      placeWall(
+        ctx,
+        { x: centre.x + Math.cos(outward) * apothem, y: centre.y + Math.sin(outward) * apothem },
+        { angle: outward + Math.PI / 2, length: side * 1.25, thickness: 10, ttl: 3 }
+      );
+    }
+    placeShadow(ctx, centre, 4);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + SHADOW + PIERCE
+//  Sink a hook and reel: the victim is dragged in every turn and paves your
+//  shadow network with its own retreat.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Reeling Hook',
+  words: ['bind', 'shadow', 'pierce'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Sink a hook into one enemy (range 15), rooting it for 3 turns. At the start of each of its turns it is reeled 4 range toward you, takes 1d6 pierce, and leaves one of your shadow pools where it comes to rest. Like every forced displacement, being dragged into a wall or the field edge slams it for 2d6 shatter.',
+  visual: { preset: 'beam', color: 0xfffbe0, size: 8, speed: 1.6 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const duration = critScale(ctx, 3);
+    applyStun(ctx, ctx.target, { duration, type: 'movement' });
+    addOrExtendStatus(
+      ctx.target.statuses,
+      {
+        key: 'shadowHook',
+        name: 'Hooked',
+        kind: 'shadowHook',
+        duration,
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        ownerTeam: ctx.caster.team,
+        pullPx: R(4),
+        damageSpec: '1d6',
+        shadowTtl: 3,
+      },
+      false
+    );
+    ctx.log(`${ctx.caster.name}'s hook bites into ${ctx.target.name}.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + SHADOW + CORRODE
+//  The dark grows hungry: every pool you own swallows what stands in it, and
+//  each meal makes it wider and more caustic.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Hungering Dark',
+  words: ['bind', 'shadow', 'corrode'],
+  set: 'dlc',
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 13,
+  description:
+    'For 3 rounds every shadow you own feeds. An enemy starting its turn in one is rooted and swallowed for 1d3 shadow, plus 1d3 corrosive for every enemy that pool has already eaten. Each meal widens the pool by 1 range; a pool may eat twice per round.',
+  visual: { preset: 'nova', color: 0x9be870, size: 64, speed: 1.1 },
+  cast(ctx) {
+    ctx.game.feedingDarks.push({
+      ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+      ownerTeam: ctx.caster.team,
+      roundsLeft: critScale(ctx, 3),
+    });
+    if (ctx.game.shadowsOf(ctx.caster.team).length === 0) placeShadow(ctx, ctx.caster.pos, 4);
+    ctx.log(`${ctx.caster.name}'s shadows begin to hunger.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + MIND + CURSE
+//  Obey and rot; break free and bleed; ride it out and carry the rot anyway.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Sworn Repetition',
+  words: ['bind', 'mind', 'curse'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Compel one enemy to repeat its last action for 4 turns (range 12). Every turn it obeys, the oath deepens by a stack: -1 damage dealt and +1 damage taken, cumulative. The turn it fails to repeat, the oath collects 1d6 sanity per stack and ends. Survive all 4 turns and it costs no blood, but the stacks linger 2 turns longer.',
+  visual: { preset: 'beam', color: 0xff9f6b, size: 7, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const duration = critScale(ctx, 4);
+    applyControl(ctx, ctx.target, { name: 'Compelled', mode: 'repeat', duration });
+    addOrExtendStatus(
+      ctx.target.statuses,
+      {
+        key: 'swornRepetition',
+        name: 'Sworn Repetition',
+        kind: 'swornRepetition',
+        duration,
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        stacks: 0,
+        perStackSpec: 'd6',
+        lingerTurns: 2,
+        lingering: false,
+      },
+      false
+    );
+    ctx.log(`${ctx.target.name} is sworn to repeat itself.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + MIND + PIERCE
+//  Three dashes sew a thread through everyone you clip; afterwards they all
+//  share every wound any of them takes.
+// ---------------------------------------------------------------------------
+const THREAD_DASHES = 3;
+/** Slack around the dash line so a body clipped in passing still counts. */
+const THREAD_CLIP = 12;
+
+registerSpell({
+  name: 'Threaded Run',
+  words: ['bind', 'mind', 'pierce'],
+  set: 'dlc',
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 13,
+  description:
+    'Dash three times, 5 range each. Every enemy you clip is threaded and rooted for 3 turns and takes 1d3 mill. While the thread holds, any wound dealt to one threaded enemy echoes to all the others for half its value as mill.',
+  visual: { preset: 'nova', color: 0xffb0e0, size: 58, speed: 1.6 },
+  async cast(ctx) {
+    const threaded = new Set<Mage>();
+    for (let step = 0; step < THREAD_DASHES && ctx.caster.alive; step++) {
+      const chosen = await ctx.requestPoint?.({
+        maxRange: R(5),
+        origin: ctx.caster.pos,
+        prompt: `Bind Mind Pierce — dash ${step + 1}/${THREAD_DASHES} (Esc to stop)`,
+      });
+      if (!chosen) break;
+      const from = { ...ctx.caster.pos };
+      dash(ctx, ctx.caster, { toPoint: chosen, distance: R(5) });
+      for (const foe of ctx.game.mages) {
+        if (foe === ctx.caster || !foe.alive || foe.team === ctx.caster.team) continue;
+        if (threaded.has(foe)) continue;
+        if (pointSegmentDistance(foe.pos, { from, to: ctx.caster.pos }) > foe.bodyRadius() + THREAD_CLIP) continue;
+        threaded.add(foe);
+        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Threaded Run'), 'shadow', 'sanity'), {
+          canMiss: false,
+        });
+        if (!foe.alive) continue;
+        applyStun(ctx, foe, { duration: 3, type: 'movement' });
+        addOrExtendStatus(
+          foe.statuses,
+          {
+            key: 'threadMark',
+            name: 'Threaded',
+            kind: 'threadMark',
+            duration: critScale(ctx, 3),
+            ownerTeam: ctx.caster.team,
+            sharePct: 0.5,
+          },
+          false
+        );
+      }
+      await ctx.resolveImpacts?.();
+    }
+    ctx.log(
+      threaded.size > 0
+        ? `${ctx.caster.name} sews ${threaded.size} ${threaded.size === 1 ? 'body' : 'bodies'} together.`
+        : `${ctx.caster.name}'s thread catches nothing.`
+    );
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + VEIL + CORRODE
+//  Stop existing. Drift through the world and dissolve whatever you pass.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Dissolve Into Dark',
+  words: ['shadow', 'veil', 'corrode'],
+  set: 'dlc',
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 13,
+  description:
+    'Until the start of your next turn you stop existing: nothing can target, damage or afflict you, and no debuff or damage-over-time reaches you. You may walk — through walls, zones and bodies alike — but do nothing else. Every enemy you drift through takes 1d6 corrosive. Phasing back in skips your upkeep, though your statuses still age. A shadow opens where you dissolve.',
+  visual: { preset: 'nova', color: 0x9be870, size: 60, speed: 1.2 },
+  cast(ctx) {
+    placeShadow(ctx, ctx.caster.pos, 4);
+    addOrExtendStatus(
+      ctx.caster.statuses,
+      {
+        key: 'phaseOut',
+        name: 'Dissolved',
+        kind: 'phaseOut',
+        duration: 1,
+        mode: 'self',
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        ownerTeam: ctx.caster.team,
+        passThroughSpec: '1d6',
+      },
+      false
+    );
+    ctx.log(`${ctx.caster.name} dissolves into the dark.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + VEIL + CURSE
+//  Banish a threat into the dark — then let the dark spit it back out.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Banish Into Dark',
+  words: ['shadow', 'veil', 'curse'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Phase one enemy out of the world until the start of its next turn (range 15). It cannot be targeted, damaged or affected by anything, and it can do nothing but walk — its items are inert and its upkeep is skipped, though its statuses still age. When the dark releases it, every enemy within 4 range of it, itself included, takes 2d6 shadow.',
+  visual: { preset: 'beam', color: 0xb98bff, size: 9, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    addOrExtendStatus(
+      ctx.target.statuses,
+      {
+        key: 'phaseOut',
+        name: 'Banished',
+        kind: 'phaseOut',
+        duration: 1,
+        mode: 'banished',
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        ownerTeam: ctx.caster.team,
+        burstSpec: '2d6',
+        burstRadius: R(4),
+      },
+      false
+    );
+    ctx.log(`${ctx.target.name} is swallowed out of the world.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + SHATTER + PIERCE
+//  Spend your own board as ammunition: every pool you break becomes a spike.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Impale Through Dark',
+  words: ['shadow', 'shatter', 'pierce'],
+  set: 'dlc',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Choose an enemy at any range, then choose how many of your own shadow pools to shatter. Each pool you spend launches a spike for 1d6 pierce and 1d6 shatter, rolled separately, and is consumed. Spend nothing and the spell does nothing.',
+  visual: { preset: 'beam', color: 0xffd166, size: 9, speed: 1.8 },
+  async cast(ctx) {
+    if (!ctx.target) return;
+    const foe = ctx.target;
+    let spent = 0;
+    // Each pick names one pool to shatter; Esc stops and keeps the rest.
+    for (let i = 0; i < 24 && foe.alive; i++) {
+      const owned = ctx.game.shadowsOf(ctx.caster.team);
+      if (owned.length === 0) break;
+      const chosen = await ctx.requestPoint?.({
+        maxRange: Math.hypot(FIELD.w, FIELD.h),
+        origin: ctx.caster.pos,
+        prompt: `Shadow Shatter Pierce — shatter a pool (${owned.length} left, Esc to stop)`,
+      });
+      if (!chosen) break;
+      const pool = ctx.game.shadows.find(
+        (shadow) =>
+          shadow.owner === ctx.caster.team &&
+          Math.hypot(shadow.x - chosen.x, shadow.y - chosen.y) <= shadow.radius
+      );
+      if (!pool) {
+        ctx.log(`${ctx.caster.name} grasps at dark that is not theirs.`);
+        break;
+      }
+      ctx.game.shadows = ctx.game.shadows.filter((shadow) => shadow !== pool);
+      spent += 1;
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Shadow spike'), 'pierce', 'physical'), {
+        canMiss: false,
+      });
+      if (foe.alive) {
+        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Shadow spike'), 'shatter', 'physical'), {
+          canMiss: false,
+        });
+      }
+      await ctx.resolveImpacts?.();
+    }
+    ctx.log(
+      spent > 0
+        ? `${ctx.caster.name} shatters ${spent} pool${spent === 1 ? '' : 's'} into ${foe.name}.`
+        : `${ctx.caster.name} keeps the dark intact.`
+    );
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + CURSE + PIERCE
+//  A wound that opens into a shadow and travels with its victim.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Walking Wound',
+  words: ['shadow', 'curse', 'pierce'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'A ranging shot. Beyond 8 range the wound is shallow: 2d6 pierce and a 1-range shade biting 1d3 for 2 turns. Inside 5 range you are too close to aim: the same shade for 3 turns. Struck from the sweet spot at 5–8 range it is 3d6 pierce and a 2-range shade biting 1d6 for 5 turns. The shade is one of YOUR pools and travels with its victim — reach, teleports and every spell that reads your pools find it.',
+  visual: { preset: 'projectile', color: 0x8a6bff, size: 10, speed: 1.8 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const units = Math.hypot(ctx.target.x - ctx.caster.x, ctx.target.y - ctx.caster.y) / RANGE_UNIT;
+    const sweet = units >= 5 && units <= 8;
+    dealDamage(
+      ctx,
+      ctx.target,
+      dmg(rollDice(ctx, sweet ? '3d6' : '2d6', 'Walking Wound'), 'pierce', 'physical')
+    );
+    if (!ctx.target.alive) return;
+    const duration = sweet ? 5 : units > 8 ? 2 : 3;
+    addOrExtendStatus(
+      ctx.target.statuses,
+      {
+        key: 'woundShade',
+        name: 'Walking Wound',
+        kind: 'woundShade',
+        duration: critScale(ctx, duration),
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        ownerTeam: ctx.caster.team,
+        radius: sweet ? R(2) : R(1),
+        damageSpec: sweet ? '1d6' : '1d3',
+      },
+      false
+    );
+    ctx.log(
+      sweet
+        ? `${ctx.caster.name} finds the range — the wound tears wide open.`
+        : `${ctx.caster.name}'s shot lands ${units > 8 ? 'long' : 'short'}.`
+    );
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  VEIL + MIND + CURSE
+//  Erase the difference between friend and foe, and the memory of where each
+//  of them was standing.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Friend From Foe',
+  words: ['veil', 'mind', 'curse'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'For 3 turns the victim cannot tell friend from foe: every entity reads as hostile to it, its areas and cones spare nobody, and each target it picks is chosen at random instead of by its controller. It also bleeds 1d4 sanity each turn. You slip into a partial veil.',
+  visual: { preset: 'beam', color: 0xff8be0, size: 8, speed: 1.1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    addOrExtendStatus(
+      ctx.target.statuses,
+      {
+        key: 'foeBlind',
+        name: 'Friend From Foe',
+        kind: 'foeBlind',
+        duration: critScale(ctx, 3),
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        damageSpec: '1d4',
+      },
+      false
+    );
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+    ctx.log(`${ctx.target.name} can no longer tell who is who.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  MIND + SHATTER + CURSE
+//  A fuse the victim shapes: rush it small, or stall it and pray.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Swelling Fuse',
+  words: ['mind', 'shatter', 'curse'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Set a fuse in one enemy for 10 of its turns (range 15). It starts at 1d6 sanity and swells by 1d6 every turn it survives. Every action the victim takes — main, bonus or reaction — burns the fuse down one turn early, so it can rush a small blast now or stall for a far larger one and hope the fight ends first.',
+  visual: { preset: 'beam', color: 0xffd166, size: 8, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    addOrExtendStatus(
+      ctx.target.statuses,
+      {
+        key: 'mindFuse',
+        name: 'Swelling Fuse',
+        kind: 'mindFuse',
+        duration: critScale(ctx, 10),
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        baseSpec: '1d6',
+        growthSpec: '1d6',
+        ticks: 0,
+      },
+      false
+    );
+    ctx.log(`A fuse begins to swell inside ${ctx.target.name}.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  MIND + CURSE + PIERCE
+//  A needle that punishes reacting instead of forbidding it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Remembering Needle',
+  words: ['mind', 'curse', 'pierce'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Deal 2d6 mill and pin a needle for 4 turns (range 12). Every time the victim takes a reaction the needle twists for another 2d6 mill — the reaction still resolves, it simply costs.',
+  visual: { preset: 'projectile', color: 0xff7bb0, size: 10, speed: 1.9 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Remembering Needle'), 'shadow', 'sanity'));
+    if (!ctx.target.alive) return;
+    addOrExtendStatus(
+      ctx.target.statuses,
+      {
+        key: 'reactionNeedle',
+        name: 'Remembering Needle',
+        kind: 'reactionNeedle',
+        duration: critScale(ctx, 4),
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        damageSpec: '2d6',
+      },
+      false
+    );
+    ctx.log(`A needle settles into ${ctx.target.name}'s mind.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + MIND + SHATTER
+//  Break open a lasting pool; everything caught in the opening is rattled.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Breaking Dark',
+  words: ['shadow', 'mind', 'shatter'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'circle', radius: SHADOW_RADIUS },
+  description:
+    'Break a shadow pool open at a point within range 12; it lasts 5 turns. Every enemy caught in the opening takes 1d6 shatter and 1d3 mill and is fully stunned for 1 turn.',
+  visual: { preset: 'burst', color: 0xffd166, size: SHADOW_RADIUS, speed: 1.2 },
+  noCastSprite: true,
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    placeShadow(ctx, ctx.targetPoint, 5);
+    const shatter = rollDice(ctx, '1d6', 'Breaking Dark');
+    const mill = rollDice(ctx, '1d3', 'Breaking Dark mill');
+    for (const foe of areaDamage(
+      ctx,
+      ctx.targetPoint,
+      SHADOW_RADIUS,
+      dmg(shatter, 'shatter', 'physical'),
+      { canMiss: false }
+    )) {
+      if (!foe.alive) continue;
+      dealDamage(ctx, foe, dmg(mill, 'shadow', 'sanity'), { canMiss: false, aoe: true });
+      if (foe.alive) applyStun(ctx, foe, { duration: 1, type: 'full' });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + MIND + CORRODE
+//  A single d20 split between body and mind; whichever half bites deep enough
+//  leaves its own mark.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Divided Rot',
+  words: ['shadow', 'mind', 'corrode'],
+  set: 'dlc',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'enemy',
+  dc: 13,
+  requiresTargetNearOwnShadow: R(5),
+  description:
+    'Choose an enemy standing within range 5 of any shadow of yours, however far away it is. Roll 1d20: it takes that much corrosive damage and 20 minus that much as mill. If 6 or more corrosion lands after mitigation it is slowed 50% for 3 turns; if 6 or more mill lands after mitigation it is rooted for 1 turn.',
+  visual: { preset: 'beam', color: 0x9be870, size: 9, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const split = rollDice(ctx, '1d20', 'Divided Rot');
+    const rot = dealDamage(ctx, ctx.target, dmg(split, 'corrosive', 'physical'));
+    if (!ctx.target.alive) return;
+    const mill = dealDamage(ctx, ctx.target, dmg(20 - split, 'shadow', 'sanity'));
+    if (!ctx.target.alive) return;
+    if (rot >= 6) {
+      applyDebuff(ctx, ctx.target, {
+        name: 'Divided Rot',
+        duration: 3,
+        mods: { moveRange: -Math.round(MOVE_RANGE * 0.5) },
+      });
+    }
+    if (mill >= 6) applyStun(ctx, ctx.target, { duration: 1, type: 'movement' });
+    ctx.log(`The rot divides ${rot} into the body and ${mill} into the mind.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + MIND + CURSE
+//  Nail a pool to one enemy, then make every pool you own a rotting mire.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Standing Rot',
+  words: ['shadow', 'mind', 'curse'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Nail a shadow pool to one enemy for 5 turns — it travels with the victim and counts as one of yours. For those 5 rounds every shadow you own rots: any enemy starting its turn in one takes 1d3 mill and 1d6 corrosive and is slowed 75%.',
+  visual: { preset: 'beam', color: 0x8a6bff, size: 9, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const duration = critScale(ctx, 5);
+    addOrExtendStatus(
+      ctx.target.statuses,
+      {
+        key: 'woundShade',
+        name: 'Nailed Dark',
+        kind: 'woundShade',
+        duration,
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        ownerTeam: ctx.caster.team,
+        radius: SHADOW_RADIUS,
+      },
+      false
+    );
+    ctx.game.rottingDarks.push({
+      ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+      ownerTeam: ctx.caster.team,
+      roundsLeft: duration,
+    });
+    ctx.log(`${ctx.caster.name} nails the dark to ${ctx.target.name} and it begins to rot.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + MIND + CORRODE
+//  A shackle that eats whatever the victim reaches for.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Memory Shackle',
+  words: ['bind', 'mind', 'corrode'],
+  set: 'dlc',
+  actionType: 'main',
+  range: R(10),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Root one enemy for 3 turns and deal 1d6 corrosive sanity (range 10). While the shackle holds, everything it declares is eaten: a weapon strike makes it forget how to attack, and a spell makes it forget every word that spell used, for 3 turns each.',
+  visual: { preset: 'beam', color: 0xc6f08a, size: 7, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Memory Shackle'), 'corrosive', 'sanity'));
+    if (!ctx.target.alive) return;
+    applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
+    addOrExtendStatus(
+      ctx.target.statuses,
+      {
+        key: 'memoryShackle',
+        name: 'Memory Shackle',
+        kind: 'memoryShackle',
+        duration: critScale(ctx, 3),
+        forgetDuration: 3,
+      },
+      false
+    );
+    ctx.log(`${ctx.target.name}'s memory begins to dissolve.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + VEIL + PIERCE
+//  Step out of the dark, strike once, step back into it, and vanish again.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Shadowstep Assassination',
+  words: ['shadow', 'veil', 'pierce'],
+  set: 'dlc',
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 13,
+  description:
+    'Optionally step to any point inside a shadow, then run the nearest enemy within range 5 through for 3d6 pierce. Afterwards step back to where you started or to any point inside a shadow you choose, and vanish for 2 turns.',
+  visual: { preset: 'nova', color: 0xb98bff, size: 56, speed: 1.4 },
+  async cast(ctx) {
+    const origin = { ...ctx.caster.pos };
+    const fieldDiag = Math.hypot(FIELD.w, FIELD.h);
+    const stepIntoShadow = async (prompt: string): Promise<void> => {
+      const chosen = await ctx.requestPoint?.({
+        maxRange: fieldDiag,
+        origin: ctx.caster.pos,
+        prompt,
+      });
+      if (!chosen) return;
+      if (!ctx.game.shadowAt(chosen)) {
+        ctx.log(`${ctx.caster.name} reaches for dark that is not there.`);
+        return;
+      }
+      teleport(ctx, ctx.caster, chosen);
+    };
+
+    await stepIntoShadow('Shadow Veil Pierce — step into a shadow (Esc to stay)');
+    const foe = enemyNear(ctx, ctx.caster.pos, R(5));
+    if (foe) {
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '3d6', 'Shadow Veil Pierce'), 'pierce', 'physical'));
+      await ctx.resolveImpacts?.();
+    } else {
+      ctx.log(`${ctx.caster.name} finds nobody within reach of the blade.`);
+    }
+    if (!ctx.caster.alive) return;
+
+    const back = await ctx.requestPoint?.({
+      maxRange: fieldDiag,
+      origin: ctx.caster.pos,
+      prompt: 'Shadow Veil Pierce — withdraw to a shadow (Esc to return where you began)',
+    });
+    teleport(ctx, ctx.caster, back && ctx.game.shadowAt(back) ? back : origin);
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+  },
+});
+
 
 // ---------------------------------------------------------------------------
 //  SHATTER + CORRODE + CURSE   —   Blightburst

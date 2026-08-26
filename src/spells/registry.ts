@@ -1,5 +1,5 @@
 import type { WordId } from '../core/Words';
-import { comboKey, isClassSpell, WORDS } from '../core/Words';
+import { comboKey, isClassSpell, spellDisplayName, WORDS } from '../core/Words';
 import type { Spell } from './Spell';
 import type { ItemSet } from '../core/Items';
 import type { MageClass } from '../core/Classes';
@@ -50,6 +50,8 @@ export function registerSpell(spell: Omit<Spell, 'id'> & { id?: string }): Spell
   const id = spell.id ?? comboKey(spell.words);
   const full: Spell = {
     ...spell,
+    codename: spell.name,
+    name: spellDisplayName(spell.words),
     dc: isClassSpell(spell.words) ? classSpellDc(spell.words, spell.dc) : spell.dc,
     id,
   } as Spell;
@@ -73,6 +75,8 @@ function buildClassSpell(words: WordId[], cls: MageClass, variant: ClassSpellVar
   const key = comboKey(words);
   return {
     ...variant,
+    codename: variant.name,
+    name: spellDisplayName(words),
     dc: classSpellDc(words, variant.dc),
     words,
     id: `${key}@${cls}`,

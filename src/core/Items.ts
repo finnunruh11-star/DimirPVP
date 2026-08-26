@@ -63,6 +63,12 @@ export type ItemId =
   | 'lungingEdge'
   | 'warHammer'
   | 'runicMaul'
+  // ---- Dimir Faithful DLC (wards & cleansing) ----
+  | 'oathboundMail'
+  | 'faithkeepersSigil'
+  | 'wardingBeads'
+  | 'creedOfTheUnyielding'
+  | 'chaliceOfClearWater'
   | 'arrow'
   | 'manaPotion'
   | 'healthPotion'
@@ -292,6 +298,16 @@ export interface ItemDef {
   manaDiscount?: number;
   /** Witch wand: debuffs you apply last twice as long. */
   doubleDebuffs?: boolean;
+  /**
+   * Debuff RESISTANCE: multiplies the duration of every affliction landed on the
+   * wearer (debuff / DoT / aura-DoT / stun / control). Stacks multiplicatively;
+   * a scaled duration never drops below one cycle.
+   */
+  debuffDurationMult?: number;
+  /** Debuff IMMUNITY: every status-shaped effect (harmful or not) slides off. */
+  debuffImmunity?: boolean;
+  /** Grants the Cleanse bonus action, stripping the wearer's afflictions for this much mana. */
+  cleanseManaCost?: number;
   /** Consumable potion, drunk as a bonus action. */
   potion?: 'mana' | 'health' | 'word';
   /** Arrows: stack as a numeric count and fuel bows. */
@@ -512,7 +528,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'Dex attack (shadow mill): floor((d20 + Dex - 10) / 2). While held in a shadow, gain a half veil for 1 mana per turn (about 5 seconds). Weapon Action (bonus): while standing in a shadow, point at any shadow to teleport there. The toll is 8 mana and never requires enough mana; each unpaid mana silently consumes a random permanent stat point and can kill through max-HP loss.',
+      'Dex attack (shadow mill): floor((d20 + Dex - 10) / 2). While held in a shadow you vanish utterly for 1 mana per turn: untargetable at any range, unshaken by dark light, and no attack, proximity or dispel can strip it — you stay hidden even while cutting down someone beside you. Weapon Action (bonus): while standing in a shadow, point at any shadow to teleport there. The toll is 8 mana and never requires enough mana; each unpaid mana silently consumes a random permanent stat point and can kill through max-HP loss.',
     weaponAbility: 'shadowDaggerTeleport',
     shadowDagger: { teleportManaCost: 8, stealthManaPerRound: 1 },
     weapon: {
@@ -548,6 +564,71 @@ export const ITEM_DEFS: ItemDef[] = [
       damageType: 'shatter',
     },
     shield: { blockPct: 0.67, armorFlat: 2, magicFlat: 2, bashMult: 0.5 },
+  },
+  // ---- Dimir Faithful DLC: wards, immunities & cleansing -------------------
+  {
+    id: 'creedOfTheUnyielding',
+    name: 'Creed of the Unyielding',
+    slot: 'torso',
+    set: 'dlc',
+    rarity: 'mythical',
+    cost: g(0),
+    weight: 6,
+    blurb:
+      'Nothing may be written upon the faithful. You are immune to every affliction — debuffs, damage-over-time, stuns, roots, compulsions, Fire, Blueflare and Soul Rend all slide off. The creed is blind, so stat blessings written the same way (Emboldened and its kin) fail on you too. -20% max HP and max sanity.',
+    debuffImmunity: true,
+    hpMult: 0.8,
+    sanityMult: 0.8,
+  },
+  {
+    id: 'faithkeepersSigil',
+    name: "Faithkeeper's Sigil",
+    slot: 'accessory',
+    set: 'dlc',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 1,
+    blurb:
+      'Immune to shadow damage, and afflictions land on you for half as long. The sigil burns bright enough to be seen: you take double light damage.',
+    resist: { immune: ['shadow'], weak: ['light'] },
+    debuffDurationMult: 0.5,
+  },
+  {
+    id: 'oathboundMail',
+    name: 'Oathbound Mail',
+    slot: 'torso',
+    set: 'dlc',
+    rarity: 'epic',
+    cost: g(0),
+    weight: 16,
+    blurb:
+      '+2 physical armour and halved pierce, slashing and shatter damage — but corrosive damage lands doubled and the weight of the oath costs you 25% movement.',
+    armor: { flat: 2 },
+    resist: { resist: ['pierce', 'slashing', 'shatter'], weak: ['corrosive'] },
+    moveMult: 0.75,
+  },
+  {
+    id: 'chaliceOfClearWater',
+    name: 'Chalice of Clear Water',
+    slot: 'utility',
+    set: 'dlc',
+    rarity: 'epic',
+    cost: g(0),
+    weight: 2,
+    blurb:
+      'Cleanse (bonus action): pay 6 mana to wash away every affliction on yourself — debuffs, damage-over-time, stuns, compulsions, Fire, Blueflare and Soul Rend. Your veils are left untouched. Never runs dry.',
+    cleanseManaCost: 6,
+  },
+  {
+    id: 'wardingBeads',
+    name: 'Warding Beads',
+    slot: 'accessory',
+    set: 'dlc',
+    rarity: 'rare',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Afflictions landed on you last 25% fewer cycles (never below one).',
+    debuffDurationMult: 0.75,
   },
   // ---- Unreal -------------------------------------------------------------
   {
@@ -931,7 +1012,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'Cursed and permanently binding. Shake as a bonus action to alternate between its dormant prison and a 15cm dark light. Activating costs 4 mana and gives every unit in range 3 Soul Rend. Deactivating pulls nearby units inward and captures afflicted, critically wounded creatures within 6cm. Captives suffer 10 true HP and 5 true mill each turn for 2 mana; failing that payment kills the bearer and releases them. Dormant: -33% movement, and a loaded lantern can be thrown for 1d20 dark/cold plus 1d10 mill in a 5cm blast within Strength cm by spending the entire turn. Active: ordinary movement passes through solid objects, darkness reveals all but Shadow Veil, and each weapon attack pulls units inward before dealing 2 dark damage to all in the light, including the bearer.',
+      'Cursed and permanently binding. Shake as a bonus action to alternate between its dormant prison and a 15cm dark light. That dark light counts as one of your shadows for every Shadow effect — casting reach, shadow teleports and spells that read your pools all treat it as one. Activating costs 4 mana and gives every unit in range 3 Soul Rend — an affliction that tears 1d3 true health and 1d3 true mill per stack at the bearer’s turn start before losing one stack. Deactivating pulls nearby units inward and captures afflicted, critically wounded creatures within 6cm. Captives suffer 10 true HP and 5 true mill each turn for 2 mana; failing that payment kills the bearer and releases them. Dormant: -33% movement, and a loaded lantern can be thrown for 1d20 dark/cold plus 1d10 mill in a 5cm blast within Strength cm by spending the entire turn. Active: ordinary movement passes through solid objects, darkness reveals all but Shadow Veil, and each weapon attack pulls units inward before dealing 2 dark damage to all in the light, including the bearer.',
     resist: { weak: ['light'] },
     edgelordLantern: true,
     cursed: true,
@@ -1104,7 +1185,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'unreal',
     cost: g(0),
     weight: 2,
-    blurb: '+50% Dex-attack damage while you are veiled (invisible).',
+    blurb: '+50% Dex-attack damage while you are hidden by any form of stealth — a veil, a Shadow Veil in shadow, or the Dagger of Shadow.',
     veiledDaggerBonus: 0.5,
   },
   {

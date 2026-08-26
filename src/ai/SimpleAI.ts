@@ -2,6 +2,7 @@ import type { GameState } from '../core/GameState';
 import type { Mage } from '../core/Mage';
 import type { Spell } from '../spells/Spell';
 import { allSpells } from '../spells/registry';
+import { comboKey } from '../core/Words';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type { Scarab } from '../core/Scarab';
 import type { StackItem } from '../core/Stack';
@@ -399,7 +400,8 @@ export class SimpleAI {
   }
 
   private isWeaponEnchant(spell: Spell): boolean {
-    return spell.name === 'Fire Mind' || spell.name === 'Lightning Mind' || spell.name === 'Lightning Mind Fire';
+    const key = comboKey(spell.words);
+    return key === 'fire+mind' || key === 'lightning+mind' || key === 'fire+lightning+mind';
   }
 
   private bestEnchantTarget(spell: Spell): Mage | null {
@@ -421,7 +423,8 @@ export class SimpleAI {
   }
 
   private isIndiscriminateStorm(spell: Spell): boolean {
-    return spell.name === 'Lightning Veil' || spell.name === 'Fire Lightning Veil' || spell.name === 'Lightning Mind Veil';
+    const key = comboKey(spell.words);
+    return key === 'lightning+veil' || key === 'fire+lightning+veil' || key === 'lightning+mind+veil';
   }
 
   private stormIsWorthRisk(): boolean {

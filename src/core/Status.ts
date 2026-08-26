@@ -25,6 +25,16 @@ export type StatusKind =
   | 'blueflare'
   | 'soulRend'
   | 'reap'
+  | 'shadowAnchor'
+  | 'memoryShackle'
+  | 'shadowHook'
+  | 'phaseOut'
+  | 'threadMark'
+  | 'swornRepetition'
+  | 'woundShade'
+  | 'mindFuse'
+  | 'reactionNeedle'
+  | 'foeBlind'
   | 'deathCurse';
 export type StunType = 'main' | 'movement' | 'full';
 export type InvisMode = 'full' | 'partial';
@@ -151,7 +161,7 @@ export interface BlueflareStatus extends BaseStatus {
   decayNext: boolean;
 }
 
-/** Permanent true-damage affliction applied by the Edgelord Lantern. */
+/** Stacking true-damage affliction applied by the Edgelord Lantern; one stack fades per tick. */
 export interface SoulRendStatus extends BaseStatus {
   kind: 'soulRend';
   stacks: number;
@@ -214,6 +224,122 @@ export interface ShadowTrailStatus extends BaseStatus {
 export interface ForgetStatus extends BaseStatus {
   kind: 'forget';
   forgotten: string[];
+}
+
+/**
+ * Bind Shadow Mind: the bearer is chained to a point. At each of its turn starts
+ * it is dragged `pullPx` toward the anchor; only then is it checked against the
+ * anchoring team's shadows — inside it forgets a word, outside the chain bites.
+ */
+export interface ShadowAnchorStatus extends BaseStatus {
+  kind: 'shadowAnchor';
+  x: number;
+  y: number;
+  ownerIndex: number;
+  ownerTeam: number;
+  pullPx: number;
+}
+
+/**
+ * Bind Mind Corrode: while the shackle holds, anything the bearer declares is
+ * eaten by it — a weapon strike forgets 'melee', a spell forgets every word it
+ * used. `forgetDuration` is how long each theft lasts.
+ */
+export interface MemoryShackleStatus extends BaseStatus {
+  kind: 'memoryShackle';
+  forgetDuration: number;
+}
+
+/**
+ * Bind Shadow Pierce: a hook sunk into the bearer. Each of its turns it is
+ * reeled `pullPx` toward the hooker, bleeds `damageSpec`, and leaves one of the
+ * hooker's shadows where it comes to rest.
+ */
+export interface ShadowHookStatus extends BaseStatus {
+  kind: 'shadowHook';
+  ownerIndex: number;
+  ownerTeam: number;
+  pullPx: number;
+  damageSpec: string;
+  shadowTtl: number;
+}
+
+/**
+ * Phased into the dark: the bearer does not exist. Nothing may target, damage or
+ * afflict it, and it may do nothing but walk. 'self' phasing also lets the bearer
+ * pass through every obstacle; 'banished' detonates around the bearer on release.
+ */
+export interface PhaseOutStatus extends BaseStatus {
+  kind: 'phaseOut';
+  mode: 'self' | 'banished';
+  ownerIndex: number;
+  ownerTeam: number;
+  /** 'self': dealt to any enemy the bearer walks through. */
+  passThroughSpec?: string;
+  /** 'banished': dealt to every hostile within `burstRadius` when the phase ends. */
+  burstSpec?: string;
+  burstRadius?: number;
+}
+
+/** Bind Mind Pierce: threaded victims share a fraction of every wound. */
+export interface ThreadMarkStatus extends BaseStatus {
+  kind: 'threadMark';
+  ownerTeam: number;
+  /** Fraction of a threaded wound echoed to the other marks, as mill. */
+  sharePct: number;
+}
+
+/**
+ * Bind Mind Curse: obeying the compulsion deepens the rot, breaking it detonates.
+ * Riding it out to the end costs no blood but the stacks linger.
+ */
+export interface SwornRepetitionStatus extends BaseStatus {
+  kind: 'swornRepetition';
+  ownerIndex: number;
+  stacks: number;
+  perStackSpec: string;
+  lingerTurns: number;
+  /** Set once the debuff has outlived the compulsion; it only decays from here. */
+  lingering: boolean;
+}
+
+/** Shadow Curse Pierce: a shadow that rides the bearer and counts as the owner's. */
+export interface WoundShadeStatus extends BaseStatus {
+  kind: 'woundShade';
+  ownerIndex: number;
+  ownerTeam: number;
+  radius: number;
+  /** Omit for a shade that only projects a pool and never bites on its own. */
+  damageSpec?: string;
+}
+
+/**
+ * Mind Shatter Curse: a fuse that swells every turn it survives. Acting burns it
+ * down faster, so the victim chooses between a small early blast and a huge late one.
+ */
+export interface MindFuseStatus extends BaseStatus {
+  kind: 'mindFuse';
+  ownerIndex: number;
+  baseSpec: string;
+  growthSpec: string;
+  ticks: number;
+}
+
+/** Mind Curse Pierce: every reaction the bearer takes twists the needle. */
+export interface ReactionNeedleStatus extends BaseStatus {
+  kind: 'reactionNeedle';
+  ownerIndex: number;
+  damageSpec: string;
+}
+
+/**
+ * Veil Mind Curse: the bearer can no longer tell friend from foe. Every entity
+ * reads as hostile to it and its targets are chosen at random.
+ */
+export interface FoeBlindStatus extends BaseStatus {
+  kind: 'foeBlind';
+  ownerIndex: number;
+  damageSpec: string;
 }
 
 /**
@@ -293,6 +419,16 @@ export type Status =
   | BlueflareStatus
   | SoulRendStatus
   | ReapStatus
+  | ShadowAnchorStatus
+  | MemoryShackleStatus
+  | ShadowHookStatus
+  | PhaseOutStatus
+  | ThreadMarkStatus
+  | SwornRepetitionStatus
+  | WoundShadeStatus
+  | MindFuseStatus
+  | ReactionNeedleStatus
+  | FoeBlindStatus
   | DeathCurseStatus;
 
 /**

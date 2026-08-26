@@ -605,6 +605,7 @@ type TurnCommand =
   | { t: 'command'; summon: number }
   | { t: 'uncommand' }
   | { t: 'mantle-bind' }
+  | { t: 'cleanse' }
   | { t: 'raid-begin' }
   | { t: 'raid-restore'; kind: RaidRestoreKind }
   | { t: 'end' };
@@ -677,6 +678,7 @@ const ACTION_GROUPS: { title: string; ids: string[] }[] = [
       'thunder',
       'deaths-angel-wings',
       'mantle-bind',
+      'cleanse',
       'edgelord-shake',
       'edgelord-throw',
     ],
@@ -5043,7 +5045,10 @@ export class GameScene extends Phaser.Scene {
         await runAction(this.gs.makeMoveItem(me, { x: cmd.x, y: cmd.y }));
         break;
       case 'melee': {
-        const target = this.mageBySeat(cmd.target);
+        const declared = this.mageBySeat(cmd.target);
+        const target = this.gs.isFoeBlind(me)
+          ? this.gs.randomFoeBlindTarget(me, this.gs.mages.filter((other) => this.gs.canMelee(me, other))) ?? declared
+          : declared;
         spend(me.attackIsBonusAction() ? 'bonus' : 'main');
         await runAction(this.gs.makeMeleeItem(me, target));
         break;
@@ -5062,6 +5067,11 @@ export class GameScene extends Phaser.Scene {
             : cmd.target != null
             ? this.mageBySeat(cmd.target)
             : null;
+        // Foe-blind: the caster no longer decides who the spell finds.
+        const aimed =
+          target && spell.targeting !== 'self' && this.gs.isFoeBlind(me)
+            ? this.gs.randomFoeBlindTarget(me, this.gs.validSpellTargets(spell, me)) ?? target
+            : target;
         const point = cmd.x != null && cmd.y != null ? { x: cmd.x, y: cmd.y } : null;
         const point2 = cmd.x2 != null && cmd.y2 != null ? { x: cmd.x2, y: cmd.y2 } : null;
         if (cmd.angle != null) me.wallAngle = cmd.angle;
@@ -5070,7 +5080,7 @@ export class GameScene extends Phaser.Scene {
         else this.payForSpell(me, spell, freeBonus, mods);
         // Channel and Delay hold the spell instead of resolving it now.
         if (mods.includes('channel')) {
-          me.channeledCast = { spell, target, point, point2, modifiers: mods };
+          me.channeledCast = { spell, target: aimed, point, point2, modifiers: mods };
           me.actions = { move: 0, main: 0, bonus: 0 };
           this.gs.log(
             `${me.name} begins channelling ${spell.name} — they can do nothing else until it breaks free.`
@@ -5078,14 +5088,14 @@ export class GameScene extends Phaser.Scene {
           break;
         }
         if (mods.includes('delay')) {
-          me.delayedCast = { spell, target, point, point2, modifiers: mods };
+          me.delayedCast = { spell, target: aimed, point, point2, modifiers: mods };
           this.gs.log(`${me.name} delays ${spell.name} until their next turn.`);
           break;
         }
-        const spellItem = this.gs.makeSpellItem(me, spell, target, point, undefined, point2, mods);
+        const spellItem = this.gs.makeSpellItem(me, spell, aimed, point, undefined, point2, mods);
         const rodTarget =
-          me.hands.includes('mutivargRod' as ItemId) && target && target !== me
-            ? target
+          me.hands.includes('mutivargRod' as ItemId) && aimed && aimed !== me
+            ? aimed
             : null;
         const burnRodMana = (): void => {
           if (!rodTarget?.alive) return;
@@ -5488,6 +5498,22 @@ export class GameScene extends Phaser.Scene {
             label: 'Weak Bind',
             description: `${me.name} invokes a binding mantle.`,
             resolve: (game) => game.applyMantleBind(me),
+          })
+        );
+        break;
+      }
+      case 'cleanse': {
+        const cost = me.cleanseManaCost();
+        if (cost == null || me.mana < cost) break;
+        spend('bonus');
+        await runAction(
+          this.gs.makeActionItem({
+            source: me,
+            label: 'Cleanse',
+            description: `${me.name} drinks from the Chalice of Clear Water.`,
+            resolve: (game) => {
+              game.cleanseAfflictions(me);
+            },
           })
         );
         break;
@@ -5949,6 +5975,10 @@ export class GameScene extends Phaser.Scene {
           continue;
         }
         const choice = await this.getReaction(reactor, top);
+        if (choice && (choice.needle || choice.spell || choice.dodge || choice.shield || choice.weapon)) {
+          this.gs.twistReactionNeedle(reactor);
+          this.gs.burnMindFuse(reactor);
+        }
         if (choice && choice.needle) {
           // Needle of Serenity: stifle the ability/strike (it never resolves)
           // and disable it against this reactor forever. One-time use.
@@ -7598,6 +7628,20 @@ export class GameScene extends Phaser.Scene {
       });
     }
 
+    // Chalice of Clear Water: wash every affliction off for mana.
+    const cleanseCost = me.cleanseManaCost();
+    if (cleanseCost != null) {
+      entries.push({
+        id: 'cleanse',
+        label: `Cleanse (${cleanseCost} mana)`,
+        hotkey: 'Menu',
+        desc: 'Strip every affliction from yourself; veils are left alone (bonus action).',
+        enabled: (me.actions.bonus > 0 || inf) && me.mana >= cleanseCost,
+        reason: me.mana < cleanseCost ? `Needs ${cleanseCost} mana.` : 'Needs a bonus action.',
+        run: () => this.submitTurn({ t: 'cleanse' }),
+      });
+    }
+
     // Inventory.
     entries.push({
       id: 'inventory',
@@ -8109,9 +8153,31 @@ export class GameScene extends Phaser.Scene {
       case 'blueflare':
         return `Blueflare — ${s.stacks} mental-flame stack${s.stacks === 1 ? '' : 's'}; spreads from 3+.`;
       case 'soulRend':
-        return `Soul Rend — ${s.stacks} permanent stack${s.stacks === 1 ? '' : 's'}; each tears 1 health and 1 mill at turn start.`;
+        return `Soul Rend — ${s.stacks} stack${s.stacks === 1 ? '' : 's'}; at your turn start each stack tears 1d3 true health and 1d3 true mill, then one stack closes.`;
       case 'reap':
         return `Reap — ${s.stacks} stack${s.stacks === 1 ? '' : 's'}; you die at or below ${s.stacks} health, and executions against you are raised by ${2 * s.stacks}.`;
+      case 'shadowAnchor':
+        return `Chained to the Dark — at your turn start you are dragged toward the anchoring pool first, then judged: inside it you forget a word, outside it you take 1d4 sanity. (${turns})`;
+      case 'memoryShackle':
+        return `Memory Shackle — everything you declare is eaten: a weapon strike forgets how to attack, a spell forgets every word it used. (${turns})`;
+      case 'shadowHook':
+        return `Hooked — at your turn start you are reeled toward the hooker, take 1d6 pierce, and leave one of their shadows behind. Dragged into a wall it is 2d6 shatter on top. (${turns})`;
+      case 'phaseOut':
+        return s.mode === 'self'
+          ? `Dissolved — until your next turn you do not exist: nothing can target, damage or afflict you. You may only walk, straight through walls and bodies, dissolving enemies you pass. Phasing back in skips your upkeep.`
+          : `Banished — until your next turn you do not exist: nothing reaches you, your items are inert and your upkeep is skipped. When it ends, everything within 4 range takes 2d6 shadow.`;
+      case 'threadMark':
+        return `Threaded — every wound dealt to another threaded victim echoes to you for half its value as mill. (${turns})`;
+      case 'swornRepetition':
+        return `Sworn Repetition — ${s.stacks} stack${s.stacks === 1 ? '' : 's'} (-${s.stacks} damage dealt, +${s.stacks} damage taken). ${s.lingering ? 'The oath is spent; the rot is merely fading.' : 'Break the compulsion and it collects 1d6 sanity per stack.'} (${turns})`;
+      case 'woundShade':
+        return `Walking Wound — you carry the caster's shadow: it bites each turn and counts as one of their pools wherever you go. (${turns})`;
+      case 'mindFuse':
+        return `Swelling Fuse — ${s.ticks} charge${s.ticks === 1 ? '' : 's'} banked, detonating for 1d6 plus 1d6 per charge. Every action you take — main, bonus or reaction — burns it down one turn early. (${turns})`;
+      case 'reactionNeedle':
+        return `Remembering Needle — every reaction you take twists it for 2d6 mill. The reaction still resolves. (${turns})`;
+      case 'foeBlind':
+        return `Friend From Foe — every entity reads as hostile, your areas spare nobody, and your targets are chosen at random. (${turns})`;
       case 'deathCurse':
         return `Death Curse — ${s.stacks} counter${s.stacks === 1 ? '' : 's'} left; each falls at your turn start or on shadow/corrosive damage for 2 Reap. Executions become Reap until the last counter, which executes you.`;
       case 'debuff': {
@@ -8846,6 +8912,7 @@ export class GameScene extends Phaser.Scene {
     this.time.timeScale = this.combatSpeed;
     this.tweens.timeScale = this.combatSpeed;
     this.anims.globalTimeScale = this.combatSpeed;
+    this.swampArena?.setCombatSpeed(this.combatSpeed);
     this.refreshCombatSpeedButton();
     this.flashHint(`Combat speed: ${this.combatSpeed}x  [.]`);
   }
@@ -9310,6 +9377,10 @@ export class GameScene extends Phaser.Scene {
     if (source.bindMantleCharges > 0) {
       add('mantle-bind', 'Weak Bind', `Root the nearest enemy; ${source.bindMantleCharges} charges remain.`);
     }
+    const cleanseCost = source.cleanseManaCost();
+    if (cleanseCost != null && source.mana >= cleanseCost) {
+      add('cleanse', 'Cleanse', `Pay ${cleanseCost} mana to wash every affliction off yourself.`);
+    }
     if (
       source.hasEdgelordLantern() &&
       !source.isItemBanned('edgelordLantern') &&
@@ -9558,6 +9629,7 @@ export class GameScene extends Phaser.Scene {
       case 'deaths-angel-wings': return { t: 'deaths-angel-wings' };
       case 'edgelord-shake': return { t: 'edgelord-shake' };
       case 'mantle-bind': return { t: 'mantle-bind' };
+      case 'cleanse': return { t: 'cleanse' };
       default: return null;
     }
   }
@@ -9896,7 +9968,10 @@ export class GameScene extends Phaser.Scene {
     drawCabinetPanel(g, DOCK_LOG, { accent: MENU_COLOR.amethyst });
     drawCabinetPanel(g, HINT_BAR, { accent: MENU_COLOR.brass, fill: MENU_COLOR.woodDeep });
 
-    if (theme.kind === 'swamp') this.swampArena = new SwampArenaView(this, FIELD, this.reducedMotion);
+    if (theme.kind === 'swamp') {
+      this.swampArena = new SwampArenaView(this, FIELD, this.reducedMotion);
+      this.swampArena.setCombatSpeed(this.combatSpeed);
+    }
     this.gfxArenaAmbient = this.add.graphics();
     this.drawArenaAmbient(0);
     this.gfx = this.add.graphics();
