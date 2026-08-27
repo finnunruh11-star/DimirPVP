@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { unlockAudio } from './audio';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config/constants';
 import { MenuScene } from './scenes/MenuScene';
 import { GameScene } from './scenes/GameScene';
@@ -46,6 +47,15 @@ const gameConfig: Phaser.Types.Core.GameConfig = {
       canvas.setAttribute('role', 'application');
       canvas.setAttribute('aria-label', 'Dimir tactical mage arena');
       canvas.addEventListener('pointerdown', () => canvas.focus(), { passive: true });
+      // Build the audio device on the very first gesture, in the capture phase
+      // so it is ready before any handler asks for a sound.
+      const primeAudio = (): void => {
+        unlockAudio();
+        window.removeEventListener('pointerdown', primeAudio, true);
+        window.removeEventListener('keydown', primeAudio, true);
+      };
+      window.addEventListener('pointerdown', primeAudio, true);
+      window.addEventListener('keydown', primeAudio, true);
     },
   },
 };

@@ -541,7 +541,7 @@ export class GameState {
       if (target && target.alive) {
         target.drainLinkTo = lich;
         target.drainLinkTurns = 3;
-        this.log(`${lich.name} binds a life-link to ${target.name} — their pain becomes its salve.`);
+        this.log(`${lich.name} links to ${target.name}. It heals from damage dealt to them.`);
       }
       return { roll };
     }
@@ -554,7 +554,7 @@ export class GameState {
         x: lich.pos.x + Math.cos(ang) * rad,
         y: lich.pos.y + Math.sin(ang) * rad,
       };
-      this.log(`${lich.name} tears a zombie from the mire.`);
+      this.log(`${lich.name} summons a zombie.`);
       return { roll, summonAt };
     }
     return { roll };
@@ -565,7 +565,7 @@ export class GameState {
   /** Mark a delayed shadow zone that erupts at the start of the Ghast's next turn. */
   markGhastZone(ghast: Mage, at: Vec2, radius: number): void {
     ghast.ghastPendingZone = { x: at.x, y: at.y, radius };
-    this.log(`${ghast.name} marks the ground — creeping shadow will erupt on its next turn.`);
+    this.log(`${ghast.name} marks the ground. It erupts on its next turn.`);
   }
 
   /** Resolve a Ghast's pending zone: 2d3 shadow to every foe caught within it. */
@@ -633,7 +633,7 @@ export class GameState {
   reaperMark(reaper: Mage, target: Mage): void {
     if (!target.alive || target.reaperMarkedBy === reaper) return;
     target.reaperMarkedBy = reaper;
-    this.log(`${reaper.name} brushes ${target.name} — they are Marked and can no longer flee it.`);
+    this.log(`${reaper.name} marks ${target.name}. They cannot flee it.`);
   }
 
   /** Begin (or continue) the Reaper's channel; the clap resolves on its next turn. */
@@ -652,7 +652,7 @@ export class GameState {
     reaper.reaperChanneling = false;
     const marked = this.mages.filter((m) => m.reaperMarkedBy === reaper && !m.reaperDeletedBy);
     if (marked.length === 0) {
-      this.log(`${reaper.name} claps — but no mark remains to answer it.`);
+      this.log(`${reaper.name} releases its channel. No marks remain.`);
       return;
     }
     for (const m of marked) m.reaperDeletedBy = reaper;
@@ -1178,12 +1178,12 @@ export class GameState {
       if (swallowed) {
         // Duration 2: this runs before tickStatuses, so 1 would expire the same turn.
         applyForget(ctx, bearer, { count: 1, duration: 2 });
-        this.log(`The dark closes over ${bearer.name} and eats a word.`);
+        this.log(`${bearer.name} is inside the anchoring shadow and forgets a word.`);
       } else {
         dealDamage(ctx, bearer, dmg(this.rng.roll('1d4').total, 'shadow', 'sanity'), {
           canMiss: false,
         });
-        this.log(`${bearer.name} strains against the chain and it bites.`);
+        this.log(`${bearer.name} is outside the anchoring shadow.`);
       }
     }
   }
@@ -1202,7 +1202,7 @@ export class GameState {
       if (!owner?.alive) continue;
       const ctx = this.effectContext(owner, bearer, owner.pos);
       const toOwner = stepTowards(bearer.pos, owner.pos, hook.pullPx);
-      this.log(`${owner.name}'s hook reels ${bearer.name} in.`);
+      this.log(`${owner.name}'s hook pulls ${bearer.name} in.`);
       this.forceMove(owner, bearer, toOwner);
       if (!bearer.alive) return;
       dealDamage(ctx, bearer, dmg(this.rng.roll(hook.damageSpec).total, 'pierce', 'physical'), {
@@ -1268,11 +1268,11 @@ export class GameState {
     if (!phase) return;
     phase.duration -= 1;
     if (phase.duration > 0) {
-      this.log(`${bearer.name} is still elsewhere (${phase.duration} left).`);
+      this.log(`${bearer.name} is still phased (${phase.duration} left).`);
       return;
     }
     bearer.statuses = bearer.statuses.filter((status) => status !== phase);
-    this.log(`${bearer.name} snaps back into the world.`);
+    this.log(`${bearer.name} returns from phase.`);
     if (phase.mode !== 'banished' || !phase.burstSpec) return;
     const owner = this.mages[phase.ownerIndex] ?? bearer;
     const radius = phase.burstRadius ?? 4 * RANGE_UNIT;
@@ -1285,7 +1285,7 @@ export class GameState {
         aoe: true,
       });
     }
-    this.log(`The dark releases ${bearer.name} in a burst.`);
+    this.log(`${bearer.name}'s phase ends in a burst.`);
   }
 
   /**
@@ -1321,7 +1321,7 @@ export class GameState {
       pool.feedStacks = stacks + 1;
       pool.feedMeals = (pool.feedMeals ?? 0) + 1;
       pool.radius += RANGE_UNIT;
-      this.log(`The hungry dark swallows ${prey.name} and swells (${pool.feedStacks} fed).`);
+      this.log(`The shadow consumes ${prey.name} and grows (${pool.feedStacks} consumed).`);
     }
   }
 
@@ -1361,7 +1361,7 @@ export class GameState {
         duration: 1,
         mods: { moveRange: -Math.round(MOVE_RANGE * 0.75) },
       });
-      this.log(`${prey.name} rots in the standing dark.`);
+      this.log(`${prey.name} takes damage from the rotting shadow.`);
     }
   }
 
@@ -1451,7 +1451,7 @@ export class GameState {
       if (sworn.stacks <= 0) return;
       const owner = this.mages[sworn.ownerIndex] ?? bearer;
       const total = this.rng.roll(`${sworn.stacks}${sworn.perStackSpec}`).total;
-      this.log(`${bearer.name} breaks the oath — it collects ${total}.`);
+      this.log(`${bearer.name} fails to repeat. Sworn Repetition deals ${total}.`);
       dealDamage(this.effectContext(owner, bearer, null), bearer, dmg(total, 'shadow', 'sanity'), {
         canMiss: false,
       });
@@ -1462,10 +1462,10 @@ export class GameState {
       // Rode it out: no blood, but the rot outlives the compulsion.
       sworn.lingering = true;
       sworn.duration = sworn.lingerTurns + 1;
-      this.log(`${bearer.name} keeps the oath — the rot settles in for good.`);
+      this.log(`${bearer.name} survived Sworn Repetition. Stacks remain.`);
       return;
     }
-    this.log(`${bearer.name} obeys; the oath deepens to ${sworn.stacks}.`);
+    this.log(`${bearer.name} repeats its action. Sworn Repetition: ${sworn.stacks} stacks.`);
   }
 
   /** Damage-dealt / taken shift from an unbroken oath. */
@@ -1580,7 +1580,7 @@ export class GameState {
         forgotten: [...tokens],
       });
     }
-    this.log(`The shackle eats ${bearer.name}'s ${tokens.join(' & ')}.`);
+    this.log(`${bearer.name} forgets ${tokens.join(', ')}.`);
   }
 
   /**
@@ -2806,7 +2806,7 @@ export class GameState {
     if (!target.alive || count <= 0) return;
     if (this.defeatPftlhbByIllumination(target, owner)) return;
     if (target.isDebuffImmune()) {
-      this.log(`${target.name} is beyond affliction — Fire finds no purchase.`);
+      this.log(`${target.name} is immune to debuffs. Fire fails.`);
       return;
     }
     let fire = target.statuses.find((s) => s.kind === 'fire') as FireStatus | undefined;
@@ -2878,7 +2878,7 @@ export class GameState {
     if (!target.alive || count <= 0) return;
     if (this.defeatPftlhbByIllumination(target, owner)) return;
     if (target.isDebuffImmune()) {
-      this.log(`${target.name} is beyond affliction — Sentinel Fire finds no purchase.`);
+      this.log(`${target.name} is immune to debuffs. Sentinel Fire fails.`);
       return;
     }
     let fire = target.statuses.find((s) => s.kind === 'sentinelFire') as
@@ -2954,7 +2954,7 @@ export class GameState {
   applyBlueflareStacks(target: Mage, count: number, owner: Mage): void {
     if (!target.alive || count <= 0) return;
     if (target.isDebuffImmune()) {
-      this.log(`${target.name} is beyond affliction — Blueflare finds no purchase.`);
+      this.log(`${target.name} is immune to debuffs. Blueflare fails.`);
       return;
     }
     let flare = target.statuses.find((s) => s.kind === 'blueflare') as BlueflareStatus | undefined;
@@ -2997,7 +2997,7 @@ export class GameState {
   applySoulRend(target: Mage, count: number, owner: Mage): void {
     if (!target.alive || count <= 0) return;
     if (target.isDebuffImmune()) {
-      this.log(`${target.name} is beyond affliction — Soul Rend finds no purchase.`);
+      this.log(`${target.name} is immune to debuffs. Soul Rend fails.`);
       return;
     }
     let rend = target.statuses.find((status) => status.kind === 'soulRend') as
@@ -3083,7 +3083,7 @@ export class GameState {
   executeTarget(source: Mage, target: Mage, amount: number): boolean {
     if (!target.alive || amount <= 0) return false;
     if (this.deathCurseOn(target)) {
-      this.log(`${target.name}'s Death Curse swallows the execution — it becomes ${amount} Reap.`);
+      this.log(`${target.name}'s Death Curse converts the execution into ${amount} Reap.`);
       this.applyReap(target, amount, source);
       return false;
     }
@@ -3093,6 +3093,7 @@ export class GameState {
       return false;
     }
     this.log(`${source.name} executes ${target.name} at ${threshold} health.`);
+    this.vfxSink?.execute?.(target.pos);
     return this.killByDeathWord(target, source);
   }
 
@@ -3103,7 +3104,7 @@ export class GameState {
       target.reviveAtHalfAvailable = false;
       target.hp = Math.max(1, Math.ceil(target.maxHp / 2));
       if (target.maxSanity > 0) target.sanity = target.maxSanity;
-      this.log(`${target.name} refuses death — its phylactery drags it back at half strength!`);
+      this.log(`${target.name} revives at half HP.`);
       return false;
     }
     target.hp = 0;
@@ -3447,7 +3448,7 @@ export class GameState {
       if (s.band) {
         const d = opponent ? dist(opponent.pos, m.pos) : Infinity;
         if (d < s.band.min || d > s.band.max) {
-          this.log(`${s.name} lies dormant — ${m.name} is out of its reach.`);
+          this.log(`${s.name} is dormant. ${m.name} is out of range.`);
           continue;
         }
       }
@@ -3548,7 +3549,7 @@ export class GameState {
       const entity = this.mages[s.targetIndex];
       if (!entity || !entity.alive) {
         s.duration = 0;
-        this.log(`Order's judgement on ${m.name} dissolves — its quarry is gone.`);
+        this.log(`Order's judgement on ${m.name} ends. Its target is gone.`);
         continue;
       }
       const curDist = dist(m.pos, entity.pos);
@@ -3576,7 +3577,7 @@ export class GameState {
           this.log(`Order's judgement falls on ${m.name} (${s.stacks} stacks).`);
           dealDamage(ctx, m, dmg(total, 'slashing', 'physical'), { canMiss: false });
         } else {
-          this.log(`${m.name} answered the order — the judgement passes harmlessly.`);
+          this.log(`${m.name} obeyed the order. No damage.`);
         }
         s.duration = 0;
       }
@@ -3825,7 +3826,7 @@ export class GameState {
       );
       if (enemyClose) {
         m.statuses = m.statuses.filter((s) => s.kind !== 'invisibility');
-        this.log(`${m.name}'s veil collapses — an enemy is too close.`);
+        this.log(`${m.name}'s veil breaks. An enemy is within 2cm.`);
       }
     }
   }
@@ -3874,7 +3875,7 @@ export class GameState {
       }
       case 'defend': {
         source.eldritchDefend = true;
-        this.log(`${source.name} wreathes themselves in eldritch truth — all damage is void until their next turn.`);
+        this.log(`${source.name} defends. Immune to all damage until their next turn.`);
         break;
       }
       case 'restore': {
@@ -3900,6 +3901,7 @@ export class GameState {
       const fire = this.rng.roll('1d20').total;
       const mill = this.rng.roll('1d10').total;
       this.log(`Roaring thunder ravages ${m.name} (${fire} fire, ${mill} mill).`);
+      this.vfxSink?.boom?.(m.pos);
       dealDamage(self, m, dmg(fire, 'heat', 'physical'), { canMiss: false });
       dealDamage(self, m, dmg(mill, 'shatter', 'sanity'), { canMiss: false });
       const blast = 10 * RANGE_UNIT;
@@ -3950,7 +3952,7 @@ export class GameState {
     source.spendMana(cost);
     const self = this.effectContext(source, source, null);
     const bite = this.rng.roll('1d6').total;
-    this.log(`${source.name} charges the storm — spends ${cost} mana and takes ${bite} true damage.`);
+    this.log(`${source.name} charges Thunder. Spends ${cost} mana and takes ${bite} true damage.`);
     dealDamage(self, source, dmg(bite, 'heat', 'physical'), { canMiss: false, trueDamage: true });
     if (!source.alive) return;
     const gained = this.rng.roll('1d4').total;
@@ -4012,6 +4014,7 @@ export class GameState {
     }
     const schedule = this.thunderDischargeSchedule(stacks);
     this.log(`${source.name} discharges ${stacks} Thunder stacks in a chain of lightning!`);
+    if (stacks > 9) this.vfxSink?.thunder?.(source.pos);
     source.thunderStacks = 0;
     const struck = new Set<Mage>();
     let fromPos = source.pos;
@@ -4350,7 +4353,7 @@ export class GameState {
     }
     // The Greatshield is bound while in sword form — it cannot be dropped.
     if (itemId === 'bastionSword' && !source.bastionShieldForm) {
-      this.log(`${source.name}'s greatshield is bound in sword form — it cannot be dropped.`);
+      this.log(`${source.name}'s greatshield is in sword form and cannot be dropped.`);
       return false;
     }
     if (getItem(itemId).permanentlyBinding) {
@@ -4601,7 +4604,7 @@ export class GameState {
   castMutivargZone(source: Mage): void {
     const paid = Math.ceil(source.mana * 0.25);
     if (paid <= 3) {
-      this.log(`${source.name} channels the rod, but only ${paid} mana answers — the field fizzles.`);
+      this.log(`${source.name} pays only ${paid} mana. The rod's field fails.`);
       return;
     }
     source.spendMana(paid);
@@ -4873,7 +4876,7 @@ export class GameState {
       (m) => m.team !== source.team && this.canStrikeAirborne(source, m)
     );
     if (targets.length === 0) {
-      this.log(`${source.name} cleaves the air — nothing in reach.`);
+      this.log(`${source.name} cleaves. Nothing in range.`);
       return;
     }
     for (const t of targets) {

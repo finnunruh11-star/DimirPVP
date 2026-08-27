@@ -419,6 +419,11 @@ const U = RANGE_UNIT;
 /** Convert a gold price to silver for the catalog. */
 const g = (gold: number): number => gold * SILVER_PER_GOLD;
 
+// Blurb style: terse and uniform. Percentages over fractions. Fixed vocabulary:
+// "Immunity to X" / "Resist X" (50%) / "Weak to X" (200%) / "Range Ncm" /
+// "Bonus action:" / "Main action:" / "Weapon Action:" / "Reaction:" /
+// "On hit:" / "On kill:" / "On cast:" / "On fizzle:" / "On damage taken:".
+
 export const ITEM_DEFS: ItemDef[] = [
   // ---- Conjured (never offered in the shop; made by Objects class spells) --
   {
@@ -430,7 +435,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'A two-handed doomglass hammer. Toll mode deals only 1 direct damage but leaves a 1d3 shadow wound for 6 turns (9 if the victim stands in shadow). Weapon Action toggles Condense mode: the next attacks clear harmful statuses, cash out every remaining DoT tick as half shatter / half shadow, and leave a shadow enlarged by each non-damaging debuff consumed.',
+      'Two-handed, 10% Strength shatter. Toll: +1d3 shadow DoT for 6 turns, 9 in shadow. Weapon Action: toggle Condense. Condense hit: remove all harmful statuses, deal all remaining DoT instantly as 50% shatter / 50% shadow, create a shadow +1cm per debuff removed.',
     conjuredBlackBell: true,
     twoHanded: true,
     weaponAbility: 'blackBellMode',
@@ -450,7 +455,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'A two-handed acid bow woven from shadow. Keeps its holder veiled while held (until unsummoned or 3 combats; unequipping erases it). Firing spends mana, reveals the shooter for a turn, looses a Dex-scaled corrosive shot that mires on hit, and re-veils at the start of the next turn.',
+      'Two-handed Dex bow, corrosive, range 15cm. Veils the holder while held. On fire: costs mana, veil breaks for 1 turn, slow on hit. Lasts 3 combats.',
     conjuredVeilBow: true,
     weapon: {
       rangePx: 15 * U,
@@ -467,7 +472,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      '−15% max HP and max sanity. Each word you cast (even on a failure) adds a Thunder stack, which reshapes your speed and, past 9 stacks, sears you every turn; 15 stacks kills you in an explosion. Charge Up (bonus): spend mana + 1d6 true damage to roll d4 extra stacks & color charges. Discharge (bonus): dump all stacks as bouncing lightning (1d3 per stack).',
+      '-15% max HP and sanity. On cast: +1 Thunder. 9+ Thunder: damage each turn. 15 Thunder: death. Bonus action: mana + 1d6 true for +1d4 Thunder and color charges. Bonus action: spend all Thunder as chain lightning, 1d3 per stack.',
     hpMult: 0.85,
     sanityMult: 0.85,
     thunderBlessing: true,
@@ -481,7 +486,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'One-time reaction to an ability or a weapon attack: stifle that action (it never happens). Whatever was stifled can never be used against you again — a weapon is disabled for good (all copies of that item), an ability (dodge, colour ability, or the unarmed strike) is disabled for good. Base mechanics like walking and casting spells cannot be stifled.',
+      'Reaction, one use: cancel an ability or weapon attack. That source is permanently disabled against you.',
     needleOfSerenity: true,
   },
   {
@@ -492,7 +497,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'During turn cycles 3 and 4 you cannot be affected by anything hostile — no damage, stuns, movement impairment, or debuffs. You basically do not exist to anything hostile.',
+      'Immunity to everything hostile during turn cycles 3 and 4.',
     laranegRing: true,
   },
   {
@@ -503,7 +508,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'Grants the "Eldritch" main action: Attack (10 true damage to any target at any range), Defend (cancel all damage to you until your next turn), or Restore (regain 5 HP, 10 mana and 2 charges of each word).',
+      'Main action, choose one: 10 true damage at any range; immunity to all damage until your next turn; or +5 HP, +10 mana and +2 charges per word.',
     eldritchMantle: true,
   },
   {
@@ -515,7 +520,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'Permanently binding. Gain 1 Energy whenever you kill an enemy; Energy resets on a long rest. Cape Ability (bonus): spend 1 Energy to fly for 2 of your turns. Once per active turn, heal 1d3 HP and deal 1d3 true damage to every enemy within 5cm. Any positive damage you deal executes a target left at or below 6% max HP (rounded up). Extending flight adds duration without triggering an extra pulse.',
+      'Permanently binding. On kill: +1 Energy. Bonus action (1 Energy): fly 2 turns. Per flying turn: +1d3 HP and 1d3 true damage to enemies within 5cm. Your damage executes below 6% max HP.',
     deathsAngelWings: true,
     permanentlyBinding: true,
   },
@@ -528,7 +533,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'Dex attack (shadow mill): floor((d20 + Dex - 10) / 2). While held in a shadow you vanish utterly for 1 mana per turn: untargetable at any range, unshaken by dark light, and no attack, proximity or dispel can strip it — you stay hidden even while cutting down someone beside you. Weapon Action (bonus): while standing in a shadow, point at any shadow to teleport there. The toll is 8 mana and never requires enough mana; each unpaid mana silently consumes a random permanent stat point and can kill through max-HP loss.',
+      'Dex attack, shadow sanity. In shadow (1 mana/turn): immunity to all targeting, unbreakable. Weapon Action (8 mana): teleport to any shadow. Unpaid mana costs 1 random permanent stat point each.',
     weaponAbility: 'shadowDaggerTeleport',
     shadowDagger: { teleportManaCost: 8, stealthManaPerRound: 1 },
     weapon: {
@@ -546,7 +551,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'Starts in shield form; the Weapon Action toggles form (both forms: -25% move). Shield: +2 physical & +2 magic armour, block reaction removes 67% of a physical/magical blow, enables shield-bash, and strikes at -50% Strength (shatter). Sword: +1 range and a +100% Strength slashing strike that fully ignores armour & resistances — but disables bag actions & weapon swaps and cannot be dropped.',
+      'Weapon Action: toggle form. Both: -25% move. Shield: +2 armour, +2 magic armour, block 67%, bash, 50% Strength shatter. Sword: +1cm range, 200% Strength slashing, ignores armour and resistances, no bag actions, cannot be dropped.',
     moveMult: 0.75,
     weaponAbility: 'bastionSwap',
     weapon: {
@@ -575,7 +580,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 6,
     blurb:
-      'Nothing may be written upon the faithful. You are immune to every affliction — debuffs, damage-over-time, stuns, roots, compulsions, Fire, Blueflare and Soul Rend all slide off. The creed is blind, so stat blessings written the same way (Emboldened and its kin) fail on you too. -20% max HP and max sanity.',
+      'Immunity to all debuffs AND buffs. -20% max HP and sanity.',
     debuffImmunity: true,
     hpMult: 0.8,
     sanityMult: 0.8,
@@ -589,7 +594,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 1,
     blurb:
-      'Immune to shadow damage, and afflictions land on you for half as long. The sigil burns bright enough to be seen: you take double light damage.',
+      'Immunity to shadow. Weak to light. -50% debuff duration.',
     resist: { immune: ['shadow'], weak: ['light'] },
     debuffDurationMult: 0.5,
   },
@@ -602,7 +607,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 16,
     blurb:
-      '+2 physical armour and halved pierce, slashing and shatter damage — but corrosive damage lands doubled and the weight of the oath costs you 25% movement.',
+      '+2 armour. Resist pierce, slashing and shatter. Weak to corrosive. -25% move.',
     armor: { flat: 2 },
     resist: { resist: ['pierce', 'slashing', 'shatter'], weak: ['corrosive'] },
     moveMult: 0.75,
@@ -616,7 +621,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 2,
     blurb:
-      'Cleanse (bonus action): pay 6 mana to wash away every affliction on yourself — debuffs, damage-over-time, stuns, compulsions, Fire, Blueflare and Soul Rend. Your veils are left untouched. Never runs dry.',
+      'Bonus action (6 mana): cleanse all debuffs. Unlimited uses.',
     cleanseManaCost: 6,
   },
   {
@@ -627,7 +632,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 0,
-    blurb: 'Afflictions landed on you last 25% fewer cycles (never below one).',
+    blurb: '-25% debuff duration.',
     debuffDurationMult: 0.75,
   },
   // ---- Unreal -------------------------------------------------------------
@@ -640,7 +645,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 22,
     blurb:
-      'A colossal slab of iron. Counts as a shield: +2 physical & +2 magic armour, block reaction removes 60% of a physical/magical blow, enables shield-bash. Strikes at 30% Strength (shatter). Weighs a tremendous amount.',
+      'Shield: +2 armour, +2 magic armour, block 60%, bash. 30% Strength shatter.',
     weapon: {
       rangePx: MELEE_RANGE,
       kind: 'strength',
@@ -658,7 +663,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 3,
     blurb:
-      '+75% Strength slashing damage. After you land a hit, dash up to 3 tiles in any direction.',
+      '+75% Strength slashing, +1cm range. On hit: dash 3cm.',
     weapon: {
       rangePx: MELEE_RANGE + U,
       kind: 'strength',
@@ -675,7 +680,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 4,
     blurb:
-      'Wand (never blocks casting). Casting through it doubles the spell\u2019s mana cost and burns 20% of the target\u2019s current mana. Weapon Action (bonus): pay 25% of your mana (fails at \u22643 paid) to raise a crushing slow / root circle that grinds everyone inside for two of your turns.',
+      'Wand. Casts cost 200% mana and burn 20% of target mana. Weapon Action: spend 25% mana for a slow and root circle, 2 turns. Fails below 4 mana paid.',
     isWand: true,
     weaponAbility: 'mutivargZone',
     doublesSpellCost: true,
@@ -688,7 +693,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'unreal',
     cost: g(0),
     weight: 2,
-    blurb: '+1 physical armour and +1 melee damage.',
+    blurb: '+1 armour. +1 melee damage.',
     armor: { flat: 1 },
     meleeDamageBonus: 1,
   },
@@ -700,7 +705,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 7,
     blurb:
-      'Roll d20 to hit versus DC = distance(tiles) \u00d7 2. Damage 2d10+1 (+1d6 if the to-hit roll is under 10). Starts combat loaded; takes 2 turns to reload after firing.',
+      'Range 10cm. d20 vs DC = cm x 2. 2d10+1 pierce, +1d6 if the roll is under 10. Reload 2 turns.',
     weapon: {
       rangePx: 10 * U,
       kind: 'strength',
@@ -716,7 +721,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 3,
     blurb:
-      'Everything you carry weighs nothing \u2014 carry unlimited weapons, armour, accessories and potions.',
+      'No weight, no carry limit.',
     bagOfHolding: true,
   },
   // ---- Epic ---------------------------------------------------------------
@@ -730,7 +735,7 @@ export const ITEM_DEFS: ItemDef[] = [
     weight: 12,
     weaponFamily: 'hammer',
     blurb:
-      '+50% Strength blunt (shatter) damage. Each hit knocks the target back 3 tiles. Fairly heavy.',
+      '+50% Strength shatter. On hit: knockback 3cm.',
     weapon: {
       rangePx: MELEE_RANGE,
       kind: 'strength',
@@ -748,7 +753,7 @@ export const ITEM_DEFS: ItemDef[] = [
     weight: 1,
     weaponFamily: 'bow',
     blurb:
-      'Dex attack +3 (pierce). Always hits within 15 tiles; 50% chance to hit from 16\u201320 tiles; cannot reach farther. Consumes an arrow per shot.',
+      'Dex attack +3, pierce, range 20cm. 100% hit to 15cm, 50% to 20cm. Uses arrows.',
     weapon: {
       rangePx: 20 * U,
       kind: 'dex',
@@ -765,7 +770,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'epic',
     cost: g(0),
     weight: 1,
-    blurb: 'Reduce all incoming mental (sanity) damage by 1.',
+    blurb: '-1 to all incoming sanity damage.',
     mentalReduce: 1,
   },
   {
@@ -775,7 +780,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'unreal',
     cost: g(0),
     weight: 2,
-    blurb: 'Dex attack +5 with +50% damage. Accurate to 20 tiles and carries the Elf Ranger burning arrows.',
+    blurb: 'Dex attack +5, +50% damage, pierce, range 24cm. 100% hit to 20cm, 75% to 24cm. Uses arrows. Burning arrows.',
     weaponFamily: 'bow',
     weapon: {
       rangePx: 24 * U,
@@ -794,7 +799,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'unreal',
     cost: g(0),
     weight: 14,
-    blurb: 'Double Strength shatter damage and knock targets back 4 tiles.',
+    blurb: '+100% Strength shatter. On hit: knockback 4cm.',
     weaponFamily: 'hammer',
     weapon: {
       rangePx: MELEE_RANGE,
@@ -812,7 +817,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 2,
     blurb:
-      'You cannot be slowed by more than 75% (roots / shatter-reality disable movement outright and are unaffected). Once per combat, gain 1d3 mana when mental (mill) damage is dealt or taken \u2014 yours or the enemy\u2019s.',
+      'Slow capped at 75%. Once per combat: +1d3 mana on the first sanity damage.',
     slowCapPct: 0.75,
     millManaOnce: true,
   },
@@ -824,7 +829,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 1,
     blurb:
-      'Dex attack (pierce): floor((d20 + dex + bonus \u2212 10) / 2), where the bonus is 50% of your Dex.',
+      'Dex attack +50% Dex, pierce.',
     weapon: {
       rangePx: MELEE_RANGE,
       kind: 'dex',
@@ -840,7 +845,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 0,
-    blurb: 'Gain 2 mana whenever you take damage.',
+    blurb: 'On damage taken: +2 mana.',
     manaOnHit: 2,
   },
   {
@@ -850,7 +855,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 3,
-    blurb: '+1 physical armour.',
+    blurb: '+1 armour.',
     armor: { flat: 1 },
   },
   {
@@ -860,7 +865,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 1,
-    blurb: '+25% movement range.',
+    blurb: '+25% move.',
     moveMult: 1.25,
   },
   {
@@ -870,7 +875,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 2,
-    blurb: 'Standard Strength slashing attack with a 20% chance to deal double damage.',
+    blurb: '100% Strength slashing. 20% chance to double damage.',
     weapon: {
       rangePx: MELEE_RANGE,
       kind: 'strength',
@@ -886,7 +891,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 1,
-    blurb: 'Wand (never blocks casting). Your word-spells cost 1 less mana.',
+    blurb: 'Wand. -1 mana per word spell.',
     isWand: true,
     manaDiscount: 1,
   },
@@ -897,7 +902,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 2,
-    blurb: '+1 tile of melee range and +50% Strength damage (slashing).',
+    blurb: '+50% Strength slashing, +1cm range.',
     weapon: {
       rangePx: MELEE_RANGE + U,
       kind: 'strength',
@@ -914,7 +919,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 2,
     blurb:
-      'Counts as a shield: +1 physical armour, block reaction removes 33% of a physical/magical blow, enables shield-bash. Strikes at 25% Strength (shatter).',
+      'Shield: +1 armour, block 33%, bash. 25% Strength shatter.',
     weapon: {
       rangePx: MELEE_RANGE,
       kind: 'strength',
@@ -930,7 +935,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 1,
-    blurb: 'The first spell you cast each combat is free (0 mana) if it contains a black word.',
+    blurb: 'First black-word spell each combat: 0 mana.',
     firstBlackSpellFree: true,
   },
   // ---- Consumeable --------------------------------------------------------
@@ -942,7 +947,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'consumeable',
     cost: g(1),
     weight: 1,
-    blurb: 'Bonus action: hurl for 1d3 pierce at a target within 10 tiles, then consumed.',
+    blurb: 'Bonus action: 1d3 pierce, range 10cm. Consumed.',
     throwable: { rollSpec: '1d3', rangePx: 10 * U },
   },
   {
@@ -952,7 +957,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'consumeable',
     cost: 5, // silver
     weight: 0,
-    blurb: 'Ammunition for bows, consumed on each bow shot.',
+    blurb: 'Bow ammunition.',
     ammo: true,
   },
   {
@@ -962,7 +967,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'consumeable',
     cost: g(3),
     weight: 1,
-    blurb: 'Bonus action: restore 10 mana, then consumed.',
+    blurb: 'Bonus action: +10 mana. Consumed.',
     potion: 'mana',
   },
   {
@@ -972,7 +977,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'consumeable',
     cost: g(4),
     weight: 1,
-    blurb: 'Bonus action: heal 2d3 HP, then consumed.',
+    blurb: 'Bonus action: +2d3 HP. Consumed.',
     potion: 'health',
   },
   {
@@ -983,7 +988,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(2),
     weight: 1,
     blurb:
-      'A held light source that burns for 3 combats once lit (equipped) — stowing it snuffs it for good. While held it lights a 3cm aura: light-weak foes that start their turn in it take 1d3. Swings as an unarmed strike; a swing through a light-weak foe deals +5 true damage, and each swing at a non-ethereal foe has a 10% chance to snuff the torch.',
+      'Light 3cm, 3 combats. Light-weak enemies in the aura: 1d3 per turn. Unarmed strike, +5 true vs light-weak. 10% to break per swing. Stowing destroys it.',
     lightSource: true,
     lightRadiusPx: 3 * U,
     torchCombats: 3,
@@ -997,7 +1002,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 2,
     blurb:
-      'An eternal light that never burns out. It lights a 3cm aura even while stowed in your bag: light-weak foes that start their turn in it take 1d3. Held, it swings as an unarmed strike; a swing through a light-weak foe deals +5 true damage.',
+      'Light 3cm, permanent, works from the bag. Light-weak enemies in the aura: 1d3 per turn. Unarmed strike, +5 true vs light-weak.',
     lightSource: true,
     lightRadiusPx: 3 * U,
     lightInBag: true,
@@ -1012,7 +1017,12 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'Cursed and permanently binding. Shake as a bonus action to alternate between its dormant prison and a 15cm dark light. That dark light counts as one of your shadows for every Shadow effect — casting reach, shadow teleports and spells that read your pools all treat it as one. Activating costs 4 mana and gives every unit in range 3 Soul Rend — an affliction that tears 1d3 true health and 1d3 true mill per stack at the bearer’s turn start before losing one stack. Deactivating pulls nearby units inward and captures afflicted, critically wounded creatures within 6cm. Captives suffer 10 true HP and 5 true mill each turn for 2 mana; failing that payment kills the bearer and releases them. Dormant: -33% movement, and a loaded lantern can be thrown for 1d20 dark/cold plus 1d10 mill in a 5cm blast within Strength cm by spending the entire turn. Active: ordinary movement passes through solid objects, darkness reveals all but Shadow Veil, and each weapon attack pulls units inward before dealing 2 dark damage to all in the light, including the bearer.',
+      'Cursed. Permanently binding. Weak to light. Bonus action: toggle active or dormant.\n' +
+      'ACTIVE (4 mana): 15cm dark light that counts as your shadow. On activation: 3 Soul Rend to all in range, including you. Move through walls. Reveals all stealth except Shadow Veil. On weapon attack: pull all units 6cm in, then 2 shadow to all in the light, including you.\n' +
+      'DORMANT: -33% move. Full turn: throw within (Strength)cm for a 5cm blast, 1d20 shadow/shatter + 1d10 shadow sanity. Can hit you.\n' +
+      'On deactivate: pull all units 6cm in, then capture units in 6cm with Soul Rend below 15 HP, 8 sanity or 34%.\n' +
+      'Captives: 2 mana per turn, 10 true HP + 5 true sanity each. Unpaid: you die.\n' +
+      'Soul Rend: 1d3 true HP + 1d3 true sanity per stack per turn, then -1 stack.',
     resist: { weak: ['light'] },
     edgelordLantern: true,
     cursed: true,
@@ -1031,7 +1041,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 1,
     blurb:
-      'Each spell you cast costs 15% of your max HP. In exchange, your spells have 15% lifesteal — you heal for 15% of the HP damage they deal to enemies.',
+      'On cast: -15% max HP. Spells heal you 15% of HP damage dealt.',
     spellHealthCostPct: 0.15,
     spellLifestealPct: 0.15,
   },
@@ -1044,7 +1054,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 1,
     blurb:
-      '−8 max HP. Healing you receive is 50% more effective, and your melee hits heal you for 2 (3 with the bonus).',
+      '-8 max HP. +50% healing received. On melee hit: +2 HP.',
     hpFlat: -8,
     healMult: 1.5,
     meleeHealOnHit: 2,
@@ -1058,7 +1068,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 2,
     blurb:
-      '−5 Dex. Each turn you move more than 80% of your max movement you gain +1 tile of movement (stacking). Standing still resets it.',
+      '-5 Dex. +1cm move per consecutive turn moving 80%+ of max. Resets when stationary.',
     statMods: { dex: -5 },
     momentumBoots: true,
   },
@@ -1082,7 +1092,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 3,
     blurb:
-      'A sword that strikes as a bonus action for \u221250% Strength damage (slashing). Each hit (melee or spell, once per action) grants 1d3 Greed stacks. Weapon Action (bonus): shatter the blade and draft one item \u2014 choose one of three \u2014 for every 5 Greed stacks you hold.',
+      'Bonus action attack, 50% Strength slashing. On hit: +1d3 Greed. Weapon Action: destroy the blade, draft 1 of 3 items per 5 Greed.',
     weapon: {
       rangePx: MELEE_RANGE,
       kind: 'strength',
@@ -1102,7 +1112,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 3,
     blurb:
-      '−30% movement. Gain +1 physical armour for each turn you do not move, up to +4.',
+      '-30% move. +1 armour per consecutive stationary turn, max +4.',
     moveMult: 0.7,
     anchorBoots: true,
   },
@@ -1115,7 +1125,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 2,
     blurb:
-      '−4 Dex. You gain mana equal to the melee damage you deal (does not work with bows / crossbows).',
+      '-4 Dex. Melee damage dealt becomes mana. Not bows or crossbows.',
     statMods: { dex: -4 },
     manaPerMeleeDmg: true,
   },
@@ -1127,7 +1137,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 1,
-    blurb: '−2 Intellect. A failed spell heals you for 4.',
+    blurb: '-2 Intellect. On fizzle: +4 HP.',
     statMods: { int: -2 },
     onFizzleHeal: 4,
   },
@@ -1139,7 +1149,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'epic',
     cost: g(0),
     weight: 1,
-    blurb: '−2 Intellect. A failed spell grants you 4 mana.',
+    blurb: '-2 Intellect. On fizzle: +4 mana.',
     statMods: { int: -2 },
     onFizzleMana: 4,
   },
@@ -1151,7 +1161,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'epic',
     cost: g(0),
     weight: 1,
-    blurb: '−2 Intellect. Failing a spell adds +50% damage to your next basic attack.',
+    blurb: '-2 Intellect. On fizzle: +50% damage to your next attack.',
     statMods: { int: -2 },
     onFizzleRage: 0.5,
   },
@@ -1163,7 +1173,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(0),
     weight: 1,
-    blurb: 'Melee attackers take 2 damage whenever they hit you.',
+    blurb: 'On melee hit taken: 2 damage to the attacker.',
     thorns: 2,
   },
   {
@@ -1174,7 +1184,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'epic',
     cost: g(0),
     weight: 1,
-    blurb: 'Fully negates any mill (sanity) hit that would deal less than 3.',
+    blurb: 'Immunity to sanity damage below 3.',
     sanityWardBelow: 3,
   },
   {
@@ -1185,7 +1195,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'unreal',
     cost: g(0),
     weight: 2,
-    blurb: '+50% Dex-attack damage while you are hidden by any form of stealth — a veil, a Shadow Veil in shadow, or the Dagger of Shadow.',
+    blurb: '+50% Dex attack damage while stealthed.',
     veiledDaggerBonus: 0.5,
   },
   {
@@ -1195,7 +1205,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: 0,
     weight: 1,
-    blurb: 'A chipped Mine creature spear.',
+    blurb: 'Dex attack -2 (pierce). Enemy weapon.',
     enemyOnly: true,
     weapon: { rangePx: MELEE_RANGE * 1.2, kind: 'dex', dexBonus: -2, damageType: 'pierce' },
   },
@@ -1206,7 +1216,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: 0,
     weight: 2,
-    blurb: 'A balanced spear tipped with mine stone.',
+    blurb: 'Dex attack (pierce). Enemy weapon.',
     enemyOnly: true,
     weapon: { rangePx: MELEE_RANGE * 1.25, kind: 'dex', damageType: 'pierce' },
   },
@@ -1217,7 +1227,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: 0,
     weight: 2,
-    blurb: 'A Mine-forged iron spear.',
+    blurb: 'Dex attack +2 (pierce). Enemy weapon.',
     enemyOnly: true,
     weapon: { rangePx: MELEE_RANGE * 1.3, kind: 'dex', dexBonus: 2, damageType: 'pierce' },
   },
@@ -1228,7 +1238,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: 0,
     weight: 3,
-    blurb: 'A heavy Dragonborn club.',
+    blurb: '80% Strength shatter damage. Enemy weapon.',
     enemyOnly: true,
     weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 0.8, damageType: 'shatter' },
   },
@@ -1239,7 +1249,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: 0,
     weight: 3,
-    blurb: 'A broad stone-edged Dragonborn axe.',
+    blurb: '100% Strength slashing damage. Enemy weapon.',
     enemyOnly: true,
     weapon: { rangePx: MELEE_RANGE, kind: 'strength', damageType: 'slashing' },
   },
@@ -1250,7 +1260,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: 0,
     weight: 4,
-    blurb: 'A brutal Mine-forged Dragonborn axe.',
+    blurb: '130% Strength slashing damage. Enemy weapon.',
     enemyOnly: true,
     weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.3, damageType: 'slashing' },
   },

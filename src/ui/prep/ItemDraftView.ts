@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { playSound, unlockAudio } from '../../audio';
 import { RARITY_COLOR, getItem, type ItemId } from '../../core/Items';
 import { SceneInput } from '../../engine/SceneInput';
 import { CabinetChip, MenuFocusGroup, type MenuControl } from '../cabinet/controls';
@@ -72,7 +73,8 @@ class DraftCard extends Phaser.GameObjects.Container implements MenuControl {
     this.add([this.face, name, meta, body, this.hit]);
     this.hit.on('pointerover', () => this.focusRequest?.());
     this.hit.on('pointerdown', () => {
-      if (this.isEnabled) this.activateCard();
+      unlockAudio();
+      this.activate();
     });
     this.redraw();
   }
@@ -92,7 +94,12 @@ class DraftCard extends Phaser.GameObjects.Container implements MenuControl {
   }
 
   activate(): void {
-    if (this.isEnabled) this.activateCard();
+    if (!this.isEnabled) {
+      playSound('ui.deny');
+      return;
+    }
+    playSound('ui.confirm');
+    this.activateCard();
   }
 
   adjust(_direction: -1 | 1): boolean {

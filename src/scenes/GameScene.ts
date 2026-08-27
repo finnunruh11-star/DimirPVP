@@ -64,6 +64,7 @@ import {
 import { TextEntry } from '../ui/cabinet/TextEntry';
 import { addCabinetWindow } from '../ui/cabinet/CabinetWindow';
 import { isReducedMotion, toggleMotionPreference } from '../ui/cabinet/motion';
+import { playSound, playMusic, type SoundName } from '../audio';
 import {
   ACTIONS_PER_TURN,
   COLORS,
@@ -174,6 +175,7 @@ import type { Spell, SpellVisual } from '../spells/Spell';
 import { allSpells, getSpell, isClassSpellCombo, spellById, setActiveSpellSets } from '../spells/registry';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type {
+  CombatFeedback,
   SubTargetCombatantOpts,
   SubTargetPointOpts,
   SubTargetEnemyOpts,
@@ -193,6 +195,20 @@ import {
   SwampArenaView,
 } from '../visuals/SwampArenaView';
 import { SimpleAI, type AIDecision } from '../ai/SimpleAI';
+
+/** Damage types with their own authored voice; anything else lands as a hit. */
+const DAMAGE_SOUND: Record<string, SoundName> = {
+  corrosive: 'spell.corrosive',
+  fire: 'spell.fire',
+  heat: 'spell.fire',
+  shatter: 'spell.shatter',
+  slashing: 'melee.slash',
+  pierce: 'melee.slash',
+};
+
+/** Words that bring their own sound, so the generic spell voice stays off. */
+const SELF_VOICED_WORDS = new Set(['lightning', 'fire', 'corrode', 'drain']);
+
 import type { MatchConfig, SeatConfig, SwampPrepMode } from '../config/MatchConfig';
 import {
   MINE_ROOM_VISUAL_LABEL,
@@ -1156,6 +1172,7 @@ export class GameScene extends Phaser.Scene {
     this.selectedIdx = [];
     this.pendingDice = [];
     this.pendingHits = [];
+    this.pendingSounds = [];
     this.pendingEffects = [];
     this.pendingDrains = [];
     this.pendingSummonPuffs = [];
@@ -1359,26 +1376,81 @@ export class GameScene extends Phaser.Scene {
     this.gs.vfxSink = {
       diceRoll: (spec, total, rolls, label) => this.pendingDice.push({ spec, total, rolls, label }),
       hit: (m) => this.playHit(m),
-      dash: (mover, from) => this.animateDash(mover, from),
-      blink: (from, to, color) => this.vfxBlink(from, to, color),
-      slash: (at, angle, size) => void this.vfxSlash('fx-slash-arc', at, angle, size),
-      pull: (mover, from, to) => this.animateEdgelordPull(mover, from, to),
-      lightningBolt: (from, to) => this.vfxLightningBolt(from, to),
-      spellEffect: (m, kind) => this.pendingEffects.push({ mage: m, kind }),
-      drainParticles: (from, to) => this.pendingDrains.push({ from: { ...from }, to: { ...to } }),
-      boomerang: (from, to, color, size, speed) => this.vfxBoomerang(from, to, color, size, speed),
-      summonPuff: (at, size) => this.pendingSummonPuffs.push({ at: { ...at }, size }),
-      combatFeedback: (mage, feedback) => this.combatFeedback?.show(mage, feedback),
-      shatterBurst: (at, size) => void this.vfxSpriteAt('fx-shatter', at, { lengthPx: size }),
-      wedge: (apex, angle, halfAngle, range) => this.vfxWedge(apex, angle, halfAngle, range),
+      dash: (mover, from) => {
+        playSound('move.dash');
+        this.animateDash(mover, from);
+      },
+      blink: (from, to, color) => {
+        playSound('spell.blink');
+        this.vfxBlink(from, to, color);
+      },
+      slash: (at, angle, size) => {
+        playSound('melee.slash');
+        void this.vfxSlash('fx-slash-arc', at, angle, size);
+      },
+      pull: (mover, from, to) => {
+        playSound('spell.pull');
+        return this.animateEdgelordPull(mover, from, to);
+      },
+      lightningBolt: (from, to) => {
+        playSound('spell.lightning');
+        return this.vfxLightningBolt(from, to);
+      },
+      spellEffect: (m, kind) => {
+        if (kind === 'vanish') this.pendingSounds.push('spell.vanish');
+        this.pendingEffects.push({ mage: m, kind });
+      },
+      drainParticles: (from, to) => {
+        // The siphon is voiced as it starts; the corrosion lands with the visual.
+        playSound('spell.drain');
+        this.pendingSounds.push('spell.corrosive');
+        this.pendingDrains.push({ from: { ...from }, to: { ...to } });
+      },
+      boomerang: (from, to, color, size, speed) => {
+        playSound('melee.slash');
+        return this.vfxBoomerang(from, to, color, size, speed);
+      },
+      summonPuff: (at, size) => {
+        this.pendingSounds.push('spell.summon');
+        this.pendingSummonPuffs.push({ at: { ...at }, size });
+      },
+      combatFeedback: (mage, feedback) => {
+        this.playFeedbackSound(feedback);
+        this.combatFeedback?.show(mage, feedback);
+      },
+      shatterBurst: (at, size) => {
+        playSound('spell.shatter');
+        void this.vfxSpriteAt('fx-shatter', at, { lengthPx: size });
+      },
+      wedge: (apex, angle, halfAngle, range) => {
+        playSound('spell.shatter');
+        this.vfxWedge(apex, angle, halfAngle, range);
+      },
       lightningTrail: (segments) => this.setLightningTrail(segments),
-      lightningDash: (from, to, color) =>
-        this.lightningFx?.dashStreak(from, to, color, FX_MOTION.dash.duration) ?? Promise.resolve(),
-      lightningImpact: (at, color) => void this.lightningFx?.impact(at, color),
-      lightningCrash: (at, color) => this.lightningFx?.crash(at, color) ?? Promise.resolve(),
+      lightningDash: (from, to, color) => {
+        playSound('spell.lightning');
+        return this.lightningFx?.dashStreak(from, to, color, FX_MOTION.dash.duration) ?? Promise.resolve();
+      },
+      lightningImpact: (at, color) => {
+        playSound('spell.thunder');
+        void this.lightningFx?.impact(at, color);
+      },
+      lightningCrash: (at, color) => {
+        playSound('spell.thunder');
+        return this.lightningFx?.crash(at, color) ?? Promise.resolve();
+      },
       clearLightningTrail: () => this.clearLightningTrail(),
-      quarterTurn: (clockwise) => this.vfxQuarterTurn(clockwise),
-      twistRune: (pivot, radius, clockwise) => this.vfxTwistRune(pivot, radius, clockwise),
+      quarterTurn: (clockwise) => {
+        playSound('spell.cast');
+        this.vfxQuarterTurn(clockwise);
+      },
+      boom: () => playSound('spell.explode'),
+      thunder: () => playSound('spell.thunder'),
+      execute: () => this.pendingSounds.push('unit.death'),
+      twistRune: (pivot, radius, clockwise) => {
+        playSound('spell.cast');
+        this.vfxTwistRune(pivot, radius, clockwise);
+      },
     };
     this.gs.subTargeter = {
       requestPoint: (source, opts) => this.requestSubtargetPoint(source, opts),
@@ -2364,7 +2436,7 @@ export class GameScene extends Phaser.Scene {
       }
     } else if (this.mineRun) {
       const spawns = mineWaveComposition(n, this.gs.rng, partySize);
-      this.gs.log(`— Mine encounter ${n} — ${spawns.length} foe${spawns.length === 1 ? '' : 's'} stir inside the room! —`);
+      this.gs.log(`— Mine encounter ${n}: ${spawns.length} foe${spawns.length === 1 ? '' : 's'} in the room —`);
       for (const spawn of spawns) this.spawnMineEnemy(spawn);
     } else {
       const encounter = rollSwamprunEncounter(n, this.gs.rng, partySize);
@@ -2569,7 +2641,7 @@ export class GameScene extends Phaser.Scene {
     const def = ENEMY_DEFS[this.raidBoss];
     this.swamprunEncounterPower = def.power;
     this.raidTarget = this.spawnEnemy(this.raidBoss);
-    this.gs.log(`— The effigies crumble to dust. ${def.name} steps into the arena! —`);
+    this.gs.log(`— Effigies removed. ${def.name} enters combat. —`);
     this.syncMageSprites();
     this.updateWaveHud();
     this.redraw();
@@ -2796,8 +2868,7 @@ export class GameScene extends Phaser.Scene {
 
   private expeditionXpToNext(): number {
     const l = this.expeditionLevel;
-    if (l === 1) return 3;
-    return Math.ceil(l * l * 1.5 + l);
+    return Math.ceil(10 * Math.pow(1.7, l - 1));
   }
 
   private expeditionPlayers(): Mage[] {
@@ -3023,7 +3094,7 @@ export class GameScene extends Phaser.Scene {
     const copy = this.spawnEnemy('wisp', near);
     copy.justSpawned = true; // it may not act (nor split) until its next turn
     this.swamprunWispCopies.add(copy); // copies drop no loot
-    this.gs.log(`${m.name} flickers and splits — another wisp coalesces.`);
+    this.gs.log(`${m.name} splits. A new wisp appears.`);
     this.redraw();
   }
 
@@ -3093,7 +3164,7 @@ export class GameScene extends Phaser.Scene {
       const wave = this.expeditionRetreatCursor--;
       this.gs.log(`Return path: crossing depth ${wave}...`);
       if (this.gs.rng.chance(0.05)) {
-        this.gs.log(`The path closes — wave ${wave} must be fought again!`);
+        this.gs.log(`Wave ${wave} must be fought again.`);
         this.spawnWave(wave);
         return true;
       }
@@ -4114,7 +4185,7 @@ export class GameScene extends Phaser.Scene {
     } else {
       // Word Vial: restore 1 charge to every word in the loadout.
       mage.grantEldritchCharges(1);
-      this.gs.log(`${mage.name} uncorks a Word Vial — each word regains 1 charge.`);
+      this.gs.log(`${mage.name} uses a Word Vial. Each word regains 1 charge.`);
     }
   }
 
@@ -4503,12 +4574,19 @@ export class GameScene extends Phaser.Scene {
 
   /** Per-frame: pulse the highlight rings around currently valid targets. */
   update(time: number): void {
+    this.syncMusic();
     this.drawArenaAmbient(time);
     this.syncMageSprites();
     this.drawMineMarkers();
     this.syncScarabSprites();
     this.drawScarabHp();
     this.drawTargetHighlights(time);
+  }
+
+  /** Shops and prep panels borrow the menu bed; combat keeps the arena bed. */
+  private syncMusic(): void {
+    const shopping = !!this.swampShopPanel || !!this.creativePrepPanel || !!this.shopPanel;
+    playMusic(shopping ? 'menu' : 'combat');
   }
 
   private drawTargetHighlights(time: number): void {
@@ -4571,6 +4649,7 @@ export class GameScene extends Phaser.Scene {
     if (this.gs.isOver) return this.endGame();
     const turnOwner = this.gs.current;
     this.gs.beginTurn();
+    if (!turnOwner.isAI) playSound('turn.start');
     if (this.raidPrepActive) this.maintainRaidEffigies();
     const oniTrigger = this.buildOniTurnEndTrigger();
     if (oniTrigger) {
@@ -4648,7 +4727,7 @@ export class GameScene extends Phaser.Scene {
       this.gs.log(`${me.name} is compelled to repeat their last action.`);
       await this.runStack(item);
     } else {
-      this.gs.log(`${me.name} is compelled but cannot act — they do nothing.`);
+      this.gs.log(`${me.name} is compelled but cannot act. No action taken.`);
       await this.delay(300);
     }
     if (this.swamprun && wave !== this.swamprunWave) return;
@@ -4952,7 +5031,7 @@ export class GameScene extends Phaser.Scene {
         if (this.gs.controlOf(me)?.mode === 'random') {
           const sub = this.randomCastFor(me);
           if (sub) {
-            this.gs.log(`${me.name} is scrambled — ${sub.spell.name} erupts instead!`);
+            this.gs.log(`${me.name} is scrambled. ${sub.spell.name} is cast instead.`);
             this.payForSpell(me, sub.spell);
             await this.runStack(this.gs.makeSpellItem(me, sub.spell, sub.target, sub.point));
           }
@@ -5121,7 +5200,7 @@ export class GameScene extends Phaser.Scene {
         // from the same synced RNG, so they pick the same spell + target.
         const sub = this.randomCastFor(me);
         if (sub) {
-          this.gs.log(`${me.name} is scrambled — ${sub.spell.name} erupts instead!`);
+          this.gs.log(`${me.name} is scrambled. ${sub.spell.name} is cast instead.`);
           this.payForSpell(me, sub.spell, freeBonus);
           await runAction(this.gs.makeSpellItem(me, sub.spell, sub.target, sub.point));
         }
@@ -5742,8 +5821,8 @@ export class GameScene extends Phaser.Scene {
     this.showEndCard({
       eyebrow: 'ONLINE SESSION',
       title: 'CONNECTION LOST',
-      detail: 'The other player left the relay. This match can no longer continue.',
-      actionLabel: 'RETURN TO CABINET',
+      detail: 'The other player left the relay. This match cannot continue.',
+      actionLabel: 'RETURN TO MAIN MENU',
       tone: 'warning',
       onActivate: () => this.returnToMenu(),
     });
@@ -6090,7 +6169,7 @@ export class GameScene extends Phaser.Scene {
     // A spell/action fizzles entirely (including any counter effect) if its
     // target is no longer valid when it resolves.
     if (!item.isStillValid(this.gs)) {
-      this.gs.log(`${item.label} fizzles — no valid target.`);
+      this.gs.log(`${item.label} fizzles. No valid target.`);
       if (item.kind === 'spell') this.setCharging(item.source, false);
       await this.delay(150);
       return item;
@@ -6099,7 +6178,7 @@ export class GameScene extends Phaser.Scene {
     // Bound after declaring: the body can no longer follow the action through.
     const bound = this.gs.stunPrevents(item);
     if (bound) {
-      this.gs.log(`${item.label} fails — ${item.source.name} is ${bound}.`);
+      this.gs.log(`${item.label} fails. ${item.source.name} is ${bound}.`);
       if (item.kind === 'spell') this.setCharging(item.source, false);
       await this.delay(220);
       return item;
@@ -6121,6 +6200,9 @@ export class GameScene extends Phaser.Scene {
       }
       this.gs.critThisCast = res.crit;
       this.gs.spellRollThisCast = res.roll;
+    }
+    if (item.kind === 'spell' && item.spell && !item.spell.words.some((w) => SELF_VOICED_WORDS.has(w))) {
+      playSound(item.spell.words.includes('death') ? 'unit.death' : 'spell.cast');
     }
 
     if (item.counters && item.respondingTo != null) {
@@ -6149,7 +6231,7 @@ export class GameScene extends Phaser.Scene {
     // Last look before the effect lands: a target that slipped out of range (or
     // stopped being legal) during the reaction window is off the hook entirely.
     if (!item.isStillValid(this.gs)) {
-      this.gs.log(`${item.label} fizzles — the target slipped out of reach.`);
+      this.gs.log(`${item.label} fizzles. The target moved out of range.`);
       if (item.kind === 'spell') this.setCharging(item.source, false);
       await this.delay(150);
       return item;
@@ -6680,6 +6762,11 @@ export class GameScene extends Phaser.Scene {
             this.closePause();
             return;
           }
+          if (this.mode === 'idle' || this.mode === 'reaction') {
+            this.openPause();
+            return;
+          }
+          playSound('ui.back');
           if (this.mode === 'action-menu') {
             this.hideActionMenu();
             return;
@@ -6713,10 +6800,6 @@ export class GameScene extends Phaser.Scene {
             this.scenarioMoveTarget = null;
             this.mode = 'idle';
             this.toggleScenarioLab();
-            return;
-          }
-          if (this.mode === 'idle' || this.mode === 'reaction') {
-            this.openPause();
             return;
           }
           this.cancelAiming();
@@ -6761,6 +6844,7 @@ export class GameScene extends Phaser.Scene {
 
   private openPause(): void {
     if (this.mode !== 'idle' && this.mode !== 'reaction') return;
+    playSound('ui.open');
     this.pauseReturn = this.mode;
     this.mode = 'pause';
     this.pauseView?.destroy();
@@ -6785,6 +6869,7 @@ export class GameScene extends Phaser.Scene {
 
   private closePause(): void {
     if (this.mode !== 'pause') return;
+    playSound('ui.close');
     this.pauseView?.destroy();
     this.pauseView = undefined;
     this.mode = this.pauseReturn;
@@ -8133,53 +8218,53 @@ export class GameScene extends Phaser.Scene {
     switch (s.kind) {
       case 'invisibility':
         return s.mode === 'full'
-          ? `Fully invisible — enemies cannot target you. (${turns})`
-          : `Partially veiled — breaks if an enemy gets close. (${turns})`;
+          ? `Invisible. Cannot be targeted beyond 6cm; 90% dodge within 6cm. (${turns})`
+          : `Half veil. Still targetable. Dodge chance 95% beyond 10cm, 75% at 6-10cm, 50% within 6cm. Breaks if an enemy comes within 2cm. (${turns})`;
       case 'stun': {
         const what =
           s.stunType === 'full'
-            ? 'cannot act at all'
+            ? 'No actions.'
             : s.stunType === 'movement'
-              ? 'cannot move'
-              : 'lose your main action';
-        return `Stunned — you ${what}. (${turns})`;
+              ? 'Cannot move.'
+              : 'No main action.';
+        return `${what} (${turns})`;
       }
       case 'dot':
-        return `Damage over time — takes damage at the start of your turn. (${turns})`;
+        return `Damage over time. Deals damage at the start of your turn. (${turns})`;
       case 'fire':
-        return `Fire — ${s.stacks} stack${s.stacks === 1 ? '' : 's'}; flares and decays at turn start.`;
+        return `Fire: ${s.stacks} stack${s.stacks === 1 ? '' : 's'}. At turn start, 1-3 stacks deal 1d3 then lose 1; 4-6 stacks deal 1d6, spread 1 to units within 2cm, then lose 2. Applying above 6 deals 1d10, spreads, and resets to 5.`;
       case 'sentinelFire':
-        return `Sentinel Fire — ${s.stacks} stack${s.stacks === 1 ? '' : 's'}; spreads from 5 and erupts at 10.`;
+        return `Sentinel Fire: ${s.stacks} stack${s.stacks === 1 ? '' : 's'}. Spreads at 5+ stacks. Erupts at 10 stacks.`;
       case 'blueflare':
-        return `Blueflare — ${s.stacks} mental-flame stack${s.stacks === 1 ? '' : 's'}; spreads from 3+.`;
+        return `Blueflare: ${s.stacks} stack${s.stacks === 1 ? '' : 's'}. Deals sanity damage at turn start. Spreads at 3+ stacks.`;
       case 'soulRend':
-        return `Soul Rend — ${s.stacks} stack${s.stacks === 1 ? '' : 's'}; at your turn start each stack tears 1d3 true health and 1d3 true mill, then one stack closes.`;
+        return `Soul Rend: ${s.stacks} stack${s.stacks === 1 ? '' : 's'}. At turn start, deals 1d3 true HP and 1d3 true sanity per stack, then loses 1 stack.`;
       case 'reap':
-        return `Reap — ${s.stacks} stack${s.stacks === 1 ? '' : 's'}; you die at or below ${s.stacks} health, and executions against you are raised by ${2 * s.stacks}.`;
+        return `Reap: ${s.stacks} stack${s.stacks === 1 ? '' : 's'}. You die at or below ${s.stacks} HP. Execution thresholds against you are increased by ${2 * s.stacks}.`;
       case 'shadowAnchor':
-        return `Chained to the Dark — at your turn start you are dragged toward the anchoring pool first, then judged: inside it you forget a word, outside it you take 1d4 sanity. (${turns})`;
+        return `Chained. At turn start you are dragged 5cm toward the anchor, then checked: inside the caster's shadow you forget 1 random word or action; outside it you take 1d4 sanity. (${turns})`;
       case 'memoryShackle':
-        return `Memory Shackle — everything you declare is eaten: a weapon strike forgets how to attack, a spell forgets every word it used. (${turns})`;
+        return `Shackled. Any action you declare is forgotten: a weapon attack forgets 'melee', a spell forgets every word it used, for 3 turns each. (${turns})`;
       case 'shadowHook':
-        return `Hooked — at your turn start you are reeled toward the hooker, take 1d6 pierce, and leave one of their shadows behind. Dragged into a wall it is 2d6 shatter on top. (${turns})`;
+        return `Hooked. At turn start you are pulled 4cm toward the caster, take 1d6 pierce, and leave one of their shadows where you stop. Being dragged into a wall or the field edge adds 2d6 shatter. (${turns})`;
       case 'phaseOut':
         return s.mode === 'self'
-          ? `Dissolved — until your next turn you do not exist: nothing can target, damage or afflict you. You may only walk, straight through walls and bodies, dissolving enemies you pass. Phasing back in skips your upkeep.`
-          : `Banished — until your next turn you do not exist: nothing reaches you, your items are inert and your upkeep is skipped. When it ends, everything within 4 range takes 2d6 shadow.`;
+          ? 'Phased. Cannot be targeted, damaged or affected until your next turn. Movement only, passing through walls, zones and bodies. Enemies you pass through take 1d6 corrosive. Upkeep is skipped; statuses still count down.'
+          : 'Phased. Cannot be targeted, damaged or affected until your next turn. Movement only. Items have no effect and upkeep is skipped; statuses still count down. On expiry, all enemies of the caster within 4cm, including you, take 2d6 shadow.';
       case 'threadMark':
-        return `Threaded — every wound dealt to another threaded victim echoes to you for half its value as mill. (${turns})`;
+        return `Threaded. Damage dealt to any other threaded target also deals 50% of that amount to you as sanity damage. (${turns})`;
       case 'swornRepetition':
-        return `Sworn Repetition — ${s.stacks} stack${s.stacks === 1 ? '' : 's'} (-${s.stacks} damage dealt, +${s.stacks} damage taken). ${s.lingering ? 'The oath is spent; the rot is merely fading.' : 'Break the compulsion and it collects 1d6 sanity per stack.'} (${turns})`;
+        return `Sworn: ${s.stacks} stack${s.stacks === 1 ? '' : 's'}. -${s.stacks} damage dealt, +${s.stacks} damage taken. ${s.lingering ? 'Compulsion over; stacks now fade.' : 'Failing to repeat your last action deals 1d6 sanity per stack and ends it.'} (${turns})`;
       case 'woundShade':
-        return `Walking Wound — you carry the caster's shadow: it bites each turn and counts as one of their pools wherever you go. (${turns})`;
+        return `Carrying the caster's shadow. It moves with you and counts as one of their pools for reach, teleports and spell conditions. (${turns})`;
       case 'mindFuse':
-        return `Swelling Fuse — ${s.ticks} charge${s.ticks === 1 ? '' : 's'} banked, detonating for 1d6 plus 1d6 per charge. Every action you take — main, bonus or reaction — burns it down one turn early. (${turns})`;
+        return `Fuse: ${s.ticks} charge${s.ticks === 1 ? '' : 's'}. Detonates for 1d6 plus 1d6 per charge as sanity damage. Gains 1 charge per turn. Each action you take (main, bonus or reaction) reduces the timer by 1 extra turn. (${turns})`;
       case 'reactionNeedle':
-        return `Remembering Needle — every reaction you take twists it for 2d6 mill. The reaction still resolves. (${turns})`;
+        return `Needled. Each reaction you take deals 2d6 sanity damage to you. The reaction still resolves. (${turns})`;
       case 'foeBlind':
-        return `Friend From Foe — every entity reads as hostile, your areas spare nobody, and your targets are chosen at random. (${turns})`;
+        return `Foe-blind. All entities count as hostile to you, your areas and cones hit allies, and your targets are chosen at random. Deals 1d4 sanity at turn start. (${turns})`;
       case 'deathCurse':
-        return `Death Curse — ${s.stacks} counter${s.stacks === 1 ? '' : 's'} left; each falls at your turn start or on shadow/corrosive damage for 2 Reap. Executions become Reap until the last counter, which executes you.`;
+        return `Death Curse: ${s.stacks} counter${s.stacks === 1 ? '' : 's'}. Each counter falls at your turn start or on shadow/corrosive damage, granting 2 Reap. Executions against you become Reap until the last counter, which kills you.`;
       case 'debuff': {
         const parts: string[] = [];
         if (s.mods.moveRange) parts.push(`move ${s.mods.moveRange > 0 ? '+' : ''}${s.mods.moveRange}`);
@@ -8190,17 +8275,17 @@ export class GameScene extends Phaser.Scene {
         return `${parts.join(', ') || 'Stat change'}. (${turns})`;
       }
       case 'ward':
-        return `Ward — negates the next mind/sanity hit. (${turns})`;
+        return `Ward. Negates the next sanity hit or mental control effect. (${turns})`;
       case 'auraDot':
-        return `Damaging aura — harms nearby enemies each turn. (${turns})`;
+        return `Damaging aura. Deals damage to nearby enemies each turn. (${turns})`;
       case 'control':
-        return `Compelled — your action is hijacked this turn. (${turns})`;
+        return `Controlled. Your action selection is overridden. (${turns})`;
       case 'shadowVeil':
-        return `Shadow veil — cloaked in shadow. (${turns})`;
+        return `Shadow Veil. Untargetable at any range while standing in a shadow. (${turns})`;
       case 'shadowTrail':
-        return `Shadow trail — leaves shadows where you walk. (${turns})`;
+        return `Leaves a shadow pool wherever you move. (${turns})`;
       case 'forget':
-        return `Forgetful — part of your loadout is unusable. (${turns})`;
+        return `Forgotten: ${s.forgotten.join(', ') || 'nothing'}. Those actions or words are unusable. (${turns})`;
       default:
         return turns;
     }
@@ -8588,7 +8673,7 @@ export class GameScene extends Phaser.Scene {
     ) {
       mage.firstBlackSpellUsed = true;
       mana = 0;
-      this.gs.log(`${mage.name}'s Dark Mage's Cape swallows the cost — the spell is free.`);
+      this.gs.log(`${mage.name}'s Dark Mage's Cape makes the spell free.`);
     }
     if (free && mage.swamprunCurse === 'feeding') mana += 1;
     mage.spendMana(mana);
@@ -9261,14 +9346,14 @@ export class GameScene extends Phaser.Scene {
       `${reactor.name} rolls a dodge [${roll.rolls.join(', ')}] → ${dodgeTierLabel(tier)}.`
     );
     if (tier === 'none') {
-      this.gs.log(`${reactor.name} fails to evade — the blow lands.`);
+      this.gs.log(`${reactor.name} fails to dodge. The attack lands.`);
       return tier;
     }
 
     // Success: negate the whole action and let the dodger slip aside. The
     // reposition distance scales only very slightly with Dexterity: 2R at Dex 0
     // up to 4R at Dex 20.
-    this.gs.log(`${reactor.name} twists away from the ${top.label.toLowerCase()} — avoided!`);
+    this.gs.log(`${reactor.name} dodges the ${top.label.toLowerCase()}.`);
     const range = RANGE_UNIT * (2 + dex / 10);
     let dest: Vec2 | null;
     if (this.controllerIsAI(reactor)) {
@@ -12954,6 +13039,9 @@ export class GameScene extends Phaser.Scene {
   /** Mages awaiting a hit recoil; flushed after their damage dice resolve. */
   private pendingHits: Mage[] = [];
 
+  /** Sounds for queued visuals, played when those visuals actually appear. */
+  private pendingSounds: SoundName[] = [];
+
   /** Queued one-shot hit-effect overlays; flushed alongside hit recoils. */
   private pendingEffects: {
     mage: Mage;
@@ -13163,6 +13251,40 @@ export class GameScene extends Phaser.Scene {
     if (!this.pendingHits.includes(m)) this.pendingHits.push(m);
   }
 
+  /**
+   * Voice one combat readout. Queued, not played: the matching visual only
+   * appears once the damage dice have settled.
+   */
+  private playFeedbackSound(feedback: CombatFeedback): void {
+    if (feedback.critical) this.pendingSounds.push('hit.crit');
+    switch (feedback.kind) {
+      case 'heal':
+      case 'sanityHeal':
+        this.pendingSounds.push('spell.heal');
+        return;
+      case 'miss':
+        this.pendingSounds.push('melee.slash');
+        return;
+      case 'immune':
+      case 'blocked':
+        this.pendingSounds.push('hit.block');
+        return;
+      case 'sanityDamage':
+        this.pendingSounds.push('spell.psychic');
+        return;
+      case 'damage': {
+        // An enemy's blow always reads as a plain hit, whatever it is made of.
+        const voice = feedback.source?.isAI
+          ? 'hit.physical'
+          : DAMAGE_SOUND[feedback.damageType ?? ''] ?? 'hit.physical';
+        this.pendingSounds.push(voice);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
   /** Keep a defeated authored creature visible until its fatal animation plays. */
   private queueCreatureDeath(m: Mage): void {
     const kind = creatureSpriteKind(m);
@@ -13181,6 +13303,9 @@ export class GameScene extends Phaser.Scene {
   private async flushHitsAndEffects(): Promise<void> {
     const queued = this.pendingHits;
     this.pendingHits = [];
+    // Repeats collapse in the audio throttle, so a six-target burst stays one hit.
+    for (const name of this.pendingSounds) playSound(name);
+    this.pendingSounds = [];
     for (const m of queued) this.triggerHit(m);
     await this.flushEffects();
   }
@@ -13474,6 +13599,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private vfxLightningNova(at: Vec2, color: number, thickness = 1): Promise<void> {
+    playSound('spell.lightning');
     return this.lightningFx?.nova(at, color, thickness) ?? Promise.resolve();
   }
 
@@ -14055,8 +14181,8 @@ export class GameScene extends Phaser.Scene {
       this.showEndCard({
         eyebrow: 'RAID COMPLETE',
         title: this.raidVictory ? 'VICTORY' : 'DEFEAT',
-        detail: this.raidVictory ? `${targetName} has fallen.` : `${targetName} still commands the arena.`,
-        actionLabel: 'RETURN TO CABINET',
+        detail: this.raidVictory ? `${targetName} defeated.` : `${targetName} survived.`,
+        actionLabel: 'RETURN TO MAIN MENU',
         tone: this.raidVictory ? 'victory' : 'defeat',
         onActivate: () => this.returnToMenu(),
       });
@@ -14087,15 +14213,15 @@ export class GameScene extends Phaser.Scene {
           ? 'EXPEDITION ENDED'
           : 'SWAMPRUN ENDED';
       const detail = this.mineRun
-        ? `The maze claims the party. ${mineEncountersCleared} encounters cleared.`
+        ? `${mineEncountersCleared} encounters cleared.`
         : this.expedition
-          ? `The company falls at depth ${this.swamprunWave}, level ${this.expeditionLevel}.`
-          : `The swamp claims the party after ${this.swamprunWave} waves.`;
+          ? `Depth ${this.swamprunWave}, level ${this.expeditionLevel}.`
+          : `${this.swamprunWave} waves survived.`;
       this.showEndCard({
         eyebrow,
         title: 'PARTY LOST',
         detail,
-        actionLabel: 'RETURN TO CABINET',
+        actionLabel: 'RETURN TO MAIN MENU',
         tone: 'defeat',
         onActivate: () => this.returnToMenu(),
       });
@@ -14109,7 +14235,7 @@ export class GameScene extends Phaser.Scene {
       this.showEndCard({
         eyebrow: 'TRAINING COMPLETE',
         title: 'FIELD RESET',
-        detail: 'The exercise has resolved. Restore every combatant and clear the arena.',
+        detail: 'Combat resolved. Restore every combatant and clear the field.',
         actionLabel: 'RESET FIELD',
         tone: 'neutral',
         onActivate: () => {
@@ -14128,9 +14254,9 @@ export class GameScene extends Phaser.Scene {
       eyebrow: 'MATCH COMPLETE',
       title: w ? `${w.name} WINS` : 'DRAW',
       detail: w
-        ? `Team ${w.team} controls the arena after ${this.gs.round} rounds.`
-        : `No side controls the arena after ${this.gs.round} rounds.`,
-      actionLabel: 'RETURN TO CABINET',
+        ? `Team ${w.team} wins after ${this.gs.round} rounds.`
+        : `No winner after ${this.gs.round} rounds.`,
+      actionLabel: 'RETURN TO MAIN MENU',
       tone: w ? 'victory' : 'neutral',
       onActivate: () => this.returnToMenu(),
     });
@@ -15012,7 +15138,14 @@ export class GameScene extends Phaser.Scene {
       this.dicePanel.hide();
       return;
     }
-    for (const roll of queued) await this.dicePanel.play(roll, this.reducedMotion);
+    for (const roll of queued) {
+      playSound('dice.roll');
+      await this.dicePanel.play(roll, this.reducedMotion);
+      // Sting the swing rolls only; damage dice would fire this constantly.
+      if (!roll.spec.includes('d20')) continue;
+      if (roll.rolls.includes(20)) playSound('dice.crit');
+      else if (roll.rolls.includes(1)) playSound('dice.fumble');
+    }
   }
 
   private delay(ms: number): Promise<void> {

@@ -41,7 +41,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: true,
     charges: 4,
     color: 0x6ad1ff,
-    blurb: 'Control and BDSM.',
+    blurb: 'Roots, stuns and movement control.',
   },
   shadow: {
     id: 'shadow',
@@ -49,7 +49,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0x8a6bff,
-    blurb: 'Hello darkness my old friend.',
+    blurb: 'Shadow pools, shadow damage and casting reach through them.',
   },
   veil: {
     id: 'veil',
@@ -57,7 +57,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: true,
     charges: 4,
     color: 0xb98bff,
-    blurb: 'Invisibility.',
+    blurb: 'Invisibility and untargetability.',
   },
   mind: {
     id: 'mind',
@@ -65,7 +65,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: true,
     charges: 4,
     color: 0xff8be0,
-    blurb: 'Targets the Mind',
+    blurb: 'Sanity damage and mental control.',
   },
   shatter: {
     id: 'shatter',
@@ -73,7 +73,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0xffd166,
-    blurb: 'Blunt damage cone.',
+    blurb: 'Shatter damage in cones and areas.',
   },
   corrode: {
     id: 'corrode',
@@ -81,7 +81,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0x9be870,
-    blurb: 'Corrosive attack.',
+    blurb: 'Corrosive damage.',
   },
   curse: {
     id: 'curse',
@@ -89,7 +89,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0xff9f6b,
-    blurb: 'DoTs and debuffs.',
+    blurb: 'Damage over time and debuffs.',
   },
   pierce: {
     id: 'pierce',
@@ -97,7 +97,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0xfffbe0,
-    blurb: 'Dashes and precision',
+    blurb: 'Pierce damage, dashes and single-target precision.',
   },
   // --- Secret words (NAD easter-egg loadout only; hidden from the menu grid) ---
   twist: {
@@ -106,7 +106,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: true,
     charges: 4,
     color: 0x66ffd1,
-    blurb: 'YOU SPIN ME RIGHT ROUND.',
+    blurb: 'Rotates units and the battlefield.',
   },
   reality: {
     id: 'reality',
@@ -114,7 +114,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0xff5599,
-    blurb: 'Bends the rules of the duel.',
+    blurb: 'Alters turn order, targeting rules and the battlefield itself.',
   },
   drain: {
     id: 'drain',
@@ -122,7 +122,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0x57d6a0,
-    blurb: 'Corrosive lifesteal.',
+    blurb: 'Corrosive damage that heals you for the amount dealt.',
   },
   death: {
     id: 'death',
@@ -130,7 +130,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0xb9c0cc,
-    blurb: 'Reap marks and executions.',
+    blurb: 'Reap stacks and execution thresholds.',
   },
   fire: {
     id: 'fire',
@@ -138,7 +138,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0xff5a36,
-    blurb: 'Stacking flames.',
+    blurb: 'Stacking Fire status that spreads and detonates.',
   },
   lightning: {
     id: 'lightning',
@@ -146,7 +146,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0xffe45c,
-    blurb: 'Gambles on the cast roll.',
+    blurb: 'Chains and dashes scaled by the cast roll, with self-risk.',
   },
   stop: {
     id: 'stop',
@@ -154,7 +154,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: true,
     charges: 4,
     color: 0x9ee7ff,
-    blurb: 'Companion counter that stops anything.',
+    blurb: 'Companion reaction that cancels any action.',
   },
   // --- Modifiers (granted to every mage; free of the loadout limit) ---
   subtle: {
@@ -163,7 +163,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0x8fa3b8,
-    blurb: 'Silent casting at 80% power.',
+    blurb: 'Modifier: the spell cannot be reacted to, at 80% power.',
   },
   delay: {
     id: 'delay',
@@ -171,7 +171,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: true,
     charges: 4,
     color: 0x7fd8c0,
-    blurb: 'Postpone a spell or a stacked action.',
+    blurb: 'Modifier: hold the spell until your next turn. Also a reaction spell that delays a stacked action.',
   },
   channel: {
     id: 'channel',
@@ -179,7 +179,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0xffc98a,
-    blurb: 'Hold a turn for +50% power.',
+    blurb: 'Modifier: lose the rest of your turn, release the spell next turn at 150% power.',
   },
   // --- Secret words (GEN easter-egg loadout only; hidden from the menu grid) ---
   order: {
@@ -188,7 +188,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0xf3ecd2,
-    blurb: 'White word — command and control.',
+    blurb: 'White word. Commands, conditional buffs and action denial.',
   },
   slash: {
     id: 'slash',
@@ -196,7 +196,7 @@ export const WORDS: Record<WordId, WordDef> = {
     grantsReaction: false,
     charges: 4,
     color: 0xffe08a,
-    blurb: 'Slashing cones and dashes.',
+    blurb: 'Slashing damage in cones, with a dash.',
   },
 };
 

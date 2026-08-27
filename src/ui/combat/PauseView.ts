@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { audioVolume, isAudioMuted, playSound, setAudioMuted, setAudioVolume } from '../../audio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
 import { SceneInput } from '../../engine/SceneInput';
 import { CabinetButton, MenuFocusGroup } from '../cabinet/controls';
@@ -18,6 +19,7 @@ export class PauseView extends Phaser.GameObjects.Container {
   private readonly focus = new MenuFocusGroup();
   private readonly motion: CabinetButton;
   private readonly speed: CabinetButton;
+  private readonly volume: CabinetButton;
   private disposed = false;
 
   constructor(scene: Phaser.Scene, private readonly options: PauseViewOptions) {
@@ -40,7 +42,7 @@ export class PauseView extends Phaser.GameObjects.Container {
     frame.fillStyle(MENU_COLOR.charcoal, 1).fillRect(left + 14, top + 14, width - 28, height - 28);
     frame.lineStyle(2, MENU_COLOR.brassDark, 1).strokeRect(left + 14.5, top + 14.5, width - 29, height - 29);
     frame.fillStyle(MENU_COLOR.brass, 1).fillRect(left + 14, top + 14, width - 28, 6);
-    const eyebrow = scene.add.text(GAME_WIDTH / 2, top + 39, 'DIMIR CABINET', {
+    const eyebrow = scene.add.text(GAME_WIDTH / 2, top + 39, 'DIMIR', {
       fontFamily: MENU_FONT.control,
       fontSize: '12px',
       color: MENU_HEX.brassLight,
@@ -71,7 +73,7 @@ export class PauseView extends Phaser.GameObjects.Container {
       onActivate: options.toggleMotion,
       onAdjust: () => options.toggleMotion(),
     });
-    this.speed = new CabinetButton(scene, left + 46, top + 302, {
+    this.speed = new CabinetButton(scene, left + 46, top + 290, {
       width: width - 92,
       height: 70,
       label: '',
@@ -80,17 +82,27 @@ export class PauseView extends Phaser.GameObjects.Container {
       onActivate: options.toggleSpeed,
       onAdjust: () => options.toggleSpeed(),
     });
-    const menu = new CabinetButton(scene, left + 46, top + 414, {
+    this.volume = new CabinetButton(scene, left + 46, top + 366, {
       width: width - 92,
       height: 70,
-      label: 'RETURN TO CABINET',
+      label: '',
+      index: 'V',
+      selected: !isAudioMuted(),
+      onActivate: () => this.toggleMute(),
+      onAdjust: (direction) => this.stepVolume(direction),
+    });
+    const menu = new CabinetButton(scene, left + 46, top + 452, {
+      width: width - 92,
+      height: 70,
+      label: 'RETURN TO MAIN MENU',
       index: '<',
       onActivate: options.returnToMenu,
     });
-    this.add([resume, this.motion, this.speed, menu]);
+    this.add([resume, this.motion, this.speed, this.volume, menu]);
     this.focus.add(resume);
     this.focus.add(this.motion);
     this.focus.add(this.speed);
+    this.focus.add(this.volume);
     this.focus.add(menu);
     this.refresh(options.motionReduced, options.combatSpeed);
 
@@ -111,6 +123,29 @@ export class PauseView extends Phaser.GameObjects.Container {
     this.motion.setSelected(motionReduced);
     this.speed.setCopy(`COMBAT SPEED: ${combatSpeed}X`);
     this.speed.setSelected(combatSpeed > 1);
+    this.refreshVolume();
+  }
+
+  private refreshVolume(): void {
+    const muted = isAudioMuted();
+    this.volume.setCopy(`VOLUME: ${muted ? 'MUTED' : `${Math.round(audioVolume() * 100)}%`}`);
+    this.volume.setSelected(!muted);
+  }
+
+  private toggleMute(): void {
+    const muted = !isAudioMuted();
+    setAudioMuted(muted);
+    if (!muted && audioVolume() <= 0) setAudioVolume(0.7);
+    this.refreshVolume();
+  }
+
+  private stepVolume(direction: -1 | 1): void {
+    const next = Math.min(1, Math.max(0, Math.round((audioVolume() + direction * 0.1) * 10) / 10));
+    setAudioVolume(next);
+    if (next > 0) setAudioMuted(false);
+    this.refreshVolume();
+    // Preview blip so the new level is audible immediately.
+    playSound('ui.hover');
   }
 
   override destroy(fromScene?: boolean): void {

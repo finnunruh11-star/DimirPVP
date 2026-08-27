@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { playSound, unlockAudio } from '../../audio';
 import type { ItemId } from '../../core/Items';
 import { STAT_DEFS, type StatKey } from '../../core/Stats';
 import { SceneInput } from '../../engine/SceneInput';
@@ -103,7 +104,8 @@ class OfferCard extends Phaser.GameObjects.Container implements MenuControl {
     this.add([this.face, title, price, body, this.hit]);
     this.hit.on('pointerover', () => this.focusRequest?.());
     this.hit.on('pointerdown', () => {
-      if (offer.enabled) activateCard();
+      unlockAudio();
+      this.activate();
     });
     this.redraw();
   }
@@ -120,7 +122,12 @@ class OfferCard extends Phaser.GameObjects.Container implements MenuControl {
   }
 
   activate(): void {
-    if (this.offer.enabled) this.activateCard();
+    if (!this.offer.enabled) {
+      playSound('ui.deny');
+      return;
+    }
+    playSound('ui.confirm');
+    this.activateCard();
   }
 
   adjust(_direction: -1 | 1): boolean {

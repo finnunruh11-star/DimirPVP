@@ -3645,7 +3645,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Chain one enemy to your nearest shadow for 3 turns (range 12). At the start of each of its turns it is first dragged 5 range toward that pool, and only then judged: swallowed by the dark it forgets a random word or action for the turn, left outside it takes 1d4 sanity. With no shadow of yours on the field, one opens beneath the target.',
+    'Range 12. Root for 3 turns and anchor the target to your nearest shadow. At the start of each of its turns: drag it 5cm toward the anchor, then check its position. Inside one of your shadows it forgets 1 random word or action for the turn. Outside, it takes 1d4 sanity. If you own no shadow, one is created under the target.',
   visual: { preset: 'beam', color: 0x8a6bff, size: 8, speed: 1.1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -3733,7 +3733,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Sink a hook into one enemy (range 15), rooting it for 3 turns. At the start of each of its turns it is reeled 4 range toward you, takes 1d6 pierce, and leaves one of your shadow pools where it comes to rest. Like every forced displacement, being dragged into a wall or the field edge slams it for 2d6 shatter.',
+    'Range 15. Root for 3 turns. At the start of each of the target\u2019s turns: pull it 4cm toward you, deal 1d6 pierce, and create one of your shadow pools where it stops. Being pulled into a wall or the field edge adds 2d6 shatter.',
   visual: { preset: 'beam', color: 0xfffbe0, size: 8, speed: 1.6 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -3772,7 +3772,7 @@ registerSpell({
   targeting: 'none',
   dc: 13,
   description:
-    'For 3 rounds every shadow you own feeds. An enemy starting its turn in one is rooted and swallowed for 1d3 shadow, plus 1d3 corrosive for every enemy that pool has already eaten. Each meal widens the pool by 1 range; a pool may eat twice per round.',
+    'For 3 rounds, every shadow you own damages enemies. An enemy starting its turn in one of your pools is rooted for 1 turn and takes 1d3 shadow, plus 1d3 corrosive per enemy that pool has already consumed. Each consumption widens the pool by 1cm. Each pool may consume at most 2 enemies per round.',
   visual: { preset: 'nova', color: 0x9be870, size: 64, speed: 1.1 },
   cast(ctx) {
     ctx.game.feedingDarks.push({
@@ -3798,7 +3798,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Compel one enemy to repeat its last action for 4 turns (range 12). Every turn it obeys, the oath deepens by a stack: -1 damage dealt and +1 damage taken, cumulative. The turn it fails to repeat, the oath collects 1d6 sanity per stack and ends. Survive all 4 turns and it costs no blood, but the stacks linger 2 turns longer.',
+    'Range 12. The target must repeat its last action for 4 turns. Each turn it repeats successfully, gain 1 stack: -1 damage dealt and +1 damage taken per stack, cumulative. If it fails to repeat, it takes 1d6 sanity per stack and the effect ends. If it survives all 4 turns, it takes no damage but the stacks remain for 2 more turns.',
   visual: { preset: 'beam', color: 0xff9f6b, size: 7, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -3841,7 +3841,7 @@ registerSpell({
   targeting: 'self',
   dc: 13,
   description:
-    'Dash three times, 5 range each. Every enemy you clip is threaded and rooted for 3 turns and takes 1d3 mill. While the thread holds, any wound dealt to one threaded enemy echoes to all the others for half its value as mill.',
+    'Dash 3 times, up to 5cm each. Every enemy you pass through is marked and rooted for 3 turns and takes 1d3 sanity. While marked, damage dealt to any marked enemy also deals 50% of that amount to every other marked enemy as sanity damage.',
   visual: { preset: 'nova', color: 0xffb0e0, size: 58, speed: 1.6 },
   async cast(ctx) {
     const threaded = new Set<Mage>();
@@ -3900,7 +3900,7 @@ registerSpell({
   targeting: 'self',
   dc: 13,
   description:
-    'Until the start of your next turn you stop existing: nothing can target, damage or afflict you, and no debuff or damage-over-time reaches you. You may walk — through walls, zones and bodies alike — but do nothing else. Every enemy you drift through takes 1d6 corrosive. Phasing back in skips your upkeep, though your statuses still age. A shadow opens where you dissolve.',
+    'Until the start of your next turn you cannot be targeted, damaged or affected by anything, including debuffs and DoTs. You may only move, passing through walls, zones and bodies. Enemies you move through take 1d6 corrosive. Phasing back in skips your upkeep; statuses still count down. Creates a shadow pool at your position.',
   visual: { preset: 'nova', color: 0x9be870, size: 60, speed: 1.2 },
   cast(ctx) {
     placeShadow(ctx, ctx.caster.pos, 4);
@@ -3935,7 +3935,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Phase one enemy out of the world until the start of its next turn (range 15). It cannot be targeted, damaged or affected by anything, and it can do nothing but walk — its items are inert and its upkeep is skipped, though its statuses still age. When the dark releases it, every enemy within 4 range of it, itself included, takes 2d6 shadow.',
+    'Range 15. The target cannot be targeted, damaged or affected by anything until the start of its next turn. It may only move; its items have no effect and its upkeep is skipped, but its statuses still count down. When it ends, every enemy within 4cm of it, including itself, takes 2d6 shadow.',
   visual: { preset: 'beam', color: 0xb98bff, size: 9, speed: 1.2 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -4112,7 +4112,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Set a fuse in one enemy for 10 of its turns (range 15). It starts at 1d6 sanity and swells by 1d6 every turn it survives. Every action the victim takes — main, bonus or reaction — burns the fuse down one turn early, so it can rush a small blast now or stall for a far larger one and hope the fight ends first.',
+    'Range 15. Sets a fuse lasting 10 of the target’s turns. It starts at 1d6 sanity and gains 1d6 every turn it survives. Each action the target takes (main, bonus or reaction) reduces the timer by 1 extra turn.',
   visual: { preset: 'beam', color: 0xffd166, size: 8, speed: 1.2 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -4147,7 +4147,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Deal 2d6 mill and pin a needle for 4 turns (range 12). Every time the victim takes a reaction the needle twists for another 2d6 mill — the reaction still resolves, it simply costs.',
+    'Range 12. Deal 2d6 sanity and apply a needle for 4 turns. Each reaction the target takes deals a further 2d6 sanity to it. The reaction still resolves.',
   visual: { preset: 'projectile', color: 0xff7bb0, size: 10, speed: 1.9 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -4254,7 +4254,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Nail a shadow pool to one enemy for 5 turns — it travels with the victim and counts as one of yours. For those 5 rounds every shadow you own rots: any enemy starting its turn in one takes 1d3 mill and 1d6 corrosive and is slowed 75%.',
+    'Range 15. Attach a shadow pool to the target for 5 turns; it moves with the target and counts as one of yours. For 5 rounds, every shadow you own damages enemies: an enemy starting its turn in one takes 1d3 sanity and 1d6 corrosive and is slowed 75%.',
   visual: { preset: 'beam', color: 0x8a6bff, size: 9, speed: 1.2 },
   cast(ctx) {
     if (!ctx.target) return;

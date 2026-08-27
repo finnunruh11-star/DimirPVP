@@ -62,21 +62,21 @@ const NATIVE_MODES = new Set<MatchMode>([
 const PACK_COPY: Record<keyof ItemSetSelection, MenuEntryCopy> = {
   original: {
     label: 'Original Dimir',
-    detail: 'The core equipment and spell catalogue',
+    detail: 'Core items and spells',
     title: 'ORIGINAL DIMIR',
-    description: 'The foundational item and spell set. At least one catalogue must remain enabled.',
+    description: 'The base item and spell set. At least 1 pack must stay enabled.',
   },
   finns: {
     label: "Finn's Additions",
-    detail: 'Experimental equipment and authored additions',
+    detail: 'Extra items and spells',
     title: "FINN'S ADDITIONS",
-    description: 'Adds the custom equipment and spell content authored for this ruleset.',
+    description: 'Adds custom items and spells to drafts, shops and the spell grid.',
   },
   dlc: {
     label: 'Dimir Faithful DLC',
-    detail: 'The extended optional content catalogue',
+    detail: 'Optional items and spells',
     title: 'DIMIR FAITHFUL DLC',
-    description: 'Adds the extended optional catalogue to drafts, shops, and applicable spells.',
+    description: 'Adds the optional catalogue to drafts, shops and the spell grid.',
   },
 };
 
@@ -210,7 +210,7 @@ export class MenuExperience {
   private buildMain(): MenuScreenView {
     const view = this.createScreen(
       'CHOOSE A TABLE',
-      'Every path begins with a single kind of game. Rules and builds come later.'
+      'Pick a game type. Rules and builds are configured next.'
     );
     (Object.keys(CATEGORY_COPY) as MenuCategory[]).forEach((category, index) => {
       const copy = CATEGORY_COPY[category];
@@ -264,7 +264,7 @@ export class MenuExperience {
       index: '>',
       primary: true,
       onActivate: () => this.advanceFromIntro(),
-      onFocus: () => this.stage.setCaption(copy.title, 'Continue to the first decision for this mode.'),
+      onFocus: () => this.stage.setCaption(copy.title, 'Continue to setup.'),
     });
     view.root.add([plaque, proceed]);
     view.focus.add(proceed);
@@ -280,8 +280,8 @@ export class MenuExperience {
         return {
           role,
           copy: {
-            label: 'Local Run', detail: 'One screen, with optional AI allies', title: 'LOCAL RUN',
-            description: 'Build every human-controlled explorer on this machine and fill remaining seats with AI allies.',
+            label: 'Local Run', detail: 'One device, optional AI allies', title: 'LOCAL RUN',
+            description: 'Build every human mage on this device. Remaining seats are filled with AI.',
           },
         };
       }
@@ -291,18 +291,18 @@ export class MenuExperience {
           role,
           copy: {
             label: versus ? 'Host Match' : 'Host Co-op',
-            detail: 'Create a room and own the match rules',
+            detail: 'Create a room and set the rules',
             title: versus ? 'HOST ONLINE MATCH' : 'HOST CO-OP',
-            description: 'Choose the table, content, and AI fill, then wait for the other human players to join.',
+            description: 'Set the table, packs and AI fill, then wait for other players to join.',
           },
         }
         : {
           role,
           copy: {
             label: versus ? 'Join Match' : 'Join Co-op',
-            detail: 'Bring one mage into a host-owned match',
+            detail: 'Bring 1 mage into a hosted match',
             title: versus ? 'JOIN ONLINE MATCH' : 'JOIN CO-OP',
-            description: 'Build your mage and join with the room code. Match rules arrive from the host.',
+            description: 'Build your mage and join by room code. Rules come from the host.',
           },
         };
     });
@@ -324,7 +324,7 @@ export class MenuExperience {
   private buildRaidTarget(returnToReview: boolean): MenuScreenView {
     const view = this.createScreen(
       'SELECT RAID TARGET',
-      'Your party receives a preparation field before this single boss enters combat.'
+      'The party gets a preparation phase before this boss is summoned.'
     );
     const buttons = new Map<RaidBossKind, CabinetButton>();
     RAID_BOSS_KINDS.forEach((boss, index) => {
@@ -369,18 +369,18 @@ export class MenuExperience {
     const view = this.createScreen(
       pve ? 'ASSEMBLE THE PARTY' : 'SET THE TABLE',
       this.model.role === 'host'
-        ? 'The room needs at least two human explorers. AI occupies the final seats.'
+        ? 'Requires 2+ human players. AI fills the remaining seats.'
         : this.model.mode === 'ai'
-          ? 'Choose the number of combatants and whether they fight in teams or free-for-all.'
+          ? 'Set the number of combatants and whether they fight in teams or free-for-all.'
           : pve
-            ? 'Choose the total party size, then decide how many seats the machine controls.'
-            : 'Choose the table size, then decide how many seats the machine controls.'
+            ? 'Set the party size, then how many seats are AI.'
+            : 'Set the table size, then how many seats are AI.'
     );
 
     const explorers = new CabinetButton(this.scene, 76, 262, {
       width: 714,
       label: `${pve ? 'Explorers' : 'Combatants'}  ${this.model.seatCount}`,
-      detail: `Total seats at this ${pve ? 'party' : 'table'}, from ${this.model.capability.seats[0]} to ${this.model.capability.seats[1]}`,
+      detail: `Total seats, ${this.model.capability.seats[0]} to ${this.model.capability.seats[1]}`,
       index: 'I',
       onActivate: () => updateExplorers(1),
       onAdjust: (direction) => updateExplorers(direction),
@@ -390,10 +390,8 @@ export class MenuExperience {
       width: 714,
       label: `${aiLabel}  ${this.model.aiCount}`,
       detail: this.model.mode === 'ai'
-        ? 'AI Duel always reserves the first seat for you'
-        : pve
-          ? 'Human explorers always occupy the first seats'
-          : 'Human-controlled combatants always occupy the first seats',
+        ? 'Seat 1 is always yours'
+        : 'Human seats always come first',
       index: 'II',
       onActivate: () => updateAllies(1),
       onAdjust: (direction) => updateAllies(direction),
@@ -498,7 +496,7 @@ export class MenuExperience {
   private buildTeamLayout(returnToReview: boolean): MenuScreenView {
     const view = this.createScreen(
       'ASSIGN TEAMS',
-      'Place every seat on one of two sides. Neither side may be left empty.'
+      'Put every seat on 1 of 2 sides. Neither side may be empty.'
     );
     for (let seat = 0; seat < this.model.seatCount; seat++) {
       const human = seat < this.model.humanCount();
@@ -512,9 +510,9 @@ export class MenuExperience {
         onActivate: () => {
           const next = this.model.teamOf(seat) === 1 ? 2 : 1;
           if (this.model.setSeatTeam(seat, next)) this.navigator.refresh();
-          else this.stage.setCaption('BOTH SIDES REQUIRED', 'Move another seat before emptying this team.');
+          else this.stage.setCaption('BOTH SIDES REQUIRED', 'Move another seat first.');
         },
-        onFocus: () => this.stage.setCaption(label, `${label} currently fights for Team ${this.model.teamOf(seat)}.`),
+        onFocus: () => this.stage.setCaption(label, `Team ${this.model.teamOf(seat)}.`),
       });
       view.root.add(button);
       view.focus.add(button);
@@ -538,7 +536,7 @@ export class MenuExperience {
   private buildPreparation(returnToReview: boolean): MenuScreenView {
     const view = this.createScreen(
       'CHOOSE PREPARATION',
-      'This choice changes only the party setup before the run begins.'
+      'Sets how the party is equipped before the run starts.'
     );
     const buttons: Partial<Record<SwampPrepMode, CabinetButton>> = {};
     (Object.keys(PREP_COPY) as SwampPrepMode[]).forEach((prep, index) => {
@@ -569,7 +567,7 @@ export class MenuExperience {
   private buildContentPacks(returnToReview: boolean): MenuScreenView {
     const view = this.createScreen(
       'CHOOSE CONTENT PACKS',
-      'Enabled catalogues determine which items and optional spells can appear in this match.'
+      'Enabled packs decide which items and spells can appear.'
     );
     const buttons = new Map<keyof ItemSetSelection, CabinetButton>();
     (Object.keys(PACK_COPY) as (keyof ItemSetSelection)[]).forEach((pack, index) => {
@@ -606,7 +604,7 @@ export class MenuExperience {
   private buildPlayerHandoff(seat: number): MenuScreenView {
     const view = this.createScreen(
       `PLAYER ${seat + 1}`,
-      'Pass control before revealing the next private mage build.'
+      'Pass control before the next build is shown.'
     );
     const cover = this.scene.add.text(76, 278, 'BUILD CONCEALED', {
       fontFamily: MENU_FONT.display,
@@ -625,7 +623,7 @@ export class MenuExperience {
       index: '>',
       primary: true,
       onActivate: () => this.navigator.push({ id: 'mage-build', seat }),
-      onFocus: () => this.stage.setCaption(`PLAYER ${seat + 1}`, 'Continue only when the next player has control.'),
+      onFocus: () => this.stage.setCaption(`PLAYER ${seat + 1}`, 'Continue when the next player has control.'),
     });
     view.root.add([cover, proceed]);
     view.focus.add(proceed);
@@ -640,7 +638,7 @@ export class MenuExperience {
     const nextSeat = draftSeats[draftIndex + 1];
     const view = this.createScreen(
       draftSeats.length > 1 ? `BUILD PLAYER ${seat + 1}` : 'BUILD YOUR MAGE',
-      `Choose one discipline, ${this.model.loadoutLimit()} words, and a casting method.`
+      `Choose 1 discipline, ${this.model.loadoutLimit()} words and 1 method.`
     );
 
     const disciplineLabel = this.scene.add.text(76, 230, 'DISCIPLINE', {
@@ -740,9 +738,9 @@ export class MenuExperience {
       onFocus: () => this.stage.setCaption(
         returnToReview ? 'RETURN TO REVIEW' : nextSeat != null ? 'NEXT MAGE' : 'REVIEW SETUP',
         returnToReview
-          ? 'Keep this edited build and return to the final summary.'
+          ? 'Keep this build and return to the summary.'
           : nextSeat != null
-            ? `Pass control to Player ${nextSeat + 1} for their build.`
+            ? `Pass control to Player ${nextSeat + 1}.`
             : this.rosterSummary()
       ),
     });
@@ -782,7 +780,7 @@ export class MenuExperience {
   private buildReview(): MenuScreenView {
     const copy = MODE_COPY[this.model.mode];
     const rulesOwner = this.model.role !== 'guest';
-    const view = this.createScreen('REVIEW SETUP', 'Inspect the complete configuration before entering play.');
+    const view = this.createScreen('REVIEW SETUP', 'Check the configuration before starting.');
     const rows: { label: string; detail: string; edit: () => void }[] = [
       {
         label: `Mode: ${copy.label}`,
@@ -807,14 +805,14 @@ export class MenuExperience {
     if (rulesOwner && (this.model.capability.seats[0] !== this.model.capability.seats[1] || this.model.mode === 'ai')) {
       rows.push({
         label: `${isPveRunMode(this.model.mode) ? 'Party' : 'Table'}: ${this.rosterSummary()}`,
-        detail: 'Edit seats, AI fill, and formation.',
+        detail: 'Edit seats, AI fill and formation.',
         edit: () => this.navigator.push({ id: 'roster', returnToReview: true }),
       });
     }
     if (rulesOwner && this.shouldChooseTeams()) {
       rows.push({
         label: `Teams: ${this.teamSummary()}`,
-        detail: 'Edit which human and AI seats share a side.',
+        detail: 'Edit which seats share a side.',
         edit: () => this.navigator.push({ id: 'team-layout', returnToReview: true }),
       });
     }
@@ -828,13 +826,13 @@ export class MenuExperience {
     if (rulesOwner) {
       rows.push({
         label: `Content: ${this.packSummary()}`,
-        detail: 'Edit the catalogues available to this match.',
+        detail: 'Edit the packs available to this match.',
         edit: () => this.navigator.push({ id: 'content-packs', returnToReview: true }),
       });
     }
     rows.push({
       label: `Mage Builds: ${this.buildSummary()}`,
-      detail: 'Review every locally controlled mage from the beginning.',
+      detail: 'Rebuild every local mage from the start.',
       edit: () => this.navigator.push({ id: 'mage-build', seat: this.model.localDraftSeats()[0] ?? 0 }),
     });
     const rowStart = rows.length > 6 ? 220 : 226;
@@ -866,7 +864,7 @@ export class MenuExperience {
       },
       onFocus: () => this.stage.setCaption(
         ready ? 'READY' : 'SETUP INCOMPLETE',
-        ready ? 'Begin with this configuration.' : this.model.validationIssues().join(' ')
+        ready ? 'Start with this configuration.' : this.model.validationIssues().join(' ')
       ),
     });
     view.root.add(launch);
@@ -880,8 +878,8 @@ export class MenuExperience {
     const view = this.createScreen(
       scenario ? 'REVIEW MEMORY' : 'OPEN A MEMORY',
       scenario
-        ? 'This sanitized scenario will replace the drafted roster and resume at its recorded turn.'
-        : 'Choose a saved .dimir.json scenario. The file is validated before anything is shown or launched.'
+        ? 'This scenario replaces the drafted roster and resumes at its recorded turn.'
+        : 'Choose a saved .dimir.json scenario. The file is validated before it is shown or launched.'
     );
 
     if (!scenario) {
@@ -911,7 +909,7 @@ export class MenuExperience {
         primary: true,
         enabled: this.memoryState !== 'loading',
         onActivate: () => void this.chooseMemoryFile(),
-        onFocus: () => this.stage.setCaption('CHOOSE MEMORY', 'Open a validated scenario file from this device.'),
+        onFocus: () => this.stage.setCaption('CHOOSE MEMORY', 'Open a scenario file from this device.'),
       });
       view.root.add([slot, message, choose]);
       view.focus.add(choose);
@@ -974,7 +972,7 @@ export class MenuExperience {
       index: '<',
       enabled: this.memoryState !== 'loading',
       onActivate: () => void this.chooseMemoryFile(),
-      onFocus: () => this.stage.setCaption('CHOOSE ANOTHER', 'Replace this scenario with a different validated file.'),
+      onFocus: () => this.stage.setCaption('CHOOSE ANOTHER', 'Replace this scenario with a different file.'),
     });
     const launch = new CabinetButton(this.scene, 438, 554, {
       width: 352,
@@ -1060,7 +1058,7 @@ export class MenuExperience {
       label: host ? 'Change Code' : 'Enter Code',
       enabled: !this.lobbyBusy,
       onActivate: () => this.beginLobbyEntry('room', roomValue),
-      onFocus: () => this.stage.setCaption('ROOM CODE', host ? 'Edit the code shared with other players.' : 'Enter the code supplied by the host.'),
+      onFocus: () => this.stage.setCaption('ROOM CODE', host ? 'Edit the code shared with other players.' : 'Enter the code from the host.'),
     });
     view.root.add([fieldGraphics, roomLabel, roomValue, roomHit, roomEdit]);
     view.focus.add(roomEdit);
@@ -1069,7 +1067,7 @@ export class MenuExperience {
       width: 714,
       height: 50,
       label: this.lobbyAdvanced ? 'Connection Details: Shown' : 'Connection Details',
-      detail: 'The default relay works for ordinary local or hosted sessions',
+      detail: 'The default relay works for local and hosted sessions',
       index: 'A',
       selected: this.lobbyAdvanced,
       enabled: !this.lobbyBusy,
@@ -1077,7 +1075,7 @@ export class MenuExperience {
         this.lobbyAdvanced = !this.lobbyAdvanced;
         this.navigator.refresh();
       },
-      onFocus: () => this.stage.setCaption('CONNECTION DETAILS', 'Change the relay only when hosting through a custom server or tunnel.'),
+      onFocus: () => this.stage.setCaption('CONNECTION DETAILS', 'Change the relay only for a custom server or tunnel.'),
     });
     view.root.add(advanced);
     view.focus.add(advanced);
@@ -1281,7 +1279,7 @@ export class MenuExperience {
       label: 'Back',
       index: '<',
       onActivate: () => this.navigator.back(),
-      onFocus: () => this.stage.setCaption('BACK', 'Return to the previous decision without discarding your choices.'),
+      onFocus: () => this.stage.setCaption('BACK', 'Return to the previous step. Choices are kept.'),
     });
     view.root.add(back);
     view.focus.add(back);

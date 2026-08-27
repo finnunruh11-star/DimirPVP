@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { unlockAudio } from '../audio';
 
 export interface KeyBinding {
   key: string;
@@ -31,6 +32,7 @@ export class SceneInput {
       const eventName = `keydown-${binding.key}`;
       const handler = (event: KeyboardEvent): void => {
         if (!binding.allowRepeat && event.repeat) return;
+        unlockAudio();
         binding.run(event);
       };
       keyboard.on(eventName, handler);
@@ -47,6 +49,7 @@ export class SceneInput {
     if (!keyboard) return;
     const handler = (event: KeyboardEvent): void => {
       if (!allowRepeat && event.repeat) return;
+      unlockAudio();
       run(event);
     };
     keyboard.on('keydown', handler);

@@ -49,6 +49,8 @@ export interface CombatFeedback {
   damageType?: DamageType;
   label?: string;
   critical?: boolean;
+  /** Who dealt this, so presentation can voice enemy blows differently. */
+  source?: Mage;
 }
 
 /**
@@ -99,6 +101,12 @@ export interface VfxSink {
   clearLightningTrail?(): void;
   /** Cue a logical full-field quarter-turn without owning any movement state. */
   quarterTurn?(clockwise: boolean): void;
+  /** Report a large detonation at `at` so the scene can voice it. */
+  boom?(at: Vec2): void;
+  /** Report a peal of lightning big enough to warrant a thunderclap. */
+  thunder?(at: Vec2): void;
+  /** Report a death-word execution landing on `at`. */
+  execute?(at: Vec2): void;
   /** Pulse the active Twist Rune and show its orbit direction. */
   twistRune?(pivot: Vec2, radius: number, clockwise: boolean): void;
 }
@@ -322,7 +330,7 @@ export function dealDamage(
   // Eldritch Truth: while shrouded, the wielder voids all incoming damage until
   // their next turn.
   if (target.eldritchDefend) {
-    ctx.log(`${target.name} stands untouched — eldritch truth voids the blow.`);
+    ctx.log(`${target.name} is immune to all damage (Eldritch).`);
     ctx.vfx?.combatFeedback?.(target, { kind: 'blocked', label: 'VOIDED' });
     return 0;
   }
@@ -330,12 +338,12 @@ export function dealDamage(
   // Swamprun creature class-immunities. Mindless things ignore mental (sanity)
   // damage; incorporeal things ignore physical damage except radiant 'light'.
   if (target.sanityImmune && damage.damageClass === 'sanity') {
-    ctx.log(`${target.name} is mindless — the psychic assault finds nothing.`);
+    ctx.log(`${target.name} is immune to sanity damage.`);
     ctx.vfx?.combatFeedback?.(target, { kind: 'immune', label: 'MINDLESS' });
     return 0;
   }
   if (target.physicalImmune && BASE_PHYSICAL_TYPES.has(damage.type)) {
-    ctx.log(`${target.name} is incorporeal — the blow passes through it.`);
+    ctx.log(`${target.name} is immune to physical damage.`);
     ctx.vfx?.combatFeedback?.(target, {
       kind: 'immune',
       damageType: damage.type,
@@ -352,7 +360,7 @@ export function dealDamage(
       const units = dist(ctx.caster.pos, target.pos) / RANGE_UNIT;
       const dodge = veilDodgeChance(inv.mode, units);
       if (dodge >= 1 || ctx.rng.chance(dodge)) {
-        ctx.log(`${target.name} blurs aside — the attack finds nothing.`);
+        ctx.log(`${target.name} dodges the attack.`);
         ctx.vfx?.combatFeedback?.(target, { kind: 'miss', label: 'DODGED' });
         return 0;
       }
@@ -361,7 +369,7 @@ export function dealDamage(
 
   // A Mind Dodge ward absorbs the next instance of sanity damage.
   if (damage.damageClass === 'sanity' && target.consumeWard('mind')) {
-    ctx.log(`${target.name}'s Mind Dodge absorbs the psychic assault.`);
+    ctx.log(`${target.name}'s Mind Dodge negates the sanity damage.`);
     ctx.vfx?.combatFeedback?.(target, { kind: 'blocked', label: 'MIND WARD' });
     return 0;
   }
@@ -398,7 +406,7 @@ export function dealDamage(
       const before = amount;
       amount = Math.floor(amount * mult);
       if (mult === 0) {
-        ctx.log(`${target.name} is immune to ${damage.type} — the blow is absorbed.`);
+        ctx.log(`${target.name} is immune to ${damage.type}.`);
         feedbackLabel = 'IMMUNE';
       } else if (mult < 1) {
         ctx.log(`${target.name} resists ${damage.type} (${before} → ${amount}).`);
@@ -412,7 +420,7 @@ export function dealDamage(
 
   // An Aluminium Hat shrugs off any minor psychic jab below its threshold.
   if (damage.damageClass === 'sanity' && amount > 0 && amount < target.sanityWardBelow()) {
-    ctx.log(`${target.name}'s foil hat shrugs off the minor psychic jab.`);
+    ctx.log(`${target.name}'s Aluminium Hat negates the sanity damage.`);
     amount = 0;
     feedbackLabel = 'FOIL WARD';
   }
@@ -424,7 +432,7 @@ export function dealDamage(
     if (block > 0) {
       const before = amount;
       amount = Math.floor(amount * (1 - block));
-      ctx.log(`${target.name} catches it on the shield (${before} → ${amount}).`);
+      ctx.log(`${target.name} blocks with a shield (${before} → ${amount}).`);
       feedbackLabel = 'BLOCKED';
     }
   }
@@ -476,6 +484,7 @@ export function dealDamage(
       damageType: damage.type,
       label: feedbackLabel,
       critical: !!ctx.crit,
+      source: ctx.caster,
     });
   }
 
@@ -484,7 +493,7 @@ export function dealDamage(
     ctx.caster.hp = Math.min(ctx.caster.maxHp, ctx.caster.hp + amount);
     const healed = ctx.caster.hp - before;
     if (healed > 0) {
-      ctx.log(`${ctx.caster.name} steals ${healed} health from the wound.`);
+      ctx.log(`${ctx.caster.name} drains ${healed} health.`);
       ctx.vfx?.combatFeedback?.(ctx.caster, { kind: 'heal', amount: healed, label: 'LIFESTEAL' });
     }
   }
@@ -498,7 +507,7 @@ export function dealDamage(
     target.hp <= Math.ceil(target.maxHp * 0.06)
   ) {
     target.hp = 0;
-    ctx.log(`${ctx.caster.name}'s Wings execute ${target.name} at death's threshold.`);
+    ctx.log(`${ctx.caster.name}'s Wings execute ${target.name}.`);
   }
 
   // Lich "Link": HP damage dealt to a linked victim is mirrored back to the
@@ -510,7 +519,7 @@ export function dealDamage(
       lich.hp = Math.min(lich.maxHp, lich.hp + amount);
       const healed = lich.hp - before;
       if (healed > 0) {
-        ctx.log(`${lich.name} drains ${healed} life through its link to ${target.name}.`);
+        ctx.log(`${lich.name} drains ${healed} health from ${target.name}.`);
         ctx.vfx?.combatFeedback?.(lich, { kind: 'heal', amount: healed, label: 'DRAIN LINK' });
       }
     }
@@ -526,7 +535,7 @@ export function dealDamage(
     target.reviveAtHalfAvailable = false;
     target.hp = Math.max(1, Math.ceil(target.maxHp / 2));
     if (target.maxSanity > 0) target.sanity = target.maxSanity;
-    ctx.log(`${target.name} refuses death — its phylactery drags it back at half strength!`);
+    ctx.log(`${target.name} revives at half HP (phylactery).`);
   }
 
   if (targetWasAlive && !target.alive) {
@@ -581,7 +590,7 @@ export function dealDamage(
     const manaBack = target.manaOnHit();
     if (manaBack > 0) {
       target.gainMana(manaBack);
-      ctx.log(`${target.name}'s ring channels the pain into ${manaBack} mana.`);
+      ctx.log(`${target.name}'s Channeling Ring grants ${manaBack} mana.`);
     }
     // Gaze Timez Bracelet: dealing or taking mental (mill) damage grants 1d3 mana.
     if (damage.damageClass === 'sanity') {
@@ -608,7 +617,7 @@ export function dealDamage(
       const leech = Math.round(amount * ctx.caster.spellLifestealPct() * ctx.caster.healMult());
       if (leech > 0) {
         ctx.caster.hp = Math.min(ctx.caster.maxHp, ctx.caster.hp + leech);
-        ctx.log(`${ctx.caster.name}'s blood charm drinks ${leech} health from the spell.`);
+        ctx.log(`${ctx.caster.name}'s Blood Charm heals ${leech}.`);
       }
     }
   }
@@ -622,7 +631,7 @@ function tryMillMana(mage: Mage, ctx: EffectContext): void {
   mage.manaMilledOnce = true;
   const gain = ctx.rng.roll('1d3').total;
   mage.gainMana(gain);
-  ctx.log(`${mage.name}'s Gaze Timez Bracelet drinks the mill for ${gain} mana.`);
+  ctx.log(`${mage.name}'s Gaze Timez Bracelet grants ${gain} mana.`);
 }
 
 /** Chance (0..1) that a targeted attack misses a veiled mage `units` away. */
@@ -655,7 +664,7 @@ function breakVeilOnStruck(
       : amount > VEIL.full.breakNonMill;
   if (breaks) {
     removeInvisibility(target);
-    ctx.log(`${target.name}'s veil is torn away by the hit.`);
+    ctx.log(`${target.name}'s veil is removed by the hit.`);
   }
 }
 
@@ -768,11 +777,11 @@ export function applyStun(
 ): void {
   if (ctx.game.isUnreachable(target)) return;
   if (target.slowStunImmune) {
-    ctx.log(`${target.name} cannot be slowed or stunned.`);
+    ctx.log(`${target.name} is immune to stuns and roots.`);
     return;
   }
   if (target.isDebuffImmune()) {
-    ctx.log(`${target.name} cannot be stayed — it shrugs off the binding.`);
+    ctx.log(`${target.name} is immune to stuns.`);
     return;
   }
   const names: Record<StunType, string> = {
@@ -848,7 +857,7 @@ export function dash(
   ctx.vfx?.dash?.(mover, from);
   ctx.game.triggerNeedlepointDomains(mover);
   if (bc.blocked) {
-    ctx.log(`${mover.name} slams into a reality break and stops short.`);
+    ctx.log(`${mover.name} is stopped by a reality break.`);
   } else {
     ctx.log(`${mover.name} dashes ${Math.round(opts.distance)} away.`);
   }
@@ -899,7 +908,7 @@ export function teleport(ctx: EffectContext, mover: Mage, at: Vec2): void {
   ctx.game.notifyMageRelocation(mover, from, mover.pos, false);
   ctx.vfx?.blink?.(from, mover.pos, BLINK_SHADOW);
   ctx.game.triggerNeedlepointDomains(mover);
-  ctx.log(`${mover.name} slips through the shadows.`);
+  ctx.log(`${mover.name} teleports.`);
 }
 
 /** Distance helper exposed for spells that scale with range. */
@@ -918,7 +927,7 @@ export function distanceBetween(a: Mage, b: Mage): number {
  */
 export function placeShadow(ctx: EffectContext, at: Vec2, ttl?: number): void {
   ctx.game.addShadow(at, ctx.caster.team, ttl != null ? critScale(ctx, ttl) : ttl);
-  ctx.log(`${ctx.caster.name} conjures a pool of shadow.`);
+  ctx.log(`${ctx.caster.name} creates a shadow pool.`);
 }
 
 /** Strip every invisibility / veil status from `target`. Returns true if any. */
@@ -928,7 +937,7 @@ export function dispelVeil(ctx: EffectContext, target: Mage): boolean {
     (s) => s.kind !== 'invisibility' && s.kind !== 'shadowVeil'
   );
   const removed = target.statuses.length !== before;
-  if (removed) ctx.log(`${target.name}'s veil is torn away.`);
+  if (removed) ctx.log(`${target.name}'s veil is removed.`);
   return removed;
 }
 
@@ -981,7 +990,7 @@ export function applyDot(
   }
 ): void {
   if (target.isDebuffImmune()) {
-    ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
+    ctx.log(`${target.name} is immune to debuffs. ${opts.name} fails.`);
     return;
   }
   const duration = afflictDuration(ctx, target, opts.duration);
@@ -1038,7 +1047,7 @@ export function applyStackingDot(
   }
 ): void {
   if (target.isDebuffImmune()) {
-    ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
+    ctx.log(`${target.name} is immune to debuffs. ${opts.name} fails.`);
     return;
   }
   const key = opts.key ?? `dot:${opts.name}`;
@@ -1108,11 +1117,11 @@ export function applyDebuff(
 ): void {
   if (ctx.game.isUnreachable(target)) return;
   if (target.slowStunImmune && (opts.mods.moveRange ?? 0) < 0) {
-    ctx.log(`${target.name} ignores the slowing curse.`);
+    ctx.log(`${target.name} ignores the slow.`);
     return;
   }
   if (target.isDebuffImmune()) {
-    ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
+    ctx.log(`${target.name} is immune to debuffs. ${opts.name} fails.`);
     return;
   }
   // A Witch Wand makes every debuff the caster lands last twice as long.
@@ -1138,7 +1147,7 @@ export function cleanse(ctx: EffectContext, target: Mage): void {
     (s) => s.kind === 'invisibility'
   );
   if (target.statuses.length !== before) {
-    ctx.log(`${target.name} is cleansed of afflictions.`);
+    ctx.log(`${target.name} is cleansed.`);
   }
 }
 
@@ -1258,7 +1267,7 @@ export function summonScarabs(
   count = SCARAB.count
 ): void {
   ctx.game.addScarabs(at, ctx.caster.team, count, ctx.game.mages.indexOf(ctx.caster));
-  ctx.log(`${ctx.caster.name} looses a swarm of ${count} scarabs.`);
+  ctx.log(`${ctx.caster.name} summons ${count} scarabs.`);
 }
 
 /** Curse a mage so it bleeds damage to everyone around it each turn. */
@@ -1276,7 +1285,7 @@ export function applyAuraDot(
 ): void {
   if (ctx.game.isUnreachable(target)) return;
   if (target.isDebuffImmune()) {
-    ctx.log(`${target.name} is beyond affliction — ${opts.name} finds no purchase.`);
+    ctx.log(`${target.name} is immune to debuffs. ${opts.name} fails.`);
     return;
   }
   const duration = afflictDuration(ctx, target, opts.duration);
@@ -1295,7 +1304,7 @@ export function applyAuraDot(
     false
   );
   ctx.game.syncCurseCorrodeSlow(target);
-  ctx.log(`${target.name} is wreathed in ${opts.name} (${duration} cycles).`);
+  ctx.log(`${target.name} gains ${opts.name} (${duration} cycles).`);
 }
 
 /** Grant a consumable ward that negates the next matching hit. */
@@ -1326,11 +1335,11 @@ export function applyControl(
 ): void {
   if (ctx.game.isUnreachable(target)) return;
   if (target.isDebuffImmune()) {
-    ctx.log(`${target.name}'s will is unassailable — the compulsion fails.`);
+    ctx.log(`${target.name} is immune to control.`);
     return;
   }
   if (target.consumeWard('mind')) {
-    ctx.log(`${target.name}'s Mind Dodge shrugs off the compulsion.`);
+    ctx.log(`${target.name}'s Mind Dodge negates the control effect.`);
     return;
   }
   const duration = afflictDuration(ctx, target, opts.duration);
@@ -1345,7 +1354,7 @@ export function applyControl(
     },
     false
   );
-  ctx.log(`${target.name} is gripped by ${opts.name} (${duration} cycles).`);
+  ctx.log(`${target.name} is controlled by ${opts.name} (${duration} cycles).`);
 }
 
 /**
@@ -1401,7 +1410,7 @@ export function applyShadowVeil(
     },
     false
   );
-  ctx.log(`${target.name} melds with the shadows (${opts.duration} cycles).`);
+  ctx.log(`${target.name} gains Shadow Veil (${opts.duration} cycles).`);
 }
 
 /**
@@ -1425,7 +1434,7 @@ export function applyShadowTrail(
     },
     false
   );
-  ctx.log(`${ctx.caster.name}'s shadow clings to ${target.name}'s heels.`);
+  ctx.log(`${target.name} now leaves a shadow trail.`);
 }
 
 // -----------------------------------------------------------------------------
@@ -1438,7 +1447,7 @@ export function applyShadowTrail(
  */
 export function swapMinds(ctx: EffectContext, target: Mage, turns: number): void {
   ctx.game.pendingMindSwap = turns;
-  ctx.log(`${ctx.caster.name} swaps minds with ${target.name} — control is about to invert!`);
+  ctx.log(`${ctx.caster.name} swaps control with ${target.name}.`);
 }
 
 /**
@@ -1481,7 +1490,7 @@ export function placeRealityWedge(
     ttl: opts.ttl,
   });
   ctx.vfx?.wedge?.(apex, angle, halfAngle, range);
-  ctx.log(`${ctx.caster.name} tears a wedge of reality open — no one may pass.`);
+  ctx.log(`${ctx.caster.name} creates a reality wedge. Blocks all movement.`);
   return { apex, angle, halfAngle, range };
 }
 
@@ -1501,13 +1510,13 @@ export function placeWall(
     owner: ctx.caster.team,
     ttl: opts.ttl,
   });
-  ctx.log(`${ctx.caster.name} raises a wall — no one may pass.`);
+  ctx.log(`${ctx.caster.name} raises a wall. Blocks all movement.`);
 }
 
 /** Shatter+Mind+Reality: grant `m` an extra turn after the current one. */
 export function grantExtraTurn(ctx: EffectContext, m: Mage): void {
   ctx.game.grantExtraTurn(m);
-  ctx.log(`${m.name} is granted an extra turn!`);
+  ctx.log(`${m.name} gains an extra turn.`);
 }
 
 /**
@@ -1548,7 +1557,7 @@ export function twistStrike(ctx: EffectContext, target: Mage): void {
     dealDamage(ctx, target, { amount, type: 'shatter', damageClass: 'physical' });
   } else {
     applyStun(ctx, target, { duration: 2, type: 'main' });
-    ctx.log(`${target.name}'s next action is stifled by the twist.`);
+    ctx.log(`${target.name} loses its next main action.`);
   }
 }
 

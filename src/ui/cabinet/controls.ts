@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { playSound, unlockAudio } from '../../audio';
 import { MENU_COLOR, MENU_FONT, MENU_HEX } from './theme';
 
 export interface CabinetButtonOptions {
@@ -84,7 +85,12 @@ export class CabinetButton extends Phaser.GameObjects.Container implements MenuC
       if (this.enabled) this.focusRequest?.();
     });
     this.hit.on('pointerdown', () => {
-      if (!this.enabled) return;
+      unlockAudio();
+      if (!this.enabled) {
+        playSound('ui.deny');
+        return;
+      }
+      playSound('ui.click');
       this.pressed = true;
       this.y += 1;
       this.redraw();
@@ -131,11 +137,18 @@ export class CabinetButton extends Phaser.GameObjects.Container implements MenuC
   }
 
   activate(): void {
-    if (this.enabled) this.options.onActivate();
+    unlockAudio();
+    if (!this.enabled) {
+      playSound('ui.deny');
+      return;
+    }
+    playSound('ui.click');
+    this.options.onActivate();
   }
 
   adjust(direction: -1 | 1): boolean {
     if (!this.enabled || !this.options.onAdjust) return false;
+    playSound('ui.click');
     this.options.onAdjust(direction);
     return true;
   }
@@ -223,7 +236,12 @@ export class CabinetChip extends Phaser.GameObjects.Container implements MenuCon
       if (this.enabled) this.focusRequest?.();
     });
     this.hit.on('pointerdown', () => {
-      if (!this.enabled) return;
+      unlockAudio();
+      if (!this.enabled) {
+        playSound('ui.deny');
+        return;
+      }
+      playSound('ui.click');
       this.pressed = true;
       this.y += 1;
       this.redraw();
@@ -268,7 +286,13 @@ export class CabinetChip extends Phaser.GameObjects.Container implements MenuCon
   }
 
   activate(): void {
-    if (this.enabled) this.options.onActivate();
+    unlockAudio();
+    if (!this.enabled) {
+      playSound('ui.deny');
+      return;
+    }
+    playSound('ui.click');
+    this.options.onActivate();
   }
 
   adjust(_direction: -1 | 1): boolean {
@@ -348,6 +372,8 @@ export class WordPlate extends Phaser.GameObjects.Container implements MenuContr
 
     this.hit.on('pointerover', () => this.focusRequest?.());
     this.hit.on('pointerdown', () => {
+      unlockAudio();
+      playSound('ui.click');
       this.pressed = true;
       this.y += 1;
       this.redraw();
@@ -388,6 +414,8 @@ export class WordPlate extends Phaser.GameObjects.Container implements MenuContr
   }
 
   activate(): void {
+    unlockAudio();
+    playSound('ui.click');
     this.options.onActivate();
   }
 
@@ -434,6 +462,8 @@ export class MenuFocusGroup {
     if (this.controls.length === 0) return;
     const next = (index + this.controls.length) % this.controls.length;
     if (!this.controls[next].isEnabled) return;
+    // Silent on the initial auto-focus, so building a screen stays quiet.
+    if (this.index >= 0 && this.index !== next) playSound('ui.hover');
     this.controls.forEach((control, controlIndex) => control.setFocused(controlIndex === next));
     this.index = next;
   }

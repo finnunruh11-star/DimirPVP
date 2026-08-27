@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { playSound, unlockAudio } from '../../audio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
 import { ITEM_DEFS, RARITY_COLOR, getItem, type ItemDef, type ItemId } from '../../core/Items';
 import { STAT_DEFS, type StatKey } from '../../core/Stats';
@@ -93,6 +94,8 @@ class CatalogPlate extends Phaser.GameObjects.Container implements MenuControl {
     this.add([this.face, this.nameText, this.metaText, this.countText, this.hit]);
     this.hit.on('pointerover', () => this.focusRequest?.());
     this.hit.on('pointerdown', () => {
+      unlockAudio();
+      playSound('ui.click');
       this.pressed = true;
       this.y += 1;
       this.redraw();
@@ -121,6 +124,8 @@ class CatalogPlate extends Phaser.GameObjects.Container implements MenuControl {
   }
 
   activate(): void {
+    unlockAudio();
+    playSound('ui.click');
     this.options.onActivate();
   }
 

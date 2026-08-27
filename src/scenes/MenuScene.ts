@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { playMusic } from '../audio';
 import { COLORS } from '../config/constants';
 import type { MatchConfig } from '../config/MatchConfig';
 import type { Scenario } from '../core/Scenario';
@@ -22,6 +23,7 @@ export class MenuScene extends Phaser.Scene {
   create(): void {
     this.destroyExperience();
     this.cameras.main.setBackgroundColor(COLORS.bg);
+    playMusic('menu');
     this.model = new MenuModel();
     this.experience = new MenuExperience(
       this,

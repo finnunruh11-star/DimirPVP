@@ -60,7 +60,7 @@ export const MAGE_CLASS_DEFS: Record<MageClass, MageClassDef> = {
     id: 'hexcraft',
     label: 'Hexcraft',
     focus: 'Magic · field-spells · auras',
-    blurb: 'Class spells make wonky effects or lay down a field-spell.',
+    blurb: 'Class spells create zones, auras and battlefield-wide rules.',
     color: 0xb98bff,
   },
 };
