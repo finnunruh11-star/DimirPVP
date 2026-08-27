@@ -105,8 +105,6 @@ export interface VfxSink {
   boom?(at: Vec2): void;
   /** Report a peal of lightning big enough to warrant a thunderclap. */
   thunder?(at: Vec2): void;
-  /** Report a death-word execution landing on `at`. */
-  execute?(at: Vec2): void;
   /** Pulse the active Twist Rune and show its orbit direction. */
   twistRune?(pivot: Vec2, radius: number, clockwise: boolean): void;
 }

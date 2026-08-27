@@ -3093,7 +3093,6 @@ export class GameState {
       return false;
     }
     this.log(`${source.name} executes ${target.name} at ${threshold} health.`);
-    this.vfxSink?.execute?.(target.pos);
     return this.killByDeathWord(target, source);
   }
 

@@ -1401,9 +1401,8 @@ export class GameScene extends Phaser.Scene {
         this.pendingEffects.push({ mage: m, kind });
       },
       drainParticles: (from, to) => {
-        // The siphon is voiced as it starts; the corrosion lands with the visual.
-        playSound('spell.drain');
-        this.pendingSounds.push('spell.corrosive');
+        // A drain both siphons and corrodes, and both land with the particles.
+        this.pendingSounds.push('spell.drain', 'spell.corrosive');
         this.pendingDrains.push({ from: { ...from }, to: { ...to } });
       },
       boomerang: (from, to, color, size, speed) => {
@@ -1419,11 +1418,9 @@ export class GameScene extends Phaser.Scene {
         this.combatFeedback?.show(mage, feedback);
       },
       shatterBurst: (at, size) => {
-        playSound('spell.shatter');
         void this.vfxSpriteAt('fx-shatter', at, { lengthPx: size });
       },
       wedge: (apex, angle, halfAngle, range) => {
-        playSound('spell.shatter');
         this.vfxWedge(apex, angle, halfAngle, range);
       },
       lightningTrail: (segments) => this.setLightningTrail(segments),
@@ -1444,9 +1441,8 @@ export class GameScene extends Phaser.Scene {
         playSound('spell.cast');
         this.vfxQuarterTurn(clockwise);
       },
-      boom: () => playSound('spell.explode'),
+      boom: () => this.pendingSounds.push('spell.explode'),
       thunder: () => playSound('spell.thunder'),
-      execute: () => this.pendingSounds.push('unit.death'),
       twistRune: (pivot, radius, clockwise) => {
         playSound('spell.cast');
         this.vfxTwistRune(pivot, radius, clockwise);
@@ -6281,7 +6277,10 @@ export class GameScene extends Phaser.Scene {
     // so pure control spells (Mind, Bind, Twist, …) still read as landing.
     if (item.kind === 'spell' && item.spell?.targeting === 'enemy' && item.target) {
       const struck = this.pendingEffects.some((e) => e.mage === item.target);
-      if (!struck) this.pendingEffects.push({ mage: item.target, kind: 'disrupt' });
+      if (!struck) {
+        this.pendingEffects.push({ mage: item.target, kind: 'disrupt' });
+        this.pendingSounds.push('spell.impact');
+      }
     }
     // 3) Show the dice that were rolled (roll → settle → linger), then the
     //    HP/sanity changes become visible on the next redraw.
@@ -13303,11 +13302,20 @@ export class GameScene extends Phaser.Scene {
   private async flushHitsAndEffects(): Promise<void> {
     const queued = this.pendingHits;
     this.pendingHits = [];
-    // Repeats collapse in the audio throttle, so a six-target burst stays one hit.
-    for (const name of this.pendingSounds) playSound(name);
-    this.pendingSounds = [];
+    this.flushSounds();
     for (const m of queued) this.triggerHit(m);
     await this.flushEffects();
+  }
+
+  /**
+   * Voice the impact batch. Duplicates collapse to one hit, and the survivors
+   * are spread apart so a six-target burst reads as a volley, not a chord.
+   */
+  private flushSounds(): void {
+    if (this.pendingSounds.length === 0) return;
+    const unique = [...new Set(this.pendingSounds)];
+    this.pendingSounds = [];
+    unique.forEach((name, index) => playSound(name, { delay: index * 0.055 }));
   }
 
   /** Spawn every queued hit-effect overlay and clear the queue. */

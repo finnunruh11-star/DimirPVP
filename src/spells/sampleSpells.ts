@@ -2323,16 +2323,18 @@ registerSpell({
   targeting: 'self',
   dc: 15,
   description:
-    'Dash roll/3 times, starting at roll/3 range and halving the range with every dash (critical doubles the starting range and damage). Choose each direction, then roll d6 accuracy with up to 30° error. The animated lightning trail deals 4d6 Fire whenever crossed; touching your own earlier trail stops you there and deals 4d6 Fire to you.',
+    'Dash roll/3 times, starting at roll/3 range and cutting the range by a fifth with every dash. The chain stops once a dash would be under 3cm (critical doubles the starting range and damage). Choose each direction, then roll d6 accuracy with up to 30° error. The animated lightning trail deals 4d6 Fire whenever crossed; touching your own earlier trail stops you there and deals 4d6 Fire to you.',
   visual: { preset: 'nova', color: 0xff3d24, size: 80, speed: 1.5 },
   async cast(ctx) {
     const power = lightningPower(ctx);
-    const dashCount = Math.max(1, Math.floor(power / 3));
+    const dashCount = Math.max(1, Math.floor(power / 1.5));
     const dashDistance = R((power / 3) * (ctx.crit ? 2 : 1));
     const trail: TrailSegment[] = [];
     try {
       for (let step = 0; step < dashCount && ctx.caster.alive; step++) {
-        const currentDashDistance = Math.max(R(1), dashDistance / 2 ** step);
+        const currentDashDistance = dashDistance * 0.8 ** step;
+        // Too short to be worth a dash; end the chain here.
+        if (currentDashDistance < R(2)) break;
         let chosen: Vec2 | null;
         if (ctx.requestPoint) {
           chosen = await ctx.requestPoint({
