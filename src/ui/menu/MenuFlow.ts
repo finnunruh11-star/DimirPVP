@@ -18,6 +18,7 @@ export type MenuRoute =
   | { id: 'mage-build'; seat: number; returnToReview?: boolean }
   | { id: 'review' }
   | { id: 'memory-file' }
+  | { id: 'codex' }
   | { id: 'online-lobby' };
 
 export interface MenuScreenView {

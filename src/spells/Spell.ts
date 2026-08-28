@@ -52,6 +52,8 @@ export interface Spell {
   targeting: Targeting;
   /** This spell may select only a mage currently protected by a stealth effect. */
   requiresInvisibleTarget?: boolean;
+  /** This spell can pick a target that stealth would normally make untargetable. */
+  ignoresStealth?: boolean;
   /** The target must stand within this many pixels of one of the caster's own shadows. */
   requiresTargetNearOwnShadow?: number;
   description: string;

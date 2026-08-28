@@ -8,128 +8,136 @@ export interface MenuEntryCopy {
   description: string;
 }
 
+/** Standalone main-menu entry that is not a match category. */
+export const SPELLBOOK_COPY: MenuEntryCopy = {
+  label: 'Spellbook',
+  detail: 'Look up what any combination of words casts',
+  title: 'SPELLBOOK',
+  description: 'Browse every spell in the active catalogues without starting a match.',
+};
+
 export const CATEGORY_COPY: Record<MenuCategory, MenuEntryCopy> = {
   versus: {
-    label: 'PvP',
-    detail: 'Duels against players or AI',
-    title: 'PVP',
-    description: 'Duel another player locally, online, or against AI.',
+    label: 'Versus',
+    detail: 'Duels against people or the machine',
+    title: 'THE DUELLING TABLE',
+    description: 'Settle a compact battle locally, online, or against an AI-controlled mage.',
   },
   adventures: {
-    label: 'PvE',
-    detail: 'Persistent runs against AI enemies',
-    title: 'PVE',
-    description: 'Take a party into Swamprun, Mine Run, Expedition or Raid.',
+    label: 'Adventures',
+    detail: 'Persistent runs into hostile places',
+    title: 'THE WAY OUT',
+    description: 'Take a party into the Swamp, the Mine, an Expedition, or a prepared Raid.',
   },
   workshop: {
     label: 'Workshop',
-    detail: 'Training and authored fights',
-    title: 'WORKSHOP',
-    description: 'Test builds, author scenarios, or load a saved fight.',
+    detail: 'Training, authored fights, and memories',
+    title: 'THE WORKBENCH',
+    description: 'Test builds, construct scenarios, or reopen a fight saved to disk.',
   },
 };
 
 export const MODE_COPY: Record<MatchMode, MenuEntryCopy> = {
   ai: {
     label: 'AI Duel',
-    detail: '1 human vs AI',
+    detail: 'One human against a configurable AI table',
     title: 'AI DUEL',
-    description: 'Build a mage and fight AI opponents.',
+    description: 'Build your mage, choose the table, and fight opponents controlled by the game.',
   },
   hotseat: {
     label: 'Hotseat',
-    detail: 'Local multiplayer, one device',
+    detail: 'Two to four local seats',
     title: 'HOTSEAT',
-    description: 'Draft each local mage privately, then fight in teams or free-for-all.',
+    description: 'Draft each local mage in private, then share the battlefield in teams or free-for-all.',
   },
   online: {
     label: 'Online',
-    detail: 'Host or join with a room code',
-    title: 'ONLINE',
-    description: 'Connect by room code. The host sets the rules. Each player controls 1 mage.',
+    detail: 'Host or join a deterministic match',
+    title: 'ONLINE TABLE',
+    description: 'Connect through a room code. The host owns the rules; every player owns a mage.',
   },
   training: {
     label: 'Training Lab',
-    detail: 'Solo sandbox with spawnable targets',
+    detail: 'A solo field with editable targets',
     title: 'TRAINING LAB',
-    description: 'Test one build against targets you spawn and edit.',
+    description: 'Enter the sandbox with one build, then spawn targets and inspect interactions freely.',
   },
   swamprun: {
     label: 'Swamprun',
-    detail: 'Endless wave survival',
-    title: 'SWAMPRUN',
-    description: 'Survive escalating waves. Shared gold, shop between waves.',
+    detail: 'Endless survival, supplies, and escalating horrors',
+    title: 'THE SWAMP',
+    description: 'Survive fresh combats at increasing depth. Spend shared gold between waves and keep what the party earns.',
   },
   expedition: {
     label: 'Expedition',
-    detail: 'Swamprun with permanent upgrades',
+    detail: 'A solo campaign of depth, retreat, and town',
     title: 'EXPEDITION',
-    description: 'No field shops. Retreat when you choose, then spend personal gold and recruit in town.',
+    description: 'Push deeper without field shops, choose when to retreat, then spend personal gold and recruit in town.',
   },
   minerun: {
     label: 'Mine Run',
-    detail: 'Endless maze of hidden rooms',
-    title: 'MINE RUN',
-    description: 'Map branching tunnels. Manage tools and traps. Choose which rooms to enter.',
+    detail: 'Map an endless maze of concealed rooms',
+    title: 'THE MINE',
+    description: 'Chart branching tunnels, manage tools and traps, and decide which hostile rooms are worth entering.',
   },
   raid: {
     label: 'Raid',
-    detail: '1 boss, prepared party',
-    title: 'RAID',
-    description: 'Pick a boss, prepare on respawning effigies, summon when ready.',
+    detail: 'Prepare a party for one selected boss',
+    title: 'RAID TABLE',
+    description: 'Choose the target, tune the party, prepare on reforming effigies, and summon the boss when ready.',
   },
   scenario: {
     label: 'Scenario Lab',
-    detail: 'Author and save a fight',
+    detail: 'Construct and save an authored combat',
     title: 'SCENARIO LAB',
-    description: 'Place a roster, set equipment and words, save to file.',
+    description: 'Open a blank fight, place a roster, set its equipment and words, then save the result.',
   },
   memory: {
     label: 'Memory',
-    detail: 'Load a saved fight',
+    detail: 'Load an exact fight from a scenario file',
     title: 'MEMORY',
-    description: 'Resume a saved scenario with its roster, positions, resources and turn order.',
+    description: 'Choose a saved scenario and resume its roster, positions, resources, and turn order.',
   },
 };
 
 export const PREP_COPY = {
   quick: {
     label: 'Quick Start',
-    detail: 'Flat attributes, no starting gear',
+    detail: 'Flat reliable attributes, no starting draft',
     title: 'QUICK START',
-    description: 'Start immediately with even attributes and no opening item.',
+    description: 'Enter the first wave immediately with even attributes and no opening equipment decision.',
   },
   custom: {
     label: 'Rolled Kit',
-    detail: 'Rolled attributes, 1 starting item',
+    detail: 'Assign rolled attributes and draft starting gear',
     title: 'ROLLED KIT',
-    description: 'Assign rolled attributes, then draft 1 opening item.',
+    description: 'Shape each human mage from a rolled attribute set, then choose one opening item.',
   },
   creative: {
     label: 'Creative Kit',
-    detail: 'Set attributes and gear freely',
+    detail: 'Set attributes directly and choose any equipment',
     title: 'CREATIVE KIT',
-    description: 'No price, rarity, quantity or carry limits.',
+    description: 'Build without price, rarity, quantity, or carry restrictions before the run begins.',
   },
 } as const;
 
 export const RAID_BOSS_COPY: Record<RaidBossKind, MenuEntryCopy> = {
   lich: {
     label: 'Lich',
-    detail: '30 HP. Revives once. Immunity to debuffs.',
-    title: 'LICH',
-    description: '30 HP, 80 sanity, move 6cm. Immunity to pierce, slashing, shadow and all debuffs. Resist shatter and heat. Weak to light. Commands other undead. Revives once at half HP.',
+    detail: 'Commander / revives once / rejects most control',
+    title: 'THE LICH',
+    description: 'A calculating undead commander with 30 HP and high sanity. It ignores most physical attacks and debuffs, commands the dead, and revives once at half health. Light is its clearest weakness.',
   },
   reaper: {
     label: 'Reaper',
-    detail: 'Requires 2+ players. 33 HP. 10 damage cap per source.',
-    title: 'REAPER',
-    description: 'Requires 2+ party members. 33 HP, immune to sanity damage, move 6cm. Max 10 damage per entity per round. Immunity to pierce, slashing, shatter, shadow and all debuffs. Resist heat. Weak to light. Leashes and marks targets, then executes all marks.',
+    detail: 'Execution marks / damage cap / physical immunity',
+    title: 'THE REAPER',
+    description: 'A slow executioner that leashes and marks prey before its killing clap. Each entity can deal at most 10 damage to it per round. It ignores physical damage and shadow; light remains effective.',
   },
   deathknightSpear: {
     label: 'Deathknight',
-    detail: '125 HP. 5cm reach. Move 12cm.',
-    title: 'DEATHKNIGHT',
-    description: '125 HP, 99 sanity, move 12cm. 2d10 pierce at 5cm reach. Resist pierce, slashing, shadow and heat. Weak to light, cleansing and healing.',
+    detail: '125 HP / long spear reach / relentless pressure',
+    title: 'THE DEATHKNIGHT',
+    description: 'A massive armoured spear fighter with 125 HP, long reach, and high movement. It resists ordinary steel, shadow, and heat; light, cleansing, and healing effects exploit its weaknesses.',
   },
 };

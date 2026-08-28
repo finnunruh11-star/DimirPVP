@@ -363,6 +363,13 @@ export function dealDamage(
         return 0;
       }
     }
+    // Standing inside a concealing hazard is its own miss chance.
+    const hazardDodge = ctx.game.hazardDodgeChance(target);
+    if (hazardDodge > 0 && ctx.rng.chance(hazardDodge)) {
+      ctx.log(`${target.name} is lost in the haze and the attack misses.`);
+      ctx.vfx?.combatFeedback?.(target, { kind: 'miss', label: 'DODGED' });
+      return 0;
+    }
   }
 
   // A Mind Dodge ward absorbs the next instance of sanity damage.
@@ -575,6 +582,9 @@ export function dealDamage(
       | undefined;
     if (oj && ctx.game.mages[oj.targetIndex] === target) oj.attackedTarget = true;
     ctx.game.echoThreadMark(ctx.caster, target, amount);
+    ctx.game.arcStormConduit(ctx.caster, target, amount);
+    ctx.game.recordPierceEcho(ctx.caster, target, amount);
+    ctx.game.extendPierceWounds(target, damage, amount);
     // Spell impact overlay on the afflicted target: corrosive → poison splash,
     // anything else → the generic impact. Suppressed for basic attacks and DoT
     // ticks (which drive their own 'dot' overlay).
@@ -702,7 +712,7 @@ export function heal(
     if (restored > 0) ctx.vfx?.combatFeedback?.(target, { kind: 'sanityHeal', amount: restored });
   } else {
     // Blood Charm and the like make every heal restore more.
-    amount = Math.round(amount * target.healMult());
+    amount = Math.round(amount * target.healMult() * ctx.game.healMultiplierAt(target.pos));
     const before = target.hp;
     target.hp = Math.min(target.maxHp, target.hp + amount);
     ctx.log(`${target.name} heals ${amount} health.`);
@@ -984,6 +994,18 @@ export function applyDot(
     reapOnOwnerHealIndex?: number;
     /** On the bearer's death, pass its Reap to the nearest enemy in this radius. */
     reapTransferRadius?: number;
+    /** Dice specs used in order on successive ticks; the last one repeats forever. */
+    escalateSpecs?: string[];
+    /** Random actions the bearer forgets on every tick. */
+    forgetPerTick?: number;
+    /** Each tick, copy this DoT at half duration onto everything within this radius. */
+    spreadRadius?: number;
+    /** The contagion veils everyone it infects. */
+    spreadVeils?: boolean;
+    /** Pierce damage on the bearer buys the DoT more time. */
+    extendOnPierce?: { minAmount: number; chanceBelow: number; maxDuration: number };
+    /** When a tick empties the bearer's sanity, jump to the nearest unit in this radius. */
+    jumpOnMindBreakRadius?: number;
     extend?: boolean;
   }
 ): void {
@@ -1014,6 +1036,13 @@ export function applyDot(
       reapPerTick: opts.reapPerTick,
       reapOnOwnerHealIndex: opts.reapOnOwnerHealIndex,
       reapTransferRadius: opts.reapTransferRadius,
+      escalateSpecs: opts.escalateSpecs,
+      escalateIndex: opts.escalateSpecs ? 0 : undefined,
+      forgetPerTick: opts.forgetPerTick,
+      spreadRadius: opts.spreadRadius,
+      spreadVeils: opts.spreadVeils,
+      extendOnPierce: opts.extendOnPierce,
+      jumpOnMindBreakRadius: opts.jumpOnMindBreakRadius,
     },
     !!opts.extend
   );
@@ -1557,5 +1586,145 @@ export function twistStrike(ctx: EffectContext, target: Mage): void {
     applyStun(ctx, target, { duration: 2, type: 'main' });
     ctx.log(`${target.name} loses its next main action.`);
   }
+}
+
+// -----------------------------------------------------------------------------
+//  HAZARDS / SEALS / SPIKES / OATHS
+// -----------------------------------------------------------------------------
+
+/** Raise a standing, indiscriminate hazard centred on `at`. */
+export function placeHazardZone(
+  ctx: EffectContext,
+  at: Vec2,
+  opts: {
+    name: string;
+    radius: number;
+    rounds: number;
+    damageSpecs: string[];
+    damageType: DamageType;
+    movedOnly?: boolean;
+    dodgeChance?: number;
+    healMult?: number;
+    color: number;
+    /** Far end, to lay the hazard along a line instead of in a disc. */
+    to?: Vec2;
+    /** Pieces sharing a group merge into one field that only ticks once. */
+    groupId?: number;
+  }
+): void {
+  const { to, ...zone } = opts;
+  ctx.game.addHazardZone(at, ctx.caster, {
+    ...zone,
+    toX: to?.x,
+    toY: to?.y,
+    radius: critScale(ctx, opts.radius),
+    roundsLeft: critScale(ctx, opts.rounds),
+  });
+  ctx.log(`${ctx.caster.name} raises ${opts.name}.`);
+}
+
+/**
+ * Seal `target` away: hidden from its OWN side (so no ally can reach it) while
+ * the sealer's team may still act on it freely.
+ */
+export function applySeal(
+  ctx: EffectContext,
+  target: Mage,
+  opts: { duration: number; damageSpec: string; executeAmount: number }
+): void {
+  if (target.isDebuffImmune()) {
+    ctx.log(`${target.name} is immune to debuffs. The seal fails.`);
+    return;
+  }
+  const duration = afflictDuration(ctx, target, opts.duration);
+  addOrExtendStatus(
+    target.statuses,
+    {
+      key: 'seal',
+      name: 'Sealed',
+      kind: 'seal',
+      duration,
+      blindTeam: target.team,
+      ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+      damageSpec: opts.damageSpec,
+      executeAmount: opts.executeAmount,
+    },
+    false
+  );
+  applyStun(ctx, target, { duration, type: 'full' });
+  applyStun(ctx, target, { duration, type: 'movement' });
+  ctx.log(`${target.name} is sealed away from its own side (${duration} cycles).`);
+}
+
+/** Stake `target` to the ground it stands on; straying from it is billed each turn. */
+export function applyAnchorSpike(
+  ctx: EffectContext,
+  target: Mage,
+  opts: { duration: number; pxPerDie: number; maxDice: number }
+): void {
+  if (target.isDebuffImmune()) {
+    ctx.log(`${target.name} is immune to debuffs. The spike fails.`);
+    return;
+  }
+  const duration = afflictDuration(ctx, target, opts.duration);
+  addOrExtendStatus(
+    target.statuses,
+    {
+      key: 'anchorSpike',
+      name: 'Staked',
+      kind: 'anchorSpike',
+      duration,
+      ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+      x: target.x,
+      y: target.y,
+      pxPerDie: opts.pxPerDie,
+      maxDice: opts.maxDice,
+    },
+    false
+  );
+  ctx.log(`${target.name} is staked to the ground (${duration} cycles).`);
+}
+
+/** For `duration` cycles, every pierce hit the caster lands is dealt again at turn end. */
+export function applyPierceEcho(ctx: EffectContext, target: Mage, duration: number): void {
+  addOrExtendStatus(
+    target.statuses,
+    {
+      key: 'pierceEcho',
+      name: 'Blood Oath',
+      kind: 'pierceEcho',
+      duration: critScale(ctx, duration),
+    },
+    false
+  );
+  ctx.log(`${target.name} swears the oath: its pierce wounds will echo.`);
+}
+
+/** Turn `target` into a conduit: every wound on it arcs a share to nearby bodies. */
+export function applyStormConduit(
+  ctx: EffectContext,
+  target: Mage,
+  opts: { duration: number; maxTargets: number; radius: number; sharePct: number }
+): void {
+  if (target.isDebuffImmune()) {
+    ctx.log(`${target.name} is immune to debuffs. The storm will not hold.`);
+    return;
+  }
+  const duration = afflictDuration(ctx, target, opts.duration);
+  addOrExtendStatus(
+    target.statuses,
+    {
+      key: 'stormConduit',
+      name: 'Storm Conduit',
+      kind: 'stormConduit',
+      duration,
+      ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+      maxTargets: opts.maxTargets,
+      radius: opts.radius,
+      sharePct: opts.sharePct,
+    },
+    false
+  );
+  ctx.log(`${target.name} becomes a storm conduit (${duration} cycles).`);
 }
 

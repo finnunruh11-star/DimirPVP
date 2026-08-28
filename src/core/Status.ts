@@ -35,6 +35,10 @@ export type StatusKind =
   | 'mindFuse'
   | 'reactionNeedle'
   | 'foeBlind'
+  | 'seal'
+  | 'anchorSpike'
+  | 'pierceEcho'
+  | 'stormConduit'
   | 'deathCurse';
 export type StunType = 'main' | 'movement' | 'full';
 export type InvisMode = 'full' | 'partial';
@@ -118,6 +122,66 @@ export interface DotStatus extends BaseStatus {
   reapOnOwnerHealIndex?: number;
   /** On the bearer's death, pass its remaining Reap to the nearest enemy. */
   reapTransferRadius?: number;
+  /** Dice specs used in order on successive ticks; the last one repeats forever. */
+  escalateSpecs?: string[];
+  /** How many ticks have already been spent walking `escalateSpecs`. */
+  escalateIndex?: number;
+  /** Random actions the bearer forgets on every tick. */
+  forgetPerTick?: number;
+  /** Each tick, copy this DoT at half duration onto everything within this radius. */
+  spreadRadius?: number;
+  /** Newly infected bearers (and the original) are veiled by the contagion. */
+  spreadVeils?: boolean;
+  /** Pierce damage on the bearer buys the DoT more time. */
+  extendOnPierce?: {
+    /** Hits of at least this much always extend; weaker hits roll `chanceBelow`. */
+    minAmount: number;
+    chanceBelow: number;
+    /** Remaining duration may never be pushed above this. */
+    maxDuration: number;
+  };
+  /** When a tick empties the bearer's sanity, jump to the nearest unit in this radius. */
+  jumpOnMindBreakRadius?: number;
+}
+
+/**
+ * Bind Shadow Veil: the bearer is sealed away — held still and hidden from its
+ * OWN side, so only `ownerTeam` can still reach it while it is ground down.
+ */
+export interface SealStatus extends BaseStatus {
+  kind: 'seal';
+  /** The team that can no longer see or target the bearer. */
+  blindTeam: number;
+  ownerIndex: number;
+  damageSpec: string;
+  executeAmount: number;
+}
+
+/** Bind Shatter Pierce: a spike the bearer is dragged back to every turn. */
+export interface AnchorSpikeStatus extends BaseStatus {
+  kind: 'anchorSpike';
+  ownerIndex: number;
+  x: number;
+  y: number;
+  /** Pixels of travel that earn one die of shatter on the yank. */
+  pxPerDie: number;
+  maxDice: number;
+}
+
+/** Bind Curse Pierce: the bearer's pierce damage is dealt a second time at turn end. */
+export interface PierceEchoStatus extends BaseStatus {
+  kind: 'pierceEcho';
+}
+
+/** Lightning Curse: every wound on the bearer arcs a share onward to nearby bodies. */
+export interface StormConduitStatus extends BaseStatus {
+  kind: 'stormConduit';
+  ownerIndex: number;
+  /** How many other bodies a single wound may arc to. */
+  maxTargets: number;
+  radius: number;
+  /** Fraction of the wound passed to each of them. */
+  sharePct: number;
 }
 
 /** Stacking execution mark: the bearer dies at or below this much health. */
@@ -429,6 +493,10 @@ export type Status =
   | MindFuseStatus
   | ReactionNeedleStatus
   | FoeBlindStatus
+  | SealStatus
+  | AnchorSpikeStatus
+  | PierceEchoStatus
+  | StormConduitStatus
   | DeathCurseStatus;
 
 /**

@@ -161,20 +161,29 @@ export function spellById(id: string): Spell | undefined {
   return undefined;
 }
 
+/** Every catalogue, for reference UI that must not depend on match state. */
+export const ALL_SPELL_SETS: ReadonlySet<ItemSet> = new Set<ItemSet>(['original', 'finns', 'dlc']);
+
 /**
  * Every active spell, with class spells resolved to the given class's variant
  * (one entry per class-spell combo). Callers that operate on a specific mage
- * should pass that mage's class so class spells surface correctly.
+ * should pass that mage's class so class spells surface correctly. Pass `sets`
+ * to ignore the active-set global entirely.
  */
-export function allSpells(mageClass: MageClass = DEFAULT_MAGE_CLASS): Spell[] {
+export function allSpells(
+  mageClass: MageClass = DEFAULT_MAGE_CLASS,
+  sets?: ReadonlySet<ItemSet>
+): Spell[] {
+  const active = (spell: Spell): boolean =>
+    sets ? sets.has(spell.set ?? 'original') : spellActive(spell);
   const resolved = new Map<string, Spell>();
   for (const spell of registry.values()) {
-    if (spellActive(spell)) resolved.set(comboKey(spell.words), spell);
+    if (active(spell)) resolved.set(comboKey(spell.words), spell);
   }
   for (const [key, variants] of classRegistry) {
     const variant = variants[mageClass];
     if (!variant) continue;
-    if (spellActive(variant)) resolved.set(key, variant);
+    if (active(variant)) resolved.set(key, variant);
     else resolved.delete(key);
   }
   return [...resolved.values()];

@@ -83,7 +83,7 @@ import {
   START_SANITY,
   TEXT,
 } from '../config/constants';
-import { GameState } from '../core/GameState';
+import { GameState, hazardDistance } from '../core/GameState';
 import { Mage } from '../core/Mage';
 import { Dice } from '../core/Dice';
 import { analyzeDodge, dodgeGrantsBonusAction, type DodgeTier } from '../core/Dodge';
@@ -8246,6 +8246,14 @@ export class GameScene extends Phaser.Scene {
         return `Shackled. Any action you declare is forgotten: a weapon attack forgets 'melee', a spell forgets every word it used, for 3 turns each. (${turns})`;
       case 'shadowHook':
         return `Hooked. At turn start you are pulled 4cm toward the caster, take 1d6 pierce, and leave one of their shadows where you stop. Being dragged into a wall or the field edge adds 2d6 shatter. (${turns})`;
+      case 'seal':
+        return `Sealed. Your own allies cannot see or target you; the caster's side still can. At turn start you take ${s.damageSpec} shadow and are executed for ${s.executeAmount}. (${turns})`;
+      case 'anchorSpike':
+        return `Staked. At turn start you are dragged back to the spike and take 1d6 shatter for every 2cm you strayed, up to ${s.maxDice}d6. (${turns})`;
+      case 'pierceEcho':
+        return `Blood Oath. Every point of pierce damage you deal is dealt again at the end of your turn. (${turns})`;
+      case 'stormConduit':
+        return `Storm Conduit. Every wound you take arcs ${Math.round(s.sharePct * 100)}% of itself as heat to up to ${s.maxTargets} unit${s.maxTargets === 1 ? '' : 's'} within ${Math.round(s.radius / RANGE_UNIT)}cm, either side. (${turns})`;
       case 'phaseOut':
         return s.mode === 'self'
           ? 'Phased. Cannot be targeted, damaged or affected until your next turn. Movement only, passing through walls, zones and bodies. Enemies you pass through take 1d6 corrosive. Upkeep is skipped; statuses still count down.'
@@ -12199,6 +12207,14 @@ export class GameScene extends Phaser.Scene {
       show(`mv${z.id}`, z.x, z.y - z.radius - 10, z.turnsLeft, z.owner);
     for (const pool of this.gs.corrosionPools)
       show(`cp${pool.id}`, pool.x, pool.y - pool.radius - 10, pool.roundsLeft, pool.ownerTeam);
+    for (const zone of this.gs.hazardZones)
+      show(
+        `hz${zone.id}`,
+        zone.toX != null ? (zone.x + zone.toX) / 2 : zone.x,
+        (zone.toY != null ? (zone.y + zone.toY) / 2 : zone.y) - zone.radius - 10,
+        zone.roundsLeft,
+        zone.ownerTeam
+      );
     for (const b of this.gs.barriers) show(`ba${b.id}`, b.x, b.y, b.ttl, b.owner);
     for (const zone of this.gs.veilBindZones) {
       show(`vb${zone.id}`, zone.x, zone.y - zone.radius - 10, zone.roundsLeft, zone.owner);
@@ -12484,6 +12500,18 @@ export class GameScene extends Phaser.Scene {
       g.fillStyle(0x467a3f, 0.2).fillCircle(pool.x, pool.y, pool.radius);
       g.lineStyle(2, 0x9dcf62, 0.65).strokeCircle(pool.x, pool.y, pool.radius);
       g.lineStyle(1, 0x263d2b, 0.8).strokeCircle(pool.x, pool.y, pool.radius * 0.62);
+    }
+    for (const zone of this.gs.hazardZones) {
+      if (zone.toX != null && zone.toY != null) {
+        g.lineStyle(zone.radius * 2, zone.color, 0.22);
+        g.lineBetween(zone.x, zone.y, zone.toX, zone.toY);
+        g.lineStyle(2, zone.color, 0.7);
+        g.lineBetween(zone.x, zone.y, zone.toX, zone.toY);
+        continue;
+      }
+      g.fillStyle(zone.color, 0.16).fillCircle(zone.x, zone.y, zone.radius);
+      g.lineStyle(2, zone.color, 0.7).strokeCircle(zone.x, zone.y, zone.radius);
+      g.lineStyle(1, zone.color, 0.35).strokeCircle(zone.x, zone.y, zone.radius * 0.7);
     }
   }
 
@@ -14163,6 +14191,22 @@ export class GameScene extends Phaser.Scene {
       if (dist(p, zone) <= zone.radius) {
         return 'Veil Bind - inside this circle, gaining a veil also roots the bearer; being rooted or bound grants a half veil for the same duration.';
       }
+    }
+    for (const zone of this.gs.hazardZones) {
+      if (hazardDistance(zone, p) > zone.radius) continue;
+      const parts = [`${zone.name} - affects every unit inside, allies included.`];
+      const spec = zone.damageSpecs[Math.min(zone.escalateIndex, zone.damageSpecs.length - 1)];
+      parts.push(
+        zone.movedOnly
+          ? `Units that moved last turn take ${spec} ${zone.damageType} at turn start.`
+          : `Units inside take ${spec} ${zone.damageType} at turn start.`
+      );
+      if (zone.damageSpecs.length > 1) parts.push('The damage deepens every round.');
+      if (zone.dodgeChance) parts.push(`${Math.round(zone.dodgeChance * 100)}% chance to dodge targeted attacks.`);
+      if (zone.healMult != null && zone.healMult !== 1) {
+        parts.push(`Healing received inside is multiplied by ${zone.healMult}.`);
+      }
+      return parts.join(' ');
     }
     return null;
   }

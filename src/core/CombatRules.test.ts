@@ -1,10 +1,10 @@
-import { applyDebuff, applyDot, applyStun, dealDamage } from '../effects/effects';
+import { applyDebuff, applyDot, applyInvisibility, applyStun, dealDamage } from '../effects/effects';
 import { applyEnemyTraits } from '../pve/swamprun';
 import { RANGE_UNIT } from '../config/constants';
 import { FIELD, MELEE_RANGE } from '../config/constants';
 import { Dice } from './Dice';
 import { analyzeDodge, dodgeGrantsBonusAction } from './Dodge';
-import { GameState } from './GameState';
+import { GameState, hazardDistance } from './GameState';
 import { Mage } from './Mage';
 import { getSpell, setActiveSpellSets } from '../spells/registry';
 import '../spells/sampleSpells';
@@ -588,6 +588,447 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       'The slow tracks the corrosive half'
     );
     equal(foe.isStunned('movement'), mill >= 6, 'The root tracks the mill half');
+  }],
+
+  ['seals a target away from its own side but not from the sealer', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const ally = new Mage({ name: 'Ally', isAI: false, team: 1, position: { x: 320, y: 270 }, loadout: [] });
+    const foe = new Mage({ name: 'Foe', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    const foeMate = new Mage({ name: 'Foe Mate', isAI: true, team: 2, position: { x: 420, y: 270 }, loadout: [] });
+    foe.maxHp = 200;
+    foe.hp = 200;
+    const game = new GameState([caster, ally, foe, foeMate], 11);
+    const spell = getSpell(['shadow', 'veil', 'bind']);
+    assert(spell, 'Expected Shadow Veil Bind to be registered.');
+
+    void spell.cast(game.effectContext(caster, foe, null));
+
+    assert(foe.hp < 200, 'The cast deals its opening 2d6');
+    equal(foe.isStunned('full'), true, 'The seal fully stuns');
+    equal(foe.isStunned('movement'), true, 'The seal roots');
+    equal(game.isUntargetable(foe, foeMate), true, "Its own side cannot reach it");
+    equal(game.isUntargetable(foe, caster), false, 'The sealer can still reach it');
+    equal(game.isUntargetable(foe, ally), false, "The sealer's allies can still reach it");
+  }],
+
+  ['escalates the rotting ground and halves healing inside it', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const victim = new Mage({ name: 'Victim', isAI: true, team: 2, position: { x: 340, y: 270 }, loadout: [] });
+    victim.maxHp = 400;
+    victim.hp = 400;
+    const game = new GameState([caster, victim], 23);
+    const spell = getSpell(['shadow', 'corrode', 'curse']);
+    assert(spell, 'Expected Shadow Corrode Curse to be registered.');
+
+    void spell.cast(game.effectContext(caster, null, { x: 340, y: 270 }));
+    const zone = game.hazardZones[0];
+    assert(zone, 'Expected the death zone to be raised.');
+    equal(zone.damageSpecs, ['1d4', '1d6', '1d8', '1d10'], 'It walks 1d4 up to 1d10');
+    equal(game.healMultiplierAt(victim.pos), 0.5, 'Healing inside is halved');
+    equal(game.healMultiplierAt({ x: 3000, y: 3000 }), 1, 'Healing outside is untouched');
+
+    // Everything caught is fair game, including the caster's own side.
+    caster.x = 340;
+    caster.y = 270;
+    const before = caster.hp;
+    game.currentIndex = 0;
+    game.beginTurn();
+    assert(caster.hp < before, 'The zone bites its own author too');
+  }],
+
+  ['only bites movers in the corroding mist and conceals whoever stands in it', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const still = new Mage({ name: 'Still', isAI: true, team: 2, position: { x: 500, y: 270 }, loadout: [] });
+    const mover = new Mage({ name: 'Mover', isAI: true, team: 2, position: { x: 520, y: 270 }, loadout: [] });
+    for (const m of [still, mover]) {
+      m.maxHp = 200;
+      m.hp = 200;
+    }
+    const game = new GameState([caster, still, mover], 31);
+    const spell = getSpell(['bind', 'veil', 'corrode']);
+    assert(spell, 'Expected Bind Veil Corrode to be registered.');
+
+    void spell.cast(game.effectContext(caster, null, { x: 510, y: 270 }));
+    equal(game.hazardZones.length, 1, 'The mist is raised');
+    equal(game.hazardDodgeChance(still), 0.5, 'Standing inside grants the dodge');
+    equal(game.hazardDodgeChance(caster), 0, 'Outside the mist there is no dodge');
+
+    still.movedThisTurn = false;
+    game.currentIndex = 1;
+    game.beginTurn();
+    equal(still.hp, 200, 'Holding still inside the mist costs nothing');
+
+    mover.movedThisTurn = true;
+    game.currentIndex = 2;
+    game.beginTurn();
+    assert(mover.hp < 200, 'Moving inside the mist is punished');
+  }],
+
+  ['bills strayed distance on the anchor spike and hauls the bearer back', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const foe = new Mage({ name: 'Foe', isAI: true, team: 2, position: { x: 500, y: 270 }, loadout: [] });
+    foe.maxHp = 400;
+    foe.hp = 400;
+    const game = new GameState([caster, foe], 5);
+    const spell = getSpell(['bind', 'shatter', 'pierce']);
+    assert(spell, 'Expected Bind Shatter Pierce to be registered.');
+
+    void spell.cast(game.effectContext(caster, foe, null));
+    const spike = foe.statuses.find((s) => s.kind === 'anchorSpike');
+    assert(spike && spike.kind === 'anchorSpike', 'Expected the spike to be planted.');
+    equal(spike.maxDice, 4, 'Four dice is the cap');
+    equal(spike.pxPerDie, 2 * RANGE_UNIT, 'One die per 2 range units');
+
+    // Stray a full 8 units: the yank should cap out and drag it home.
+    foe.x = spike.x + 8 * RANGE_UNIT;
+    foe.hp = 400;
+    game.currentIndex = 1;
+    game.beginTurn();
+    assert(foe.hp <= 400 - 4, 'Straying the full distance grinds for up to 4d6');
+    assert(Math.hypot(foe.x - spike.x, foe.y - spike.y) < RANGE_UNIT, 'It is hauled back to the spike');
+  }],
+
+  ['repeats pierce damage at the end of the oath-bearer turn', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const foe = new Mage({ name: 'Foe', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    foe.maxHp = 400;
+    foe.hp = 400;
+    const game = new GameState([caster, foe], 13);
+    const spell = getSpell(['bind', 'curse', 'pierce']);
+    assert(spell, 'Expected Bind Curse Pierce to be registered.');
+
+    void spell.cast(game.effectContext(caster, foe, null));
+    equal(
+      caster.statuses.some((s) => s.kind === 'pierceEcho'),
+      true,
+      'The oath is sworn on the caster'
+    );
+    const afterCast = foe.hp;
+    game.currentIndex = 0;
+    game.endTurn();
+    assert(foe.hp < afterCast, 'The opening shot is dealt a second time at turn end');
+  }],
+
+  ['reopens the suppurating wound on pierce and caps it at three turns', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const foe = new Mage({ name: 'Foe', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    foe.maxHp = 400;
+    foe.hp = 400;
+    const game = new GameState([caster, foe], 17);
+    const spell = getSpell(['corrode', 'curse', 'pierce']);
+    assert(spell, 'Expected Corrode Curse Pierce to be registered.');
+
+    void spell.cast(game.effectContext(caster, foe, null));
+    const wound = foe.statuses.find((s) => s.key === 'dot:suppurating-wound');
+    assert(wound && wound.kind === 'dot', 'Expected the wound to be applied.');
+    equal(wound.escalateSpecs, ['1d6', '1d8', '1d10'], 'It deepens to 1d10 and stops');
+    equal(wound.duration, 3, 'It opens at three turns');
+
+    // A heavy pierce hit always extends, but never past the three-turn ceiling.
+    wound.duration = 1;
+    dealDamage(game.effectContext(caster, foe, null), foe, { amount: 9, type: 'pierce', damageClass: 'physical' }, { canMiss: false });
+    equal(wound.duration, 2, 'A hit of 6 or more always buys one turn');
+    dealDamage(game.effectContext(caster, foe, null), foe, { amount: 9, type: 'pierce', damageClass: 'physical' }, { canMiss: false });
+    equal(wound.duration, 3, 'It climbs to the ceiling');
+    dealDamage(game.effectContext(caster, foe, null), foe, { amount: 9, type: 'pierce', damageClass: 'physical' }, { canMiss: false });
+    equal(wound.duration, 3, 'The ceiling holds at three turns');
+  }],
+
+  ['spreads the silent plague at half duration to either side', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 100, y: 270 }, loadout: [] });
+    const host = new Mage({ name: 'Host', isAI: true, team: 2, position: { x: 500, y: 270 }, loadout: [] });
+    const neighbour = new Mage({ name: 'Neighbour', isAI: true, team: 2, position: { x: 500 + RANGE_UNIT, y: 270 }, loadout: [] });
+    const bystander = new Mage({ name: 'Bystander', isAI: false, team: 1, position: { x: 500 + 2 * RANGE_UNIT, y: 270 }, loadout: [] });
+    for (const m of [host, neighbour, bystander]) {
+      m.maxHp = 300;
+      m.hp = 300;
+    }
+    const game = new GameState([caster, host, neighbour, bystander], 29);
+    const spell = getSpell(['veil', 'corrode', 'curse']);
+    assert(spell, 'Expected Veil Corrode Curse to be registered.');
+
+    void spell.cast(game.effectContext(caster, host, null));
+    equal(host.isInvisible(), true, 'The host is hidden by its own plague');
+
+    game.currentIndex = 1;
+    game.beginTurn();
+    const carried = (m: Mage) => m.statuses.find((s) => s.key === 'dot:silent-plague');
+    const onNeighbour = carried(neighbour);
+    const onBystander = carried(bystander);
+    assert(onNeighbour, 'It spreads to a nearby enemy');
+    assert(onBystander, "It does not care that the bystander is on the caster's side");
+    equal(onNeighbour.duration, 2, 'The carrier gets half the remaining duration');
+  }],
+
+  ['rots the mind and moves on when the virus empties it', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const host = new Mage({ name: 'Host', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    const next = new Mage({ name: 'Next', isAI: true, team: 2, position: { x: 400 + RANGE_UNIT, y: 270 }, loadout: [] });
+    host.maxHp = 300;
+    host.hp = 300;
+    host.maxSanity = 2;
+    host.sanity = 2;
+    const game = new GameState([caster, host, next], 37);
+    const spell = getSpell(['mind', 'corrode', 'pierce']);
+    assert(spell, 'Expected Mind Corrode Pierce to be registered.');
+
+    void spell.cast(game.effectContext(caster, host, null));
+    const virus = host.statuses.find((s) => s.key === 'dot:neural-virus');
+    assert(virus && virus.kind === 'dot', 'Expected the virus to take hold.');
+    equal(virus.escalateSpecs, ['1d4', '1d6', '1d8', '1d10'], 'It multiplies up to 1d10');
+    equal(virus.forgetPerTick, 1, 'Every tick costs the host an action');
+
+    game.currentIndex = 1;
+    game.beginTurn();
+    equal(host.sanity, 0, 'The first tick empties a 2-sanity mind');
+    assert(
+      next.statuses.some((s) => s.key === 'dot:neural-virus'),
+      'A broken mind cannot hold the virus, so it jumps'
+    );
+  }],
+
+  ['ignores concealment when sniping and pays out either way', () => {
+    const makeBoard = () => {
+      const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 100, y: 270 }, loadout: [] });
+      const foe = new Mage({ name: 'Foe', isAI: true, team: 2, position: { x: 100 + 12 * RANGE_UNIT, y: 270 }, loadout: [] });
+      foe.maxHp = 400;
+      foe.hp = 400;
+      return { caster, foe, game: new GameState([caster, foe], 41) };
+    };
+    const spell = getSpell(['veil', 'shatter', 'pierce']);
+    assert(spell, 'Expected Veil Shatter Pierce to be registered.');
+    equal(spell.ignoresStealth, true, 'The shot is allowed to pick a hidden target');
+
+    const veiled = makeBoard();
+    applyInvisibility(veiled.game.effectContext(veiled.foe, veiled.foe, null), veiled.foe, {
+      duration: 3,
+      mode: 'full',
+    });
+    equal(
+      veiled.game.isValidSpellTarget(spell, veiled.caster, veiled.foe),
+      true,
+      'A fully veiled foe at long range is still a legal target'
+    );
+    void spell.cast(veiled.game.effectContext(veiled.caster, veiled.foe, null));
+    equal(veiled.game.isVeiled(veiled.foe), false, 'Breaking the veil strips it');
+    equal(veiled.caster.isInvisible(), false, 'Breaking a veil grants the sniper none');
+
+    const bare = makeBoard();
+    void spell.cast(bare.game.effectContext(bare.caster, bare.foe, null));
+    assert(bare.foe.hp < 400, 'The shot still lands on an unveiled target');
+    equal(bare.caster.isInvisible(), true, 'With no veil to break, the sniper takes cover');
+  }],
+
+  ['pulverises with Shadow Shatter Corrode without moving anybody', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 200, y: 270 }, loadout: [] });
+    const focus = new Mage({ name: 'Focus', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    const bystander = new Mage({ name: 'Bystander', isAI: true, team: 2, position: { x: 400 + 2 * RANGE_UNIT, y: 270 }, loadout: [] });
+    const ally = new Mage({ name: 'Ally', isAI: false, team: 1, position: { x: 400 - 2 * RANGE_UNIT, y: 270 }, loadout: [] });
+    for (const m of [focus, bystander, ally]) {
+      m.maxHp = 400;
+      m.hp = 400;
+    }
+    const game = new GameState([caster, focus, bystander, ally], 19);
+    const spell = getSpell(['shadow', 'shatter', 'corrode']);
+    assert(spell, 'Expected Shadow Shatter Corrode to be registered.');
+    const bystanderSpot = { x: bystander.x, y: bystander.y };
+
+    void spell.cast(game.effectContext(caster, focus, null));
+
+    assert(focus.hp <= 400 - 2, 'The focus eats the full 2d10');
+    equal(focus.isStunned('full'), true, 'The focus is stunned for a turn');
+    assert(bystander.hp < 400, 'The shockwave catches nearby enemies');
+    assert(ally.hp < 400, 'Black does not check sides');
+    equal(game.shadows.length, 0, 'It is destruction, not space control — no pool is left');
+    equal(
+      { x: bystander.x, y: bystander.y },
+      bystanderSpot,
+      'Nobody is dragged anywhere'
+    );
+  }],
+
+  ['drives Shatter Corrode Pierce straight through armour and resistance', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const tank = new Mage({ name: 'Tank', isAI: true, team: 2, position: { x: 340, y: 270 }, loadout: [] });
+    tank.maxHp = 400;
+    tank.hp = 400;
+    tank.intrinsicImmuneTypes = ['shatter', 'pierce'];
+    tank.intrinsicResistTypes = ['shatter', 'pierce'];
+    const game = new GameState([caster, tank], 43);
+    const spell = getSpell(['shatter', 'corrode', 'pierce']);
+    assert(spell, 'Expected Shatter Corrode Pierce to be registered.');
+
+    void spell.cast(game.effectContext(caster, tank, null));
+    assert(tank.hp <= 400 - 4, 'Immunity to both damage types does not save it');
+  }],
+
+  ['turns the Lightning Shatter clap inward on a roll under 6', async () => {
+    const build = (roll: number) => {
+      const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 400, y: 270 }, loadout: [] });
+      const foe = new Mage({ name: 'Foe', isAI: true, team: 2, position: { x: 400 + RANGE_UNIT, y: 270 }, loadout: [] });
+      const nearby = new Mage({ name: 'Nearby', isAI: false, team: 1, position: { x: 400 + 2 * RANGE_UNIT, y: 270 }, loadout: [] });
+      for (const m of [caster, foe, nearby]) {
+        m.maxHp = 500;
+        m.hp = 500;
+      }
+      const game = new GameState([caster, foe, nearby], 9);
+      game.spellRollThisCast = roll;
+      return { caster, foe, nearby, game };
+    };
+    const spell = getSpell(['lightning', 'shatter']);
+    assert(spell, 'Expected Lightning Shatter to be registered.');
+
+    const strong = build(20);
+    await spell.cast(strong.game.effectContext(strong.caster, strong.foe, null));
+    equal(strong.foe.isStunned('full'), true, 'A strong clap stuns the enemy');
+    equal(strong.caster.isStunned('full'), false, 'And leaves the caster standing');
+    assert(strong.nearby.hp < 500, 'The splash reaches nearby bodies on either side');
+
+    const weak = build(1);
+    await spell.cast(weak.game.effectContext(weak.caster, weak.foe, null));
+    equal(weak.caster.isStunned('full'), true, 'A feeble clap stuns its own caster');
+    equal(weak.foe.isStunned('full'), false, 'And nobody else');
+    assert(weak.foe.hp < 500, 'The damage still lands either way');
+  }],
+
+  ['weaves a Lightning Corrode web that re-crosses bodies it already holds', async () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 150, y: 150 }, loadout: [] });
+    // Four bodies in a tight clump, every one within reach of every other.
+    const clump = [0, 1, 2, 3].map((i) => {
+      const m = new Mage({
+        name: `Body ${i}`,
+        isAI: i > 0,
+        team: i === 3 ? 1 : 2,
+        position: { x: 500 + (i % 2) * 2 * RANGE_UNIT, y: 250 + Math.floor(i / 2) * 2 * RANGE_UNIT },
+        loadout: [],
+      });
+      m.maxHp = 900;
+      m.hp = 900;
+      return m;
+    });
+    const game = new GameState([caster, ...clump], 15);
+    game.spellRollThisCast = 20;
+    const spell = getSpell(['lightning', 'corrode']);
+    assert(spell, 'Expected Lightning Corrode to be registered.');
+
+    await spell.cast(game.effectContext(caster, clump[0], null));
+
+    // Every pair among the four is crossed exactly once, allies included.
+    equal(game.hazardZones.length, 6, 'One line per pair, never a duplicate');
+    for (const body of clump) assert(body.hp < 900, 'Everything in the clump conducts');
+    assert(clump[3].hp < 900, "Your own ally is part of the web");
+    // The wave rolls once but lands per arc, so the body every node points back
+    // at takes it more often than the nodes themselves do.
+    const target = 900 - clump[0].hp;
+    const others = clump.slice(1).map((m) => 900 - m.hp);
+    assert(target > Math.max(...others), 'The re-crossed target is struck by the most arcs');
+
+    const scar = game.hazardZones[0];
+    assert(scar.toX != null && scar.toY != null, 'Scars are laid as lines between bodies');
+    equal(scar.damageSpecs, ['1d3'], 'Scars tick for 1d3 corrosive');
+    // However many lines overlap a body, the cast leaves one merged field.
+    equal(new Set(game.hazardZones.map((z) => z.groupId)).size, 1, 'The web is a single field');
+    const standing = clump[3];
+    const overlapping = game.hazardZones.filter(
+      (z) => hazardDistance(z, standing.pos) <= z.radius
+    ).length;
+    assert(overlapping > 1, 'It is standing where several lines cross');
+    standing.hp = 900;
+    game.currentIndex = game.mages.indexOf(standing);
+    game.beginTurn();
+    assert(900 - standing.hp <= 3, 'Crossed lines still only tick once, for a single 1d3');
+  }],
+
+  ['always runs exactly two Lightning Corrode waves, whatever the roll', async () => {
+    const countWaves = async (roll: number) => {
+      const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 150, y: 150 }, loadout: [] });
+      const clump = [0, 1, 2, 3].map((i) => {
+        const m = new Mage({
+          name: `Body ${i}`,
+          isAI: true,
+          team: 2,
+          position: { x: 500 + (i % 2) * RANGE_UNIT, y: 250 + Math.floor(i / 2) * RANGE_UNIT },
+          loadout: [],
+        });
+        m.maxHp = 9000;
+        m.hp = 9000;
+        return m;
+      });
+      const game = new GameState([caster, ...clump], 5);
+      game.spellRollThisCast = roll;
+      let waves = 0;
+      game.log = (line: string) => {
+        if (line.includes('Lightning Corrode wave')) waves += 1;
+      };
+      await getSpell(['lightning', 'corrode'])!.cast(game.effectContext(caster, clump[0], null));
+      return waves;
+    };
+
+    equal(await countWaves(8), 2, 'A weak cast still splits twice');
+    equal(await countWaves(20), 2, 'So does a strong one');
+    equal(await countWaves(40), 2, 'The roll buys reach, never more waves');
+  }],
+
+  ['gathers dark with every Lightning Shadow jump', async () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const first = new Mage({ name: 'First', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    const second = new Mage({ name: 'Second', isAI: true, team: 2, position: { x: 400 + 2 * RANGE_UNIT, y: 270 }, loadout: [] });
+    for (const m of [first, second]) {
+      m.maxHp = 900;
+      m.hp = 900;
+    }
+    const game = new GameState([caster, first, second], 21);
+    game.spellRollThisCast = 20;
+    const spell = getSpell(['lightning', 'shadow']);
+    assert(spell, 'Expected Lightning Shadow to be registered.');
+
+    await spell.cast(game.effectContext(caster, first, null));
+    equal(game.shadows.length, 2, 'Each body struck is left standing in a fresh pool');
+    // 2d6 for the first, 2d6 plus a gathered 1d6 for the second.
+    assert(900 - second.hp >= 3, 'The second jump carries the gathered dark');
+  }],
+
+  ['passes a share of every wound down a Lightning Curse conduit', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const conduit = new Mage({ name: 'Conduit', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    const neighbour = new Mage({ name: 'Neighbour', isAI: true, team: 2, position: { x: 400 + RANGE_UNIT, y: 270 }, loadout: [] });
+    for (const m of [conduit, neighbour]) {
+      m.maxHp = 500;
+      m.hp = 500;
+    }
+    const game = new GameState([caster, conduit, neighbour], 27);
+    game.spellRollThisCast = 20;
+    const spell = getSpell(['lightning', 'curse']);
+    assert(spell, 'Expected Lightning Curse to be registered.');
+    equal(spell.targeting, 'any', 'You may spend an ally as the conductor');
+
+    void spell.cast(game.effectContext(caster, conduit, null));
+    const storm = conduit.statuses.find((s) => s.kind === 'stormConduit');
+    assert(storm && storm.kind === 'stormConduit', 'Expected the conduit to be applied.');
+    equal(storm.duration, 3, 'It holds for three turns');
+
+    game.spellRollThisCast = 0;
+    dealDamage(game.effectContext(caster, conduit, null), conduit, { amount: 10, type: 'pierce', damageClass: 'physical' }, { canMiss: false });
+    assert(neighbour.hp < 500, 'The wound arcs onward to whoever stands nearby');
+  }],
+
+  ['roots everything a Lightning Bind arc touches, either side', async () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [] });
+    const foe = new Mage({ name: 'Foe', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    const ally = new Mage({ name: 'Ally', isAI: false, team: 1, position: { x: 400 + 2 * RANGE_UNIT, y: 270 }, loadout: [] });
+    for (const m of [foe, ally]) {
+      m.maxHp = 500;
+      m.hp = 500;
+    }
+    const game = new GameState([caster, foe, ally], 33);
+    game.spellRollThisCast = 20;
+    const spell = getSpell(['lightning', 'bind']);
+    assert(spell, 'Expected Lightning Bind to be registered.');
+
+    await spell.cast(game.effectContext(caster, foe, null));
+    equal(foe.isStunned('movement'), true, 'The named enemy is rooted');
+    assert(ally.hp < 500, 'The arc does not spare your own line');
+    equal(ally.isStunned('movement'), true, 'And roots it too');
   }],
 ];
 

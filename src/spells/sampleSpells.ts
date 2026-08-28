@@ -21,6 +21,7 @@ import { addOrExtendStatus } from '../core/Status';
 import { CONE_DEGREES, FIELD, MOVE_RANGE, RANGE_UNIT, SHADOW_RADIUS } from '../config/constants';
 import {
   applyAuraDot,
+  applyAnchorSpike,
   applyBlueflareStacks,
   applyControl,
   applyDebuff,
@@ -29,9 +30,12 @@ import {
   applyForget,
   applyInvisibility,
   applyOrderJudgment,
+  applyPierceEcho,
+  applySeal,
   applyShadowTrail,
   applyShadowVeil,
   applyStackingDot,
+  applyStormConduit,
   applyStun,
   applyWard,
   areaDamage,
@@ -44,6 +48,7 @@ import {
   drainDamage,
   grantExtraTurn,
   heal,
+  placeHazardZone,
   placeRealityWedge,
   placeShadow,
   placeTotem,
@@ -115,6 +120,19 @@ function lightningGamble(ctx: EffectContext): LightningGamble {
     roll === 1 ? 'overload' : roll === 2 ? 'unstable' : roll === 6 ? 'surge' : 'stable';
   ctx.log(`Lightning gamble: ${result}.`);
   return result;
+}
+
+/** Lightning power, doubled by a critical cast. */
+function lightningRoll(ctx: EffectContext): number {
+  return lightningPower(ctx) * (ctx.crit ? 2 : 1);
+}
+
+/**
+ * A distance derived from the roll. A critical already doubled the roll, and it
+ * doubles reach again on top — so a crit quadruples anything measured this way.
+ */
+function lightningRange(ctx: EffectContext, units: number): number {
+  return R(Math.max(0, units)) * (ctx.crit ? 2 : 1);
 }
 
 function pointSegmentDistance(point: Vec2, segment: TrailSegment): number {
@@ -2323,7 +2341,7 @@ registerSpell({
   targeting: 'self',
   dc: 15,
   description:
-    'Dash roll/3 times, starting at roll/3 range and cutting the range by a fifth with every dash. The chain stops once a dash would be under 3cm (critical doubles the starting range and damage). Choose each direction, then roll d6 accuracy with up to 30° error. The animated lightning trail deals 4d6 Fire whenever crossed; touching your own earlier trail stops you there and deals 4d6 Fire to you.',
+    'Dash roll/3 times, starting at roll/3 range and cutting the range by a third with every dash. The chain stops once a dash would be under 2cm (critical doubles the starting range and damage). Choose each direction, then roll d6 accuracy with up to 30° error. The animated lightning trail deals 4d6 Fire whenever crossed; touching your own earlier trail stops you there and deals 4d6 Fire to you.',
   visual: { preset: 'nova', color: 0xff3d24, size: 80, speed: 1.5 },
   async cast(ctx) {
     const power = lightningPower(ctx);
@@ -2504,20 +2522,33 @@ registerSpell({
   name: 'Lightning Shatter',
   words: ['lightning', 'shatter'],
   actionType: 'main',
-  range: R(5),
-  targeting: 'point',
+  range: R(3),
+  targeting: 'enemy',
   dc: 12,
-  aoe: { kind: 'cone', radius: R(5), degrees: CONE_DEGREES },
   description:
-    '1d6 plus 1 damage per 6 Lightning power in a 90° cone (range 5); each enemy hit has a 25% chance to be fully stunned for 2 turns.',
-  visual: { preset: 'burst', color: 0xffe45c, size: 62, speed: 1.3 },
+    'A thunderclap at close quarters (range 3). One enemy takes 2d6 shatter and is fully stunned for 2 turns. Up to one further unit per 5 Lightning power, within power ÷ 2 cm of it and on either side, takes 1d3 shatter and is stunned as well. On a Lightning power under 6 the clap turns inward and stuns you instead of any of them — and you are standing in melee range when it does.',
+  visual: { preset: 'nova', color: 0xffe45c, size: R(3), speed: 1.9 },
   cast(ctx) {
-    if (!ctx.targetPoint) return;
-    const power = lightningPower(ctx);
-    const amount = rollDice(ctx, '1d6', 'Lightning Shatter') + Math.floor(power / 6);
-    const hits = coneDamage(ctx, ctx.targetPoint, R(5), CONE_DEGREES, dmg(amount, 'heat', 'physical'));
-    for (const h of hits) {
-      if (ctx.rng.chance(0.25)) applyStun(ctx, h, { duration: 2, type: 'full' });
+    if (!ctx.target) return;
+    const power = lightningRoll(ctx);
+    const backfired = power < 6;
+    const splash = ctx.game
+      .magesInRadius(ctx.target.pos, lightningRange(ctx, power / 2), ctx.target)
+      .filter((m) => m !== ctx.caster)
+      .slice(0, Math.floor(power / 5));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Lightning Shatter'), 'shatter', 'physical'));
+    if (!backfired && ctx.target.alive) applyStun(ctx, ctx.target, { duration: 2, type: 'full' });
+    for (const body of splash) {
+      if (!body.alive) continue;
+      dealDamage(ctx, body, dmg(rollDice(ctx, '1d3', 'Lightning Shatter'), 'shatter', 'physical'), {
+        canMiss: false,
+        aoe: true,
+      });
+      if (!backfired && body.alive) applyStun(ctx, body, { duration: 2, type: 'full' });
+    }
+    if (backfired) {
+      ctx.log('The clap turns inward.');
+      applyStun(ctx, ctx.caster, { duration: 2, type: 'full' });
     }
   },
 });
@@ -2525,23 +2556,63 @@ registerSpell({
 registerSpell({
   name: 'Lightning Corrode',
   words: ['lightning', 'corrode'],
-  actionType: 'bonus',
-  range: R(10),
-  targeting: 'point',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
   dc: 12,
-  aoe: { kind: 'circle', radius: R(1.6) },
   description:
-    '1d6 plus 1 damage per 8 Lightning power to all enemies in a small area (radius 1.6, range 10). Each hit has a 33% chance to take 1 corrosive damage per turn for 2 turns.',
-  visual: { preset: 'burst', color: 0xc7e85c, size: 60, speed: 1.2 },
-  cast(ctx) {
-    if (!ctx.targetPoint) return;
-    const power = lightningPower(ctx);
-    const amount = rollDice(ctx, '1d6', 'Lightning Corrode') + Math.floor(power / 8);
-    const hits = areaDamage(ctx, ctx.targetPoint, R(1.6), dmg(amount, 'heat', 'physical'));
-    for (const m of hits) {
-      if (ctx.rng.chance(0.33)) {
-        applyDot(ctx, m, { name: 'Corrosion', duration: 2, damage: dmg(1, 'corrosive', 'physical') });
+    'Deal 1d6 corrosive to one enemy. The charge then splits twice, each wave firing all at once: every arc from the target to everything within power ÷ 2 cm, then every arc from all of those at half that reach. The second wave re-crosses bodies the web already holds. One 1d3 corrosive roll is made per wave and it lands once for EVERY arc that reaches a body. Allies conduct it too. The paths fuse into a single field of corrosion for 3 rounds that deals 1d3 to anything standing on it, however many lines overlap there.',
+  visual: { preset: 'beam', color: 0xc7e85c, size: 9, speed: 1.8 },
+  async cast(ctx) {
+    if (!ctx.target) return;
+    const power = lightningRoll(ctx);
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Lightning Corrode'), 'corrosive', 'physical'));
+    const indexOf = (m: Mage) => ctx.game.mages.indexOf(m);
+    // Deterministic, so both peers of an online match derive the same field.
+    const groupId = ctx.game.turnSeq * 64 + indexOf(ctx.caster);
+    const burnt = new Set<string>();
+    let frontier: Mage[] = [ctx.target];
+    let units = power / 2;
+    // Always exactly two waves; the roll decides their reach, never their count.
+    for (let wave = 0; wave < 2 && frontier.length > 0; wave++) {
+      const reach = lightningRange(ctx, units);
+      const arcs: { from: Mage; to: Mage }[] = [];
+      for (const node of frontier) {
+        for (const body of ctx.game.mages) {
+          if (!body.alive || body === node || body === ctx.caster) continue;
+          if (Math.hypot(body.x - node.x, body.y - node.y) > reach) continue;
+          arcs.push({ from: node, to: body });
+        }
       }
+      if (arcs.length === 0) break;
+      // The whole wave leaps at the same instant rather than one arc at a time.
+      await Promise.all(
+        arcs.map((arc) => ctx.vfx?.lightningBolt?.(arc.from.pos, arc.to.pos) ?? Promise.resolve())
+      );
+      for (const arc of arcs) {
+        // One line per pair of bodies, however many times the web crosses it.
+        const key = [indexOf(arc.from), indexOf(arc.to)].sort((a, b) => a - b).join('-');
+        if (burnt.has(key) || burnt.size >= 40) continue;
+        burnt.add(key);
+        placeHazardZone(ctx, { ...arc.from.pos }, {
+          name: 'Corrosion Scar',
+          to: { ...arc.to.pos },
+          radius: R(0.6),
+          rounds: 3,
+          damageSpecs: ['1d3'],
+          damageType: 'corrosive',
+          color: 0xc7e85c,
+          groupId,
+        });
+      }
+      // A single roll for the wave, but every arc that lands deals it again.
+      const bite = rollDice(ctx, '1d3', 'Lightning Corrode wave');
+      for (const arc of arcs) {
+        if (!arc.to.alive) continue;
+        dealDamage(ctx, arc.to, dmg(bite, 'corrosive', 'physical'), { canMiss: false, aoe: true });
+      }
+      frontier = [...new Set(arcs.map((arc) => arc.to))].filter((m) => m.alive);
+      units /= 2;
     }
   },
 });
@@ -2554,15 +2625,47 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description:
-    'Deal 1d6 plus 1 damage per 6 Lightning power to one enemy (range 15), then leave a shadow pool at its location for 5 turns.',
-  visual: { preset: 'beam', color: 0xd0e85c, size: 8, speed: 1.5 },
-  cast(ctx) {
+    'A bolt that arcs through anything, ally or enemy, never the same body twice. Its reach is Lightning power in cm and halves with every jump. Each hit deals 2d6 split evenly between shadow and heat, and drowns the ground beneath it in shadow — and every pool the storm lays adds another 1d6 shadow to every hit that follows.',
+  visual: { preset: 'beam', color: 0x9b7bff, size: 10, speed: 1.7 },
+  async cast(ctx) {
     if (!ctx.target) return;
-    const power = lightningPower(ctx);
-    const amount = rollDice(ctx, '1d6', 'Lightning Shadow') + Math.floor(power / 6);
-    const spot = { ...ctx.target.pos };
-    dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
-    placeShadow(ctx, spot, 5);
+    const power = lightningRoll(ctx);
+    let units = power;
+    let current: Mage | null = ctx.target;
+    let from = ctx.caster.pos;
+    const struck = new Set<Mage>();
+    let laid = 0;
+    while (current && units >= 1) {
+      await ctx.vfx?.lightningBolt?.(from, current.pos);
+      const roll = rollDice(ctx, '2d6', 'Lightning Shadow');
+      const dark = Math.ceil(roll / 2);
+      dealDamage(ctx, current, dmg(dark, 'shadow', 'physical'), { canMiss: false });
+      if (current.alive) {
+        dealDamage(ctx, current, dmg(roll - dark, 'heat', 'physical'), { canMiss: false });
+      }
+      // Every pool already laid feeds the storm one more die.
+      if (laid > 0 && current.alive) {
+        dealDamage(
+          ctx,
+          current,
+          dmg(rollDice(ctx, `${laid}d6`, 'Lightning Shadow — gathered dark'), 'shadow', 'physical'),
+          { canMiss: false }
+        );
+      }
+      const spot = { ...current.pos };
+      placeShadow(ctx, spot);
+      laid += 1;
+      struck.add(current);
+      from = spot;
+      units /= 2;
+      if (units < 1) break;
+      const reach = lightningRange(ctx, units);
+      const candidates = ctx.game.mages.filter(
+        (m) =>
+          m.alive && m !== ctx.caster && !struck.has(m) && Math.hypot(m.x - from.x, m.y - from.y) <= reach
+      );
+      current = candidates.length > 0 ? ctx.rng.pick(candidates) : null;
+    }
   },
 });
 
@@ -2571,22 +2674,19 @@ registerSpell({
   words: ['lightning', 'curse'],
   actionType: 'main',
   range: R(15),
-  targeting: 'enemy',
+  targeting: 'any',
   dc: 12,
   description:
-    'Deal 1d6 plus 1 damage per 6 Lightning power to one enemy (range 15), then curse it for 1d3 heat damage each turn for 4 turns.',
-  visual: { preset: 'beam', color: 0xffc95c, size: 7, speed: 1.4 },
+    'Make one unit a conductor for 3 turns — an enemy, or an ally you are willing to spend. Every time it is wounded, a share of that wound arcs onward to the nearest bodies within power ÷ 3 cm: one body per 8 Lightning power, each taking power ÷ 20 of the damage as heat. At full power the storm passes on everything it receives.',
+  visual: { preset: 'beam', color: 0xffc95c, size: 8, speed: 1.5 },
   cast(ctx) {
-    if (!ctx.target) return;
-    const power = lightningPower(ctx);
-    const amount = rollDice(ctx, '1d6', 'Lightning Curse') + Math.floor(power / 6);
-    dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
-    if (!ctx.target.alive) return;
-    applyDot(ctx, ctx.target, {
-      name: 'Lightning Curse',
-      duration: 4,
-      damage: dmg(2, 'heat', 'physical'),
-      damageSpec: '1d3',
+    const target = ctx.target ?? ctx.caster;
+    const power = lightningRoll(ctx);
+    applyStormConduit(ctx, target, {
+      duration: 3,
+      maxTargets: Math.max(1, Math.ceil(power / 8)),
+      radius: lightningRange(ctx, power / 3),
+      sharePct: power / 20,
     });
   },
 });
@@ -2599,14 +2699,32 @@ registerSpell({
   targeting: 'enemy',
   dc: 12,
   description:
-    'Deal 1d6 plus 1 damage per 6 Lightning power to one enemy (range 15) and root it (movement stun) for 3 turns.',
-  visual: { preset: 'beam', color: 0x6ad1ff, size: 7, speed: 1.4 },
-  cast(ctx) {
+    'A bolt that arcs through anything, ally or enemy, never the same body twice. Its reach is Lightning power in cm and halves with every jump. Each hit deals 1d6 heat and roots whatever it touches for 3 turns.',
+  visual: { preset: 'beam', color: 0x6ad1ff, size: 8, speed: 1.6 },
+  async cast(ctx) {
     if (!ctx.target) return;
-    const power = lightningPower(ctx);
-    const amount = rollDice(ctx, '1d6', 'Lightning Bind') + Math.floor(power / 6);
-    dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
-    if (ctx.target.alive) applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
+    const power = lightningRoll(ctx);
+    let units = power;
+    let current: Mage | null = ctx.target;
+    let from = ctx.caster.pos;
+    const struck = new Set<Mage>();
+    while (current && units >= 1) {
+      await ctx.vfx?.lightningBolt?.(from, current.pos);
+      dealDamage(ctx, current, dmg(rollDice(ctx, '1d6', 'Lightning Bind'), 'heat', 'physical'), {
+        canMiss: false,
+      });
+      if (current.alive) applyStun(ctx, current, { duration: 3, type: 'movement' });
+      struck.add(current);
+      from = current.pos;
+      units /= 2;
+      if (units < 1) break;
+      const reach = lightningRange(ctx, units);
+      const candidates = ctx.game.mages.filter(
+        (m) =>
+          m.alive && m !== ctx.caster && !struck.has(m) && Math.hypot(m.x - from.x, m.y - from.y) <= reach
+      );
+      current = candidates.length > 0 ? ctx.rng.pick(candidates) : null;
+    }
   },
 });
 
@@ -4416,28 +4534,26 @@ registerSpell({
 });
 
 // ---------------------------------------------------------------------------
-//  SHADOW + VEIL + BIND   —   Phantom Cage
-//  Root the enemy, drop a shadow on them, slip into a full veil. Reaction.
+//  SHADOW + VEIL + BIND
+//  Blue-dominant: the control does the work and shadow only sharpens it, so
+//  this makes no pool. The seal hides the victim from its OWN side.
 // ---------------------------------------------------------------------------
 registerSpell({
-  name: 'Phantom Cage',
+  name: 'Shadow Veil Bind',
   words: ['shadow', 'veil', 'bind'],
   set: 'finns',
-  actionType: 'bonus',
-  range: 0,
-  targeting: 'any',
-  dc: 12,
-  reaction: true,
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 14,
   description:
-    'Root the nearest enemy within range 10 for 3 turns, place a shadow pool at its location, then gain a full veil for 2 turns. Can be cast as a reaction.',
-  visual: { preset: 'nova', color: 0x8ad1ff, size: 60, speed: 1.1 },
+    'Deal 2d6 shadow damage to one enemy (range 12) and seal it for 3 turns: it is fully stunned and rooted, and its own allies can no longer see or target it — only you and your allies can. Each turn it takes 1d3 shadow damage and is executed for 2.',
+  visual: { preset: 'beam', color: 0x8ad1ff, size: 9, speed: 1.1 },
   cast(ctx) {
-    const foe = enemyNear(ctx, ctx.caster.pos, R(10));
-    if (foe) {
-      applyStun(ctx, foe, { duration: 3, type: 'movement' });
-      placeShadow(ctx, foe.pos);
-    }
-    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'full' });
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Shadow Veil Bind'), 'shadow', 'physical'));
+    if (!ctx.target.alive) return;
+    applySeal(ctx, ctx.target, { duration: 3, damageSpec: '1d3', executeAmount: 2 });
   },
 });
 
@@ -4531,6 +4647,333 @@ registerSpell({
       damageSpec: '1d6',
       stunChance: 0.33,
       stunType: 'full',
+    });
+  },
+});
+
+// ===========================================================================
+//  REMAINING STANDARD 3-WORD COMBINATIONS   (set: 'finns')
+// ---------------------------------------------------------------------------
+//  Colour majority decides the character of each spell: blue = control and
+//  concealment, black = raw power that does not care whose side you are on,
+//  colourless = damage. Every one of these resolves on its own — none needs a
+//  pre-existing veil or shadow pool to function.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+//  BIND + VEIL + CORRODE
+//  Blue-dominant: a small concealing mist that only bites what moves in it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Bind Veil Corrode',
+  words: ['bind', 'veil', 'corrode'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(10),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'circle', radius: R(2) },
+  description:
+    'Raise a range-2 mist at a point (range 10) for 3 rounds. Anyone inside it has a 50% chance to dodge any targeted attack. At the start of its turn, anyone inside who moved during its last turn takes 1d4 corrosive damage. Affects everyone, including you and your allies.',
+  visual: { preset: 'burst', color: 0x8fd6a8, size: R(2), speed: 1 },
+  noCastSprite: true,
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    placeHazardZone(ctx, ctx.targetPoint, {
+      name: 'Corroding Mist',
+      radius: R(2),
+      rounds: 3,
+      damageSpecs: ['1d4'],
+      damageType: 'corrosive',
+      movedOnly: true,
+      dodgeChance: 0.5,
+      color: 0x8fd6a8,
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + SHATTER + CORRODE
+//  Black-dominant destruction. No pull, no root, no zone — it just pulverises.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Shadow Shatter Corrode',
+  words: ['shadow', 'shatter', 'corrode'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(10),
+  targeting: 'enemy',
+  dc: 14,
+  aoe: { kind: 'circle', radius: R(3) },
+  description:
+    'Deal 2d10 damage to one enemy (range 10), split evenly between corrosive and shadow, and fully stun it for 1 turn. Everything else within range 3 takes 1d3 shatter + 1d3 corrosive + 1d3 shadow damage and has a 33% chance to be fully stunned for 1 turn. The blast hits your allies too.',
+  visual: { preset: 'burst', color: 0x7a5f8c, size: R(3), speed: 1.4 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const focus = ctx.target;
+    const roll = rollDice(ctx, '2d10', 'Shadow Shatter Corrode');
+    const corrosive = Math.ceil(roll / 2);
+    dealDamage(ctx, focus, dmg(corrosive, 'corrosive', 'physical'));
+    if (focus.alive) {
+      dealDamage(ctx, focus, dmg(roll - corrosive, 'shadow', 'physical'), { canMiss: false });
+    }
+    if (focus.alive) applyStun(ctx, focus, { duration: 2, type: 'full' });
+    // Black does not check sides: the shockwave catches every other body.
+    for (const bystander of ctx.game.magesInRadius(focus.pos, R(3), focus)) {
+      if (!bystander.alive) continue;
+      for (const type of ['shatter', 'corrosive', 'shadow'] as const) {
+        if (!bystander.alive) break;
+        dealDamage(
+          ctx,
+          bystander,
+          dmg(rollDice(ctx, '1d3', `Shadow Shatter Corrode — ${type}`), type, 'physical'),
+          { canMiss: false, aoe: true }
+        );
+      }
+      if (bystander.alive && ctx.rng.chance(0.33)) {
+        applyStun(ctx, bystander, { duration: 2, type: 'full' });
+      }
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + CORRODE + CURSE
+//  Pure black: a giant death zone you have to play around. It rots your side too.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Shadow Corrode Curse',
+  words: ['shadow', 'corrode', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(10),
+  targeting: 'point',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(8) },
+  description:
+    'Open a range-8 zone of decay at a point (range 10) for 4 rounds. Anyone starting a turn inside takes corrosive damage that deepens every round: 1d4, then 1d6, then 1d8, then 1d10. All healing received inside the zone is halved. It does not care whose side you are on.',
+  visual: { preset: 'nova', color: 0x6f8f5a, size: R(8), speed: 0.9 },
+  noCastSprite: true,
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    placeHazardZone(ctx, ctx.targetPoint, {
+      name: 'Rotting Ground',
+      radius: R(8),
+      rounds: 4,
+      damageSpecs: ['1d4', '1d6', '1d8', '1d10'],
+      damageType: 'corrosive',
+      healMult: 0.5,
+      color: 0x6f8f5a,
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  VEIL + CORRODE + CURSE
+//  Black-dominant contagion. It hides its own victims, so you lose track of them.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Veil Corrode Curse',
+  words: ['veil', 'corrode', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Infect one enemy for 4 turns (range 15): 1d6 corrosive damage each turn, and it turns fully invisible. Each turn it ticks, the plague spreads to everything within range 4 at half the remaining duration — allies included. You cannot see who is carrying it.',
+  visual: { preset: 'beam', color: 0x86a86f, size: 8, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Silent Plague',
+      key: 'dot:silent-plague',
+      duration: 4,
+      damage: dmg(0, 'corrosive', 'physical'),
+      damageSpec: '1d6',
+      spreadRadius: R(4),
+      spreadVeils: true,
+    });
+    applyInvisibility(ctx, ctx.target, { duration: 4, mode: 'full' });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  CORRODE + CURSE + PIERCE
+//  Black-dominant rot that any further pierce hit keeps prying back open.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Corrode Curse Pierce',
+  words: ['corrode', 'curse', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    '1d6 pierce damage to one enemy (range 12), then 3 turns of corrosive rot that deepens as it runs: 1d6, then 1d8, then 1d10. Any pierce damage it takes from any source reopens the wound for 1 more turn — always if that hit dealt 6 or more, otherwise 50% of the time. It can never hold more than 3 turns at once.',
+  visual: { preset: 'projectile', color: 0x9aa86a, size: 10, speed: 1.6 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Corrode Curse Pierce'), 'pierce', 'physical'));
+    if (!ctx.target.alive) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Suppurating Wound',
+      key: 'dot:suppurating-wound',
+      duration: 3,
+      damage: dmg(0, 'corrosive', 'physical'),
+      escalateSpecs: ['1d6', '1d8', '1d10'],
+      extendOnPierce: { minAmount: 6, chanceBelow: 0.5, maxDuration: 3 },
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  VEIL + SHATTER + PIERCE
+//  Colourless-dominant sniping. The shot finds what nobody else can see.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Veil Shatter Pierce',
+  words: ['veil', 'shatter', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(18),
+  targeting: 'enemy',
+  dc: 14,
+  ignoresStealth: true,
+  description:
+    'Snipe one enemy (range 18). This shot can pick a target that is invisible or otherwise concealed. Deal 2d6 pierce damage; if the target was veiled, deal an extra 1d12 shatter damage and strip the veil. If there was no veil to break, you gain a half veil for 2 turns instead.',
+  visual: { preset: 'projectile', color: 0xd9d0ff, size: 8, speed: 2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const foe = ctx.target;
+    const wasVeiled = ctx.game.isVeiled(foe);
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Veil Shatter Pierce'), 'pierce', 'physical'), {
+      canMiss: false,
+    });
+    if (!wasVeiled) {
+      applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+      return;
+    }
+    if (foe.alive) {
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d12', 'Veil Shatter Pierce — unveiling'), 'shatter', 'physical'), {
+        canMiss: false,
+      });
+    }
+    dispelVeil(ctx, foe);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + SHATTER + PIERCE
+//  Colourless-dominant: it never forbids movement, it bills it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Bind Shatter Pierce',
+  words: ['bind', 'shatter', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    '2d6 pierce damage to one enemy (range 15) and stake it to the spot it stands on for 4 turns. At the start of each of its turns it is dragged back to the stake and takes 1d6 shatter damage for every 2 range units it strayed, up to 4d6 at 8 units.',
+  visual: { preset: 'projectile', color: 0xffc98a, size: 10, speed: 1.8 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Bind Shatter Pierce'), 'pierce', 'physical'));
+    if (!ctx.target.alive) return;
+    applyAnchorSpike(ctx, ctx.target, { duration: 4, pxPerDie: R(2), maxDice: 4 });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHATTER + CORRODE + PIERCE
+//  Colourless-dominant. Corrode's only job is to eat the armour on the way in.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Shatter Corrode Pierce',
+  words: ['shatter', 'corrode', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(8),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    '2d6 shatter damage then 2d6 pierce damage to one enemy (range 8). Both hits ignore armour and every resistance and immunity.',
+  visual: { preset: 'conjure', color: 0xe0d08a, size: 34, speed: 1.5 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const foe = ctx.target;
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Shatter Corrode Pierce'), 'shatter', 'physical'), {
+      trueDamage: true,
+      canMiss: false,
+    });
+    if (!foe.alive) return;
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Shatter Corrode Pierce'), 'pierce', 'physical'), {
+      trueDamage: true,
+      canMiss: false,
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + CURSE + PIERCE
+//  A contract: the curse repeats every pierce wound you open while it holds.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Bind Curse Pierce',
+  words: ['bind', 'curse', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Root one enemy for 3 turns and slow it by 30% for 4 turns (range 12), then deal 1d6 pierce damage. For the next 4 turns every point of pierce damage you deal to anyone is dealt again at the end of your turn.',
+  visual: { preset: 'beam', color: 0xc0a8ff, size: 8, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
+    applyDebuff(ctx, ctx.target, {
+      name: 'Oathbound',
+      key: 'debuff:blood-oath',
+      duration: 4,
+      mods: { moveRange: -Math.round(MOVE_RANGE * 0.3) },
+    });
+    // The oath is sworn before the shot, so this hit already echoes.
+    applyPierceEcho(ctx, ctx.caster, 4);
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Bind Curse Pierce'), 'pierce', 'physical'));
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  MIND + CORRODE + PIERCE
+//  An infection, not a compulsion: a virus injected straight into the mind.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Mind Corrode Pierce',
+  words: ['mind', 'corrode', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Inject one enemy for 1d6 pierce damage (range 12), then infect it for 4 turns. Each turn the virus deals sanity damage that deepens as it multiplies — 1d4, then 1d6, then 1d8, then 1d10 — and the host forgets one random action. If the infection empties its sanity, the virus abandons it and takes root in the nearest unit within range 4, whatever side that unit is on.',
+  visual: { preset: 'projectile', color: 0xa8c86f, size: 9, speed: 1.7 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Mind Corrode Pierce'), 'pierce', 'physical'));
+    if (!ctx.target.alive) return;
+    applyDot(ctx, ctx.target, {
+      name: 'Neural Virus',
+      key: 'dot:neural-virus',
+      duration: 4,
+      damage: dmg(0, 'corrosive', 'sanity'),
+      escalateSpecs: ['1d4', '1d6', '1d8', '1d10'],
+      forgetPerTick: 1,
+      jumpOnMindBreakRadius: R(4),
     });
   },
 });

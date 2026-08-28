@@ -10,6 +10,9 @@ import {
   type SwampPrepMode,
 } from '../../config/MatchConfig';
 import { MAGE_CLASSES, MAGE_CLASS_DEFS, type MageClass } from '../../core/Classes';
+import { RANGE_UNIT } from '../../config/constants';
+import { ALL_SPELL_SETS, allSpells } from '../../spells/registry';
+import type { Spell } from '../../spells/Spell';
 import type { Scenario } from '../../core/Scenario';
 import { MODIFIER_WORDS, WORDS, type WordId } from '../../core/Words';
 import { SceneInput } from '../../engine/SceneInput';
@@ -18,7 +21,7 @@ import { pickScenarioFile } from '../scenarioFile';
 import { MenuModel } from './MenuModel';
 import { addMenuMageStage, type MenuMageStage } from './art';
 import { CabinetButton, CabinetChip, MenuFocusGroup, WordPlate } from '../cabinet/controls';
-import { CATEGORY_COPY, MODE_COPY, PREP_COPY, RAID_BOSS_COPY, type MenuEntryCopy } from './content';
+import { CATEGORY_COPY, MODE_COPY, PREP_COPY, RAID_BOSS_COPY, SPELLBOOK_COPY, type MenuEntryCopy } from './content';
 import { MenuNavigator, type MenuRoute, type MenuScreenView } from './MenuFlow';
 import {
   OnlineCoordinator,
@@ -89,6 +92,11 @@ export class MenuExperience {
   private readonly chapter: Phaser.GameObjects.Text;
   private readonly stage: MenuMageStage;
   private activeRoute: MenuRoute = { id: 'main' };
+
+  /** Spellbook browsing state; kept off the route so Back preserves it. */
+  private codexWords = new Set<WordId>();
+  private codexClass: MageClass = MAGE_CLASSES[0];
+  private codexPage = 0;
   private memoryScenario: Scenario | null = null;
   private memoryState: 'idle' | 'loading' | 'ready' | 'error' = 'idle';
   private memoryMessage = '';
@@ -203,6 +211,7 @@ export class MenuExperience {
       case 'raid-target': return this.buildRaidTarget(route.returnToReview ?? false);
       case 'team-layout': return this.buildTeamLayout(route.returnToReview ?? false);
       case 'memory-file': return this.buildMemoryFile();
+      case 'codex': return this.buildCodex();
       case 'online-lobby': return this.buildOnlineLobby();
     }
   }
@@ -218,6 +227,16 @@ export class MenuExperience {
         this.navigator.push({ id: 'category', category });
       }));
     });
+    const categoryCount = Object.keys(CATEGORY_COPY).length;
+    view.focus.add(this.choice(
+      view.root,
+      76,
+      246 + categoryCount * 88,
+      SPELLBOOK_COPY,
+      String(categoryCount + 1),
+      () => this.navigator.push({ id: 'codex' }),
+      64,
+    ));
     return view;
   }
 
@@ -1228,6 +1247,164 @@ export class MenuExperience {
       : 'Enter the exact room code shared by the host.';
   }
 
+  /** Every word that can head a spell; the three methods are modifiers. */
+  private codexWordList(): WordId[] {
+    return (Object.keys(WORDS) as WordId[]).filter((word) => !MODIFIER_WORDS.includes(word));
+  }
+
+  /** Spells castable from exactly the selected words, shortest combos first. */
+  private codexMatches(): Spell[] {
+    if (this.codexWords.size === 0) return [];
+    // Every catalogue, so the list does not change with the last match played.
+    return allSpells(this.codexClass, ALL_SPELL_SETS)
+      .filter((spell) => spell.words.every((word) => this.codexWords.has(word)))
+      .sort((a, b) => a.words.length - b.words.length || a.name.localeCompare(b.name));
+  }
+
+  private codexSpellLine(spell: Spell): string {
+    return [
+      spell.words.map((word) => WORDS[word].label).join(' + '),
+      spell.actionType,
+      spell.targeting === 'self' ? 'self' : `range ${Math.round(spell.range / RANGE_UNIT)}`,
+      spell.dc ? `DC ${spell.dc}` : 'no roll',
+      spell.reaction ? 'reaction' : null,
+      spell.set && spell.set !== 'original' ? spell.set.toUpperCase() : null,
+    ].filter(Boolean).join('  ·  ');
+  }
+
+  private cycleCodexClass(direction: -1 | 1): void {
+    const current = MAGE_CLASSES.indexOf(this.codexClass);
+    this.codexClass = MAGE_CLASSES[(current + direction + MAGE_CLASSES.length) % MAGE_CLASSES.length];
+    this.navigator.refresh();
+  }
+
+  private turnCodexPage(direction: -1 | 1, pages: number): void {
+    this.codexPage = (this.codexPage + direction + pages) % pages;
+    this.navigator.refresh();
+  }
+
+  private buildCodex(): MenuScreenView {
+    const view = this.createScreen(
+      'SPELLBOOK',
+      'Pick words to see what they cast. A spell needs every one of its words. Lists all catalogues.'
+    );
+    const words = this.codexWordList();
+    const columns = 6;
+    const chipWidth = Math.floor((714 - 8 * (columns - 1)) / columns);
+    words.forEach((word, index) => {
+      const definition = WORDS[word];
+      const chip = new CabinetChip(
+        this.scene,
+        76 + (index % columns) * (chipWidth + 8),
+        238 + Math.floor(index / columns) * 48,
+        {
+          width: chipWidth,
+          height: 42,
+          label: definition.label,
+          accent: definition.color,
+          selected: this.codexWords.has(word),
+          onActivate: () => {
+            if (!this.codexWords.delete(word)) this.codexWords.add(word);
+            this.codexPage = 0;
+            this.navigator.refresh();
+          },
+          onFocus: () => this.stage.setCaption(definition.label, definition.blurb),
+        }
+      );
+      view.root.add(chip);
+      view.focus.add(chip);
+    });
+
+    const controlY = 244 + Math.ceil(words.length / columns) * 48;
+    const matches = this.codexMatches();
+    const pageSize = 3;
+    const pages = Math.max(1, Math.ceil(matches.length / pageSize));
+    this.codexPage = Math.min(this.codexPage, pages - 1);
+
+    const classButton = new CabinetButton(this.scene, 76, controlY, {
+      width: 226,
+      height: 44,
+      label: `Class: ${MAGE_CLASS_DEFS[this.codexClass].label}`,
+      index: 'C',
+      onActivate: () => this.cycleCodexClass(1),
+      onAdjust: (direction) => this.cycleCodexClass(direction),
+      onFocus: () => this.stage.setCaption(
+        MAGE_CLASS_DEFS[this.codexClass].label,
+        'Class spells resolve differently per class. This picks which variant is listed.'
+      ),
+    });
+    const clearButton = new CabinetButton(this.scene, 310, controlY, {
+      width: 150,
+      height: 44,
+      label: 'Clear',
+      index: 'X',
+      enabled: this.codexWords.size > 0,
+      onActivate: () => {
+        this.codexWords.clear();
+        this.codexPage = 0;
+        this.navigator.refresh();
+      },
+      onFocus: () => this.stage.setCaption('CLEAR', 'Deselect every word.'),
+    });
+    const pageButton = new CabinetButton(this.scene, 468, controlY, {
+      width: 150,
+      height: 44,
+      label: `Page ${this.codexPage + 1}/${pages}`,
+      index: 'P',
+      enabled: pages > 1,
+      onActivate: () => this.turnCodexPage(1, pages),
+      onAdjust: (direction) => this.turnCodexPage(direction, pages),
+      onFocus: () => this.stage.setCaption(
+        'RESULTS',
+        `${matches.length} spell${matches.length === 1 ? '' : 's'} from these words.`
+      ),
+    });
+    const back = new CabinetButton(this.scene, 626, controlY, {
+      width: 164,
+      height: 44,
+      label: 'Back',
+      index: '<',
+      onActivate: () => this.navigator.back(),
+      onFocus: () => this.stage.setCaption('BACK', 'Return to the main menu.'),
+    });
+    view.root.add([classButton, clearButton, pageButton, back]);
+    view.focus.add(classButton);
+    view.focus.add(clearButton);
+    view.focus.add(pageButton);
+    view.focus.add(back);
+
+    const listY = controlY + 58;
+    if (matches.length === 0) {
+      const hint = this.scene.add.text(76, listY + 10, this.codexWords.size === 0
+        ? 'Select one or more words above.'
+        : 'No spell uses only these words. Add another word.', {
+        fontFamily: MENU_FONT.body,
+        fontSize: '15px',
+        color: MENU_HEX.boneDim,
+        fixedWidth: 714,
+        wordWrap: { width: 714 },
+      });
+      view.root.add(hint);
+      return view;
+    }
+
+    const start = this.codexPage * pageSize;
+    matches.slice(start, start + pageSize).forEach((spell, index) => {
+      const button = new CabinetButton(this.scene, 76, listY + index * 68, {
+        width: 714,
+        height: 64,
+        label: spell.name,
+        detail: this.codexSpellLine(spell),
+        index: String(spell.words.length),
+        onActivate: () => this.stage.setCaption(spell.name, spell.description),
+        onFocus: () => this.stage.setCaption(spell.name, spell.description),
+      });
+      view.root.add(button);
+      view.focus.add(button);
+    });
+    return view;
+  }
+
   private createScreen(title: string, summary: string): MenuScreenView {
     const root = this.scene.add.container(0, 0);
     const focus = new MenuFocusGroup();
@@ -1309,6 +1486,7 @@ export class MenuExperience {
       case 'mage-build': return `Player ${route.seat + 1} Build`;
       case 'review': return 'Review';
       case 'memory-file': return 'Memory File';
+      case 'codex': return 'Spellbook';
       case 'online-lobby': return 'Online Lobby';
     }
   }

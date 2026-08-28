@@ -5,7 +5,7 @@ import type { Spell } from '../spells/Spell';
 import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
 import { dealDamage, drainDamage, heal, applyDot, applyDebuff, applyForget, applyInvisibility, applyStun, dash, rollDice, teleport } from '../effects/effects';
 import { dmg } from './Damage';
-import type { DamageType, DamageClass } from './Damage';
+import type { DamageType, DamageClass, DamageInstance } from './Damage';
 import type { ItemId, ItemDef } from './Items';
 import { getItem, isRangedWeapon, SLOT_CAPS } from './Items';
 import { dist, segmentCircleFirstIntersection, stepTowards, type Vec2 } from './utils';
@@ -49,6 +49,9 @@ import {
   type BlueflareStatus,
   type SoulRendStatus,
   type ShadowAnchorStatus,
+  type AnchorSpikeStatus,
+  type SealStatus,
+  type StormConduitStatus,
   type MemoryShackleStatus,
   type ShadowHookStatus,
   type PhaseOutStatus,
@@ -65,8 +68,18 @@ import {
   type Status,
 } from './Status';
 
-/** Reach of an active Edgelord dark light; it counts as a shadow zone. */
-const EDGELORD_DARK_LIGHT_RADIUS = 15 * RANGE_UNIT;
+/** Distance from `at` to a hazard's body — its centre, or its line if it has one. */
+export function hazardDistance(zone: HazardZone, at: Vec2): number {
+  if (zone.toX == null || zone.toY == null) return dist(at, { x: zone.x, y: zone.y });
+  const dx = zone.toX - zone.x;
+  const dy = zone.toY - zone.y;
+  const lengthSq = dx * dx + dy * dy;
+  if (lengthSq <= 0.001) return dist(at, { x: zone.x, y: zone.y });
+  const t = Math.max(0, Math.min(1, ((at.x - zone.x) * dx + (at.y - zone.y) * dy) / lengthSq));
+  return Math.hypot(at.x - (zone.x + dx * t), at.y - (zone.y + dy * t));
+}
+
+/** Reach of an active Edgelord dark light; it counts as a shadow zone. */const EDGELORD_DARK_LIGHT_RADIUS = 15 * RANGE_UNIT;
 /** Bind Shadow Corrode: how many enemies one pool may swallow each round. */
 const FEEDING_DARK_MEALS_PER_ROUND = 2;
 
@@ -173,6 +186,38 @@ export interface CorrosionPool {
   roundsLeft: number;
 }
 
+/**
+ * An indiscriminate standing hazard (Bind Veil Corrode's mist, Shadow Corrode
+ * Curse's death zone). Everything inside is affected, allies and caster too.
+ */
+export interface HazardZone {
+  id: number;
+  x: number;
+  y: number;
+  /** Far end of a line-shaped hazard. Absent for an ordinary circular one. */
+  toX?: number;
+  toY?: number;
+  radius: number;
+  ownerIndex: number;
+  ownerTeam: number;
+  roundsLeft: number;
+  /** Zones sharing a group are one merged field and only ever tick once. */
+  groupId?: number;
+  name: string;
+  /** Dice rolled on successive rounds; the last entry repeats once exhausted. */
+  damageSpecs: string[];
+  /** How many rounds of `damageSpecs` have already been spent. */
+  escalateIndex: number;
+  damageType: DamageType;
+  /** Only bite units that actually moved during the turn that just ended. */
+  movedOnly?: boolean;
+  /** Chance (0-1) that a targeted attack on anyone inside simply misses. */
+  dodgeChance?: number;
+  /** Multiplier applied to healing received inside the zone. */
+  healMult?: number;
+  color: number;
+}
+
 export interface OrderDrainCurse {
   ownerIndex: number;
   ownerTeam: number;
@@ -206,8 +251,16 @@ export class GameState {
   feedingDarks: FeedingDark[] = [];
   /** Shadow Mind Curse: teams whose shadow pools currently rot what stands in them. */
   rottingDarks: RottingDark[] = [];
+  /** Standing indiscriminate hazards (Bind Veil Corrode, Shadow Corrode Curse). */
+  hazardZones: HazardZone[] = [];
+  /** Bind Curse Pierce: pierce damage waiting to be dealt again at its dealer's turn end. */
+  private pierceEchoes: { sourceIndex: number; targetIndex: number; amount: number }[] = [];
+  /** Guard so a replayed pierce echo can never queue another echo. */
+  private pierceEchoFlushing = false;
   /** Guard so a threaded echo can never re-enter and chain into itself. */
   private threadEchoing = false;
+  /** Guard so a storm arc can never re-enter and chain into itself. */
+  private stormArcing = false;
 
   /**
    * Set true for the duration of a single spell resolution when that spell's
@@ -895,6 +948,9 @@ export class GameState {
     this.applyTwistRunes(m);
     this.applyShadowAnchors(m);
     this.applyShadowHooks(m);
+    this.applyAnchorSpikes(m);
+    this.applySeals(m);
+    this.applyHazardZones(m);
     this.applyFeedingDarks(m);
     this.applyRottingDarks(m);
     this.applyWoundShades(m);
@@ -1372,6 +1428,214 @@ export class GameState {
     this.rottingDarks = this.rottingDarks.filter((law) => law.roundsLeft > 0);
   }
 
+  /** Raise a standing hazard. Returns the created zone. */
+  addHazardZone(
+    at: Vec2,
+    owner: Mage,
+    opts: Omit<HazardZone, 'id' | 'x' | 'y' | 'ownerIndex' | 'ownerTeam' | 'escalateIndex'>
+  ): HazardZone {
+    const zone: HazardZone = {
+      ...opts,
+      id: this.nextId++,
+      x: at.x,
+      y: at.y,
+      ownerIndex: this.mages.indexOf(owner),
+      ownerTeam: owner.team,
+      escalateIndex: 0,
+    };
+    this.hazardZones.push(zone);
+    return zone;
+  }
+
+  /** Every hazard zone `m` is currently standing in. */
+  private hazardZonesAt(at: Vec2): HazardZone[] {
+    return this.hazardZones.filter((zone) => hazardDistance(zone, at) <= zone.radius);
+  }
+
+  /** Best concealment a standing hazard grants whoever is inside it. */
+  hazardDodgeChance(m: Mage): number {
+    let best = 0;
+    for (const zone of this.hazardZonesAt(m.pos)) best = Math.max(best, zone.dodgeChance ?? 0);
+    return best;
+  }
+
+  /** Combined healing multiplier of every hazard covering `at`. */
+  healMultiplierAt(at: Vec2): number {
+    let mult = 1;
+    for (const zone of this.hazardZonesAt(at)) mult *= zone.healMult ?? 1;
+    return mult;
+  }
+
+  /**
+   * Bite anyone starting a turn inside a standing hazard. Deliberately
+   * indiscriminate: black hazards do not care whose side you are on.
+   */
+  private applyHazardZones(m: Mage): void {
+    if (!m.alive || this.hazardZones.length === 0) return;
+    const spent = new Set<number>();
+    for (const zone of this.hazardZonesAt(m.pos)) {
+      // Read before Mage.beginTurn() clears it, so this is the turn just ended.
+      if (zone.movedOnly && !m.movedThisTurn) continue;
+      // Overlapping pieces of one cast are a single field, not many hazards.
+      if (zone.groupId != null) {
+        if (spent.has(zone.groupId)) continue;
+        spent.add(zone.groupId);
+      }
+      const owner = this.mages[zone.ownerIndex] ?? m;
+      const spec = zone.damageSpecs[Math.min(zone.escalateIndex, zone.damageSpecs.length - 1)];
+      dealDamage(
+        this.effectContext(owner, m, m.pos),
+        m,
+        dmg(this.rng.roll(spec).total, zone.damageType, 'physical'),
+        { canMiss: false, aoe: true }
+      );
+      this.log(`${m.name} is caught in ${zone.name}.`);
+      if (!m.alive) return;
+    }
+  }
+
+  /** Age every hazard once per round and deepen the ones that escalate. */
+  private tickHazardZones(): void {
+    if (this.hazardZones.length === 0) return;
+    for (const zone of this.hazardZones) {
+      zone.roundsLeft -= 1;
+      zone.escalateIndex += 1;
+    }
+    this.hazardZones = this.hazardZones.filter((zone) => zone.roundsLeft > 0);
+  }
+
+  /**
+   * Bind Shadow Veil: the sealed bearer is worn down each turn. Its own side
+   * cannot reach it to help (see {@link isUntargetable}), but the sealer can.
+   */
+  private applySeals(bearer: Mage): void {
+    if (!bearer.alive) return;
+    const seals = bearer.statuses.filter((status) => status.kind === 'seal') as SealStatus[];
+    for (const seal of seals) {
+      const owner = this.mages[seal.ownerIndex] ?? bearer;
+      const ctx = this.effectContext(owner, bearer, bearer.pos);
+      dealDamage(ctx, bearer, dmg(this.rng.roll(seal.damageSpec).total, 'shadow', 'physical'), {
+        canMiss: false,
+      });
+      if (!bearer.alive) return;
+      this.executeTarget(owner, bearer, seal.executeAmount);
+      if (!bearer.alive) return;
+    }
+  }
+
+  /**
+   * Bind Shatter Pierce: measure how far the bearer strayed from its spike over
+   * the turn just ended, grind it for that distance, then haul it back.
+   */
+  private applyAnchorSpikes(bearer: Mage): void {
+    if (!bearer.alive) return;
+    const spikes = bearer.statuses.filter(
+      (status) => status.kind === 'anchorSpike'
+    ) as AnchorSpikeStatus[];
+    for (const spike of spikes) {
+      const owner = this.mages[spike.ownerIndex] ?? bearer;
+      const anchor = { x: spike.x, y: spike.y };
+      const travelled = dist(bearer.pos, anchor);
+      const dice = Math.min(spike.maxDice, Math.floor(travelled / spike.pxPerDie));
+      if (dice > 0) {
+        dealDamage(
+          this.effectContext(owner, bearer, anchor),
+          bearer,
+          dmg(this.rng.roll(`${dice}d6`).total, 'shatter', 'physical'),
+          { canMiss: false }
+        );
+        this.log(`${bearer.name} is torn back to the spike (${dice}d6).`);
+        if (!bearer.alive) return;
+      }
+      this.forceMove(owner, bearer, anchor);
+      if (!bearer.alive) return;
+    }
+  }
+
+  /**
+   * Lightning Curse: a wound on the bearer arcs a share of itself onward as heat.
+   * Only direct damage propagates, so an arc can never chain into itself.
+   */
+  arcStormConduit(source: Mage, struck: Mage, amount: number): void {
+    if (amount <= 0 || this.stormArcing) return;
+    const conduit = struck.statuses.find((status) => status.kind === 'stormConduit') as
+      | StormConduitStatus
+      | undefined;
+    if (!conduit) return;
+    const share = Math.ceil(amount * conduit.sharePct);
+    if (share <= 0) return;
+    const owner = this.mages[conduit.ownerIndex] ?? source;
+    const nearby = this.mages
+      .filter((m) => m !== struck && m.alive && dist(m.pos, struck.pos) <= conduit.radius)
+      .sort((a, b) => dist(a.pos, struck.pos) - dist(b.pos, struck.pos))
+      .slice(0, conduit.maxTargets);
+    if (nearby.length === 0) return;
+    this.stormArcing = true;
+    try {
+      for (const other of nearby) {
+        void this.vfxSink?.lightningBolt?.(struck.pos, other.pos);
+        dealDamage(this.effectContext(owner, other, null), other, dmg(share, 'heat', 'physical'), {
+          canMiss: false,
+        });
+      }
+      this.log(`The storm on ${struck.name} arcs to ${nearby.length} more.`);
+    } finally {
+      this.stormArcing = false;
+    }
+  }
+
+  /** Bind Curse Pierce: queue a pierce hit to be repeated at the dealer's turn end. */
+  recordPierceEcho(source: Mage, target: Mage, amount: number): void {
+    if (this.pierceEchoFlushing || amount <= 0 || source === target) return;
+    if (!source.statuses.some((status) => status.kind === 'pierceEcho')) return;
+    this.pierceEchoes.push({
+      sourceIndex: this.mages.indexOf(source),
+      targetIndex: this.mages.indexOf(target),
+      amount,
+    });
+  }
+
+  /** Deal every pierce echo `m` banked this turn, then clear its queue. */
+  private flushPierceEchoes(m: Mage): void {
+    if (this.pierceEchoes.length === 0) return;
+    const index = this.mages.indexOf(m);
+    const mine = this.pierceEchoes.filter((echo) => echo.sourceIndex === index);
+    this.pierceEchoes = this.pierceEchoes.filter((echo) => echo.sourceIndex !== index);
+    if (mine.length === 0 || !m.alive) return;
+    this.pierceEchoFlushing = true;
+    try {
+      for (const echo of mine) {
+        const victim = this.mages[echo.targetIndex];
+        if (!victim?.alive) continue;
+        dealDamage(
+          this.effectContext(m, victim, victim.pos),
+          victim,
+          dmg(echo.amount, 'pierce', 'physical'),
+          { canMiss: false }
+        );
+        this.log(`${m.name}'s oath repeats ${echo.amount} pierce on ${victim.name}.`);
+      }
+    } finally {
+      this.pierceEchoFlushing = false;
+    }
+  }
+
+  /**
+   * Corrode Curse Pierce: a fresh pierce wound buys the rot more time. Heavy
+   * hits always land the extension; glancing ones only sometimes.
+   */
+  extendPierceWounds(target: Mage, damage: DamageInstance, amount: number): void {
+    if (damage.type !== 'pierce' || amount <= 0) return;
+    const dots = target.statuses.filter((s) => s.kind === 'dot') as DotStatus[];
+    for (const dot of dots) {
+      const rule = dot.extendOnPierce;
+      if (!rule || dot.duration >= rule.maxDuration) continue;
+      if (amount < rule.minAmount && !this.rng.chance(rule.chanceBelow)) continue;
+      dot.duration = Math.min(rule.maxDuration, dot.duration + 1);
+      this.log(`${dot.name} reopens on ${target.name} (${dot.duration} cycles).`);
+    }
+  }
+
   /** Shadow Curse Pierce: the shade riding the bearer bites at its turn start. */
   private applyWoundShades(bearer: Mage): void {
     if (!bearer.alive) return;
@@ -1651,6 +1915,8 @@ export class GameState {
   private advanceTurn(): void {
     const n = this.initiativeOrder.length;
     if (n === 0) return;
+    // The turn being left ends here, so any banked pierce echoes land now.
+    this.flushPierceEchoes(this.current);
     for (let step = 0; step < n; step++) {
       this.turnPtr += 1;
       if (this.turnPtr >= n) {
@@ -1667,6 +1933,7 @@ export class GameState {
         this.tickCorrosionPools();
         this.tickFeedingDarks();
         this.tickRottingDarks();
+        this.tickHazardZones();
         this.startRound();
       }
       const idx = this.initiativeOrder[this.turnPtr];
@@ -3453,9 +3720,11 @@ export class GameState {
       }
       const amount = s.damageSpec
         ? Math.max(0, this.rng.roll(s.damageSpec).total)
-        : s.stacks && s.perStackSpec
-          ? this.rollStackedDot(s)
-          : Math.max(0, s.damage.amount);
+        : s.escalateSpecs?.length
+          ? Math.max(0, this.rng.roll(this.escalatingSpec(s)).total)
+          : s.stacks && s.perStackSpec
+            ? this.rollStackedDot(s)
+            : Math.max(0, s.damage.amount);
       // Order Curse Drain: an extra bite when the bearer dealt no damage last turn.
       const bonus =
         s.bonusNoDamageSpec && !m.dealtDamageThisTurn
@@ -3480,7 +3749,17 @@ export class GameState {
       this.log(`${m.name} suffers ${total} ${s.damage.type} from ${s.name}.`);
       if (s.reapPerTick) this.applyReap(m, s.reapPerTick, source ?? m);
       if (total > 0) this.checkReapDeath(m, source ?? m);
+      // An emptied mind cannot hold the virus, so it moves on even in death.
+      if (s.jumpOnMindBreakRadius && m.sanity <= 0) this.jumpContagion(m, s);
       if (!m.alive) continue;
+      if (s.forgetPerTick) {
+        // Duration 2: this runs before tickStatuses, so 1 would expire the same turn.
+        applyForget(this.effectContext(source ?? m, m, m.pos), m, {
+          count: s.forgetPerTick,
+          duration: 2,
+        });
+      }
+      if (s.spreadRadius) this.spreadContagion(m, s);
       if (s.splash && s.sourceTeam !== undefined) {
         for (const victim of this.mages) {
           if (victim === m || !victim.alive || victim.team === s.sourceTeam) continue;
@@ -3531,6 +3810,52 @@ export class GameState {
         s.freshStack = false;
       }
     }
+  }
+
+  /** Dice this escalating DoT rolls now, advancing it one step toward its cap. */
+  private escalatingSpec(s: DotStatus): string {
+    const specs = s.escalateSpecs ?? [];
+    const index = Math.min(s.escalateIndex ?? 0, specs.length - 1);
+    s.escalateIndex = (s.escalateIndex ?? 0) + 1;
+    return specs[index];
+  }
+
+  /**
+   * Veil Corrode Curse: the plague jumps to every body near its host at half
+   * the host's remaining duration, so each generation burns out faster. It does
+   * not care whose side the neighbour is on.
+   */
+  private spreadContagion(host: Mage, s: DotStatus): void {
+    const passed = Math.floor(s.duration / 2);
+    if (passed < 1) return;
+    for (const victim of this.mages) {
+      if (victim === host || !victim.alive) continue;
+      if (dist(victim.pos, host.pos) > s.spreadRadius!) continue;
+      if (victim.isDebuffImmune()) continue;
+      const carried: DotStatus = { ...s, duration: passed, escalateIndex: 0 };
+      addOrExtendStatus(victim.statuses, carried, false);
+      this.log(`${s.name} spreads from ${host.name} to ${victim.name} (${passed} cycles).`);
+      if (s.spreadVeils) {
+        applyInvisibility(this.effectContext(host, victim, victim.pos), victim, {
+          duration: passed,
+          mode: 'full',
+        });
+      }
+    }
+  }
+
+  /** Mind Corrode Pierce: a broken mind cannot hold the virus, so it moves on. */
+  private jumpContagion(host: Mage, s: DotStatus): void {
+    const radius = s.jumpOnMindBreakRadius!;
+    const candidates = this.mages
+      .filter((m) => m !== host && m.alive && !m.isDebuffImmune())
+      .filter((m) => dist(m.pos, host.pos) <= radius)
+      .sort((a, b) => dist(a.pos, host.pos) - dist(b.pos, host.pos));
+    const next = candidates[0];
+    s.duration = 0;
+    if (!next) return;
+    addOrExtendStatus(next.statuses, { ...s, duration: 2, escalateIndex: 0 }, false);
+    this.log(`${s.name} abandons ${host.name} and takes root in ${next.name}.`);
   }
 
   /**
@@ -3779,13 +4104,21 @@ export class GameState {
    * within close range — pass `from` to apply that distance rule. A half veil
    * is always targetable (its protection is the dodge, resolved on the hit).
    */
-  isUntargetable(m: Mage, from?: Mage): boolean {
+  isUntargetable(m: Mage, from?: Mage, opts: { ignoreStealth?: boolean } = {}): boolean {
     // Phased into the dark: it does not exist for anyone, friend or foe.
     if (this.isPhasedOut(m)) return true;
     // The dagger's veil is absolute — no distance rule softens it.
-    if (this.hasShadowDaggerVeil(m)) return true;
+    if (!opts.ignoreStealth && this.hasShadowDaggerVeil(m)) return true;
     // Second Ring of Lareneg: untouchable to hostiles during turn cycles 3 & 4.
     if (from && from.team !== m.team && this.isLaranegUntouchable(m)) return true;
+    // Sealed in the dark: hidden from its own side, still reachable by the sealer.
+    if (
+      from &&
+      m.statuses.some((s) => s.kind === 'seal' && (s as SealStatus).blindTeam === from.team)
+    ) {
+      return true;
+    }
+    if (opts.ignoreStealth) return false;
     if (m.oniHidden) return true;
     const inv = this.effectiveInvisibility(m);
     if (inv?.mode === 'full') {
@@ -4241,7 +4574,8 @@ export class GameState {
         return this.withinCastRange(source, target.pos, spell.range);
       case 'enemy': {
         if (target === source) return false;
-        if (this.isUntargetable(target, source)) return false;
+        if (this.isUntargetable(target, source, { ignoreStealth: spell.ignoresStealth }))
+          return false;
         let range = spell.range;
         if (
           spell.bonusRangeInOwnShadow &&
@@ -4822,6 +5156,8 @@ export class GameState {
     this.droppedItems = [];
     this.mutivargZones = [];
     this.corrosionPools = [];
+    this.hazardZones = [];
+    this.pierceEchoes = [];
     this.extraTurnQueue = [];
     this.stack = [];
     this.mindSwapTurns = 0;
