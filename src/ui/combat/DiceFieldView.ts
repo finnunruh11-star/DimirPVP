@@ -43,6 +43,8 @@ const TIMING = {
   read: 240,
   fly: 400,
   linger: 900,
+  /** Overhead trays are read in place, so they hold longer than a pooled roll. */
+  anchoredLinger: 1350,
   fade: 190,
   tick: 60,
   legacyHold: 780,
@@ -114,6 +116,7 @@ function mainDieSize(count: number): number {
 export class DiceFieldView {
   private readonly parts: Fading[] = [];
   private readonly dice: DieView[] = [];
+  private readonly pendingTotals: { text: Phaser.GameObjects.Text; total: number }[] = [];
   private readonly timers = new Set<Phaser.Time.TimerEvent>();
   private readonly waits = new Set<() => void>();
   private tumbler: Phaser.Time.TimerEvent | null = null;
@@ -205,7 +208,7 @@ export class DiceFieldView {
     }
     await this.rollOut(reducedMotion, speed, gen);
     if (this.stale(gen)) return;
-    await this.wait(TIMING.linger / speed);
+    await this.wait(TIMING.anchoredLinger / speed);
     if (this.stale(gen)) return;
     await this.fadeOut(reducedMotion, speed, gen);
   }
@@ -463,18 +466,23 @@ export class DiceFieldView {
     height: number,
     fontSize: number,
     total: number,
+    reveal: 'now' | 'onLand' = 'onLand',
   ): void {
+    const text = this.scene.add.text(x, y, reveal === 'now' ? String(total) : '', {
+      fontFamily: MENU_FONT.display,
+      fontSize: `${fontSize}px`,
+      color: MENU_HEX.ink,
+      fontStyle: 'bold',
+    }).setOrigin(0.5).setDepth(82);
     this.parts.push(
       this.scene.add.rectangle(x, y, width, height, MENU_COLOR.brass, 1)
         .setStrokeStyle(1, MENU_COLOR.brassLight)
         .setDepth(81),
-      this.scene.add.text(x, y, String(total), {
-        fontFamily: MENU_FONT.display,
-        fontSize: `${fontSize}px`,
-        color: MENU_HEX.ink,
-        fontStyle: 'bold',
-      }).setOrigin(0.5).setDepth(82),
+      text,
     );
+    // The total is the answer the dice are still working out; showing it while
+    // they tumble gives the result away before the roll reads as finished.
+    if (reveal === 'onLand') this.pendingTotals.push({ text, total });
   }
 
   private addDie(
@@ -586,6 +594,7 @@ export class DiceFieldView {
         LANDED.die + 3,
         16,
         flight.roll.total,
+        'now',
       );
       const plate = this.parts.slice(before);
       if (reducedMotion) continue;
@@ -606,6 +615,7 @@ export class DiceFieldView {
   /** Fade the tray in, tumble the dice, then show their faces. */
   private async rollOut(reducedMotion: boolean, speed: number, gen: number): Promise<void> {
     if (reducedMotion) {
+      this.revealTotals(false, speed);
       await this.wait(TIMING.read / speed);
       return;
     }
@@ -643,6 +653,23 @@ export class DiceFieldView {
         ease: 'Quad.Out',
       });
     }
+    this.revealTotals(true, speed);
+  }
+
+  /** Stamp the totals the dice were still working out. */
+  private revealTotals(animate: boolean, speed: number): void {
+    for (const pending of this.pendingTotals) {
+      if (!pending.text.active) continue;
+      pending.text.setText(String(pending.total));
+      if (!animate) continue;
+      this.scene.tweens.add({
+        targets: pending.text,
+        scale: { from: 1.3, to: 1 },
+        duration: 130 / speed,
+        ease: 'Back.Out',
+      });
+    }
+    this.pendingTotals.length = 0;
   }
 
   private async fadeOut(reducedMotion: boolean, speed: number, gen: number): Promise<void> {
@@ -685,5 +712,6 @@ export class DiceFieldView {
     }
     this.parts.length = 0;
     this.dice.length = 0;
+    this.pendingTotals.length = 0;
   }
 }

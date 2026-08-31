@@ -38,7 +38,7 @@ import {
 import { EndCardView, type EndCardOptions } from '../ui/combat/EndCardView';
 import { PauseView } from '../ui/combat/PauseView';
 import { DiceFieldView, type DiceGroup } from '../ui/combat/DiceFieldView';
-import { cycleDiceMode, diceMode, diceModeLabel } from '../ui/combat/dicePreference';
+import { cycleDiceMode, diceMode, diceModeLabel, diceTiming, diceTimingLabel, toggleDiceTiming } from '../ui/combat/dicePreference';
 import type { DiceRollView } from '../ui/combat/diceFace';
 import {
   InventoryView,
@@ -1211,6 +1211,7 @@ export class GameScene extends Phaser.Scene {
     this.pendingHits = [];
     this.pendingImpacts = [];
     this.vfxSeq = 0;
+    this.deferDice = false;
     this.pendingSounds = [];
     this.pendingEffects = [];
     this.pendingDrains = [];
@@ -6322,8 +6323,12 @@ export class GameScene extends Phaser.Scene {
     this.gs.castPotency = this.modifierPotency(item.modifiers);
     this.gs.castSilent = !!item.silent;
     this.gs.resolvingSpell = item.spell ?? null;
+    // Every mid-spell dice flush happens inside resolve, so one flag here holds
+    // them all back for a single roll once the spell has played out.
+    this.deferDice = diceTiming() === 'after';
     this.pendingDice = [];
     await item.resolve(this.gs);
+    this.deferDice = false;
     if (item.spell?.nullifiesStack && this.gs.stack.length > 0) {
       const nullified = this.gs.nullifyStack();
       for (const older of nullified) {
@@ -6935,6 +6940,10 @@ export class GameScene extends Phaser.Scene {
       },
       cycleDice: (direction) => {
         cycleDiceMode(direction);
+        this.pauseView?.refresh(this.reducedMotion, this.combatSpeed);
+      },
+      toggleDiceTiming: () => {
+        toggleDiceTiming();
         this.pauseView?.refresh(this.reducedMotion, this.combatSpeed);
       },
       returnToMenu: () => this.returnToMenu(),
@@ -13156,6 +13165,9 @@ export class GameScene extends Phaser.Scene {
   /** Orders rolls against impacts so a roll can find the bodies it landed on. */
   private vfxSeq = 0;
 
+  /** Set while a spell resolves when the player wants one roll at the end. */
+  private deferDice = false;
+
   /** Sounds for queued visuals, played when those visuals actually appear. */
   private pendingSounds: SoundName[] = [];
 
@@ -15336,6 +15348,7 @@ export class GameScene extends Phaser.Scene {
   // ===========================================================================
 
   private async playPendingDice(): Promise<void> {
+    if (this.deferDice) return;
     const queued = this.pendingDice;
     this.pendingDice = [];
     const mode = Dev.skipDice ? 'none' : diceMode();

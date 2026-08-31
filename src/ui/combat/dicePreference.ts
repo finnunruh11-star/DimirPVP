@@ -52,3 +52,37 @@ export function cycleDiceMode(direction: 1 | -1 = 1): DiceMode {
 export function diceModeLabel(mode: DiceMode = diceMode()): string {
   return LABELS[mode];
 }
+
+const TIMING_KEY = 'dimir-dice-timing';
+
+/**
+ * `during` rolls damage as each step of a spell resolves. `after` holds every
+ * damage die until the spell has finished, then rolls the whole lot at once —
+ * an uninterrupted resolution followed by one big handful of dice.
+ */
+export type DiceTiming = 'during' | 'after';
+
+export function diceTiming(): DiceTiming {
+  if (typeof window === 'undefined') return 'during';
+  try {
+    return window.localStorage.getItem(TIMING_KEY) === 'after' ? 'after' : 'during';
+  } catch {
+    return 'during';
+  }
+}
+
+export function toggleDiceTiming(): DiceTiming {
+  const next: DiceTiming = diceTiming() === 'after' ? 'during' : 'after';
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(TIMING_KEY, next);
+    } catch {
+      // A blocked preference store should never block gameplay.
+    }
+  }
+  return next;
+}
+
+export function diceTimingLabel(timing: DiceTiming = diceTiming()): string {
+  return timing === 'after' ? 'ALL AT THE END' : 'AS THEY HAPPEN';
+}

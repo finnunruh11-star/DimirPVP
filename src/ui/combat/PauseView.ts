@@ -4,7 +4,7 @@ import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
 import { SceneInput } from '../../engine/SceneInput';
 import { CabinetButton, MenuFocusGroup } from '../cabinet/controls';
 import { MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
-import { diceMode, diceModeLabel } from './dicePreference';
+import { diceMode, diceModeLabel, diceTiming, diceTimingLabel } from './dicePreference';
 
 export interface PauseViewOptions {
   motionReduced: boolean;
@@ -15,6 +15,7 @@ export interface PauseViewOptions {
   toggleMotion: () => void;
   toggleSpeed: () => void;
   cycleDice: (direction: 1 | -1) => void;
+  toggleDiceTiming: () => void;
   returnToMenu: () => void;
 }
 
@@ -24,6 +25,7 @@ export class PauseView extends Phaser.GameObjects.Container {
   private readonly motion: CabinetButton;
   private readonly speed: CabinetButton;
   private readonly dice: CabinetButton;
+  private readonly diceWhen: CabinetButton;
   private readonly volume: CabinetButton;
   private disposed = false;
 
@@ -33,9 +35,9 @@ export class PauseView extends Phaser.GameObjects.Container {
     this.setDepth(115);
 
     const left = 380;
-    const top = 48;
+    const top = 34;
     const width = 520;
-    const height = 640;
+    const height = 656;
     const dim = scene.add
       .rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, MENU_COLOR.pitch, 0.88)
       .setOrigin(0)
@@ -105,19 +107,29 @@ export class PauseView extends Phaser.GameObjects.Container {
       onActivate: () => options.cycleDice(1),
       onAdjust: (direction) => options.cycleDice(direction),
     });
-    const menu = new CabinetButton(scene, left + 46, top + 528, {
+    this.diceWhen = new CabinetButton(scene, left + 46, top + 518, {
+      width: width - 92,
+      height: 70,
+      label: '',
+      index: 'R',
+      selected: diceTiming() === 'after',
+      onActivate: () => options.toggleDiceTiming(),
+      onAdjust: () => options.toggleDiceTiming(),
+    });
+    const menu = new CabinetButton(scene, left + 46, top + 596, {
       width: width - 92,
       height: 70,
       label: 'RETURN TO MAIN MENU',
       index: '<',
       onActivate: options.returnToMenu,
     });
-    this.add([resume, this.motion, this.speed, this.volume, this.dice, menu]);
+    this.add([resume, this.motion, this.speed, this.volume, this.dice, this.diceWhen, menu]);
     this.focus.add(resume);
     this.focus.add(this.motion);
     this.focus.add(this.speed);
     this.focus.add(this.volume);
     this.focus.add(this.dice);
+    this.focus.add(this.diceWhen);
     this.focus.add(menu);
     this.refresh(options.motionReduced, options.combatSpeed);
 
@@ -140,6 +152,8 @@ export class PauseView extends Phaser.GameObjects.Container {
     this.speed.setSelected(combatSpeed > 1);
     this.dice.setCopy(`DICE: ${diceModeLabel()}`);
     this.dice.setSelected(diceMode() !== 'none');
+    this.diceWhen.setCopy(`DAMAGE ROLLS: ${diceTimingLabel()}`);
+    this.diceWhen.setSelected(diceTiming() === 'after');
     this.refreshVolume();
   }
 
