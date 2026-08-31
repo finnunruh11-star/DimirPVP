@@ -66,6 +66,79 @@ export class SceneInput {
     this.cleanups.push(() => this.scene.input.off('pointerdown', run));
   }
 
+  /**
+   * Field pointer with a touch-aware press. A mouse acts on press, as always.
+   * Touch defers to release, because the long press that stands in for a
+   * right-click has to be able to cancel the tap it started as.
+   */
+  bindPointerPress(options: {
+    press: (pointer: Phaser.Input.Pointer) => void;
+    /** Return true if the press was handled, which cancels the pending tap. */
+    longPress?: (pointer: Phaser.Input.Pointer) => boolean;
+    holdMs?: number;
+    slopPx?: number;
+  }): void {
+    const holdMs = options.holdMs ?? 420;
+    const slopPx = options.slopPx ?? 16;
+    let timer: Phaser.Time.TimerEvent | null = null;
+    let origin: { x: number; y: number } | null = null;
+    let consumed = false;
+
+    const clearTimer = (): void => {
+      timer?.remove();
+      timer = null;
+    };
+    const down = (pointer: Phaser.Input.Pointer): void => {
+      if (!pointer.wasTouch) {
+        options.press(pointer);
+        return;
+      }
+      clearTimer();
+      consumed = false;
+      origin = { x: pointer.x, y: pointer.y };
+      if (!options.longPress) return;
+      timer = this.scene.time.delayedCall(holdMs, () => {
+        timer = null;
+        unlockAudio();
+        consumed = options.longPress?.(pointer) === true;
+      });
+    };
+    const move = (pointer: Phaser.Input.Pointer): void => {
+      if (!origin || !timer) return;
+      if (Phaser.Math.Distance.Between(origin.x, origin.y, pointer.x, pointer.y) > slopPx) {
+        clearTimer();
+      }
+    };
+    const up = (pointer: Phaser.Input.Pointer): void => {
+      if (!pointer.wasTouch) return;
+      clearTimer();
+      origin = null;
+      if (consumed) {
+        consumed = false;
+        return;
+      }
+      unlockAudio();
+      options.press(pointer);
+    };
+    const abort = (): void => {
+      clearTimer();
+      origin = null;
+      consumed = false;
+    };
+
+    this.scene.input.on('pointerdown', down);
+    this.scene.input.on('pointermove', move);
+    this.scene.input.on('pointerup', up);
+    this.scene.input.on('pointerupoutside', abort);
+    this.cleanups.push(() => {
+      abort();
+      this.scene.input.off('pointerdown', down);
+      this.scene.input.off('pointermove', move);
+      this.scene.input.off('pointerup', up);
+      this.scene.input.off('pointerupoutside', abort);
+    });
+  }
+
   disableContextMenu(): void {
     this.scene.input.mouse?.disableContextMenu();
   }

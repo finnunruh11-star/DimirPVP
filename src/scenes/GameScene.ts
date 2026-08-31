@@ -10,6 +10,7 @@ import {
   TOP_ACTIONS,
   TOP_BAR,
   TOP_RUN,
+  TOP_MENU,
   TOP_TOGGLES,
   TOP_TURN,
   bottom,
@@ -1064,6 +1065,8 @@ export class GameScene extends Phaser.Scene {
   private actionMenuReturn: InputMode = 'idle';
   /** The always-visible button that opens the action menu. */
   private actionMenuButton?: Phaser.GameObjects.Text;
+  private castButton?: Phaser.GameObjects.Text;
+  private endTurnButton?: Phaser.GameObjects.Text;
   private pauseView?: PauseView;
   private pauseReturn: 'idle' | 'reaction' = 'idle';
 
@@ -6909,7 +6912,15 @@ export class GameScene extends Phaser.Scene {
       this.updateHover();
       if (this.mode.startsWith('aiming') || this.mode.startsWith('subtarget')) this.redraw();
     });
-    controls.bindPointerDown((p) => this.onPointerDown(p));
+    controls.bindPointerPress({
+      press: (p) => this.onPointerDown(p),
+      // Touch has no right button, so a long press opens the action menu.
+      longPress: () => {
+        if (this.actionMenu) return false;
+        this.toggleActionMenu();
+        return !!this.actionMenu;
+      },
+    });
   }
 
   /** The mage currently giving input — the reactor during a reaction window. */
@@ -7989,8 +8000,61 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Toggle the context-aware action menu (Tab / on-screen button / right-click). */
-  private toggleActionMenu(): void {
-    if (this.actionMenu) {
+  /** The hamburger: the only pointer route to the pause menu. */
+  private buildMenuButton(): void {
+    const hit = this.add
+      .rectangle(TOP_MENU.x, TOP_MENU.y, TOP_MENU.w, TOP_MENU.h, MENU_COLOR.woodDeep, 1)
+      .setOrigin(0, 0)
+      .setStrokeStyle(1, MENU_COLOR.brassDark)
+      .setDepth(46)
+      .setInteractive({ useHandCursor: true });
+    const bars = this.add.graphics().setDepth(47);
+    const paint = (color: number): void => {
+      bars.clear().fillStyle(color, 1);
+      for (let i = 0; i < 3; i++) {
+        bars.fillRect(TOP_MENU.x + 8, TOP_MENU.y + 8 + i * 7, TOP_MENU.w - 16, 3);
+      }
+    };
+    paint(MENU_COLOR.brassLight);
+    hit.on('pointerover', () => paint(MENU_COLOR.bone));
+    hit.on('pointerout', () => paint(MENU_COLOR.brassLight));
+    hit.on('pointerdown', () => {
+      this.menuClickGuard = true;
+      this.openPause();
+    });
+  }
+
+  /** A right-aligned brass button on the hint bar, styled like the actions one. */  private hintBarButton(
+    rightX: number,
+    width: number,
+    label: string,
+    onDown: () => void,
+  ): Phaser.GameObjects.Text {
+    const button = this.add
+      .text(rightX, centerY(HINT_BAR), label, {
+        fontFamily: MENU_FONT.control,
+        fontSize: '14px',
+        color: MENU_HEX.ink,
+        backgroundColor: MENU_HEX.brassLight,
+        fontStyle: 'bold',
+        align: 'center',
+        fixedWidth: width,
+        padding: { x: 10, y: 5 },
+      })
+      .setOrigin(1, 0.5)
+      .setDepth(46)
+      .setVisible(false)
+      .setInteractive({ useHandCursor: true });
+    button.on('pointerover', () => button.setBackgroundColor(MENU_HEX.bone));
+    button.on('pointerout', () => button.setBackgroundColor(MENU_HEX.brassLight));
+    button.on('pointerdown', () => {
+      this.menuClickGuard = true;
+      onDown();
+    });
+    return button;
+  }
+
+  private toggleActionMenu(): void {    if (this.actionMenu) {
       this.hideActionMenu();
       return;
     }
@@ -8522,8 +8586,7 @@ export class GameScene extends Phaser.Scene {
     if (p.rightButtonDown()) {
       this.toggleActionMenu();
       return;
-    }
-    const pt = { x: p.worldX, y: p.worldY };
+    }    const pt = { x: p.worldX, y: p.worldY };
     const me = this.gs.current;
 
     // Scenario Lab tools own the click while a brush / move target is armed.
@@ -10413,6 +10476,16 @@ export class GameScene extends Phaser.Scene {
       else this.toggleActionMenu();
     });
 
+    // Cast and End Turn have no pointer route otherwise; without them a touch
+    // player can build a spell but never fire it or hand the turn over.
+    this.endTurnButton = this.hintBarButton(right(HINT_BAR) - 238, 132, 'END TURN', () => {
+      if (this.mode === 'reaction') this.onReactionPass();
+      else this.onEndTurn();
+    });
+    this.castButton = this.hintBarButton(right(HINT_BAR) - 376, 250, 'CAST', () => {
+      this.onCast();
+    });
+
     // ---- Dock column 1: vitals ----
     this.panelHeader(DOCK_VITALS, 'MAGE', MENU_HEX.verdigris);
     this.resourceGfx = this.add.graphics().setDepth(40).setVisible(false);
@@ -10483,8 +10556,8 @@ export class GameScene extends Phaser.Scene {
     // ---- Dock column 3: the log supplies its own clickable header ----
 
     // ---- Toggles, right-aligned in the top bar ----
-    const chipW = 80;
-    const chipGap = 6;
+    const chipW = 72;
+    const chipGap = 5;
     const chipY = 11;
     this.autoPassButton = new CabinetChip(this, TOP_TOGGLES.x, chipY, {
       width: chipW,
@@ -10508,6 +10581,7 @@ export class GameScene extends Phaser.Scene {
     this.refreshAutoPassButton();
     this.refreshSpectateButton();
     this.refreshCombatSpeedButton();
+    this.buildMenuButton();
 
     // Docked, clickable list of every living foe (targets from anywhere).
     this.targetListPanel = this.add.container(0, 0).setDepth(48);
@@ -14198,6 +14272,17 @@ export class GameScene extends Phaser.Scene {
         this.mode === 'reaction' ? 'PASS PRIORITY' : 'ACTIONS'
       );
     }
+
+    // Cast only offers itself once the rack spells something castable.
+    const reacting = this.mode === 'reaction' && !!this.reactor && !this.controllerIsAI(this.reactor);
+    const myTurn = !this.gs.isOver
+      && this.mode === 'idle'
+      && !this.controllerIsAI(this.gs.current);
+    const combo = myTurn ? this.currentComboSpell() : undefined;
+    this.castButton?.setVisible(!!combo);
+    if (combo && this.castButton) this.castButton.setText(`CAST ${combo.name.toUpperCase()}`);
+    this.endTurnButton?.setVisible(myTurn || reacting);
+    if (this.endTurnButton) this.endTurnButton.setText(reacting ? 'PASS' : 'END TURN');
 
     this.drawLog();
   }
