@@ -1,4 +1,4 @@
-import { Dice } from './Dice';
+import { Dice, type RollResult } from './Dice';
 import { Mage } from './Mage';
 import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
@@ -339,6 +339,16 @@ export class GameState {
   vfxSink?: VfxSink | null;
   /** Bridge for interactive sub-targeting during spell resolution (scene-supplied). */
   subTargeter?: SubTargeter | null;
+
+  /**
+   * Roll and announce it. Attacks that resolve inside GameState never pass
+   * through `effects.rollDice`, so without this they would land with no dice.
+   */
+  showRoll(spec: string, label: string, target?: Mage): RollResult {
+    const result = this.rng.roll(spec);
+    this.vfxSink?.diceRoll(spec, result.total, result.rolls, label, target);
+    return result;
+  }
 
   private nextId = 1;
 
@@ -4396,7 +4406,7 @@ export class GameState {
 
   /** One lightning bounce: (stacks)d3 x pct, armour-ignoring heat. */
   private dealThunderBolt(source: Mage, target: Mage, stacks: number, pct: number): void {
-    const dice = this.rng.roll(`${stacks}d3`).total;
+    const dice = this.showRoll(`${stacks}d3`, 'Thunder Discharge', target).total;
     const total = Math.ceil(dice * pct); // reduce dice by % but round favourably
     if (total <= 0) return;
     const ctx = this.effectContext(source, target, null);
@@ -5462,6 +5472,7 @@ export class GameState {
               rolls.push(roll);
               total += Math.max(0, Math.floor((roll + dex + bonus - 10) / 2));
             }
+            game.vfxSink?.diceRoll(`${hits}d20`, total, rolls, `${source.name} attacks`, target);
           }
           // Assassin's Cloak: Dex strikes hit harder from any form of stealth.
           if (!missed && game.isVeiled(source) && source.veiledDaggerBonus() > 0) {
@@ -5481,13 +5492,13 @@ export class GameState {
         } else if (!w) {
           // Unarmed strike: a light generic-physical blow — half a d6 plus half
           // your Strength (never quite a real weapon), still boosted by gloves.
-          const roll = game.rng.roll('1d6').total;
+          const roll = game.showRoll('1d6', `${source.name} strikes`, target).total;
           amount = Math.max(1, Math.round(roll * 0.5 + source.effectiveStr() * 0.5) + source.meleeDamageBonus());
           type = 'generic';
         } else {
           // Strength swing: (1d6 + 0.5×str) × weaponMult, then flat bonuses
           // (colour identity, gloves) added after the multiply.
-          const roll = game.rng.roll('1d6').total;
+          const roll = game.showRoll('1d6', `${source.name} strikes`, target).total;
           const flat =
             (source.profile.blackPrimaryTier ? 1 : 0) +
             source.meleeDamageBonus();
