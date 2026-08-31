@@ -41,3 +41,35 @@ export const FX_TWEEN = {
   twistMarker: { duration: 420, ease: 'Cubic.Out' },
   twistRune: { duration: 460, ease: 'Cubic.Out' },
 } as const;
+
+export type ImpactWeight = 'heavy' | 'seismic';
+
+/**
+ * Camera shake is rationed so it keeps meaning something. Lightning keeps its
+ * own, louder shake inside LightningFxDirector; every other spell has to be
+ * listed here by word combination to earn one. Shatter Mind is deliberately
+ * absent — only the reality-breaking and cage/area Shatter combos qualify.
+ */
+export const SPELL_IMPACT_WEIGHT: Record<string, ImpactWeight> = {
+  'reality+shatter': 'seismic',
+  'reality+shatter+twist': 'seismic',
+  'mind+reality+shatter': 'heavy',
+  'bind+shadow+shatter': 'heavy',
+  'mind+shadow+shatter': 'heavy',
+};
+
+export const IMPACT_FX = {
+  /** Fraction of a target's max pool a single hit must take to read as heavy. */
+  heavySeverity: 0.2,
+  /** White-out on the struck sprite, in ms. */
+  flash: { duration: 64, critDuration: 104, color: 0xfff4e2 },
+  /**
+   * Brief global slowdown on the biggest hits. `time.timeScale` is left alone
+   * so the restore timer cannot slow itself down.
+   */
+  hitstop: { scale: 0.16, duration: 70, critDuration: 115 },
+  shake: {
+    heavy: { duration: 150, intensity: 0.0022 },
+    seismic: { duration: 250, intensity: 0.0044 },
+  },
+} as const;

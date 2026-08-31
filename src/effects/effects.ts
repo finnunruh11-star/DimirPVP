@@ -59,7 +59,7 @@ export interface CombatFeedback {
  */
 export interface VfxSink {
   /** Show a dice-rolling animation for a roll that has already been computed. */
-  diceRoll(spec: string, total: number, rolls: number[], label?: string): void;
+  diceRoll(spec: string, total: number, rolls: number[], label?: string, target?: Mage): void;
   /** Play the "took damage" recoil on a mage. */
   hit?(mage: Mage): void;
   /** Animate a gradual dash for `mover`, which has just jumped from `from`. */
@@ -269,14 +269,25 @@ export function byClass<T>(
 /**
  * Roll dice from a spec string ("2d6+1", "d20", "3d8"). Logs the result and
  * returns the total. Use this for variable damage, chances, etc.
+ *
+ * `victim` puts the roll's tray over one body. Leave it off and the scene
+ * infers the body from whatever this roll goes on to damage, which is right for
+ * ordinary spells; pass it when the roll belongs to somebody the roll does not
+ * damage (an accuracy check on the caster) or when rolling inside a per-target
+ * loop, where the inference would otherwise lump the rolls together.
  */
-export function rollDice(ctx: EffectContext, spec: string, reason?: string): number {
+export function rollDice(
+  ctx: EffectContext,
+  spec: string,
+  reason?: string,
+  victim?: Mage | null,
+): number {
   const r = ctx.rng.roll(spec);
   const detail = r.rolls.length
     ? ` [${r.rolls.join(', ')}${r.modifier ? (r.modifier > 0 ? `+${r.modifier}` : r.modifier) : ''}]`
     : '';
   ctx.log(`${ctx.caster.name} rolls ${spec}${reason ? ` for ${reason}` : ''}: ${r.total}${detail}`);
-  ctx.vfx?.diceRoll(spec, r.total, r.rolls, reason ? `${reason} — damage` : undefined);
+  ctx.vfx?.diceRoll(spec, r.total, r.rolls, reason, victim ?? undefined);
   return r.total;
 }
 

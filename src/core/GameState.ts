@@ -274,6 +274,8 @@ export class GameState {
   castPotency = 1;
   /** A silent cast: it draws no reactions and never reveals a veiled caster. */
   castSilent = false;
+  /** Presentation-only: the spell being resolved, so impact feedback can weight it. */
+  resolvingSpell: Spell | null = null;
 
   /** Active shadow zones placed by the Shadow word. */
   shadows: ShadowZone[] = [];
@@ -413,6 +415,7 @@ export class GameState {
     this.spellRollThisCast = 0;
     this.castPotency = 1;
     this.castSilent = false;
+    this.resolvingSpell = null;
     this.prevScarabAlive = {};
     this.oniTurnEndPending = undefined;
     this.oniForcedTurnEndFor = undefined;

@@ -22,6 +22,7 @@ import {
 import { EndCardView } from '../ui/combat/EndCardView';
 import { InventoryView } from '../ui/combat/InventoryView';
 import { PauseView } from '../ui/combat/PauseView';
+import { cycleDiceMode, diceMode, diceModeLabel } from '../ui/combat/dicePreference';
 import { CreativePrepView } from '../ui/prep/CreativePrepView';
 import { ItemDraftView } from '../ui/prep/ItemDraftView';
 import { StatAssignmentView } from '../ui/prep/StatAssignmentView';
@@ -230,6 +231,8 @@ export class GalleryScene extends Phaser.Scene {
           view = new PauseView(this, {
             motionReduced: isReducedMotion(),
             combatSpeed: speed,
+            diceLabel: diceModeLabel(),
+            diceOn: diceMode() !== 'none',
             resume: close,
             toggleMotion: () => {
               toggleMotionPreference();
@@ -237,6 +240,10 @@ export class GalleryScene extends Phaser.Scene {
             },
             toggleSpeed: () => {
               speed = speed === 1 ? 4 : 1;
+              view.refresh(isReducedMotion(), speed);
+            },
+            cycleDice: (direction) => {
+              cycleDiceMode(direction);
               view.refresh(isReducedMotion(), speed);
             },
             returnToMenu: close,

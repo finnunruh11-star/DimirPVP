@@ -4,7 +4,7 @@ import type { Mage } from '../core/Mage';
 import type { CombatFeedback } from '../effects/effects';
 import { MENU_COLOR, MENU_FONT, MENU_HEX } from '../ui/cabinet/theme';
 
-const DAMAGE_COLORS: Record<DamageType, number> = {
+export const DAMAGE_COLORS: Record<DamageType, number> = {
   pierce: 0xd9d5c7,
   shatter: 0xe4c06a,
   shadow: 0x9b7ac4,

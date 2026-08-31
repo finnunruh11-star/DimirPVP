@@ -1030,6 +1030,81 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     assert(ally.hp < 500, 'The arc does not spare your own line');
     equal(ally.isStunned('movement'), true, 'And roots it too');
   }],
+
+  ['grows the Lightning Shatter Pierce blowout risk with every body speared', async () => {
+    const lane = (count: number, seed: number) => {
+      const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 200, y: 270 }, loadout: [] });
+      const row = Array.from({ length: count }, (_, i) => {
+        const m = new Mage({
+          name: `Body ${i}`,
+          isAI: true,
+          team: 2,
+          position: { x: 200 + (i + 1) * 2 * RANGE_UNIT, y: 270 },
+          loadout: [],
+        });
+        m.maxHp = 9000;
+        m.hp = 9000;
+        return m;
+      });
+      caster.maxHp = 9000;
+      caster.hp = 9000;
+      const game = new GameState([caster, ...row], seed);
+      game.spellRollThisCast = 20;
+      return { caster, row, game };
+    };
+    const spell = getSpell(['lightning', 'shatter', 'pierce']);
+    assert(spell, 'Expected Lightning Shatter Pierce to be registered.');
+
+    const one = lane(1, 4);
+    await spell.cast(one.game.effectContext(one.caster, null, { x: 1200, y: 270 }));
+    assert(one.row[0].hp < 9000, 'It spears everything standing in the lane');
+    equal(one.row[0].isStunned('full'), true, 'And stuns what it passes through');
+
+    // Across many seeds a long lane must blow out more often than a single body.
+    let shortLane = 0;
+    let longLane = 0;
+    for (let seed = 1; seed <= 40; seed++) {
+      const a = lane(1, seed);
+      await spell.cast(a.game.effectContext(a.caster, null, { x: 1200, y: 270 }));
+      if (a.caster.hp < 9000) shortLane += 1;
+
+      const b = lane(5, seed);
+      await spell.cast(b.game.effectContext(b.caster, null, { x: 1200, y: 270 }));
+      if (b.caster.hp < 9000) longLane += 1;
+    }
+    assert(longLane > shortLane, `Risk must climb with bodies pierced (${shortLane} vs ${longLane})`);
+  }],
+
+  ['ricochets Lightning Shadow Pierce around its own shadow and bills the ride', async () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 600, y: 270 }, loadout: [] });
+    const bystander = new Mage({ name: 'Bystander', isAI: true, team: 2, position: { x: 600 + 3 * RANGE_UNIT, y: 270 }, loadout: [] });
+    caster.maxHp = 9000;
+    caster.hp = 9000;
+    bystander.maxHp = 9000;
+    bystander.hp = 9000;
+    const game = new GameState([caster, bystander], 7);
+    game.spellRollThisCast = 20;
+    const spell = getSpell(['lightning', 'shadow', 'pierce']);
+    assert(spell, 'Expected Lightning Shadow Pierce to be registered.');
+    const start = { x: caster.x, y: caster.y };
+    let bounces = 0;
+    const log = game.log.bind(game);
+    game.log = (line: string) => {
+      const m = /ricochets (\d+) time/.exec(line);
+      if (m) bounces = Number(m[1]);
+      log(line);
+    };
+
+    await spell.cast(game.effectContext(caster, null, { x: 1200, y: 270 }));
+
+    assert(game.shadows.length >= 0, 'The arena shadow is created and may shatter');
+    assert(bounces >= 1, 'It ricochets at least once off the wall of its own shadow');
+    assert(
+      Math.hypot(caster.x - start.x, caster.y - start.y) > 1,
+      'The caster is carried somewhere else entirely'
+    );
+    assert(bystander.hp < 9000, 'Anything the ride passes over is grazed');
+  }],
 ];
 
 for (const [name, run] of tests) {

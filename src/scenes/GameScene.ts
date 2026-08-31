@@ -37,7 +37,9 @@ import {
 } from '../ui/combat/CombatMenus';
 import { EndCardView, type EndCardOptions } from '../ui/combat/EndCardView';
 import { PauseView } from '../ui/combat/PauseView';
-import { DicePanelView, type DiceRollView } from '../ui/combat/DicePanelView';
+import { DiceFieldView, type DiceGroup } from '../ui/combat/DiceFieldView';
+import { cycleDiceMode, diceMode, diceModeLabel } from '../ui/combat/dicePreference';
+import type { DiceRollView } from '../ui/combat/diceFace';
 import {
   InventoryView,
   type InventoryActionKind,
@@ -131,6 +133,7 @@ import {
   MODIFIER_WORDS,
   WORD_ORDER,
   WORDS,
+  comboKey,
   isModifierWord,
   splitModifiers,
   type WordId,
@@ -180,8 +183,17 @@ import type {
   SubTargetPointOpts,
   SubTargetEnemyOpts,
 } from '../effects/effects';
-import { ACTION_FX_PRESETS, FX_MOTION, FX_TWEEN } from '../effects/FxPresets';
+import {
+  ACTION_FX_PRESETS,
+  FX_MOTION,
+  FX_TWEEN,
+  SPELL_IMPACT_WEIGHT,
+  type ImpactWeight,
+} from '../effects/FxPresets';
 import { CombatFeedbackLayer } from '../visuals/CombatFeedbackLayer';
+import { ImpactFxDirector } from '../visuals/ImpactFxDirector';
+import { preloadImpactSheets } from '../visuals/ImpactSheets';
+import { ParticleFx } from '../visuals/ParticleFx';
 import {
   LIGHTNING_FX_SHEETS,
   LightningFxDirector,
@@ -208,6 +220,22 @@ const DAMAGE_SOUND: Record<string, SoundName> = {
 
 /** Words that bring their own sound, so the generic spell voice stays off. */
 const SELF_VOICED_WORDS = new Set(['lightning', 'fire', 'corrode', 'drain']);
+
+/** One impact reaction, resolved when the blow lands and replayed at flush. */
+interface QueuedImpact {
+  mage: Mage;
+  feedback: CombatFeedback;
+  severity: number;
+  angle?: number;
+  weight?: ImpactWeight;
+  seq: number;
+}
+
+/** A queued roll plus the body it belongs to, when it belongs to one. */
+interface PendingRoll extends DiceRollView {
+  mage?: Mage;
+  seq: number;
+}
 
 import type { MatchConfig, SeatConfig, SwampPrepMode } from '../config/MatchConfig';
 import {
@@ -938,7 +966,7 @@ export class GameScene extends Phaser.Scene {
   private subtargetRequired = false;
 
   // Dice rolls queued during the current resolution, shown after the effect.
-  private pendingDice: DiceRollView[] = [];
+  private pendingDice: PendingRoll[] = [];
 
   // Graphics & text.
   private gfxStatic!: Phaser.GameObjects.Graphics;
@@ -950,8 +978,10 @@ export class GameScene extends Phaser.Scene {
   private gfxMine!: Phaser.GameObjects.Graphics;
   private gfxScarab!: Phaser.GameObjects.Graphics;
   private lightningFx?: LightningFxDirector;
+  private particleFx?: ParticleFx;
+  private impactFx?: ImpactFxDirector;
   private hoverGfx!: Phaser.GameObjects.Graphics;
-  private dicePanel!: DicePanelView;
+  private diceField?: DiceFieldView;
   private turnText!: Phaser.GameObjects.Text;
   private comboText!: Phaser.GameObjects.Text;
   private hintText!: Phaser.GameObjects.Text;
@@ -1142,6 +1172,7 @@ export class GameScene extends Phaser.Scene {
       frameWidth: 32,
       frameHeight: 32,
     });
+    preloadImpactSheets(this);
     this.load.spritesheet(SWAMP_TILESET_KEY, swampTilesUrl, {
       frameWidth: SWAMP_TILESET_FRAME.width,
       frameHeight: SWAMP_TILESET_FRAME.height,
@@ -1163,6 +1194,12 @@ export class GameScene extends Phaser.Scene {
     this.combatFeedback = undefined;
     this.lightningFx?.destroy();
     this.lightningFx = undefined;
+    this.impactFx?.destroy();
+    this.impactFx = undefined;
+    this.particleFx?.destroy();
+    this.particleFx = undefined;
+    this.diceField?.destroy();
+    this.diceField = undefined;
     this.mode = 'idle';
     this.busy = false;
     this.gameEnded = false;
@@ -1172,6 +1209,8 @@ export class GameScene extends Phaser.Scene {
     this.selectedIdx = [];
     this.pendingDice = [];
     this.pendingHits = [];
+    this.pendingImpacts = [];
+    this.vfxSeq = 0;
     this.pendingSounds = [];
     this.pendingEffects = [];
     this.pendingDrains = [];
@@ -1374,7 +1413,8 @@ export class GameScene extends Phaser.Scene {
       this.updateWaveHud();
     };
     this.gs.vfxSink = {
-      diceRoll: (spec, total, rolls, label) => this.pendingDice.push({ spec, total, rolls, label }),
+      diceRoll: (spec, total, rolls, label, target) =>
+        this.pendingDice.push({ spec, total, rolls, label, mage: target, seq: this.vfxSeq++ }),
       hit: (m) => this.playHit(m),
       dash: (mover, from) => {
         playSound('move.dash');
@@ -1392,7 +1432,9 @@ export class GameScene extends Phaser.Scene {
         playSound('spell.pull');
         return this.animateEdgelordPull(mover, from, to);
       },
-      lightningBolt: (from, to) => {
+      lightningBolt: async (from, to) => {
+        // Any roll already made explains the bolt, so settle it before it flies.
+        await this.playPendingDice();
         playSound('spell.lightning');
         return this.vfxLightningBolt(from, to);
       },
@@ -1415,7 +1457,7 @@ export class GameScene extends Phaser.Scene {
       },
       combatFeedback: (mage, feedback) => {
         this.playFeedbackSound(feedback);
-        this.combatFeedback?.show(mage, feedback);
+        this.queueImpact(mage, feedback);
       },
       shatterBurst: (at, size) => {
         void this.vfxSpriteAt('fx-shatter', at, { lengthPx: size });
@@ -1424,15 +1466,18 @@ export class GameScene extends Phaser.Scene {
         this.vfxWedge(apex, angle, halfAngle, range);
       },
       lightningTrail: (segments) => this.setLightningTrail(segments),
-      lightningDash: (from, to, color) => {
+      lightningDash: async (from, to, color) => {
+        await this.playPendingDice();
         playSound('spell.lightning');
-        return this.lightningFx?.dashStreak(from, to, color, FX_MOTION.dash.duration) ?? Promise.resolve();
+        return this.lightningFx?.dashStreak(from, to, color, FX_MOTION.dash.duration)
+          ?? Promise.resolve();
       },
       lightningImpact: (at, color) => {
         playSound('spell.thunder');
         void this.lightningFx?.impact(at, color);
       },
-      lightningCrash: (at, color) => {
+      lightningCrash: async (at, color) => {
+        await this.playPendingDice();
         playSound('spell.thunder');
         return this.lightningFx?.crash(at, color) ?? Promise.resolve();
       },
@@ -1449,9 +1494,18 @@ export class GameScene extends Phaser.Scene {
       },
     };
     this.gs.subTargeter = {
-      requestPoint: (source, opts) => this.requestSubtargetPoint(source, opts),
-      requestEnemy: (source, opts) => this.requestSubtargetEnemy(source, opts),
-      requestCombatant: (source, opts) => this.requestSubtargetCombatant(source, opts),
+      requestPoint: async (source, opts) => {
+        await this.playPendingDice();
+        return this.requestSubtargetPoint(source, opts);
+      },
+      requestEnemy: async (source, opts) => {
+        await this.playPendingDice();
+        return this.requestSubtargetEnemy(source, opts);
+      },
+      requestCombatant: async (source, opts) => {
+        await this.playPendingDice();
+        return this.requestSubtargetCombatant(source, opts);
+      },
       reactionWindow: (source, label, at) => this.offerReactionWindow(source, label, { at }),
       resolveImpacts: () => this.resolveImpacts(),
     };
@@ -1459,6 +1513,14 @@ export class GameScene extends Phaser.Scene {
 
     this.buildMageAnimations();
     this.lightningFx = new LightningFxDirector(this, () => this.reducedMotion);
+    this.particleFx = new ParticleFx(this, () => this.reducedMotion);
+    this.particleFx.setCombatSpeed(this.combatSpeed);
+    this.impactFx = new ImpactFxDirector(
+      this,
+      this.particleFx,
+      () => this.reducedMotion,
+      () => this.combatSpeed,
+    );
     this.buildHeldWeaponTextures();
     buildMineRoomTextures(this);
     this.buildStaticGraphics();
@@ -5948,7 +6010,13 @@ export class GameScene extends Phaser.Scene {
   private async rollSubtleSilence(item: StackItem): Promise<void> {
     const roll = this.gs.rng.roll('1d20');
     this.pendingDice = [
-      { spec: '1d20', total: roll.total, rolls: roll.rolls, label: 'Subtle — silent?' },
+      {
+        spec: '1d20',
+        total: roll.total,
+        rolls: roll.rolls,
+        label: 'Subtle — silent?',
+        seq: this.vfxSeq++,
+      },
     ];
     item.silent = roll.total >= 11;
     this.gs.log(
@@ -6253,6 +6321,7 @@ export class GameScene extends Phaser.Scene {
     //    A spell may await interactive sub-targeting here, so resolve is async.
     this.gs.castPotency = this.modifierPotency(item.modifiers);
     this.gs.castSilent = !!item.silent;
+    this.gs.resolvingSpell = item.spell ?? null;
     this.pendingDice = [];
     await item.resolve(this.gs);
     if (item.spell?.nullifiesStack && this.gs.stack.length > 0) {
@@ -6272,6 +6341,7 @@ export class GameScene extends Phaser.Scene {
     this.gs.spellRollThisCast = 0;
     this.gs.castPotency = 1;
     this.gs.castSilent = false;
+    this.gs.resolvingSpell = null;
     // A hostile single-target spell that dealt no instant damage (no hit overlay
     // was queued for its foe) paints the "disrupt" sheet on the target instead,
     // so pure control spells (Mind, Bind, Twist, …) still read as landing.
@@ -6316,6 +6386,7 @@ export class GameScene extends Phaser.Scene {
       total: best.total,
       rolls: naturalRolls,
       label: `${spell.name} — success?${focused ? ' (focus)' : ''}`,
+      seq: this.vfxSeq++,
     });
     let ok = Dev.autoSuccess || best.total >= dc;
     // Luck can turn a near-miss into a hit: spend the minimum needed to reach
@@ -6850,6 +6921,8 @@ export class GameScene extends Phaser.Scene {
     this.pauseView = new PauseView(this, {
       motionReduced: this.reducedMotion,
       combatSpeed: this.combatSpeed,
+      diceLabel: diceModeLabel(),
+      diceOn: diceMode() !== 'none',
       resume: () => this.closePause(),
       toggleMotion: () => {
         toggleMotionPreference();
@@ -6858,6 +6931,10 @@ export class GameScene extends Phaser.Scene {
       },
       toggleSpeed: () => {
         this.toggleCombatSpeed();
+        this.pauseView?.refresh(this.reducedMotion, this.combatSpeed);
+      },
+      cycleDice: (direction) => {
+        cycleDiceMode(direction);
         this.pauseView?.refresh(this.reducedMotion, this.combatSpeed);
       },
       returnToMenu: () => this.returnToMenu(),
@@ -9005,6 +9082,7 @@ export class GameScene extends Phaser.Scene {
     this.tweens.timeScale = this.combatSpeed;
     this.anims.globalTimeScale = this.combatSpeed;
     this.swampArena?.setCombatSpeed(this.combatSpeed);
+    this.particleFx?.setCombatSpeed(this.combatSpeed);
     this.refreshCombatSpeedButton();
     this.flashHint(`Combat speed: ${this.combatSpeed}x  [.]`);
   }
@@ -9346,6 +9424,8 @@ export class GameScene extends Phaser.Scene {
       total: roll.total,
       rolls: roll.rolls,
       label: `${reactor.name} dodge`,
+      mage: reactor,
+      seq: this.vfxSeq++,
     });
     await this.playPendingDice();
     const tier = analyzeDodge(roll.rolls);
@@ -12021,7 +12101,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buildDicePanel(): void {
-    this.dicePanel = new DicePanelView(this);
+    this.diceField = new DiceFieldView(this);
   }
 
   private redraw(): void {
@@ -13066,6 +13146,16 @@ export class GameScene extends Phaser.Scene {
   /** Mages awaiting a hit recoil; flushed after their damage dice resolve. */
   private pendingHits: Mage[] = [];
 
+  /**
+   * Queued impact reactions. The spell that caused each one is only knowable
+   * while it resolves, so the weight is resolved at queue time and replayed
+   * later beside the recoil it belongs to.
+   */
+  private pendingImpacts: QueuedImpact[] = [];
+
+  /** Orders rolls against impacts so a roll can find the bodies it landed on. */
+  private vfxSeq = 0;
+
   /** Sounds for queued visuals, played when those visuals actually appear. */
   private pendingSounds: SoundName[] = [];
 
@@ -13279,6 +13369,64 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
+   * Record how hard a blow landed while its cause is still known, so the
+   * matching debris, flash and shake can play beside the recoil later.
+   */
+  private queueImpact(mage: Mage, feedback: CombatFeedback): void {
+    const source = feedback.source;
+    const angle = source && source !== mage
+      ? Math.atan2(mage.y - source.y, mage.x - source.x)
+      : undefined;
+    this.pendingImpacts.push({
+      mage,
+      feedback,
+      severity: this.impactSeverity(mage, feedback),
+      angle,
+      weight: this.impactWeight(),
+      seq: this.vfxSeq++,
+    });
+  }
+
+  /** What share of the relevant pool this hit took, 0-1. */
+  private impactSeverity(mage: Mage, feedback: CombatFeedback): number {
+    const amount = feedback.amount ?? 0;
+    if (amount <= 0) return 0;
+    const pool = feedback.kind === 'sanityDamage' || feedback.kind === 'sanityHeal'
+      ? mage.maxSanity
+      : mage.maxHp;
+    return pool > 0 ? Math.min(1, amount / pool) : 0;
+  }
+
+  /** Only the word combinations listed as heavy may move the camera. */
+  private impactWeight(): ImpactWeight | undefined {
+    const spell = this.gs.resolvingSpell;
+    if (!spell) return undefined;
+    return SPELL_IMPACT_WEIGHT[comboKey(spell.words)];
+  }
+
+  /** Play every queued impact reaction and clear the queue. */
+  private flushImpacts(): void {
+    const queued = this.pendingImpacts;
+    this.pendingImpacts = [];
+    let shaken = false;
+    for (const impact of queued) {
+      this.combatFeedback?.show(impact.mage, impact.feedback);
+      if (!this.impactFx) continue;
+      // One blast that hits six bodies is still one blast: shake once.
+      const weight = shaken ? undefined : impact.weight;
+      if (weight) shaken = true;
+      this.impactFx.play({
+        at: { x: impact.mage.x, y: impact.mage.y },
+        feedback: impact.feedback,
+        severity: impact.severity,
+        angle: impact.angle,
+        weight,
+        sprite: this.mageAnims.get(impact.mage)?.sprite,
+      });
+    }
+  }
+
+  /**
    * Voice one combat readout. Queued, not played: the matching visual only
    * appears once the damage dice have settled.
    */
@@ -13331,6 +13479,7 @@ export class GameScene extends Phaser.Scene {
     const queued = this.pendingHits;
     this.pendingHits = [];
     this.flushSounds();
+    this.flushImpacts();
     for (const m of queued) this.triggerHit(m);
     await this.flushEffects();
   }
@@ -13376,6 +13525,10 @@ export class GameScene extends Phaser.Scene {
     m: Mage,
     kind: 'generic' | 'corrosive' | 'vanish' | 'disrupt'
   ): Promise<void> {
+    // The impact director now draws art matched to the damage type, so the old
+    // catch-all magic burst would only contradict it. It stays queued because
+    // resolveTop reads the queue to decide whether a spell needs 'disrupt'.
+    if (kind === 'generic') return Promise.resolve();
     if (!m.alive && kind !== 'vanish' && kind !== 'corrosive') return Promise.resolve();
     const key = kind === 'corrosive' ? 'fx-dot' : `fx-${kind}`;
     if (!this.anims.exists(key)) return Promise.resolve();
@@ -15185,19 +15338,77 @@ export class GameScene extends Phaser.Scene {
   private async playPendingDice(): Promise<void> {
     const queued = this.pendingDice;
     this.pendingDice = [];
-    // Skip-dice option: drop the rolling popup entirely (results already apply).
-    if (Dev.skipDice) {
-      this.dicePanel.hide();
+    const mode = Dev.skipDice ? 'none' : diceMode();
+    if (mode === 'none') {
+      this.diceField?.hide();
       return;
     }
-    for (const roll of queued) {
-      playSound('dice.roll');
-      await this.dicePanel.play(roll, this.reducedMotion);
-      // Sting the swing rolls only; damage dice would fire this constantly.
-      if (!roll.spec.includes('d20')) continue;
-      if (roll.rolls.includes(20)) playSound('dice.crit');
-      else if (roll.rolls.includes(1)) playSound('dice.fumble');
+    if (queued.length === 0) return;
+
+    const groups = this.groupPendingDice(queued);
+    playSound('dice.roll');
+    // A wide batch would otherwise linger; tighten it as the tray count grows.
+    const speed = Phaser.Math.Clamp(1 + (groups.length - 1) * 0.16, 1, 1.9);
+    await this.diceField?.play(groups, this.reducedMotion, speed, mode);
+
+    // Sting the swing rolls only; damage dice would fire this constantly.
+    const d20s = queued.filter((roll) => roll.spec.includes('d20'));
+    if (d20s.some((roll) => roll.rolls.includes(20))) playSound('dice.crit');
+    else if (d20s.some((roll) => roll.rolls.includes(1))) playSound('dice.fumble');
+  }
+
+  /**
+   * Put each roll over the bodies it landed on. Most spells roll without saying
+   * who for, so an unattributed roll claims whichever bodies were damaged
+   * before the next roll: that separates a shared roll applied to a whole cone
+   * from a loop rolling separately for each victim, without either spelling it
+   * out. Consecutive rolls with no damage between them claim the same bodies,
+   * which is how a two-type hit stacks both rows over one enemy.
+   */
+  private groupPendingDice(queued: PendingRoll[]): DiceGroup[] {
+    const groups: DiceGroup[] = [];
+    const byMage = new Map<Mage, DiceGroup>();
+    const centre: DiceGroup = { rolls: [] };
+    const struck = this.pendingImpacts;
+
+    const push = (mage: Mage, view: DiceRollView): void => {
+      let group = byMage.get(mage);
+      if (!group) {
+        group = { at: { x: mage.x, y: mage.y }, rolls: [] };
+        byMage.set(mage, group);
+        groups.push(group);
+      }
+      group.rolls.push(view);
+    };
+
+    let carried: DiceRollView[] = [];
+    queued.forEach((roll, index) => {
+      const view: DiceRollView = {
+        spec: roll.spec,
+        total: roll.total,
+        rolls: roll.rolls,
+        label: roll.label,
+      };
+      if (roll.mage) {
+        push(roll.mage, view);
+        return;
+      }
+      carried.push(view);
+      const until = queued[index + 1]?.seq ?? Infinity;
+      const claimed = new Set(
+        struck.filter((hit) => hit.seq > roll.seq && hit.seq < until).map((hit) => hit.mage),
+      );
+      if (claimed.size === 0) return;
+      for (const mage of claimed) for (const carriedView of carried) push(mage, carriedView);
+      carried = [];
+    });
+
+    // Rolls that never damaged anybody (checks, chances) keep the centre rail.
+    if (carried.length > 0) {
+      centre.rolls.push(...carried);
+      groups.push(centre);
     }
+    return groups;
   }
 
   private delay(ms: number): Promise<void> {

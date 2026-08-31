@@ -115,7 +115,7 @@ function lightningPower(ctx: EffectContext): number {
 type LightningGamble = 'overload' | 'unstable' | 'stable' | 'surge';
 
 function lightningGamble(ctx: EffectContext): LightningGamble {
-  const roll = rollDice(ctx, '1d6', 'Lightning gamble');
+  const roll = rollDice(ctx, '1d6', 'Lightning gamble', ctx.caster);
   const result: LightningGamble =
     roll === 1 ? 'overload' : roll === 2 ? 'unstable' : roll === 6 ? 'surge' : 'stable';
   ctx.log(`Lightning gamble: ${result}.`);
@@ -2313,7 +2313,7 @@ registerSpell({
       range /= 2;
     }
     if (!ctx.caster.alive) return;
-    const finalRoll = rollDice(ctx, '1d6', 'Lightning Veil Pierce escape');
+    const finalRoll = rollDice(ctx, '1d6', 'Lightning Veil Pierce escape', ctx.caster);
     const dashRange = R(finalRoll * (ctx.crit ? 2 : 1));
     const destination = ctx.requestPoint
       ? await ctx.requestPoint({
@@ -2368,7 +2368,10 @@ registerSpell({
           };
         }
         if (!chosen) break;
-        const accuracy = rollDice(ctx, '1d6', 'Lightning dash accuracy');
+        const accuracy = rollDice(ctx, '1d6', 'Lightning dash accuracy', ctx.caster);
+        // Settle the accuracy die before the body moves, or it reads as landing
+        // at the same time as the damage the dash goes on to deal.
+        await ctx.resolveImpacts?.();
         const maxError = [30, 24, 18, 12, 6, 0][accuracy - 1] * (Math.PI / 180);
         const aimedAngle = Math.atan2(chosen.y - ctx.caster.y, chosen.x - ctx.caster.x);
         const angle = aimedAngle + (ctx.rng.float() * 2 - 1) * maxError;
@@ -2391,14 +2394,14 @@ registerSpell({
         for (const entity of ctx.game.mages) {
           if (entity === ctx.caster || !entity.alive || !segmentHitsMage(segment, entity)) continue;
           ctx.vfx?.lightningImpact?.(entity.pos, RED_TRAIL_COLOR);
-          dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail') + Math.floor(power / 5), 'heat', 'physical'), {
+          dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail', entity) + Math.floor(power / 5), 'heat', 'physical'), {
             canMiss: false,
           });
         }
         if (collision) {
           ctx.log(`${ctx.caster.name} crosses the red trail and the spell collapses!`);
           await ctx.vfx?.lightningCrash?.(segment.to, RED_TRAIL_COLOR);
-          dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '4d6', 'Red trail collision') + Math.floor(power / 5), 'heat', 'physical'), {
+          dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '4d6', 'Red trail collision', ctx.caster) + Math.floor(power / 5), 'heat', 'physical'), {
             canMiss: false,
           });
           break;
@@ -2821,6 +2824,141 @@ registerSpell({
       });
       if (target.alive) applyStun(ctx, target, { duration: 2, type: 'movement' });
       range /= 3;
+    }
+  },
+});
+
+registerSpell({
+  name: 'Lightning Shatter Pierce',
+  words: ['lightning', 'shatter', 'pierce'],
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'point',
+  dc: 14,
+  description:
+    'Become the bolt. Charge in a straight line for Lightning power in cm, punching through bodies instead of stopping at them. Everything you pass takes power ÷ 4 d6 pierce and is fully stunned for 2 turns, allies included. The charge grows less stable with every body it crosses: after each one, roll 1d6 — if it comes up at or under the number you have already pierced, the charge blows out inside you. You stop there, take that same damage yourself and are stunned for 2 turns.',
+  visual: { preset: 'nova', color: 0xffe45c, size: 70, speed: 1.9 },
+  async cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const power = lightningRoll(ctx);
+    const spec = `${Math.max(1, Math.floor(power / 4))}d6`;
+    const angle = Math.atan2(ctx.targetPoint.y - ctx.caster.y, ctx.targetPoint.x - ctx.caster.x);
+    const from = { ...ctx.caster.pos };
+    const to = {
+      x: from.x + Math.cos(angle) * lightningRange(ctx, power),
+      y: from.y + Math.sin(angle) * lightningRange(ctx, power),
+    };
+    const lane: TrailSegment = { from, to };
+    // Bodies in the order the charge reaches them, so the risk builds correctly.
+    const speared = ctx.game.mages
+      .filter(
+        (m) =>
+          m !== ctx.caster &&
+          m.alive &&
+          pointSegmentDistance(m.pos, lane) <= m.bodyRadius() + R(0.5)
+      )
+      .sort(
+        (a, b) => Math.hypot(a.x - from.x, a.y - from.y) - Math.hypot(b.x - from.x, b.y - from.y)
+      );
+    ctx.vfx?.lightningBolt?.(from, to);
+    let pierced = 0;
+    for (const body of speared) {
+      dealDamage(ctx, body, dmg(rollDice(ctx, spec, 'Lightning Shatter Pierce'), 'pierce', 'physical'), {
+        canMiss: false,
+        aoe: true,
+      });
+      if (body.alive) applyStun(ctx, body, { duration: 2, type: 'full' });
+      pierced += 1;
+      if (rollDice(ctx, '1d6', 'Lightning Shatter Pierce — instability') > pierced) continue;
+      ctx.log(`The charge blows out inside ${ctx.caster.name} after ${pierced} bodies.`);
+      blinkstep(ctx, ctx.caster, { toPoint: body.pos, distance: lightningRange(ctx, power) });
+      dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, spec, 'Lightning Shatter Pierce — blowout'), 'pierce', 'physical'), {
+        canMiss: false,
+      });
+      if (ctx.caster.alive) applyStun(ctx, ctx.caster, { duration: 2, type: 'full' });
+      return;
+    }
+    // Punches through bodies and barriers alike; only the field edge stops it.
+    blinkstep(ctx, ctx.caster, { toPoint: to, distance: lightningRange(ctx, power) });
+  },
+});
+
+registerSpell({
+  name: 'Lightning Shadow Pierce',
+  words: ['lightning', 'shadow', 'pierce'],
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'point',
+  dc: 14,
+  description:
+    'Drown yourself in a shadow of radius equal to Lightning power in cm, then pick a direction and ricochet around the inside of it. Every wall you strike has a 20% chance to shatter the shadow; when it breaks you shoot off in whatever direction you were last travelling for another power cm. Anything you pass over, ally or enemy, takes power ÷ 5 shadow damage each time. When you finally stop, you have a 10% chance per bounce of tearing yourself apart for power ÷ 5 d3 — ten bounces and it is certain.',
+  visual: { preset: 'nova', color: 0x9b7bff, size: 70, speed: 1.7 },
+  async cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const power = lightningRoll(ctx);
+    const centre = { ...ctx.caster.pos };
+    const radius = Math.max(R(2), Math.min(lightningRange(ctx, power), Math.min(FIELD.w, FIELD.h) / 2));
+    const pool = ctx.game.addShadow(centre, ctx.caster.team);
+    pool.radius = radius;
+    ctx.log(`${ctx.caster.name} drowns the ground in a ${Math.round(radius / RANGE_UNIT)}cm shadow.`);
+
+    const grazed = Math.max(1, Math.floor(power / 5));
+    let dir = Math.atan2(ctx.targetPoint.y - centre.y, ctx.targetPoint.x - centre.x);
+    let at = { ...centre };
+    let bounces = 0;
+    let broken = false;
+
+    const sweep = async (to: Vec2) => {
+      const leg: TrailSegment = { from: { ...at }, to };
+      for (const body of ctx.game.mages) {
+        if (body === ctx.caster || !body.alive) continue;
+        if (pointSegmentDistance(body.pos, leg) > body.bodyRadius()) continue;
+        dealDamage(ctx, body, dmg(grazed, 'shadow', 'physical'), { canMiss: false, aoe: true });
+      }
+      blinkstep(ctx, ctx.caster, { toPoint: to, distance: Math.hypot(to.x - at.x, to.y - at.y) + 1 });
+      at = { ...ctx.caster.pos };
+      await ctx.resolveImpacts?.();
+    };
+
+    // Each wall has a 1-in-5 chance of releasing you, so this always terminates.
+    for (let step = 0; step < 30 && !broken && ctx.caster.alive; step++) {
+      // Where the ray from `at` along `dir` leaves the disc.
+      const ox = at.x - centre.x;
+      const oy = at.y - centre.y;
+      const dx = Math.cos(dir);
+      const dy = Math.sin(dir);
+      const b = ox * dx + oy * dy;
+      const c = ox * ox + oy * oy - radius * radius;
+      const t = -b + Math.sqrt(Math.max(0, b * b - c));
+      if (!Number.isFinite(t) || t <= 0.5) break;
+      await sweep({ x: at.x + dx * t, y: at.y + dy * t });
+      bounces += 1;
+      if (ctx.rng.chance(0.2)) {
+        broken = true;
+        break;
+      }
+      // Reflect around the disc's normal at the point of impact.
+      const nx = (at.x - centre.x) / radius;
+      const ny = (at.y - centre.y) / radius;
+      const dot = dx * nx + dy * ny;
+      dir = Math.atan2(dy - 2 * dot * ny, dx - 2 * dot * nx);
+    }
+
+    if (broken && ctx.caster.alive) {
+      ctx.log('The shadow shatters and flings its passenger clear.');
+      ctx.game.shadows = ctx.game.shadows.filter((s) => s.id !== pool.id);
+      const out = lightningRange(ctx, power);
+      await sweep({ x: at.x + Math.cos(dir) * out, y: at.y + Math.sin(dir) * out });
+    }
+    ctx.log(`${ctx.caster.name} ricochets ${bounces} time${bounces === 1 ? '' : 's'}.`);
+    if (bounces > 0 && ctx.caster.alive && ctx.rng.chance(Math.min(1, bounces / 10))) {
+      ctx.log('The ride tears its rider apart.');
+      dealDamage(
+        ctx,
+        ctx.caster,
+        dmg(rollDice(ctx, `${grazed}d3`, 'Lightning Shadow Pierce — whiplash'), 'shadow', 'physical'),
+        { canMiss: false }
+      );
     }
   },
 });
