@@ -264,6 +264,27 @@ export class ImpactFxDirector {
     this.scene.cameras.main.shake(duration, intensity);
   }
 
+  /** A decree stamped on the field: the Order word's own mark. */
+  sigil(at: Vec2, color: number, size: number): void {
+    if (this.destroyed) return;
+    const reduced = this.reducedMotion();
+    this.sheets.play('impact-star', at, { color, size, glow: true, still: reduced });
+    this.particles.burst(at, {
+      color,
+      count: 14,
+      speed: 210,
+      lifespan: 460,
+      shape: 'mote',
+      size: 12,
+      glow: true,
+      drag: 0.85,
+      stagger: 0.05,
+    });
+    this.particles.burst(at, {
+      color, count: 1, speed: 0, lifespan: 420, shape: 'ring', size: size * 0.8, glow: true,
+    });
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;

@@ -1456,6 +1456,10 @@ export class GameScene extends Phaser.Scene {
         this.pendingSounds.push('spell.summon');
         this.pendingSummonPuffs.push({ at: { ...at }, size });
       },
+      sigil: (at, color, size) => {
+        playSound('spell.cast');
+        this.impactFx?.sigil(at, color, size);
+      },
       combatFeedback: (mage, feedback) => {
         this.playFeedbackSound(feedback);
         this.queueImpact(mage, feedback);

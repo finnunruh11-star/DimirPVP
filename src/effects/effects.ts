@@ -80,6 +80,8 @@ export interface VfxSink {
   boomerang?(from: Vec2, to: Vec2, color: number, size: number, speed: number): Promise<void>;
   /** Puff smoke at one newly created minion. */
   summonPuff?(at: Vec2, size: number): void;
+  /** Stamp a decree mark at a point — the visual signature of the Order word. */
+  sigil?(at: Vec2, color: number, size: number): void;
   /** Show one outcome-aware floating combat readout over `mage`. */
   combatFeedback?(mage: Mage, feedback: CombatFeedback): void;
   /** Play a compact shatter-sheet burst at an exact impact point. */

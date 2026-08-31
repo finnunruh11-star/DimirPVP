@@ -3175,8 +3175,10 @@ registerSpell({
     'Target an ally or enemy (range 20). Enemy: disarmed for 1 turn (cannot take main actions). ' +
     'Ally: for 2 turns it deals +2 damage and gains +2 movement.',
   visual: { preset: 'beam', color: 0xf3ecd2, size: 6, speed: 1.1 },
+  manualCastVisual: true,
   cast(ctx) {
     const target = ctx.target ?? ctx.caster;
+    ctx.vfx?.sigil?.(target.pos, target.team === ctx.caster.team ? 0xf3ecd2 : 0xd8c9a0, 96);
     if (target.team !== ctx.caster.team) {
       // ENEMY: "cannot take hostile actions for 1 turn". Approximated with a
       // main-action disarm (they keep move + non-attack options); the engine
@@ -3275,8 +3277,10 @@ registerSpell({
   description:
     'For 5 turns the target is forced to repeat its actions and deals 2 less damage (range 20).',
   visual: { preset: 'beam', color: 0xc9a0ff, size: 6, speed: 1.1 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
+    ctx.vfx?.sigil?.(ctx.target.pos, 0xc9a0ff, 104);
     // "Can only attack targets you targeted last turn" is not enforceable by the
     // engine; represented as a control label plus a damage-sapping debuff.
     applyControl(ctx, ctx.target, { name: 'Ordered', mode: 'repeat', duration: 5 });
@@ -3325,6 +3329,7 @@ registerSpell({
     'For 4 rounds, whenever an enemy explicitly targets you or an ally, it first takes 1d6 corrosive damage and you heal for the damage dealt.',
   visual: { preset: 'nova', color: 0x9ad67a, size: 46, speed: 1.1 },
   cast(ctx) {
+    ctx.vfx?.sigil?.(ctx.caster.pos, 0x9ad67a, 120);
     ctx.game.addOrderDrainCurse(ctx.caster, 4);
   },
 });
@@ -3345,8 +3350,10 @@ registerSpell({
     '1d6 corrosive damage — plus another 1d6 if it dealt no damage last turn — and you heal for all of it. ' +
     'Whenever it damages one of your allies, the curse lasts 2 turns longer.',
   visual: { preset: 'beam', color: 0x9ad67a, size: 7, speed: 1.1 },
+  manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
+    ctx.vfx?.sigil?.(ctx.target.pos, 0x9ad67a, 112);
     const ownerIndex = ctx.game.mages.indexOf(ctx.caster);
     // The action-lock ("only repeat the next action, never forgotten, walking
     // legal") is labelled as a compulsion; the engine does not fully enforce the
@@ -3429,6 +3436,7 @@ registerSpell({
     if (!ctx.targetPoint) return;
     const p = ctx.targetPoint;
     slashCone(ctx, p, R(5));
+    ctx.vfx?.sigil?.(p, 0x8ad0c4, 108);
     const foes = ctx.game
       .magesInCone(ctx.caster.pos, p, R(5), 120, ctx.caster)
       .filter((m) => m.alive && m.team !== ctx.caster.team);
@@ -3464,9 +3472,11 @@ registerSpell({
     'gains a stack for failing to move toward that entity and a stack for failing to attack it. ' +
     'After the third turn it is dealt 2d3 slashing for every stack.',
   visual: { preset: 'beam', color: 0xf3d08a, size: 7, speed: 1.1 },
+  manualCastVisual: true,
   async cast(ctx) {
     if (!ctx.target) return;
     const enemy = ctx.target;
+    ctx.vfx?.sigil?.(enemy.pos, 0xf3d08a, 104);
     // Pick the "target entity" the enemy must chase and strike. Any mage is a
     // legal choice, so take a point and snap to the nearest mage to it.
     const point = ctx.requestPoint
@@ -3490,6 +3500,8 @@ registerSpell({
     }
     // Headless / no selection: default to the caster ("come at me").
     if (!entity) entity = ctx.caster;
+    // A second mark names the entity, so the pairing is readable on the field.
+    ctx.vfx?.sigil?.(entity.pos, 0xffe08a, 88);
     applyOrderJudgment(ctx, enemy, entity, { evals: 3, perStackSpec: '2d3' });
   },
 });
