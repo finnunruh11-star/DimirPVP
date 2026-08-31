@@ -2341,7 +2341,7 @@ registerSpell({
   targeting: 'self',
   dc: 15,
   description:
-    'Dash roll/3 times, starting at roll/3 range and cutting the range by a third with every dash. The chain stops once a dash would be under 2cm (critical doubles the starting range and damage). Choose each direction, then roll d6 accuracy with up to 30° error. The animated lightning trail deals 4d6 Fire whenever crossed; touching your own earlier trail stops you there and deals 4d6 Fire to you.',
+    'Dash roll/3 times, starting at roll/3 range and cutting the range by a third with every dash. The chain stops once a dash would be under 2cm (critical doubles the starting range and damage). Choose each direction, then roll d6 accuracy: 1 veers 45° left, 2 veers 22.5° left, 3-4 fly true, 5 veers 22.5° right, 6 veers 45° right. A veer scatters by a further 5° either way. The animated lightning trail deals 4d6 Fire whenever crossed; touching your own earlier trail stops you there and deals 4d6 Fire to you.',
   visual: { preset: 'nova', color: 0xff3d24, size: 80, speed: 1.5 },
   async cast(ctx) {
     const power = lightningPower(ctx);
@@ -2372,9 +2372,13 @@ registerSpell({
         // Settle the accuracy die before the body moves, or it reads as landing
         // at the same time as the damage the dash goes on to deal.
         await ctx.resolveImpacts?.();
-        const maxError = [30, 24, 18, 12, 6, 0][accuracy - 1] * (Math.PI / 180);
+        // Screen y grows downward, so a positive offset veers right of the aim.
+        const deflection = [-45, -22.5, 0, 0, 22.5, 45][accuracy - 1];
+        // Drawn on every face so the RNG sequence cannot depend on the roll.
+        const jitter = (ctx.rng.float() * 2 - 1) * 5;
+        const veer = deflection === 0 ? 0 : deflection + jitter;
         const aimedAngle = Math.atan2(chosen.y - ctx.caster.y, chosen.x - ctx.caster.x);
-        const angle = aimedAngle + (ctx.rng.float() * 2 - 1) * maxError;
+        const angle = aimedAngle + veer * (Math.PI / 180);
         const from = { ...ctx.caster.pos };
         const intended = {
           x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, from.x + Math.cos(angle) * currentDashDistance)),
