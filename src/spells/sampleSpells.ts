@@ -30,6 +30,8 @@ import {
   applyForget,
   applyInvisibility,
   applyOrderJudgment,
+  applyOrderMandate,
+  applyPacify,
   applyPierceEcho,
   applySeal,
   applyShadowTrail,
@@ -3172,29 +3174,43 @@ registerSpell({
   targeting: 'any',
   dc: 7,
   description:
-    'Target an ally or enemy (range 20). Enemy: disarmed for 1 turn (cannot take main actions). ' +
-    'Ally: for 2 turns it deals +2 damage and gains +2 movement.',
+    'Target an ally or enemy (range 20). Enemy: for 1 turn it can declare no hostile action at all — ' +
+    'attacks and any spell that reaches beyond its own side are unusable and cost nothing. ' +
+    'Ally: for 2 turns it deals +25% damage and healing, but may only touch the one entity you name.',
   visual: { preset: 'beam', color: 0xf3ecd2, size: 6, speed: 1.1 },
   manualCastVisual: true,
-  cast(ctx) {
+  async cast(ctx) {
     const target = ctx.target ?? ctx.caster;
     ctx.vfx?.sigil?.(target.pos, target.team === ctx.caster.team ? 0xf3ecd2 : 0xd8c9a0, 96);
     if (target.team !== ctx.caster.team) {
-      // ENEMY: "cannot take hostile actions for 1 turn". Approximated with a
-      // main-action disarm (they keep move + non-attack options); the engine
-      // cannot distinguish self/ally-only spells, so a full main-stun is used.
-      applyStun(ctx, target, { duration: 1, type: 'main' });
-    } else {
-      // ALLY / SELF: the true buff (+25% dmg & healing, +25% movespeed toward
-      // enemies, but locked to the caster's chosen target) is simplified to a
-      // flat empowerment; target-locking/retargeting flow is not modelled.
-      applyDebuff(ctx, target, {
-        name: 'Emboldened',
-        key: 'buff:order',
-        duration: 2,
-        mods: { damageDealt: 2, moveRange: R(2) },
-      });
+      applyPacify(ctx, target, 1);
+      return;
     }
+    // The mandate is the whole point: power for obedience. The caster names the
+    // one entity the ally may touch, which may be a foe, an ally, or itself.
+    const point = ctx.requestPoint
+      ? await ctx.requestPoint({
+          maxRange: R(99),
+          origin: ctx.caster.pos,
+          prompt: `Name the only entity ${target.name} may touch`,
+        })
+      : null;
+    let entity: Mage | null = null;
+    if (point) {
+      let best = Infinity;
+      for (const m of ctx.game.mages) {
+        if (!m.alive) continue;
+        const d = (m.pos.x - point.x) ** 2 + (m.pos.y - point.y) ** 2;
+        if (d < best) {
+          best = d;
+          entity = m;
+        }
+      }
+    }
+    // Headless or no pick: bind them to the caster — "only I matter".
+    const named = entity ?? ctx.caster;
+    ctx.vfx?.sigil?.(named.pos, 0xffe08a, 88);
+    applyOrderMandate(ctx, target, named, { duration: 2, potency: 1.25 });
   },
 });
 

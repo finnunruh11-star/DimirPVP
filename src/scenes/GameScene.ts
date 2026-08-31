@@ -7525,7 +7525,7 @@ export class GameScene extends Phaser.Scene {
       !!spell &&
       me.hasCharges(spell.words) &&
       me.hasMana(this.spellManaCost(me, spell)) &&
-      this.gs.canCastSpellNow(spell) &&
+      this.gs.canCastSpellNow(spell, me) &&
       (spell.actionType === 'main' ? me.actions.main : me.actions.bonus) > 0;
     entries.push({
       id: 'cast',
@@ -7541,7 +7541,9 @@ export class GameScene extends Phaser.Scene {
           ? 'Already cast a spell this turn.'
           : me.blocksCasting()
             ? 'Both hands full — drop an item to cast.'
-            : 'Not enough charges / mana / actions.',
+            : this.gs.isPacified(me) && spell.targeting !== 'self' && spell.targeting !== 'ally'
+              ? 'Pacified — no hostile action can be declared.'
+              : 'Not enough charges / mana / actions.',
       run: () => this.onCast(),
     });
 
@@ -7587,10 +7589,12 @@ export class GameScene extends Phaser.Scene {
       label: 'Attack',
       hotkey: 'A',
       desc: 'Strike an enemy with your equipped weapon.',
-      enabled: (atkPool > 0 || inf) && !me.hasForgotten('melee') && !outOfArrows,
+      enabled: (atkPool > 0 || inf) && !me.hasForgotten('melee') && !outOfArrows && !this.gs.isPacified(me),
       reason: me.hasForgotten('melee')
         ? 'Forgotten how to fight this turn.'
-        : outOfArrows
+        : this.gs.isPacified(me)
+          ? 'Pacified — no hostile action can be declared.'
+          : outOfArrows
           ? 'Out of arrows.'
           : bonusAtk
             ? 'Needs a bonus action.'
@@ -8305,6 +8309,13 @@ export class GameScene extends Phaser.Scene {
   private statusBlurb(s: Status): string {
     const turns = `${s.duration} turn${s.duration === 1 ? '' : 's'} left`;
     switch (s.kind) {
+      case 'pacified':
+        return `No hostile action can be declared. Attacks and spells that reach past your own side are unusable and cost nothing. (${turns})`;
+      case 'orderMandate': {
+        const named = this.gs.mages[s.targetIndex]?.name ?? 'the named entity';
+        const pct = Math.round((s.potency - 1) * 100);
+        return `+${pct}% damage and healing, but ${named} is the only thing you may touch. (${turns})`;
+      }
       case 'invisibility':
         return s.mode === 'full'
           ? `Invisible. Cannot be targeted beyond 6cm; 90% dodge within 6cm. (${turns})`

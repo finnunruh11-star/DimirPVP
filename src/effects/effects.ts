@@ -399,6 +399,8 @@ export function dealDamage(
     target.modifier('damageTaken') -
     ctx.game.swornRepetitionStacks(ctx.caster) +
     ctx.game.swornRepetitionStacks(target);
+  const mandate = ctx.game.orderMandate(ctx.caster);
+  if (mandate && amount > 0) amount = Math.round(amount * mandate.potency);
   let feedbackLabel: string | undefined;
 
   const globalHexcraftBonus = ctx.game.hexcraftDamageBonus(damage.type, damage.damageClass);
@@ -717,6 +719,9 @@ export function heal(
   pool: 'hp' | 'sanity' = 'hp'
 ): void {
   amount = Math.max(0, Math.round(amount));
+  // A mandated healer works harder, whichever pool it is mending.
+  const mandate = ctx.game.orderMandate(ctx.caster);
+  if (mandate) amount = Math.round(amount * mandate.potency);
   if (pool === 'sanity') {
     const before = target.sanity;
     target.sanity = Math.min(target.maxSanity, target.sanity + amount);
@@ -1432,6 +1437,51 @@ export function applyOrderJudgment(
     false
   );
   ctx.log(`${bearer.name} is bound to Order \u2014 engage ${entity.name} or answer for it.`);
+}
+
+/** Mono Order on an enemy: it may declare nothing hostile while this holds. */
+export function applyPacify(ctx: EffectContext, target: Mage, duration: number): void {
+  if (ctx.game.isUnreachable(target)) return;
+  if (target.isDebuffImmune()) {
+    ctx.log(`${target.name} will not be told what to do.`);
+    return;
+  }
+  const turns = afflictDuration(ctx, target, duration);
+  addOrExtendStatus(
+    target.statuses,
+    { key: 'pacified', name: 'Pacified', kind: 'pacified', duration: turns },
+    false
+  );
+  ctx.log(`${target.name} is forbidden any hostile action (${turns} cycles).`);
+}
+
+/** Mono Order on an ally: stronger in every way, but only against one entity. */
+export function applyOrderMandate(
+  ctx: EffectContext,
+  bearer: Mage,
+  entity: Mage,
+  opts: { duration: number; potency: number }
+): void {
+  const targetIndex = ctx.game.mages.indexOf(entity);
+  if (targetIndex < 0) return;
+  const turns = critScale(ctx, opts.duration);
+  addOrExtendStatus(
+    bearer.statuses,
+    {
+      key: 'orderMandate',
+      name: 'Mandate',
+      kind: 'orderMandate',
+      duration: turns,
+      targetIndex,
+      ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+      potency: opts.potency,
+    },
+    false
+  );
+  ctx.log(
+    `${bearer.name} accepts the Mandate: +${Math.round((opts.potency - 1) * 100)}% power, ` +
+    `but ${entity.name} is the only thing it may touch (${turns} cycles).`
+  );
 }
 
 /** Grant the bearer full invisibility while standing in a shadow zone. */
