@@ -84,11 +84,14 @@ export const TOP_TURN: Rect = { x: MARGIN, y: 0, w: 330, h: TOP_BAR.h };
 export const TOP_ACTIONS: Rect = { x: 358, y: 0, w: 330, h: TOP_BAR.h };
 export const TOP_RUN: Rect = { x: 700, y: 0, w: 300, h: TOP_BAR.h };
 export const TOP_TOGGLES: Rect = {
-  x: 1008,
+  x: 1004,
   y: 0,
-  w: GAME_WIDTH - MARGIN - 1008,
+  w: 226,
   h: TOP_BAR.h,
 };
+
+/** The hamburger that opens the pause menu, hard right in the top bar. */
+export const TOP_MENU: Rect = { x: 1230, y: 11, w: 34, h: 30 };
 
 // ---- Spell word slots -------------------------------------------------------
 

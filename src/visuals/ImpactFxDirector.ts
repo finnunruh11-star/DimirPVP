@@ -130,6 +130,30 @@ const DAMAGE_RECIPES: Record<DamageType, Recipe> = {
       count: 10, speed: 230, lifespan: 340, shape: 'mote', size: 12, drag: 0.8,
     },
   },
+  cold: {
+    hero: 'impact-frost',
+    heroSize: 108,
+    scatter: {
+      count: 14, speed: 240, lifespan: 520, shape: 'shard', size: 11,
+      gravityY: 320, tumble: true, drag: 0.7, stagger: 0.04,
+    },
+  },
+  water: {
+    hero: 'impact-bloom',
+    heroSize: 104,
+    scatter: {
+      count: 16, speed: 200, lifespan: 560, shape: 'mote', size: 13,
+      gravityY: 620, spread: 14, drag: 0.5, stagger: 0.04,
+    },
+  },
+  malforming: {
+    hero: 'impact-shards',
+    heroSize: 104,
+    scatter: {
+      count: 13, speed: 160, lifespan: 700, shape: 'mote', size: 16,
+      spread: 16, drag: 0.6, tumble: true, stagger: 0.06,
+    },
+  },
   cleansing: {
     hero: 'impact-frost',
     heroSize: 100,

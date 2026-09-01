@@ -11,6 +11,10 @@ export type DamageType =
   // Half of every heat hit resolves as 'light' (see Mage.resistMultiplier).
   | 'heat'
   | 'light'
+  // 'blunt' is not a separate type: crushing damage resolves as 'shatter'.
+  | 'cold'
+  | 'water'
+  | 'malforming'
   | 'typeless'
   | 'generic'
   // Reserved for restorative magic; no spell deals these yet, but creatures

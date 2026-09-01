@@ -736,12 +736,7 @@ export function heal(
     ctx.log(`${target.name} heals ${amount} health.`);
     const restored = target.hp - before;
     if (restored > 0) ctx.vfx?.combatFeedback?.(target, { kind: 'heal', amount: restored });
-    // White primary feeds on healing magic: every heal grants each WHITE-primary
-    // mage an extra color-charge (its "gain 1 whenever someone heals" identity).
     if (amount > 0) {
-      for (const m of ctx.game.mages) {
-        if (m.alive && m.profile.primary === 'white') m.gainColorCharges(1);
-      }
       ctx.game.reapOnOwnerHeal(target);
     }
   }
@@ -815,7 +810,8 @@ export function applyStun(
     movement: 'Rooted',
     full: 'Stunned',
   };
-  const duration = afflictDuration(ctx, target, opts.duration);
+  let duration = afflictDuration(ctx, target, opts.duration);
+  if (opts.type === 'movement' && target.slowStunResist) duration = Math.max(1, Math.floor(duration / 2));
   addOrExtendStatus(
     target.statuses,
     {
@@ -957,12 +953,27 @@ export function placeShadow(ctx: EffectContext, at: Vec2, ttl?: number): void {
 }
 
 /**
- * Scatter sand at `at`. Sand belongs to nobody: it is ground, and whoever
- * stands on it may draw on it.
+ * Scatter `charges` of sand at `at`. Sand belongs to nobody: it is ground, and
+ * whoever stands on it may draw on it.
  */
-export function placeSand(ctx: EffectContext, at: Vec2, ttl?: number): void {
-  ctx.game.addSand(at, ttl != null ? critScale(ctx, ttl) : undefined);
-  ctx.log(`Sand drifts across the ground.`);
+export function placeSand(ctx: EffectContext, at: Vec2, charges = 1): void {
+  ctx.game.addSand(at, charges);
+  ctx.log(`${charges} charge${charges === 1 ? '' : 's'} of sand drift across the ground.`);
+}
+
+/** How many charges of sand lie at `at`. */
+export function sandChargesAt(ctx: EffectContext, at: Vec2): number {
+  return ctx.game.sandChargesAt(at);
+}
+
+/** Consume up to `count` charges at `at`; returns how many were actually spent. */
+export function spendSand(ctx: EffectContext, at: Vec2, count: number): number {
+  return ctx.game.spendSandAt(at, count);
+}
+
+/** Shift up to `count` charges from one point to another; returns how many moved. */
+export function moveSand(ctx: EffectContext, from: Vec2, to: Vec2, count: number): number {
+  return ctx.game.moveSand(from, to, count);
 }
 
 /** Whether the caster has sand to work with, underfoot or where it is aiming. */
@@ -1171,6 +1182,7 @@ export function applyDebuff(
     key?: string;
     duration: number;
     mods: Partial<{ moveRange: number; damageDealt: number; damageTaken: number }>;
+    healMult?: number;
     extend?: boolean;
   }
 ): void {
@@ -1193,6 +1205,7 @@ export function applyDebuff(
       kind: 'debuff',
       duration,
       mods: opts.mods,
+      healMult: opts.healMult,
     },
     !!opts.extend
   );
@@ -1393,6 +1406,10 @@ export function applyControl(
   opts: { name: string; mode: ControlMode; duration: number }
 ): void {
   if (ctx.game.isUnreachable(target)) return;
+  if (target.controlImmune) {
+    ctx.log(`${target.name} cannot be controlled from outside.`);
+    return;
+  }
   if (target.isDebuffImmune()) {
     ctx.log(`${target.name} is immune to control.`);
     return;
@@ -1550,6 +1567,10 @@ export function applyShadowTrail(
  * The swap activates once the caster's turn ends and lasts `turns` turns.
  */
 export function swapMinds(ctx: EffectContext, target: Mage, turns: number): void {
+  if (target.controlImmune) {
+    ctx.log(`${target.name} cannot be controlled from outside.`);
+    return;
+  }
   ctx.game.pendingMindSwap = turns;
   ctx.log(`${ctx.caster.name} swaps control with ${target.name}.`);
 }

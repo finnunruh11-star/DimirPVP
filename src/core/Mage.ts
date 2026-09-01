@@ -335,6 +335,44 @@ export class Mage {
   deathknightAttackAttemptedThisTurn = false;
   deathknightHitThisTurn = new Set<Mage>();
   slowStunImmune = false;
+  /** Roots and slows take hold at half duration. */
+  slowStunResist = false;
+  /** Forced movement (pushes, pulls, throws) cannot shift this creature. */
+  displacementImmune = false;
+  /** Forced movement carries this creature twice as far. */
+  displacementWeak = false;
+  /** External control — compel, scramble, mind-swap — cannot take hold. */
+  controlImmune = false;
+  /** Movement range doubles while standing on sand. */
+  sandStrider = false;
+  /** Kept in sync by GameState so {@link moveRange} can see the ground. */
+  onSand = false;
+  /** Charges of sand scattered where this creature falls. */
+  sandDropOnDeath = 0;
+  /** Built out of sand, so Sand spells may target or sacrifice it. */
+  sandBorn = false;
+  /** Direction this unit last moved or struck in (radians), for facing arcs. */
+  facing = 0;
+  /** Minimum rounds between attacks (0 = may attack every turn). */
+  attackCooldownRounds = 0;
+  /** Round of this unit's last attack, for {@link attackCooldownRounds}. */
+  lastAttackRound = -99;
+  /** After this many attacks the unit must consume a charge of sand to strike again. */
+  sandUpkeepEvery = 0;
+  /** Attacks made since the last charge of sand was consumed. */
+  attacksSinceSandUpkeep = 0;
+  /** Free strike against anything entering or leaving reach inside the facing arc. */
+  opportunityStrike?: {
+    reach: number;
+    arcDegrees: number;
+    spec: string;
+    type: DamageType;
+    damageClass: DamageClass;
+  };
+  /** Index (in game.mages) of the host this unit rides; riders are AoE-only targets. */
+  attachedToIndex?: number;
+  /** Round on which this unit dissolves on its own (Sandsoldier-Cadett). */
+  unsummonOnRound?: number;
   /** Frail summoned zombie that spits corrosive blood at range. */
   acidZombieKind = false;
   /** Reaper: enables the leash / unpreventable mark / channel-clap / damage cap. */
@@ -419,6 +457,9 @@ export class Mage {
 
   /** Whether this mage has already cast a spell on its current turn. */
   hasCastThisTurn = false;
+
+  /** Set by THE ORDER IS GIVEN!!!: commanding summons costs no bonus action. */
+  freeSummonOrders = false;
 
   /**
    * The game turn-sequence number on which this mage was last struck by Twist,
@@ -663,18 +704,20 @@ export class Mage {
    * PRIMARY colour (mana never regenerates — that stays attrition):
    *   - Black:  +1, plus +1 per allied summon (scarab) lost since last turn.
    *   - Blue:   +1, plus +2 if you have not cast Wall yet this combat.
-   *   - White:  +1 (plus +1 whenever anyone heals — handled in effects.heal).
+   *   - White:  +1, plus +1 per living summon it owns (each scarab counts).
    *   - Colourless: +1.
    * Charges are a per-combat resource (reset in {@link resetCombatReactions}),
    * so this generation only ever builds within a single fight.
    */
-  regen(opts: { summonDeaths: number }): void {
+  regen(opts: { summonDeaths: number; summonsAlive: number }): void {
     let amount = 1;
     if (this.profile.primary === 'black') {
       amount = 1 + Math.max(0, opts.summonDeaths);
     } else if (this.profile.primary === 'blue') {
       const wallUncast = (this.abilityCastsUsed['ability:wall'] ?? 0) === 0;
       amount = 1 + (wallUncast ? 2 : 0);
+    } else if (this.profile.primary === 'white') {
+      amount = 1 + Math.max(0, opts.summonsAlive);
     }
     if (this.redGenerator) amount += 1;
     this.gainColorCharges(amount);
@@ -789,6 +832,7 @@ export class Mage {
         ? this.intrinsicMoveUnits * RANGE_UNIT
         : (1 + this.effectiveDex()) * RANGE_UNIT;
     let px = Math.round(base * this.equipMoveMult() * this.thunderMoveMult() * this.summonMoveMultiplier);
+    if (this.sandStrider && this.onSand) px *= 2;
     if (this.hasEdgelordLantern() && !this.edgelordLanternActive) px = Math.round(px * 0.67);
     if (this.profile.redPrimaryTier) px += RANGE_UNIT;
     if (this.hasMomentumBoots()) px += this.momentumStacks * RANGE_UNIT;
@@ -1034,6 +1078,9 @@ export class Mage {
     for (const id of this.equippedItems()) {
       const m = getItem(id).healMult;
       if (m != null) mult *= m;
+    }
+    for (const s of this.statuses) {
+      if (s.kind === 'debuff' && s.healMult != null) mult *= s.healMult;
     }
     return mult;
   }
@@ -1656,6 +1703,7 @@ export class Mage {
     this.deathknightHitThisTurn.clear();
     this.actions = { ...ACTIONS_PER_TURN };
     this.hasCastThisTurn = false;
+    this.freeSummonOrders = false;
     this.edgelordLanternJustDeactivated = false;
     // A Focus buff expires if its empowered word spell was never cast.
     this.focusNextSpell = false;

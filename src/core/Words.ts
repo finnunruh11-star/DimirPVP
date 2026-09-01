@@ -265,6 +265,19 @@ export const WORD_KIND: Record<WordId, WordKind> = {
 /** Modifier words every mage knows; they never count against the loadout limit. */
 export const MODIFIER_WORDS: WordId[] = ['subtle', 'delay', 'channel'];
 
+/**
+ * Every word the menu grid offers: the standard eight first, then the words the
+ * easter eggs used to gate. The presets still exist, but as a quick way to fill
+ * a rack rather than the only route to these words — a touch player has no
+ * keyboard to type them with.
+ */
+export const ALL_GRID_WORDS: WordId[] = [
+  ...WORD_ORDER,
+  ...(Object.keys(WORDS) as WordId[]).filter(
+    (word) => !WORD_ORDER.includes(word) && WORD_KIND[word] !== 'modifier',
+  ),
+];
+
 export function isModifierWord(word: WordId): boolean {
   return WORD_KIND[word] === 'modifier';
 }

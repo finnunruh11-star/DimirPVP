@@ -29,6 +29,7 @@ import {
 } from '../config/constants';
 import { WORDS } from './Words';
 import { splitModifiers } from './Words';
+import { makeSandCadett, makeRemnant } from './sandSummons';
 import type { WordId } from './Words';
 import type { ShadowZone } from './Shadow';
 import type { Totem } from './Totem';
@@ -221,13 +222,17 @@ export interface HazardZone {
   color: number;
 }
 
-/** A patch of loose sand. Unowned terrain: whoever stands on it may use it. */
+/**
+ * A pile of loose sand. Unowned terrain: whoever stands on it may use it.
+ * `charges` is the spendable currency Sand spells are priced in — piles do not
+ * expire, they are spent.
+ */
 export interface SandPatch {
   id: number;
   x: number;
   y: number;
   radius: number;
-  ttl: number;
+  charges: number;
 }
 
 /**
@@ -463,6 +468,17 @@ export class GameState {
   summonsOf(owner: Mage): Mage[] {
     const idx = this.mages.indexOf(owner);
     return this.mages.filter((s) => s.isSummon && s.alive && s.summonOwnerIndex === idx);
+  }
+
+  /**
+   * Whether `owner` may still give `summon` orders. The Silencing Spike never
+   * takes any, and Remnants stop listening while their raiser is below 3 mana —
+   * they stay allied, they simply cannot be driven.
+   */
+  canCommandSummon(owner: Mage, summon: Mage): boolean {
+    if (summon.summonKind === 'silencing-spike') return false;
+    if (summon.summonKind === 'remnant' && owner.mana < 3) return false;
+    return true;
   }
 
   /** Remove every Mage summon and Scarab at an explicit dismissal boundary. */
@@ -951,6 +967,7 @@ export class GameState {
   beginTurn(): void {
     const m = this.current;
     this.turnSeq += 1;
+    this.refreshSandFooting();
     // Keep latched scarabs glued to whoever they bit before anything else runs.
     this.updateAttachedScarabs();
     // A phased mage does not exist: nothing reaches it and it may only walk.
@@ -979,6 +996,7 @@ export class GameState {
     // Ground hazards and shadow-curse auras strike before the mage's own turn.
     this.applyTotemAuras(m);
     this.applyOwnedSummonAuras(m);
+    this.applySandSummonUpkeep(m);
     this.applyAuraDots(m);
     this.applyBindCurseAuras(m);
     this.applyLightAuras(m);
@@ -1919,7 +1937,6 @@ export class GameState {
         this.turnPtr = 0;
         this.round += 1;
         this.tickShadows();
-        this.tickSand();
         this.tickTotems();
         this.tickBarriers();
         this.tickGlobalEscalations();
@@ -1953,12 +1970,17 @@ export class GameState {
 
   /**
    * Regenerate a mage's mana & color-charges for its starting turn, scoring any
-   * allied summons (scarabs) lost since its previous turn for black's regen.
+   * allied summons (scarabs) lost since its previous turn for black's regen and
+   * its own living summons for white's.
    */
   private regenResources(m: Mage): void {
     const alive = this.scarabs.filter((s) => s.owner === m.team && scarabAlive(s)).length;
     const deaths = Math.max(0, (this.prevScarabAlive[m.team] ?? alive) - alive);
-    m.regen({ summonDeaths: deaths });
+    const idx = this.mages.indexOf(m);
+    const ownScarabs = this.scarabs.filter(
+      (s) => scarabAlive(s) && (s.ownerIndex != null ? s.ownerIndex === idx : s.owner === m.team)
+    ).length;
+    m.regen({ summonDeaths: deaths, summonsAlive: this.summonsOf(m).length + ownScarabs });
     this.prevScarabAlive[m.team] = alive;
   }
 
@@ -2248,35 +2270,66 @@ export class GameState {
   // ---- Sand -----------------------------------------------------------------
 
   /**
-   * Lay a patch of sand. Sand is unowned: it is terrain, not a claim, so either
-   * side can build on a patch the other one made.
+   * Lay `charges` of sand. Sand is unowned: it is terrain, not a claim, so
+   * either side can build on a pile the other one made. Drops that land on an
+   * existing pile merge into it rather than stacking a second disc.
    */
-  addSand(at: Vec2, ttl = SAND_TTL): SandPatch {
-    const patch: SandPatch = {
-      id: this.nextId++,
-      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x)),
-      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y)),
-      radius: SAND_RADIUS,
-      ttl,
-    };
+  addSand(at: Vec2, charges = 1): SandPatch {
+    const x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x));
+    const y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y));
+    const existing = this.sand.find((patch) => dist({ x, y }, { x: patch.x, y: patch.y }) <= patch.radius);
+    if (existing) {
+      existing.charges += Math.max(0, charges);
+      return existing;
+    }
+    const patch: SandPatch = { id: this.nextId++, x, y, radius: SAND_RADIUS, charges: Math.max(0, charges) };
     this.sand.push(patch);
     return patch;
+  }
+
+  /** Every pile whose disc covers `at`, richest first. */
+  private sandPilesAt(at: Vec2): SandPatch[] {
+    return this.sand
+      .filter((patch) => dist(at, { x: patch.x, y: patch.y }) <= patch.radius)
+      .sort((a, b) => b.charges - a.charges || a.id - b.id);
+  }
+
+  /** How many charges of sand are available at `at`. */
+  sandChargesAt(at: Vec2): number {
+    return this.sandPilesAt(at).reduce((sum, patch) => sum + patch.charges, 0);
+  }
+
+  /** Consume up to `count` charges at `at`; returns how many were actually spent. */
+  spendSandAt(at: Vec2, count: number): number {
+    let left = Math.max(0, count);
+    let spent = 0;
+    for (const patch of this.sandPilesAt(at)) {
+      if (left <= 0) break;
+      const take = Math.min(patch.charges, left);
+      patch.charges -= take;
+      left -= take;
+      spent += take;
+    }
+    this.sand = this.sand.filter((patch) => patch.charges > 0);
+    return spent;
+  }
+
+  /** Shift up to `count` charges from one point to another; returns how many moved. */
+  moveSand(from: Vec2, to: Vec2, count: number): number {
+    const moved = this.spendSandAt(from, count);
+    if (moved > 0) this.addSand(to, moved);
+    return moved;
   }
 
   /** True where sand lies — always true in a desert, which is the whole point. */
   isSandAt(pos: Vec2): boolean {
     if (this.desertArena) return true;
-    return this.sand.some((patch) => dist(pos, { x: patch.x, y: patch.y }) <= patch.radius);
+    return this.sandPilesAt(pos).length > 0;
   }
 
   /** Whether a caster has sand to work with, at its feet or at what it is aiming at. */
   hasSandFor(source: Mage, at?: Vec2 | null): boolean {
     return this.isSandAt(source.pos) || (!!at && this.isSandAt(at));
-  }
-
-  tickSand(): void {
-    for (const patch of this.sand) patch.ttl -= 1;
-    this.sand = this.sand.filter((patch) => patch.ttl > 0);
   }
 
   // ---- Shadows --------------------------------------------------------------
@@ -2824,8 +2877,292 @@ export class GameState {
     return true;
   }
 
+  /**
+   * Start-of-turn upkeep for the desert host: riders follow their hosts, cadetts
+   * dissolve, the blight slows what it rots and the standardbearer tends the line.
+   */
+  private applySandSummonUpkeep(owner: Mage): void {
+    const ownerIndex = this.mages.indexOf(owner);
+    for (const summon of this.summonsOf(owner)) {
+      const host = summon.attachedToIndex != null ? this.mages[summon.attachedToIndex] : null;
+      if (host && host.alive) {
+        summon.x = host.x;
+        summon.y = host.y;
+      } else if (host) {
+        summon.attachedToIndex = undefined;
+      }
+      if (summon.unsummonOnRound != null && this.round >= summon.unsummonOnRound) {
+        this.defeatMage(summon, owner, `${summon.name} crumbles back into loose sand.`);
+        continue;
+      }
+      // The blight's aura also drags at whatever it just rotted.
+      if (summon.intrinsicDamageAura && summon.summonKind === 'desertblight') {
+        for (const victim of this.mages) {
+          if (!victim.alive || victim.team === owner.team) continue;
+          if (dist(victim.pos, summon.pos) > summon.intrinsicDamageAura.radius) continue;
+          addOrExtendStatus(
+            victim.statuses,
+            {
+              key: 'debuff:desertblight-slow',
+              name: 'Blighted',
+              kind: 'debuff',
+              duration: 1,
+              mods: { moveRange: -Math.round(MOVE_RANGE * 0.5) },
+            },
+            false
+          );
+        }
+      }
+      if (summon.summonKind === 'standardbearer') this.pulseStandardbearer(owner, summon, ownerIndex);
+      if (summon.summonKind === 'orzhov-sandpriest') this.pulseOrzhovSandpriest(owner, summon);
+      if (summon.summonKind === 'silencing-spike') this.pulseSilencingSpike(owner, summon);
+      if (summon.summonKind === 'remnant' && !this.canCommandSummon(owner, summon)) {
+        this.pulseFeralRemnant(owner, summon);
+      }
+    }
+    this.pulseParasitePair(owner, ownerIndex);
+  }
+
+  /** A Remnant nobody can steer still bites: it goes for whatever is nearest. */
+  private pulseFeralRemnant(owner: Mage, remnant: Mage): void {
+    const prey = this.mages
+      .filter((m) => m.alive && m.team !== owner.team && !this.isUntargetable(m, remnant))
+      .sort((a, b) => dist(a.pos, remnant.pos) - dist(b.pos, remnant.pos))[0];
+    if (!prey || !this.canMelee(remnant, prey)) return;
+    const im = remnant.intrinsicMelee;
+    if (!im) return;
+    const ctx = this.effectContext(remnant, prey, null);
+    dealDamage(ctx, prey, dmg(this.rng.roll(im.spec).total, im.type, im.damageClass), {});
+    if (prey.alive) im.onHit?.(ctx, prey);
+    this.log(`${remnant.name} lurches at ${prey.name} unbidden.`);
+  }
+
+  /**
+   * The spike hunts alone: it picks the furthest enemy within range 15, lodges
+   * itself in them and keeps rotting them until they fall.
+   */
+  private pulseSilencingSpike(owner: Mage, spike: Mage): void {
+    const stuck = spike.attachedToIndex != null ? this.mages[spike.attachedToIndex] : null;
+    if (stuck && stuck.alive && stuck.team !== owner.team) {
+      const ctx = this.effectContext(spike, stuck, null);
+      dealDamage(ctx, stuck, dmg(this.rng.roll('1d4').total, 'corrosive', 'physical'), {
+        canMiss: false,
+        noImpactFx: true,
+      });
+      this.log(`${spike.name} grinds deeper into ${stuck.name}.`);
+      return;
+    }
+    const prey = this.mages
+      .filter(
+        (m) =>
+          m.alive &&
+          m.team !== owner.team &&
+          !this.isUntargetable(m, spike) &&
+          dist(m.pos, spike.pos) <= RANGE_UNIT * 15
+      )
+      .sort((a, b) => dist(b.pos, spike.pos) - dist(a.pos, spike.pos))[0];
+    if (!prey) {
+      spike.attachedToIndex = this.mages.indexOf(owner);
+      return;
+    }
+    const ctx = this.effectContext(spike, prey, null);
+    dealDamage(ctx, prey, dmg(this.rng.roll('1d6').total, 'pierce', 'physical'), { canMiss: false });
+    this.log(`${spike.name} hurls itself into ${prey.name}.`);
+    if (prey.alive) {
+      spike.attachedToIndex = this.mages.indexOf(prey);
+      spike.x = prey.x;
+      spike.y = prey.y;
+    }
+  }
+
+  /** The Orzhov mark: no healing reaches the branded, and the rot never stops. */
+  private pulseOrzhovSandpriest(owner: Mage, priest: Mage): void {
+    if (owner.mana < 1) return;
+    const foe = this.mages
+      .filter((m) => m.alive && m.team !== owner.team && !this.isUntargetable(m, priest))
+      .sort((a, b) => dist(a.pos, priest.pos) - dist(b.pos, priest.pos))[0];
+    if (!foe || foe.statuses.some((s) => s.key === 'debuff:orzhov-mark')) return;
+    owner.spendMana(1);
+    const ctx = this.effectContext(priest, foe, null);
+    applyDebuff(ctx, foe, {
+      name: 'Orzhov Mark',
+      key: 'debuff:orzhov-mark',
+      duration: 3,
+      mods: {},
+      healMult: 0,
+    });
+    applyDot(ctx, foe, {
+      name: 'Orzhov Mark',
+      key: 'dot:orzhov-mark',
+      duration: 3,
+      damage: dmg(1, 'corrosive', 'physical'),
+      damageSpec: '1d6',
+    });
+  }
+
+  /**
+   * While both parasites are latched the suckling drains and the spitling gives
+   * half of it back, and the drained host is left slow and unable to hide.
+   */
+  private pulseParasitePair(owner: Mage, ownerIndex: number): void {
+    const own = (kind: string): Mage | undefined =>
+      this.mages.find(
+        (m) => m.alive && m.isSummon && m.summonOwnerIndex === ownerIndex && m.summonKind === kind
+      );
+    const suckling = own('suckling');
+    const spitling = own('spitling');
+    if (!suckling || !spitling) return;
+    const drained = suckling.attachedToIndex != null ? this.mages[suckling.attachedToIndex] : null;
+    const fed = spitling.attachedToIndex != null ? this.mages[spitling.attachedToIndex] : null;
+    if (!drained?.alive || !fed?.alive || drained === owner) return;
+    const ctx = this.effectContext(suckling, drained, null);
+    const bite = dealDamage(ctx, drained, dmg(this.rng.roll('2d6').total, 'corrosive', 'physical'), {
+      canMiss: false,
+    });
+    if (bite <= 0) return;
+    heal(this.effectContext(spitling, fed, null), fed, Math.floor(bite / 2));
+    applyDebuff(ctx, drained, {
+      name: 'Sucked Dry',
+      key: 'debuff:suckling',
+      duration: 1,
+      mods: { moveRange: -Math.round(MOVE_RANGE * 0.51) },
+      healMult: 0.49,
+    });
+    this.dispelStealth(drained);
+  }
+
+  /**
+   * Walk a corpse upright for `owner`. The bite's rider lives here rather than in
+   * the spell layer so a cascading kill can raise the next Remnant on its own.
+   */
+  raiseRemnant(corpse: Mage, owner: Mage): Mage {
+    const remnant = makeRemnant({
+      ownerName: owner.name,
+      pos: corpse.pos,
+      team: owner.team,
+      corpse,
+    });
+    remnant.intrinsicMelee = {
+      ...remnant.intrinsicMelee!,
+      onHit: (hitCtx, victim) => {
+        applyDot(hitCtx, victim, {
+          key: 'dot:remnant-rot',
+          name: 'Remnant Rot',
+          duration: 2,
+          damage: dmg(1, 'corrosive', 'physical'),
+        });
+        applyDebuff(hitCtx, victim, {
+          name: 'Sundered Mending',
+          key: 'debuff:remnant-heal-cut',
+          duration: 2,
+          mods: {},
+          healMult: 0.5,
+        });
+      },
+    };
+    this.spawnSummon(remnant, owner, 'remnant');
+    return remnant;
+  }
+
+  /** Anything that dies rotting under a Remnant gets up again as one. */
+  private cascadeRemnant(fallen: Mage): void {
+    if (fallen.isSummon || fallen.summonKind === 'remnant') return;
+    if (!fallen.statuses.some((s) => s.key === 'debuff:remnant-heal-cut')) return;
+    const existing = this.mages.find(
+      (m) => m.alive && m.summonKind === 'remnant' && m.summonOwnerIndex != null
+    );
+    const owner = existing?.summonOwnerIndex != null ? this.mages[existing.summonOwnerIndex] : null;
+    if (!owner?.alive) return;
+    owner.spendMana(3);
+    const risen = this.raiseRemnant(fallen, owner);
+    this.log(`${fallen.name} rises as ${risen.name}.`);
+  }
+
+  /** Strip any concealment a unit is holding (the suckling's grip). */
+  private dispelStealth(m: Mage): void {
+    m.statuses = m.statuses.filter((s) => s.kind !== 'invisibility' && s.kind !== 'shadowVeil');
+  }
+
+  /**
+   * A standing banner buys back any sand-born unit that falls, for 3 mana — and
+   * if its owner cannot pay, the banner itself is spent instead.
+   */
+  private redeemSandborn(fallen: Mage): boolean {
+    if (!fallen.sandBorn || !fallen.isSummon || fallen.summonOwnerIndex == null) return false;
+    const owner = this.mages[fallen.summonOwnerIndex];
+    if (!owner?.alive) return false;
+    const banner = this.summonsOf(owner).find(
+      (s) => s.summonKind === 'standardbearer' && s !== fallen && s.alive
+    );
+    if (!banner) return false;
+    if (owner.mana >= 3) {
+      owner.spendMana(3);
+    } else {
+      banner.hp = 0;
+      this.log(`${banner.name} spends itself to call ${fallen.name} back.`);
+    }
+    fallen.hp = fallen.maxHp;
+    fallen.sanity = fallen.maxSanity;
+    fallen.x = banner.x + RANGE_UNIT;
+    fallen.y = banner.y;
+    this.log(`${fallen.name} reforms before the banner.`);
+    return true;
+  }
+
+  /** Anything that dies branded may rise again as a cadett. */
+  private harvestOrzhovMark(fallen: Mage): void {
+    if (!fallen.statuses.some((s) => s.key === 'debuff:orzhov-mark')) return;
+    const priest = this.mages.find(
+      (m) => m.alive && m.isSummon && m.summonKind === 'orzhov-sandpriest'
+    );
+    if (!priest || priest.summonOwnerIndex == null) return;
+    const owner = this.mages[priest.summonOwnerIndex];
+    if (!owner?.alive) return;
+    if (this.rng.roll('1d2').total !== 1) return;
+    const cadett = makeSandCadett({
+      ownerName: owner.name,
+      pos: fallen.pos,
+      team: owner.team,
+    });
+    cadett.unsummonOnRound = this.round + 6;
+    this.spawnSummon(cadett, owner, 'sand-cadett');
+    this.log(`${fallen.name} rises again as ${cadett.name}.`);
+    const mender = this.mages.find((m) => m.alive && m.team === owner.team && m.hp < m.maxHp);
+    if (mender) heal(this.effectContext(priest, mender, null), mender, this.rng.roll('1d6').total);
+  }
+
+  /** The banner's turn: heal and hasten every conjured ally standing near it. */
+  private pulseStandardbearer(owner: Mage, banner: Mage, ownerIndex: number): void {
+    for (const ally of this.mages) {
+      if (!ally.alive || ally.team !== owner.team || ally === banner) continue;
+      if (!ally.isSummon || ally.summonOwnerIndex !== ownerIndex) continue;
+      if (dist(ally.pos, banner.pos) > RANGE_UNIT * 15) continue;
+      ally.hp = Math.min(ally.maxHp, ally.hp + 5);
+      addOrExtendStatus(
+        ally.statuses,
+        {
+          key: 'buff:standardbearer-haste',
+          name: 'Bannered',
+          kind: 'debuff',
+          duration: 1,
+          mods: { moveRange: RANGE_UNIT * 5 },
+        },
+        false
+      );
+    }
+    this.log(`${banner.name} raises the banner: the host is healed and hastened.`);
+  }
+
   /** Attribute one confirmed defeat, including summon kills, before scene hooks run. */
   notifyMageDefeated(target: Mage, source: Mage): void {
+    // A banner buys the body back instead of letting it crumble, so this runs first.
+    const redeemed = this.redeemSandborn(target);
+    if (!redeemed && target.sandDropOnDeath > 0) {
+      this.addSand(target.pos, target.sandDropOnDeath);
+      this.log(`${target.name} collapses into ${target.sandDropOnDeath} charges of sand.`);
+    }
+    this.harvestOrzhovMark(target);
+    this.cascadeRemnant(target);
     const owner =
       source.isSummon && source.summonOwnerIndex != null
         ? this.mages[source.summonOwnerIndex] ?? source
@@ -2909,6 +3246,48 @@ export class GameState {
    * Notify the model after a relocation. Physical travel checks every supplied
    * path segment; teleportation checks only the destination.
    */
+  /** Refresh every unit's footing so sand-striders know when they are on sand. */
+  refreshSandFooting(): void {
+    for (const m of this.mages) m.onSand = m.sandStrider && this.isSandAt(m.pos);
+  }
+
+  /**
+   * Free strikes from spearwall units against anything that crossed the edge of
+   * their reach, in either direction, inside the half-circle they face.
+   */
+  private resolveOpportunityStrikes(mover: Mage, origin: Vec2, destination: Vec2): void {
+    if (!mover.alive || this.opportunityStriking) return;
+    this.opportunityStriking = true;
+    try {
+      for (const spear of this.mages) {
+        const watch = spear.opportunityStrike;
+        if (!watch || !spear.alive || spear.team === mover.team) continue;
+        const wasIn = dist(origin, spear.pos) <= watch.reach;
+        const isIn = dist(destination, spear.pos) <= watch.reach;
+        if (wasIn === isIn) continue;
+        // Judge the arc at whichever end of the move was inside reach.
+        const at = isIn ? destination : origin;
+        const toTarget = Math.atan2(at.y - spear.pos.y, at.x - spear.pos.x);
+        let delta = Math.abs(toTarget - spear.facing) % (Math.PI * 2);
+        if (delta > Math.PI) delta = Math.PI * 2 - delta;
+        if (delta > (watch.arcDegrees / 2) * (Math.PI / 180)) continue;
+        const amount = this.rng.roll(watch.spec).total;
+        dealDamage(
+          this.effectContext(spear, mover, null),
+          mover,
+          dmg(amount, watch.type, watch.damageClass),
+          { canMiss: false }
+        );
+        this.log(`${spear.name} strikes ${mover.name} as they cross its reach.`);
+        if (!mover.alive) return;
+      }
+    } finally {
+      this.opportunityStriking = false;
+    }
+  }
+
+  private opportunityStriking = false;
+
   notifyMageRelocation(
     mover: Mage,
     origin: Vec2,
@@ -2958,6 +3337,11 @@ export class GameState {
     }
 
     this.applyCorrosionPoolSlow(mover);
+    if (mover.sandStrider) mover.onSand = this.isSandAt(mover.pos);
+    if (physicalTravel && dist(origin, destination) > 0.5) {
+      mover.facing = Math.atan2(destination.y - origin.y, destination.x - origin.x);
+    }
+    this.resolveOpportunityStrikes(mover, origin, destination);
 
     const lightRadius = this.effectiveLightRadius(mover);
     if (!mover.alive || lightRadius <= 0) return;
@@ -4020,12 +4404,20 @@ export class GameState {
    */
   forceMove(source: Mage, target: Mage, rawDest: Vec2): boolean {
     if (!target.alive) return false;
+    if (target.displacementImmune) {
+      this.log(`${target.name} cannot be moved.`);
+      return false;
+    }
     const origin = target.pos;
+    // Easily shoved: the throw carries twice as far from where it started.
+    const wanted = target.displacementWeak
+      ? { x: origin.x + (rawDest.x - origin.x) * 2, y: origin.y + (rawDest.y - origin.y) * 2 }
+      : rawDest;
     const fieldDest = {
-      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, rawDest.x)),
-      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, rawDest.y)),
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, wanted.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, wanted.y)),
     };
-    const hitBorder = dist(fieldDest, rawDest) > 0.5;
+    const hitBorder = dist(fieldDest, wanted) > 0.5;
     const barrier = this.clampToBarriers(origin, fieldDest);
     const mut = this.clampToMutivargZones(target, origin, barrier.dest);
     const dest = this.clampToMages(target, origin, mut.dest);
@@ -4137,6 +4529,8 @@ export class GameState {
   isUntargetable(m: Mage, from?: Mage, opts: { ignoreStealth?: boolean } = {}): boolean {
     // Phased into the dark: it does not exist for anyone, friend or foe.
     if (this.isPhasedOut(m)) return true;
+    // Riding a host: only area effects can pick it out.
+    if (m.attachedToIndex != null && this.mages[m.attachedToIndex]?.alive) return true;
     // The dagger's veil is absolute — no distance rule softens it.
     if (!opts.ignoreStealth && this.hasShadowDaggerVeil(m)) return true;
     // Second Ring of Lareneg: untouchable to hostiles during turn cycles 3 & 4.
@@ -4655,6 +5049,15 @@ export class GameState {
 
   canMelee(source: Mage, target: Mage): boolean {
     if (source.cannotAttack) return false;
+    if (source.attackCooldownRounds > 0 && this.round - source.lastAttackRound < source.attackCooldownRounds)
+      return false;
+    // Out of sand to spend on the next swing.
+    if (
+      source.sandUpkeepEvery > 0 &&
+      source.attacksSinceSandUpkeep >= source.sandUpkeepEvery &&
+      this.sandChargesAt(source.pos) <= 0
+    )
+      return false;
     if (this.isPacified(source)) return false;
     if (!this.mandateAllows(source, target)) return false;
     if (source.hasForgotten('melee')) return false;
@@ -5440,6 +5843,29 @@ export class GameState {
             return;
           }
           const amount = game.rng.roll(im.spec).total;
+          source.lastAttackRound = game.round;
+          if (source.sandUpkeepEvery > 0) {
+            source.attacksSinceSandUpkeep += 1;
+            if (source.attacksSinceSandUpkeep >= source.sandUpkeepEvery) {
+              if (game.spendSandAt(source.pos, 1) > 0) {
+                source.attacksSinceSandUpkeep = 0;
+                game.log(`${source.name} drinks a charge of sand.`);
+              }
+            }
+          }
+          // A mending strike restores rather than wounds, and clears one affliction.
+          if (im.type === 'healing') {
+            heal(ictx, target, amount);
+            const shed = target.statuses.findIndex(
+              (s) => s.kind === 'dot' || s.kind === 'debuff' || s.kind === 'stun'
+            );
+            if (shed >= 0) {
+              game.log(`${source.name} cleanses ${target.statuses[shed].name} from ${target.name}.`);
+              target.statuses.splice(shed, 1);
+            }
+            im.onHit?.(ictx, target);
+            return;
+          }
           let dealt = 0;
           if (amount > 0) {
             dealt = dealDamage(ictx, target, dmg(amount, im.type, im.damageClass), {});

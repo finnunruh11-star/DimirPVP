@@ -242,6 +242,8 @@ export interface DebuffStatus extends BaseStatus {
     damageDealt: number;
     damageTaken: number;
   }>;
+  /** Multiplier on HP healing the bearer receives (0 = healing cannot reach them). */
+  healMult?: number;
 }
 
 /** A consumable counter (e.g. "Mind Dodge") that negates the next matching hit. */

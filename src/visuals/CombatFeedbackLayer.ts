@@ -3,6 +3,7 @@ import type { DamageType } from '../core/Damage';
 import type { Mage } from '../core/Mage';
 import type { CombatFeedback } from '../effects/effects';
 import { MENU_COLOR, MENU_FONT, MENU_HEX } from '../ui/cabinet/theme';
+import { px } from '../ui/cabinet/textScale';
 
 export const DAMAGE_COLORS: Record<DamageType, number> = {
   pierce: 0xd9d5c7,
@@ -12,6 +13,9 @@ export const DAMAGE_COLORS: Record<DamageType, number> = {
   slashing: 0xd98472,
   heat: 0xf27a4f,
   light: 0xf0dc84,
+  cold: 0x8fc4e8,
+  water: 0x6fa8d4,
+  malforming: 0xb489c9,
   typeless: 0xe7e6df,
   generic: MENU_COLOR.bone,
   cleansing: 0x8fc8bb,
@@ -58,7 +62,7 @@ export class CombatFeedbackLayer {
     const ticks = this.scene.add.graphics();
     const mainText = this.scene.add.text(0, 0, main, {
       fontFamily: MENU_FONT.display,
-      fontSize: feedback.kind === 'damage' || feedback.kind === 'sanityDamage' ? '23px' : '18px',
+      fontSize: feedback.kind === 'damage' || feedback.kind === 'sanityDamage' ? px(23) : px(18),
       fontStyle: 'bold',
       color: Phaser.Display.Color.IntegerToColor(color).rgba,
       stroke: '#080907',
@@ -67,7 +71,7 @@ export class CombatFeedbackLayer {
     }).setOrigin(0.5);
     const detailText = this.scene.add.text(0, 20, detail, {
       fontFamily: MENU_FONT.control,
-      fontSize: '9px',
+      fontSize: px(9),
       fontStyle: 'bold',
       color: feedback.critical ? '#17130f' : MENU_HEX.bone,
       backgroundColor: feedback.critical ? '#d2bd7f' : '#17110ded',

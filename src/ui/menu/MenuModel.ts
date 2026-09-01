@@ -5,6 +5,7 @@ import {
 } from '../../core/Classes';
 import type { Scenario } from '../../core/Scenario';
 import {
+  ALL_GRID_WORDS,
   MODIFIER_WORDS,
   WORDS,
   WORD_ORDER,
@@ -217,10 +218,7 @@ export class MenuModel {
   }
 
   visibleWords(): WordId[] {
-    return [
-      ...WORD_ORDER,
-      ...[...this.unlockedWords].filter((word) => !WORD_ORDER.includes(word)),
-    ];
+    return ALL_GRID_WORDS;
   }
 
   loadoutLimit(): number {

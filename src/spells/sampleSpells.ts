@@ -18,7 +18,7 @@
 
 import { dmg } from '../core/Damage';
 import { addOrExtendStatus } from '../core/Status';
-import { CONE_DEGREES, FIELD, MOVE_RANGE, RANGE_UNIT, SHADOW_RADIUS } from '../config/constants';
+import { CONE_DEGREES, FIELD, MELEE_RANGE, MOVE_RANGE, RANGE_UNIT, SHADOW_RADIUS } from '../config/constants';
 import {
   applyAuraDot,
   applyAnchorSpike,
@@ -29,9 +29,6 @@ import {
   applyFireStacks,
   applyForget,
   applyInvisibility,
-  applyOrderJudgment,
-  applyOrderMandate,
-  applyPacify,
   applyPierceEcho,
   applySeal,
   applyShadowTrail,
@@ -64,9 +61,20 @@ import {
 } from '../effects/effects';
 import { registerSpell } from './registry';
 import type { Mage } from '../core/Mage';
+import {
+  makeDesertblight,
+  makeOrzhovSandpriest,
+  makeSandPriest,
+  makeSandSpear,
+  makeSilencingSpike,
+  makeSpectralBallista,
+  makeSpitling,
+  makeStandardbearer,
+  makeSuckling,
+} from '../core/sandSummons';
 import type { EffectContext } from '../effects/effects';
 import type { DotStatus } from '../core/Status';
-import type { Vec2 } from '../core/utils';
+import { dist, type Vec2 } from '../core/utils';
 
 /** Convert an abstract range number (5 / 10 / 15) to pixels. */
 const R = (units: number): number => units * RANGE_UNIT;
@@ -3148,10 +3156,10 @@ registerSpell({
   name: 'Heal',
   words: ['heal'],
   actionType: 'main',
-  range: R(15),
+  range: MELEE_RANGE,
   targeting: 'any',
   dc: 6,
-  description: 'Restore 1d4 health to one target (range 15).',
+  description: 'Touch one creature and restore 1d4 health. It does not have to be willing.',
   visual: { preset: 'heal', color: 0x8fe6b4, size: 40, speed: 1.2 },
   cast(ctx) {
     const target = ctx.target ?? ctx.caster;
@@ -3163,20 +3171,340 @@ registerSpell({
   name: 'Sand',
   words: ['sand'],
   actionType: 'main',
-  range: R(30),
-  targeting: 'enemy',
+  range: R(5),
+  targeting: 'point',
   dc: 7,
   description:
-    'Scour one enemy for 3d3 corrosive damage (range 30) and leave a patch of sand under it. '
-    + 'The only Sand spell that needs no sand to cast.',
+    'Aim at bare ground within range 5 to lay 3 charges of sand, or at a creature for 1d3 corrosive and 2 charges. '
+    + 'Aim at existing sand to pick a second spot and sweep up to 3 charges there — a creature caught by the drift '
+    + 'takes 1d3 corrosive per charge. The only Sand spell that needs no sand to cast.',
   visual: { preset: 'burst', color: 0xe8c98a, size: 52, speed: 1.4 },
-  cast(ctx) {
-    if (!ctx.target) return;
-    const target = ctx.target;
-    dealDamage(ctx, target, dmg(rollDice(ctx, '3d3', 'Sand', target), 'corrosive', 'physical'));
-    placeSand(ctx, target.pos);
+  async cast(ctx) {
+    const at = ctx.targetPoint ?? ctx.target?.pos ?? ctx.caster.pos;
+    const bodyAt = (p: Vec2): Mage | undefined =>
+      ctx.game.mages.find((m) => m.alive && m !== ctx.caster && dist(m.pos, p) <= m.bodyRadius());
+
+    // Case three: aimed at sand, so this is a sweep rather than a conjuring.
+    if (ctx.game.sandChargesAt(at) > 0) {
+      const to = await ctx.requestPoint?.({
+        maxRange: R(15),
+        origin: at,
+        prompt: 'Sand — pick where the drift should land.',
+      });
+      if (!to) return;
+      const moved = ctx.game.moveSand(at, to, 3);
+      if (moved <= 0) return;
+      ctx.log(`${moved} charge${moved === 1 ? '' : 's'} of sand sweep across the ground.`);
+      const caught = bodyAt(to);
+      if (caught) {
+        dealDamage(
+          ctx,
+          caught,
+          dmg(rollDice(ctx, `${moved}d3`, 'Sand drift', caught), 'corrosive', 'physical')
+        );
+      }
+      return;
+    }
+
+    const victim = bodyAt(at);
+    if (!victim) {
+      placeSand(ctx, at, 3);
+      return;
+    }
+    dealDamage(ctx, victim, dmg(rollDice(ctx, '1d3', 'Sand', victim), 'corrosive', 'physical'));
+    placeSand(ctx, victim.pos, 2);
   },
 });
+
+// ---------------------------------------------------------------------------
+//  The conjured desert host. Every one of these is a stat block in
+//  core/sandSummons.ts; the spell layer only pays the sand and places the unit.
+// ---------------------------------------------------------------------------
+
+/** Spend `cost` charges at `at`, or log why the conjuring failed. */
+function paySand(ctx: EffectContext, at: Vec2, cost: number): boolean {
+  if (ctx.game.spendSandAt(at, cost) < cost) {
+    ctx.log(`Not enough sand there — ${cost} charges are needed.`);
+    return false;
+  }
+  return true;
+}
+
+/** Place a finished summon and announce it. */
+function raise(ctx: EffectContext, unit: Mage, kind: string): Mage {
+  ctx.game.spawnSummon(unit, ctx.caster, kind);
+  ctx.log(`${ctx.caster.name} raises ${unit.name}.`);
+  return unit;
+}
+
+registerSpell({
+  name: 'Sand Heal',
+  words: ['sand', 'heal'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'point',
+  dc: 10,
+  description:
+    'Aim at sand within range 15 and spend 1 charge to raise a Sandsoldier-Priest: '
+    + 'a floating medic whose strike heals 1d3 and cleanses, and which must eat a charge of sand every second strike.',
+  visual: { preset: 'conjure', color: 0xe8c98a, size: 30, speed: 1 },
+  cast(ctx) {
+    const at = ctx.targetPoint;
+    if (!at || !paySand(ctx, at, 1)) return;
+    raise(ctx, makeSandPriest({ ownerName: ctx.caster.name, pos: at, team: ctx.caster.team }), 'sand-priest');
+  },
+});
+
+registerSpell({
+  name: 'Sand Pierce',
+  words: ['sand', 'pierce'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'point',
+  dc: 10,
+  description:
+    'Aim at sand within range 15. Spend 4 charges for two Sandsoldier-Spears, or 2 for one. '
+    + 'A Spear strikes for free at anything crossing its range 6 reach in the half-circle it faces.',
+  visual: { preset: 'conjure', color: 0xd8b877, size: 32, speed: 1 },
+  cast(ctx) {
+    const at = ctx.targetPoint;
+    if (!at) return;
+    const count = ctx.game.sandChargesAt(at) >= 4 ? 2 : 1;
+    if (!paySand(ctx, at, count * 2)) return;
+    for (let i = 0; i < count; i++) {
+      const pos = { x: at.x + (i === 0 ? 0 : RANGE_UNIT), y: at.y };
+      raise(ctx, makeSandSpear({ ownerName: ctx.caster.name, pos, team: ctx.caster.team }), 'sand-spear');
+    }
+  },
+});
+
+registerSpell({
+  name: 'Sand Corrode',
+  words: ['sand', 'corrode'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'point',
+  dc: 10,
+  description:
+    'Aim at sand (1 charge) or at one of your own sand-born summons within range 15 to raise a Desertblight. '
+    + 'It rides its host untargetably and rots every enemy within range 5 for 2d3, slowing them by 50%.',
+  visual: { preset: 'conjure', color: 0xa8c07a, size: 26, speed: 1 },
+  cast(ctx) {
+    const at = ctx.targetPoint;
+    if (!at) return;
+    const host = ctx.game
+      .summonsOf(ctx.caster)
+      .find((s) => s.sandBorn && dist(s.pos, at) <= s.bodyRadius() + RANGE_UNIT);
+    if (!host && !paySand(ctx, at, 1)) return;
+    const blight = makeDesertblight({
+      ownerName: ctx.caster.name,
+      pos: host ? host.pos : at,
+      team: ctx.caster.team,
+    });
+    raise(ctx, blight, 'desertblight');
+    if (host) blight.attachedToIndex = ctx.game.mages.indexOf(host);
+  },
+});
+
+registerSpell({
+  name: 'Heal Pierce',
+  words: ['heal', 'pierce'],
+  actionType: 'main',
+  range: R(3),
+  targeting: 'point',
+  dc: 10,
+  description:
+    'Raise a spectral ballista within range 3. It fires 1d6 piercing between range 15 and 25, '
+    + 'only every second round, and heals every ally within range 2 of the impact for 2.',
+  visual: { preset: 'conjure', color: 0xbfe3ff, size: 30, speed: 1 },
+  cast(ctx) {
+    const at = ctx.targetPoint ?? ctx.caster.pos;
+    const ballista = makeSpectralBallista({ ownerName: ctx.caster.name, pos: at, team: ctx.caster.team });
+    const casterTeam = ctx.caster.team;
+    ballista.intrinsicMelee = {
+      ...ballista.intrinsicMelee!,
+      onHit: (hitCtx: EffectContext, victim: Mage) => {
+        for (const ally of hitCtx.game.mages) {
+          if (!ally.alive || ally.team !== casterTeam) continue;
+          if (dist(ally.pos, victim.pos) > R(2)) continue;
+          heal(hitCtx, ally, 2);
+        }
+      },
+    };
+    raise(ctx, ballista, 'ballista');
+  },
+});
+
+registerSpell({
+  name: 'Heal Corrode',
+  words: ['heal', 'corrode'],
+  actionType: 'main',
+  range: R(10),
+  targeting: 'point',
+  dc: 11,
+  description:
+    'Aim at a corpse within range 10 and walk it upright as a Remnant. It inherits half the body\u2019s health, '
+    + 'its speed and a share of its strength. Its bite halves healing and rots for 1 over 2 turns, and anything '
+    + 'that dies rotting rises as another Remnant for 3 mana.',
+  visual: { preset: 'conjure', color: 0x9fb87a, size: 28, speed: 1 },
+  cast(ctx) {
+    const at = ctx.targetPoint;
+    if (!at) return;
+    const corpse = ctx.game.mages.find(
+      (m) => !m.alive && !m.isSummon && dist(m.pos, at) <= m.bodyRadius() + RANGE_UNIT
+    );
+    if (!corpse) {
+      ctx.log('There is no body there to raise.');
+      return;
+    }
+    const remnant = ctx.game.raiseRemnant(corpse, ctx.caster);
+    ctx.log(`${ctx.caster.name} raises ${remnant.name}.`);
+  },
+});
+
+registerSpell({
+  name: 'Pierce Corrode',
+  words: ['pierce', 'corrode'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 11,
+  description:
+    'Bind a floating Silencing Spike to yourself. On your turn it hurls itself at the furthest enemy within '
+    + 'range 15 for 1d6 piercing, then lodges there rotting them for 1d4 a turn until they fall. It takes no orders.',
+  visual: { preset: 'conjure', color: 0xc0b0d8, size: 26, speed: 1 },
+  cast(ctx) {
+    const spike = makeSilencingSpike({
+      ownerName: ctx.caster.name,
+      pos: ctx.caster.pos,
+      team: ctx.caster.team,
+    });
+    raise(ctx, spike, 'silencing-spike');
+    spike.attachedToIndex = ctx.game.mages.indexOf(ctx.caster);
+  },
+});
+
+registerSpell({
+  name: 'Sand Heal Pierce',
+  words: ['sand', 'heal', 'pierce'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'point',
+  dc: 12,
+  description:
+    'Aim at sand within range 15. Spend 6 charges for a Sandsoldier-Standardbearer and a Spear, or 4 for the banner alone. '
+    + 'Each turn the banner heals every conjured ally within range 15 for 5 and grants them range 5 of extra movement.',
+  visual: { preset: 'conjure', color: 0xf0d79a, size: 36, speed: 1 },
+  cast(ctx) {
+    const at = ctx.targetPoint;
+    if (!at) return;
+    const grand = ctx.game.sandChargesAt(at) >= 6;
+    if (!paySand(ctx, at, grand ? 6 : 4)) return;
+    raise(ctx, makeStandardbearer({ ownerName: ctx.caster.name, pos: at, team: ctx.caster.team }), 'standardbearer');
+    if (grand) {
+      raise(
+        ctx,
+        makeSandSpear({ ownerName: ctx.caster.name, pos: { x: at.x + RANGE_UNIT, y: at.y }, team: ctx.caster.team }),
+        'sand-spear'
+      );
+    }
+  },
+});
+
+registerSpell({
+  name: 'Sand Heal Corrode',
+  words: ['sand', 'heal', 'corrode'],
+  actionType: 'main',
+  range: R(20),
+  targeting: 'point',
+  dc: 12,
+  description:
+    'Aim at one of your sand-born summons within range 20 and unmake it to raise an Orzhov-Sandpriest. '
+    + 'Instead of striking it marks an enemy for 3 turns: no healing reaches them and 1d6 corrosion eats at them each turn.',
+  visual: { preset: 'conjure', color: 0xe6d7b0, size: 34, speed: 1 },
+  cast(ctx) {
+    const at = ctx.targetPoint;
+    if (!at) return;
+    const offering = ctx.game
+      .summonsOf(ctx.caster)
+      .find((s) => s.sandBorn && dist(s.pos, at) <= s.bodyRadius() + RANGE_UNIT);
+    if (!offering) {
+      ctx.log('That needs one of your own sand-born summons.');
+      return;
+    }
+    const pos = offering.pos;
+    // Sacrificed, not killed: it leaves no sand behind.
+    offering.sandDropOnDeath = 0;
+    ctx.game.defeatMage(offering, ctx.caster, `${offering.name} is unmade for the rite.`);
+    raise(ctx, makeOrzhovSandpriest({ ownerName: ctx.caster.name, pos, team: ctx.caster.team }), 'orzhov-sandpriest');
+  },
+});
+
+registerSpell({
+  name: 'Sand Pierce Corrode',
+  words: ['sand', 'pierce', 'corrode'],
+  actionType: 'main',
+  range: R(15),
+  targeting: 'point',
+  dc: 12,
+  description:
+    'Aim at sand within range 15. Spend 9 charges for two Sandsoldier-Spears, or 3 for one, '
+    + 'each carrying a Desertblight on its back.',
+  visual: { preset: 'conjure', color: 0xc6c07a, size: 34, speed: 1 },
+  cast(ctx) {
+    const at = ctx.targetPoint;
+    if (!at) return;
+    const pairs = ctx.game.sandChargesAt(at) >= 9 ? 2 : 1;
+    if (!paySand(ctx, at, pairs === 2 ? 9 : 3)) return;
+    for (let i = 0; i < pairs; i++) {
+      const pos = { x: at.x + i * RANGE_UNIT, y: at.y };
+      const spear = raise(
+        ctx,
+        makeSandSpear({ ownerName: ctx.caster.name, pos, team: ctx.caster.team }),
+        'sand-spear'
+      );
+      const blight = raise(
+        ctx,
+        makeDesertblight({ ownerName: ctx.caster.name, pos, team: ctx.caster.team }),
+        'desertblight'
+      );
+      blight.attachedToIndex = ctx.game.mages.indexOf(spear);
+    }
+  },
+});
+
+registerSpell({
+  name: 'Heal Pierce Corrode',
+  words: ['heal', 'pierce', 'corrode'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 12,
+  description:
+    'Bind a Suckling and a Spitling to yourself. Each rides the first thing it bites. '
+    + 'While both are latched the Suckling drains 2d6 corrosion a turn and the Spitling gives back half of it.',
+  visual: { preset: 'conjure', color: 0xb98bff, size: 30, speed: 1 },
+  cast(ctx) {
+    const casterIndex = ctx.game.mages.indexOf(ctx.caster);
+    const latch = (unit: Mage): void => {
+      unit.intrinsicMelee = {
+        ...unit.intrinsicMelee!,
+        onHit: (hitCtx: EffectContext, victim: Mage) => {
+          unit.attachedToIndex = hitCtx.game.mages.indexOf(victim);
+        },
+      };
+    };
+    const suckling = makeSuckling({ ownerName: ctx.caster.name, pos: ctx.caster.pos, team: ctx.caster.team });
+    const spitling = makeSpitling({ ownerName: ctx.caster.name, pos: ctx.caster.pos, team: ctx.caster.team });
+    latch(suckling);
+    latch(spitling);
+    raise(ctx, suckling, 'suckling');
+    raise(ctx, spitling, 'spitling');
+    suckling.attachedToIndex = casterIndex;
+    spitling.attachedToIndex = casterIndex;
+  },
+});
+
 // ===========================================================================
 //  FINN'S ADDITIONS — 3-WORD SPELLS   (set: 'finns')
 //  Only available when Finn's Additions is enabled on the start screen.

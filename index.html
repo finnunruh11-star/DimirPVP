@@ -43,10 +43,70 @@
         outline: 2px solid #d2bd7f;
         outline-offset: 4px;
       }
+      #rotate {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 18px;
+        padding: 32px;
+        text-align: center;
+        background-color: #080907;
+        color: #e8e2d2;
+      }
+      #rotate[data-show='1'] {
+        display: flex;
+      }
+      #rotate svg {
+        width: 84px;
+        height: 84px;
+        stroke: #d2bd7f;
+        fill: none;
+        stroke-width: 6;
+        animation: rotate-hint 2.4s ease-in-out infinite;
+      }
+      @keyframes rotate-hint {
+        0%,
+        40% {
+          transform: rotate(0deg);
+        }
+        60%,
+        100% {
+          transform: rotate(-90deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #rotate svg {
+          animation: none;
+          transform: rotate(-90deg);
+        }
+      }
+      #rotate p {
+        margin: 0;
+        font-size: 19px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      #rotate small {
+        color: #8c8471;
+        font-size: 13px;
+        letter-spacing: 0.04em;
+      }
     </style>
   </head>
   <body>
     <div id="game"></div>
+    <div id="rotate" role="alertdialog" aria-live="polite">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <rect x="30" y="10" width="40" height="80" rx="6" />
+        <line x1="42" y1="80" x2="58" y2="80" />
+      </svg>
+      <p>Rotate your device</p>
+      <small>Dimir is played in landscape</small>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

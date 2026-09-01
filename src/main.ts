@@ -4,6 +4,7 @@ import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config/constants';
 import { MenuScene } from './scenes/MenuScene';
 import { GameScene } from './scenes/GameScene';
 import { GalleryScene } from './scenes/GalleryScene';
+import { installMobileShell } from './ui/mobileShell';
 
 // Registering the sample spells (side-effect import). Add your own spell files
 // the same way, or import them here.
@@ -11,6 +12,8 @@ import './spells/sampleSpells';
 import './spells/classSpells';
 
 const galleryMode = new URLSearchParams(window.location.search).get('ui') === 'gallery';
+
+installMobileShell();
 
 const gameConfig: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
