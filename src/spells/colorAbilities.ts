@@ -26,6 +26,8 @@ export interface ColorAbility extends Spell {
   chargeCost: number;
   /** Mana spent to cast. */
   manaCost: number;
+  /** Costs no bonus action, so it can be cast alongside a normal bonus action. */
+  freeAction?: boolean;
 }
 
 /** "marked" never expires — a huge duration that outlasts any duel. */
@@ -157,7 +159,7 @@ const wall: ColorAbility = {
 };
 
 // ---------------------------------------------------------------------------
-//  WHITE COLOR ABILITIES  (unlocked by a white primary — e.g. Order + none-words)
+//  WHITE COLOR ABILITIES  (unlocked by a white primary)
 // ---------------------------------------------------------------------------
 
 const whiteBane: ColorAbility = {
@@ -190,10 +192,33 @@ const whiteBane: ColorAbility = {
   },
 };
 
+const theOrderIsGiven: ColorAbility = {
+  id: 'ability:the-order-is-given',
+  name: 'THE ORDER IS GIVEN!!!',
+  color: 'white',
+  words: [],
+  actionType: 'bonus',
+  freeAction: true,
+  range: 0,
+  targeting: 'none',
+  chargeCost: 8,
+  manaCost: 0,
+  description: 'Costs no bonus action. Commanding your summons is free for the rest of this turn.',
+  visual: { preset: 'nova', color: 0xf3ecd2, size: 40 },
+  cast(ctx) {
+    ctx.caster.freeSummonOrders = true;
+    ctx.log(`${ctx.caster.name} gives the order — their summons obey freely this turn.`);
+  },
+};
+
+// ---------------------------------------------------------------------------
+//  Retagged black; no colour/class slot currently grants it.
+// ---------------------------------------------------------------------------
+
 const deathRealm: ColorAbility = {
   id: 'ability:death-realm',
   name: 'Death Realm',
-  color: 'white',
+  color: 'black',
   words: [],
   actionType: 'bonus',
   range: 0,
@@ -314,6 +339,7 @@ export const COLOR_ABILITIES: ColorAbility[] = [
   rejuvenate,
   wall,
   whiteBane,
+  theOrderIsGiven,
   deathRealm,
   lightningBolt,
   redOrb,
@@ -347,7 +373,7 @@ const ABILITIES_BY_COLOR: Record<ColorName, ColorAbilitySet> = {
   },
   white: {
     first: whiteBane,
-    second: { objects: deathRealm, life: deathRealm, hexcraft: deathRealm },
+    second: { objects: theOrderIsGiven, life: theOrderIsGiven, hexcraft: theOrderIsGiven },
   },
   red: {
     first: lightningBolt,

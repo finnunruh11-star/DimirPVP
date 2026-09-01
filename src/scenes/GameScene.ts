@@ -5616,7 +5616,8 @@ export class GameScene extends Phaser.Scene {
         const owner = me;
         const summon = this.mageBySeat(cmd.summon);
         if (!summon.isSummon || !summon.alive || summon.summonOwnerIndex !== this.seatOf(owner)) break;
-        spend('bonus');
+        if (!this.gs.canCommandSummon(owner, summon)) break;
+        if (!owner.freeSummonOrders) spend('bonus');
         summon.actions = { move: 1, main: 1, bonus: 1 };
         summon.hasCastThisTurn = false;
         this.puppet = { summon, owner, savedIndex: this.gs.currentIndex };
@@ -7306,9 +7307,9 @@ export class GameScene extends Phaser.Scene {
     if (this.puppet) return;
     if (this.online && !this.isLocalTurn()) return;
     const me = this.gs.current;
-    const summons = this.gs.summonsOf(me);
+    const summons = this.gs.summonsOf(me).filter((s) => this.gs.canCommandSummon(me, s));
     if (summons.length === 0) return this.flashHint('You have no summons to command.');
-    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions && !me.freeSummonOrders)
       return this.flashHint('Command needs a bonus action.');
     const summon = this.pickCommandSummon(summons);
     this.submitTurn({ t: 'command', summon: this.seatOf(summon) });
@@ -7568,7 +7569,7 @@ export class GameScene extends Phaser.Scene {
         desc: `Colour ability · ${this.abilityChargeCost(me, ab)}c / ${this.abilityManaCost(me, ab)}m · ${left} left this combat`,
         enabled:
           this.canAffordAbility(me, ab) &&
-          (me.actions.bonus > 0 || inf) &&
+          (me.actions.bonus > 0 || inf || !!ab.freeAction) &&
           !me.isAbilityBanned(ab.id) &&
           left > 0,
         reason: me.isAbilityBanned(ab.id)
@@ -7877,14 +7878,14 @@ export class GameScene extends Phaser.Scene {
 
     // Command a summon (bonus action).
     if (!this.puppet) {
-      const summons = this.gs.summonsOf(me);
+      const summons = this.gs.summonsOf(me).filter((s) => this.gs.canCommandSummon(me, s));
       if (summons.length > 0) {
         entries.push({
           id: 'command',
           label: summons.length === 1 ? `Command ${summons[0].name}` : 'Command summon',
           hotkey: 'U',
           desc: 'Take one action as one of your summons (bonus action).',
-          enabled: me.actions.bonus > 0 || inf,
+          enabled: me.actions.bonus > 0 || inf || me.freeSummonOrders,
           reason: 'Needs a bonus action.',
           run: () => this.beginCommand(),
         });
@@ -8927,7 +8928,7 @@ export class GameScene extends Phaser.Scene {
     const manaCost = baseManaCost + (free && me.swamprunCurse === 'feeding' ? 1 : 0);
     me.spendMana(manaCost);
     me.lastAbilityManaPaid = this.abilityManaCost(me, ability);
-    if (!free) me.spend('bonus');
+    if (!free && !ability.freeAction) me.spend('bonus');
     // Count the cast toward this ability's per-combat cap (both proactive casts
     // and reactions share the same budget). Runs on both peers in lockstep.
     me.abilityCastsUsed[ability.id] = (me.abilityCastsUsed[ability.id] ?? 0) + 1;
@@ -8954,7 +8955,7 @@ export class GameScene extends Phaser.Scene {
       this.flashHint(`${ability.name} is spent for this combat.`);
       return;
     }
-    if (me.actions.bonus <= 0 && !Dev.infiniteActions) {
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions && !ability.freeAction) {
       this.flashHint('Color abilities need a bonus action.');
       return;
     }
@@ -12213,6 +12214,9 @@ export class GameScene extends Phaser.Scene {
     // The dark light sits below shadows so it protects rather than obscures them.
     this.drawEdgelordDarkLights(g);
 
+    // Loose sand (terrain, so it goes under every owned zone).
+    this.drawSand(g);
+
     // Shadow pools (under everything else on the field).
     this.drawShadows(g);
 
@@ -12303,6 +12307,13 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private drawSand(g: Phaser.GameObjects.Graphics): void {
+    for (const patch of this.gs.sand) {
+      g.fillStyle(0xe8c98a, 0.14).fillCircle(patch.x, patch.y, patch.radius);
+      g.lineStyle(2, 0xc9a86a, 0.5).strokeCircle(patch.x, patch.y, patch.radius);
+    }
+  }
+
   private drawShadows(g: Phaser.GameObjects.Graphics): void {
     for (const s of this.gs.shadows) {
       const tint = s.owner === 1 ? COLORS.team1 : COLORS.team2;
@@ -12359,7 +12370,7 @@ export class GameScene extends Phaser.Scene {
    */
   private drawZoneDurations(): void {
     const live = new Set<string>();
-    const show = (key: string, x: number, y: number, turns: number, owner: number): void => {
+    const show = (key: string, x: number, y: number, turns: number, owner: number, unit = 'TURN'): void => {
       if (turns <= 0) return;
       live.add(key);
       let t = this.zoneLabels.get(key);
@@ -12377,7 +12388,7 @@ export class GameScene extends Phaser.Scene {
         this.zoneLabels.set(key, t);
       }
       const hex = owner === 1 ? MENU_HEX.verdigris : '#d99286';
-      t.setText(`${turns} TURN${turns === 1 ? '' : 'S'}`).setColor(hex).setPosition(x, y).setVisible(true);
+      t.setText(`${turns} ${unit}${turns === 1 ? '' : 'S'}`).setColor(hex).setPosition(x, y).setVisible(true);
     };
     for (const s of this.gs.shadows) show(`sh${s.id}`, s.x, s.y - s.radius - 10, s.ttl, s.owner);
     for (const t of this.gs.totems) show(`to${t.id}`, t.x, t.y - t.radius - 10, t.ttl, t.owner);
@@ -12394,6 +12405,9 @@ export class GameScene extends Phaser.Scene {
         zone.ownerTeam
       );
     for (const b of this.gs.barriers) show(`ba${b.id}`, b.x, b.y, b.ttl, b.owner);
+    // Sand is unowned, so its count is neutral rather than team-tinted.
+    for (const patch of this.gs.sand)
+      show(`sa${patch.id}`, patch.x, patch.y - patch.radius - 10, patch.charges, 0, 'SAND');
     for (const zone of this.gs.veilBindZones) {
       show(`vb${zone.id}`, zone.x, zone.y - zone.radius - 10, zone.roundsLeft, zone.owner);
     }
