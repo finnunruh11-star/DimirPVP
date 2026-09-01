@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings or they fail with "bad interpreter" on Unix.
+*.sh text eol=lf
+# Batch files need CRLF to be safe on older Windows shells.
+*.bat text eol=crlf
