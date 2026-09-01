@@ -70,6 +70,7 @@ const NUMBER_FLAGS = [
   'drainLinkTurns',
   'beastDemonBlood',
   'lastAbilityManaPaid',
+  'sandPocketKg',
 ] as const satisfies readonly (keyof Mage)[];
 
 /** Per-combat boolean fields copied verbatim. Every entry must be a `boolean`. */
@@ -176,8 +177,9 @@ export interface ScenarioEntity {
   summon?: {
     kind?: string;
     ownerIndex?: number;
+    attachedToIndex?: number;
     moveUnits?: number;
-    order?: { kind: 'move' | 'attack' | 'follow'; x?: number; y?: number; targetIndex?: number };
+    order?: { kind: 'move' | 'attack' | 'follow' | 'sentinel' | 'flee'; x?: number; y?: number; targetIndex?: number; persistent?: boolean };
   };
   /** Index-based links to other entities in this same scenario. */
   links: {
@@ -335,6 +337,7 @@ function captureEntity(m: Mage, index: Map<Mage, number>): ScenarioEntity {
       ? {
         kind: m.summonKind,
         ownerIndex: m.summonOwnerIndex,
+        attachedToIndex: m.attachedToIndex,
         moveUnits: m.summonMoveUnits,
         order: m.summonOrder
           ? {
@@ -342,6 +345,7 @@ function captureEntity(m: Mage, index: Map<Mage, number>): ScenarioEntity {
             x: m.summonOrder.point?.x,
             y: m.summonOrder.point?.y,
             targetIndex: m.summonOrder.targetIndex,
+            persistent: m.summonOrder.persistent,
           }
           : undefined,
       }
@@ -439,13 +443,14 @@ function entityIndex(value: unknown, count: number): number | undefined {
 }
 
 function parseSummonOrder(raw: Record<string, unknown>): NonNullable<NonNullable<ScenarioEntity['summon']>['order']> {
-  const kind = raw.kind === 'attack' || raw.kind === 'follow' ? raw.kind : 'move';
+  const kind = raw.kind === 'attack' || raw.kind === 'follow' || raw.kind === 'sentinel' || raw.kind === 'flee' ? raw.kind : 'move';
   const hasPoint = typeof raw.x === 'number' && typeof raw.y === 'number';
   return {
     kind,
     x: hasPoint ? num(raw.x, 0, FIELD.x, FIELD.x + FIELD.w) : undefined,
     y: hasPoint ? num(raw.y, 0, FIELD.y, FIELD.y + FIELD.h) : undefined,
     targetIndex: entityIndex(raw.targetIndex, MAX_ENTITIES),
+    persistent: raw.persistent === true,
   };
 }
 
@@ -778,6 +783,7 @@ function buildMage(e: ScenarioEntity, rng: Dice): Mage {
     m.isSummon = true;
     m.summonKind = e.summon.kind;
     m.summonOwnerIndex = e.summon.ownerIndex;
+    m.attachedToIndex = e.summon.attachedToIndex;
     m.summonMoveUnits = e.summon.moveUnits;
     m.summonOrder = e.summon.order
       ? {

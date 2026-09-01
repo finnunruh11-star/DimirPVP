@@ -544,6 +544,9 @@ type InputMode =
   | 'aiming-cleave'
   | 'aiming-edgelord-throw'
   | 'aiming-shadow-dagger'
+  | 'aiming-summon-lock'
+  | 'aiming-sand-pour'
+  | 'aiming-sand-pickup'
   | 'aiming-wall'
   | 'subtarget-point'
   | 'subtarget-enemy'
@@ -627,7 +630,7 @@ function dodgeTierLabel(t: DodgeTier): string {
 
 /** A top-level turn action chosen by the active player. */
 type TurnCommand =
-  | { t: 'move'; x: number; y: number }
+  | { t: 'move'; x: number; y: number; carrier?: number }
   | { t: 'melee'; target: number }
   | { t: 'spell'; spellId: string; ability: boolean; target: number | null; x?: number; y?: number; x2?: number; y2?: number; angle?: number; mods?: WordId[] }
   | { t: 'item-drop'; itemId: string }
@@ -636,6 +639,8 @@ type TurnCommand =
   | { t: 'item-equip'; itemId: string }
   | { t: 'item-unequip'; itemId: string }
   | { t: 'item-throw'; itemId: string; target: number }
+  | { t: 'sand-pour'; x: number; y: number; start: boolean }
+  | { t: 'sand-pickup'; x: number; y: number; start: boolean }
   | { t: 'edgelord-shake' }
   | { t: 'edgelord-throw'; x: number; y: number }
   | { t: 'deaths-angel-wings' }
@@ -805,6 +810,7 @@ export class GameScene extends Phaser.Scene {
 
   private mode: InputMode = 'idle';
   private busy = false;
+  private sandActionStarted = false;
   /** Set once the result banner is up, so repeated isOver checks are ignored. */
   private gameEnded = false;
   /** Set while handing control back to the menu, so it can only happen once. */
@@ -2551,6 +2557,10 @@ export class GameScene extends Phaser.Scene {
     this.gs.mages = party;
     for (const [summon, owner] of summonOwners) {
       if (party.includes(summon)) summon.summonOwnerIndex = party.indexOf(owner);
+      if (party.includes(summon) && summon.attachedToIndex != null) {
+        const carrier = oldRoster[summon.attachedToIndex];
+        summon.attachedToIndex = carrier && party.includes(carrier) ? party.indexOf(carrier) : undefined;
+      }
     }
     this.resetPartyPositions(party);
     this.gs.scarabs = scarabOwners.map(({ scarab, owner }) => {
@@ -3813,6 +3823,8 @@ export class GameScene extends Phaser.Scene {
     mage.utility = [];
     mage.arrows = 0;
     for (const id of result.items) this.gs.grantItem(mage, id);
+    mage.syncSandPocket();
+    this.gs.dropOverweightItems(mage);
     mage.hp = mage.maxHp;
     mage.sanity = mage.maxSanity;
   }
@@ -4510,6 +4522,8 @@ export class GameScene extends Phaser.Scene {
           break;
       }
     }
+    mage.syncSandPocket();
+    this.gs.dropOverweightItems(mage);
     mage.silver = 0;
     // The AI does not manage its bag, so it auto-equips its first hand items.
     if (mage.isAI) {
@@ -5191,10 +5205,13 @@ export class GameScene extends Phaser.Scene {
     const runAction = opts.queueOnly
       ? (item: StackItem): Promise<void> => this.stageStackItem(item)
       : (item: StackItem): Promise<void> => this.runStack(item);
-    this.resetSelection();
+    if (cmd.t !== 'sand-pour' && cmd.t !== 'sand-pickup') this.resetSelection();
     switch (cmd.t) {
       case 'move':
         spend('move');
+        if (cmd.carrier != null && me.isSummon) {
+          this.gs.setSummonCarrier(me, this.mageBySeat(cmd.carrier));
+        }
         await runAction(this.gs.makeMoveItem(me, { x: cmd.x, y: cmd.y }));
         break;
       case 'melee': {
@@ -5394,6 +5411,16 @@ export class GameScene extends Phaser.Scene {
             },
           })
         );
+        break;
+      }
+      case 'sand-pour': {
+        if (cmd.start) spend('bonus');
+        this.gs.pourSand(me, { x: cmd.x, y: cmd.y });
+        break;
+      }
+      case 'sand-pickup': {
+        if (cmd.start) spend('bonus');
+        this.gs.pickUpSand(me, { x: cmd.x, y: cmd.y });
         break;
       }
       case 'edgelord-shake': {
@@ -6697,14 +6724,20 @@ export class GameScene extends Phaser.Scene {
     controls.bindKeys(
       keys.map((key, index) => ({
         key,
-        run: actionHotkey('', () => {
+        run: (event) => {
+          if (event.shiftKey && this.puppet) {
+            this.setSummonPreset(index, true);
+            return;
+          }
+          actionHotkey('', () => {
           if (this.mode === 'assign') {
             const build = STAT_BUILD_IDS[index];
             if (build) this.applyStatBuild(build);
             return;
           }
           this.onWordKey(index);
-        }),
+          })();
+        },
       }))
     );
     controls.bindKeys([
@@ -7330,6 +7363,22 @@ export class GameScene extends Phaser.Scene {
     this.redraw();
   }
 
+  private setSummonPreset(index: number, persistent: boolean): void {
+    const summon = this.puppet?.summon;
+    if (!summon) return;
+    const kind = index === 0 ? 'attack' : index === 1 ? 'sentinel' : index === 2 ? 'flee' : null;
+    if (!kind) return this.flashHint('That command preset is unavailable.');
+    summon.summonOrder = { kind, persistent };
+    this.flashHint(`${summon.name}: ${kind.toUpperCase()}${persistent ? ' (persistent)' : ''}.`, true);
+  }
+
+  private beginSummonTargetLock(): void {
+    if (!this.puppet) return;
+    this.mode = 'aiming-summon-lock';
+    this.flashHint('Click an enemy to lock this summon onto it. Esc cancels.', true);
+    this.redraw();
+  }
+
   /** Choose which summon to command: the one nearest the cursor. */
   private pickCommandSummon(summons: Mage[]): Mage {
     if (summons.length === 1) return summons[0];
@@ -7539,6 +7588,15 @@ export class GameScene extends Phaser.Scene {
     const inf = Dev.infiniteActions;
     const entries: ActionEntry[] = [];
 
+    if (this.puppet && me.isSummon) {
+      entries.push(
+        { id: 'summon-attack', label: 'Command preset: Attack / Act', hotkey: '1', desc: 'Attack the nearest enemy at the summon\'s preferred range.', enabled: true, run: () => this.setSummonPreset(0, false) },
+        { id: 'summon-sentinel', label: 'Command preset: Sentinel', hotkey: '2', desc: 'Stay near the owner and attack enemies that enter range.', enabled: true, run: () => this.setSummonPreset(1, false) },
+        { id: 'summon-flee', label: 'Command preset: Flee', hotkey: '3', desc: 'Move away from enemies while helping allies where possible.', enabled: true, run: () => this.setSummonPreset(2, false) },
+        { id: 'summon-target-lock', label: 'Target lock', hotkey: '4', desc: 'Select one enemy for this summon to pursue.', enabled: true, run: () => this.beginSummonTargetLock() },
+      );
+    }
+
     // Cast the currently-composed word spell.
     const spell = this.currentComboSpell();
     const affordSpell =
@@ -7727,6 +7785,27 @@ export class GameScene extends Phaser.Scene {
             ? 'Needs a living captive.'
             : 'Needs an untouched turn, except after deactivating.',
         run: () => this.beginEdgelordThrow(),
+      });
+    }
+
+    if (me.hasSandPocket()) {
+      entries.push({
+        id: 'sand-pour',
+        label: `Pour Sand (${me.sandPocketKg}kg)`,
+        hotkey: 'Menu',
+        desc: 'Click repeatedly to pour 1kg of sand until the pocket is empty.',
+        enabled: (me.actions.bonus > 0 || inf) && me.sandPocketKg > 0,
+        reason: me.sandPocketKg > 0 ? 'Needs a bonus action.' : 'The pocket is empty.',
+        run: () => this.beginSandAction('pour'),
+      });
+      entries.push({
+        id: 'sand-pickup',
+        label: `Pick Up Sand (${me.sandPocketCapacity() - me.sandPocketKg}kg free)`,
+        hotkey: 'Menu',
+        desc: 'Click sand repeatedly to pick up 1kg stacks.',
+        enabled: (me.actions.bonus > 0 || inf) && me.sandPocketKg < me.sandPocketCapacity(),
+        reason: me.sandPocketKg < me.sandPocketCapacity() ? 'Needs a bonus action.' : 'The pocket is full.',
+        run: () => this.beginSandAction('pickup'),
       });
     }
 
@@ -8180,6 +8259,13 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (!this.mode.startsWith('aiming')) return;
+    if (this.mode === 'aiming-sand-pour' || this.mode === 'aiming-sand-pickup') {
+      this.sandActionStarted = false;
+      this.mode = 'idle';
+      this.flashHint('Sand action aborted.');
+      this.redraw();
+      return;
+    }
     // Cancelling a reaction's target selection returns to the reaction menu.
     if (this.reactionAiming) {
       this.reactionAiming = false;
@@ -8251,6 +8337,20 @@ export class GameScene extends Phaser.Scene {
       return this.flashHint('Too heavy to carry that as well.');
     this.resetSelection();
     this.submitTurn({ t: 'item-pickup', dropId: drop.id });
+  }
+
+  private beginSandAction(kind: 'pour' | 'pickup'): void {
+    if (!this.humanActive || this.busy) return;
+    const me = this.gs.current;
+    if (!me.hasSandPocket()) return this.flashHint('You do not have a Sand Pocket.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('A Sand Pocket action needs a bonus action.');
+    if (kind === 'pour' && me.sandPocketKg <= 0) return this.flashHint('The Sand Pocket is empty.');
+    if (kind === 'pickup' && me.sandPocketKg >= me.sandPocketCapacity()) return this.flashHint('The Sand Pocket is full.');
+    this.sandActionStarted = false;
+    this.mode = kind === 'pour' ? 'aiming-sand-pour' : 'aiming-sand-pickup';
+    this.flashHint(kind === 'pour' ? 'Click to pour 1kg of sand. Esc aborts.' : 'Click sand to pick up 1kg. Esc aborts.', true);
+    this.redraw();
   }
 
   /** Consume a specific utility item (bonus action), chosen from the inventory. */
@@ -8601,6 +8701,35 @@ export class GameScene extends Phaser.Scene {
     // Scenario Lab tools own the click while a brush / move target is armed.
     if (this.onScenarioFieldClick(pt)) return;
 
+    if (this.mode === 'aiming-sand-pour' || this.mode === 'aiming-sand-pickup') {
+      const pouring = this.mode === 'aiming-sand-pour';
+      const start = !this.sandActionStarted;
+      this.sandActionStarted = true;
+      this.submitTurn({
+        t: pouring ? 'sand-pour' : 'sand-pickup',
+        x: pt.x,
+        y: pt.y,
+        start,
+      });
+      if (pouring ? me.sandPocketKg <= 0 : me.sandPocketKg >= me.sandPocketCapacity()) {
+        this.sandActionStarted = false;
+        this.mode = 'idle';
+      }
+      return;
+    }
+    if (this.mode === 'aiming-summon-lock') {
+      const target = this.clickedMage(pt, me);
+      if (!target || target.team === me.team || !target.alive) {
+        this.flashHint('Choose a living enemy.', true);
+        return;
+      }
+      if (this.puppet) this.puppet.summon.summonOrder = { kind: 'attack', targetIndex: this.seatOf(target), persistent: true };
+      this.mode = 'busy';
+      this.flashHint(`${me.name} is target-locked onto ${target.name}.`, true);
+      this.redraw();
+      return;
+    }
+
     if (this.mode === 'subtarget-point') {
       const origin = this.subtargetOrigin ?? me.pos;
       const capped = stepTowards(origin, pt, this.subtargetRange);
@@ -8622,6 +8751,14 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (this.mode === 'aiming-move') {
+      if (me.isSummon && this.gs.canRideSummon(me)) {
+        const carrier = this.clickedMage(pt, me)?.team === me.team ? this.clickedMage(pt, me) : null;
+        if (carrier && carrier !== me) {
+          this.mode = 'busy';
+          this.submitTurn({ t: 'move', x: carrier.x, y: carrier.y, carrier: this.seatOf(carrier) });
+          return;
+        }
+      }
       const dest = stepTowards(me.pos, pt, me.moveRange());
       this.mode = 'busy';
       this.submitTurn({ t: 'move', x: dest.x, y: dest.y });

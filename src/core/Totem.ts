@@ -13,6 +13,8 @@ export interface Totem {
   owner: number;
   /** Index (in game.mages) of the mage that placed it — lifesteal heals THEM. */
   ownerIndex?: number;
+  /** Index of an allied carrier while this aura rides a target. */
+  attachedToIndex?: number;
   ttl: number;
   /** Dice spec rolled for each victim each turn (e.g. "1d3"). */
   damageSpec: string;

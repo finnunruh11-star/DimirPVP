@@ -225,6 +225,8 @@ export class Mage {
   unkillable = false;
   /** Training sandbox: this mage never takes a turn action and declines reactions. */
   trainingPassive = false;
+  /** Sand stored in the Sand Pocket, measured in 1kg charges. */
+  sandPocketKg = 4;
 
   // ---- Swamprun (PvE) intrinsic creature traits -----------------------------
   // These live on the mage itself (not on gear), so spawned monsters can carry
@@ -308,7 +310,7 @@ export class Mage {
   /** Which kind of summon this is (e.g. 'ghost', 'archer', 'binder'). */
   summonKind?: string;
   /** Summon's standing order, set by Command; drives its autonomous behaviour. */
-  summonOrder?: { kind: 'move' | 'attack' | 'follow'; point?: Vec2; targetIndex?: number };
+  summonOrder?: { kind: 'move' | 'attack' | 'follow' | 'sentinel' | 'flee'; point?: Vec2; targetIndex?: number; persistent?: boolean };
   /** A summon's own move budget (range-units per command step). */
   summonMoveUnits?: number;
   /** Lich: a one-time revive at 50% max HP is still available. */
@@ -503,6 +505,7 @@ export class Mage {
     this.mana = START_MANA;
     this.maxColorCharges = COLOR_CHARGE_CAP;
     this.colorCharges = START_COLOR_CHARGES;
+    this.syncSandPocket();
   }
 
   get pos(): Vec2 {
@@ -534,6 +537,14 @@ export class Mage {
     for (const word of this.loadout) {
       this.charges[word] = this.maxWordCharges(word);
     }
+    this.syncSandPocket();
+  }
+
+  syncSandPocket(): void {
+    const hasSand = this.loadout.includes('sand');
+    const pocketIndex = this.utility.indexOf('sandPocket');
+    if (hasSand && pocketIndex < 0) this.utility.push('sandPocket');
+    if (!hasSand && pocketIndex >= 0) this.utility.splice(pocketIndex, 1);
   }
 
   /** True if this mage's loadout grants a reaction at all. */
@@ -608,6 +619,7 @@ export class Mage {
       ? this.statuses.filter((status) => status.kind === 'soulRend')
       : [];
     this.actions = { ...ACTIONS_PER_TURN };
+    if (this.hasSandPocket()) this.sandPocketKg = this.sandPocketCapacity();
 
     this.reactionUsedRecently = false;
     this.lastAbilityManaPaid = 0;
@@ -841,7 +853,8 @@ export class Mage {
     // (roots / movement-stuns bypass this entirely — they aren't slows).
     const cap = this.slowCap();
     const floor = cap < 1 ? Math.round(px * (1 - cap)) : 0;
-    return Math.max(floor, Math.max(0, slowed));
+    const encumbrance = this.carryEncumbranceMultiplier();
+    return Math.round(Math.max(floor, Math.max(0, slowed)) * encumbrance);
   }
 
   // ---- Character stats ------------------------------------------------------
@@ -1162,6 +1175,14 @@ export class Mage {
     return this.hasItemWhere((d) => !!d.bagOfHolding);
   }
 
+  hasSandPocket(): boolean {
+    return this.utility.includes('sandPocket') || this.bag.includes('sandPocket');
+  }
+
+  sandPocketCapacity(): number {
+    return 4;
+  }
+
   /** Does this mage wear the Mantle of Eldritch Truth (grants the Eldritch action)? */
   hasEldritchMantle(): boolean {
     return this.hasItemWhere((d) => !!d.eldritchMantle);
@@ -1332,7 +1353,18 @@ export class Mage {
   /** Total weight (kg) currently carried (gear + stowed bag + arrow ammo). */
   carriedWeight(): number {
     const bagWeight = this.bag.reduce((acc, id) => acc + getItem(id).weight, 0);
-    return this.itemSum((d) => d.weight) + bagWeight + this.arrows * getItem('arrow').weight;
+    const sandWeight = this.hasSandPocket() ? this.sandPocketKg : 0;
+    return this.itemSum((d) => d.weight) + bagWeight + this.arrows * getItem('arrow').weight + sandWeight;
+  }
+
+  /** Movement penalty for carrying within 1kg of, or at/over, capacity. */
+  carryEncumbranceMultiplier(): number {
+    const capacity = this.carryCap();
+    if (!Number.isFinite(capacity)) return 1;
+    const weight = this.carriedWeight();
+    if (weight >= capacity) return 0;
+    if (weight >= capacity - 1) return 0.5;
+    return 1;
   }
 
   /** Carry capacity (kg), scaling with Strength. Bag of Holding lifts the cap. */
@@ -1396,6 +1428,7 @@ export class Mage {
       this.hands.some((held) => !!getItem(held).twoHanded) ||
       (!!getItem(id).twoHanded && this.hands.length > 0)
     ) return false;
+    if (this.carriedWeight() > this.carryCap() && !getItem(id).bagOfHolding) return false;
     this.bag.splice(i, 1);
     this.hands.push(id);
     // Lighting a torch starts its burn timer (measured in combats).
@@ -1410,6 +1443,7 @@ export class Mage {
     if (def.slot === 'hand') return this.equipHand(id);
     const i = this.bag.indexOf(id);
     if (i < 0) return false;
+    if (this.carriedWeight() > this.carryCap() && !def.bagOfHolding) return false;
     if (def.slot === 'accessory') {
       if (this.accessories.length >= SLOT_CAPS.accessory) return false;
       this.bag.splice(i, 1);
@@ -1432,6 +1466,7 @@ export class Mage {
   canEquipFromBag(id: ItemId): boolean {
     const def = getItem(id);
     if (!this.bag.includes(id)) return false;
+    if (this.carriedWeight() > this.carryCap() && !def.bagOfHolding) return false;
     if (def.slot === 'hand') return this.hasFreeHand() && !(def.twoHanded && this.hands.length > 0);
     if (def.slot === 'accessory') return this.accessories.length < SLOT_CAPS.accessory;
     if (def.slot === 'utility') return false;
@@ -1448,6 +1483,8 @@ export class Mage {
     if (i < 0) return false;
     // Cursed or sabotaged items are bound in place and cannot be removed.
     if (this.sabotagedItems.has(id) || getItem(id).permanentlyBinding) return false;
+    if (this.carriedWeight() > this.carryCap()) return false;
+    if (getItem(id).bagOfHolding && this.carriedWeight() > carryCapacity(this.statStrength)) return false;
     this.hands.splice(i, 1);
     // A conjured bow (Veil Corrode Pierce, Objects) dissipates when unequipped.
     if (getItem(id).conjuredVeilBow) {

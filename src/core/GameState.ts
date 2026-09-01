@@ -378,7 +378,7 @@ export class GameState {
    */
   private rollInitiative(): void {
     const scored = this.mages.flatMap((m, i) => {
-      if (m.isSummon) return [];
+      if (m.isSummon) return []; // Skip summons
       const roll = this.rng.roll('1d20').total;
       const total = roll + m.effectiveDex();
       const priority = Math.max(m.profile.redPrimaryTier ? 1 : 0, m.intrinsicInitiativePriority);
@@ -430,6 +430,7 @@ export class GameState {
   /** Reset turn/field state and roll initiative for a newly assembled combat roster. */
   startNewCombat(options: { preserveScarabs?: boolean } = {}): void {
     const scarabs = options.preserveScarabs ? this.scarabs.filter(scarabAlive) : [];
+    this.collectSandAtCombatEnd();
     this.clearFieldObjects();
     this.scarabs = scarabs;
     this.round = 1;
@@ -443,7 +444,75 @@ export class GameState {
     this.oniTurnEndPending = undefined;
     this.oniForcedTurnEndFor = undefined;
     this.rollInitiative();
+    this.placeSummonsAroundOwners();
+    this.updateCarriedSummons();
+    for (const scarab of this.scarabs) {
+      const owner = scarab.ownerIndex == null ? undefined : this.mages[scarab.ownerIndex];
+      if (owner?.alive) {
+        scarab.x = owner.x;
+        scarab.y = owner.y;
+        scarab.state = 'resting';
+        scarab.target = null;
+      }
+    }
     this.startRound();
+  }
+
+  /** Place active mage summons near their owner without overlapping bodies. */
+  private placeSummonsAroundOwners(): void {
+    const occupied = this.mages.filter((m) => !m.isSummon && m.alive).map((m) => m.pos);
+    for (const owner of this.mages.filter((m) => !m.isSummon && m.alive)) {
+      const summons = this.summonsOf(owner);
+      summons.forEach((summon, index) => {
+        const carrier = summon.attachedToIndex == null ? undefined : this.mages[summon.attachedToIndex];
+        if (carrier?.alive) {
+          summon.x = carrier.x;
+          summon.y = carrier.y;
+          return;
+        }
+        for (let radius = 2 * MAGE_BODY_RADIUS; radius <= 8 * MAGE_BODY_RADIUS; radius += MAGE_BODY_RADIUS) {
+          const angle = (index * Math.PI * 2) / Math.max(1, summons.length);
+          const candidate = { x: owner.x + Math.cos(angle) * radius, y: owner.y + Math.sin(angle) * radius };
+          if (occupied.every((point) => dist(point, candidate) > 2 * MAGE_BODY_RADIUS)) {
+            summon.x = candidate.x;
+            summon.y = candidate.y;
+            occupied.push(candidate);
+            break;
+          }
+        }
+      });
+    }
+  }
+
+  /** Keep attached summons exactly on their carrier. */
+  updateCarriedSummons(): void {
+    for (const summon of this.mages.filter((m) => m.isSummon && m.attachedToIndex != null)) {
+      const carrier = this.mages[summon.attachedToIndex!];
+      if (carrier?.alive) {
+        summon.x = carrier.x;
+        summon.y = carrier.y;
+      } else {
+        summon.attachedToIndex = undefined;
+      }
+    }
+  }
+
+  canRideSummon(summon: Mage): boolean {
+    return summon.isSummon && (summon.summonKind === 'sentry' || summon.summonKind === 'desertblight');
+  }
+
+  setSummonCarrier(summon: Mage, carrier: Mage | null): boolean {
+    if (!this.canRideSummon(summon)) return false;
+    if (!carrier) {
+      summon.attachedToIndex = undefined;
+      return true;
+    }
+    if (!carrier.alive || carrier.team !== summon.team) return false;
+    summon.attachedToIndex = this.mages.indexOf(carrier);
+    summon.name = `${carrier.name} + ${summon.name.replace(/^.* \+ /, '')}`;
+    this.updateCarriedSummons();
+    this.log(`${carrier.name} carries ${summon.name}.`);
+    return true;
   }
 
   /**
@@ -2269,6 +2338,41 @@ export class GameState {
 
   // ---- Sand -----------------------------------------------------------------
 
+  /** Pour one kilogram of sand from a Sand Pocket onto the clicked location. */
+  pourSand(source: Mage, at: Vec2): boolean {
+    if (!source.hasSandPocket() || source.sandPocketKg <= 0) return false;
+    source.sandPocketKg -= 1;
+    this.addSand(at, 1);
+    this.log(`${source.name} pours 1kg of sand.`);
+    return true;
+  }
+
+  /** Pick up one kilogram from the Sand Patch under the clicked location. */
+  pickUpSand(source: Mage, at: Vec2): boolean {
+    if (!source.hasSandPocket() || source.sandPocketKg >= source.sandPocketCapacity()) return false;
+    const patch = this.sandPilesAt(at)[0];
+    if (!patch || patch.charges <= 0) return false;
+    patch.charges -= 1;
+    source.sandPocketKg += 1;
+    this.sand = this.sand.filter((candidate) => candidate.charges > 0);
+    this.log(`${source.name} picks up 1kg of sand.`);
+    return true;
+  }
+
+  /** Recover loose sand into each eligible pocket before the field is cleared. */
+  collectSandAtCombatEnd(): void {
+    for (const mage of this.mages) {
+      if (!mage.hasSandPocket()) continue;
+      for (const patch of this.sand) {
+        const amount = Math.min(patch.charges, mage.sandPocketCapacity() - mage.sandPocketKg);
+        mage.sandPocketKg += amount;
+        patch.charges -= amount;
+        if (mage.sandPocketKg >= mage.sandPocketCapacity()) break;
+      }
+      this.sand = this.sand.filter((patch) => patch.charges > 0);
+    }
+  }
+
   /**
    * Lay `charges` of sand. Sand is unowned: it is terrain, not a claim, so
    * either side can build on a pile the other one made. Drops that land on an
@@ -2473,6 +2577,14 @@ export class GameState {
     return totem;
   }
 
+  attachTotem(totem: Totem, carrier: Mage | null): boolean {
+    if (!carrier || !carrier.alive || carrier.team !== totem.owner) return false;
+    totem.attachedToIndex = this.mages.indexOf(carrier);
+    totem.x = carrier.x;
+    totem.y = carrier.y;
+    return true;
+  }
+
   /** Age every totem by one round, removing any that have crumbled. */
   tickTotems(): void {
     for (const t of this.totems) t.ttl -= 1;
@@ -2485,6 +2597,11 @@ export class GameState {
   private applyTotemAuras(m: Mage): void {
     if (!m.alive) return;
     for (const t of this.totems) {
+      const carrier = t.attachedToIndex == null ? undefined : this.mages[t.attachedToIndex];
+      if (carrier?.alive) {
+        t.x = carrier.x;
+        t.y = carrier.y;
+      }
       if (t.owner === m.team) continue;
       if (dist(m.pos, { x: t.x, y: t.y }) > t.radius) continue;
       // Heal the actual caster (ownerIndex) for lifesteal; fall back to any
@@ -3295,6 +3412,7 @@ export class GameState {
     physicalTravel: boolean,
     path?: readonly Vec2[]
   ): void {
+    if (!mover.isSummon) this.updateCarriedSummons();
     const points: Vec2[] = physicalTravel
       ? [origin, ...(path?.length ? path : [destination])]
       : [destination];
@@ -5532,7 +5650,46 @@ export class GameState {
         break;
     }
     this.applyGrantedVitals(mage, def);
+    this.dropOverweightItems(mage, id);
     this.notifyLightActivation(mage);
+  }
+
+  /** During item phases, discard newly granted gear until the mage is legal. */
+  dropOverweightItems(mage: Mage, preferredId?: ItemId): void {
+    while (mage.carriedWeight() > mage.carryCap()) {
+      const id = this.removeWeightItem(mage, preferredId) ?? this.removeWeightItem(mage);
+      if (!id) break;
+      this.droppedItems.push({
+        id: this.nextId++,
+        itemId: id,
+        x: mage.pos.x,
+        y: mage.pos.y,
+        owner: mage.team,
+      });
+      this.reverseGrantedVitals(mage, getItem(id));
+      this.log(`${mage.name} cannot carry ${getItem(id).name}; it is dropped.`);
+      preferredId = undefined;
+    }
+  }
+
+  private removeWeightItem(mage: Mage, preferredId?: ItemId): ItemId | null {
+    const remove = (items: ItemId[], id?: ItemId): ItemId | null => {
+      const index = id ? items.lastIndexOf(id) : items.length - 1;
+      if (index < 0) return null;
+      const [removed] = items.splice(index, 1);
+      return removed ?? null;
+    };
+    const preferred = preferredId ? [preferredId] : [];
+    for (const id of preferred) {
+      if (mage.bag.includes(id)) return remove(mage.bag, id);
+      if (mage.utility.includes(id)) return remove(mage.utility, id);
+      if (mage.accessories.includes(id)) return remove(mage.accessories, id);
+      if (mage.hands.includes(id)) return remove(mage.hands, id);
+      if (mage.head === id) { mage.head = null; return id; }
+      if (mage.torso === id) { mage.torso = null; return id; }
+      if (mage.boots === id) { mage.boots = null; return id; }
+    }
+    return remove(mage.bag) ?? remove(mage.utility) ?? remove(mage.accessories) ?? remove(mage.hands);
   }
 
   /** Apply a single freshly-granted item's one-time HP / sanity changes. */

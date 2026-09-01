@@ -3102,7 +3102,12 @@ registerSpell({
   visual: { preset: 'burst', color: 0x57d6a0, size: 50, speed: 1 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
-    placeTotem(ctx, ctx.targetPoint, { radius: R(3), damageSpec: '1d3', slow: 0, lifesteal: true });
+    const totem = placeTotem(ctx, ctx.targetPoint, { radius: R(3), damageSpec: '1d3', slow: 0, lifesteal: true });
+    const carrier = ctx.game.mages.find(
+      (mage) => mage !== ctx.caster && mage.alive && mage.team === ctx.caster.team &&
+        dist(mage.pos, ctx.targetPoint!) <= mage.bodyRadius() + RANGE_UNIT,
+    );
+    if (carrier) ctx.game.attachTotem(totem, carrier);
   },
 });
 

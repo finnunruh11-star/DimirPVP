@@ -1297,7 +1297,7 @@ export function placeTotem(
   ctx: EffectContext,
   at: Vec2,
   opts: { radius: number; damageSpec: string; slow: number; ttl?: number; lifesteal?: boolean }
-): void {
+): ReturnType<EffectContext['game']['addTotem']> {
   // A critical cast widens the totem and (if it expires) makes it linger twice
   // as long.
   const scaled = {
@@ -1305,12 +1305,13 @@ export function placeTotem(
     radius: critScale(ctx, opts.radius),
     ttl: opts.ttl != null ? critScale(ctx, opts.ttl) : opts.ttl,
   };
-  ctx.game.addTotem(at, ctx.caster.team, { ...scaled, ownerIndex: ctx.game.mages.indexOf(ctx.caster) });
+  const totem = ctx.game.addTotem(at, ctx.caster.team, { ...scaled, ownerIndex: ctx.game.mages.indexOf(ctx.caster) });
   ctx.log(
     opts.lifesteal
       ? `${ctx.caster.name} raises a leeching totem.`
       : `${ctx.caster.name} raises a corroding totem.`
   );
+  return totem;
 }
 
 /**

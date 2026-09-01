@@ -73,7 +73,9 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
     this.add([dim, frame, title, subtitle, close]);
 
     const totalRows = options.sections.reduce((sum, section) => sum + section.entries.length, 0);
-    const twoColumns = totalRows > 10;
+    // Section headings also consume vertical space; split earlier so a full
+    // action palette always remains inside the 720px canvas.
+    const twoColumns = totalRows > 8;
     this.rowsPerColumn = Math.max(1, Math.ceil(totalRows / (twoColumns ? 2 : 1)));
     const columns = this.splitSections(options.sections, twoColumns ? 2 : 1);
     let entryIndex = 0;

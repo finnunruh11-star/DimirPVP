@@ -72,6 +72,7 @@ export type ItemId =
   | 'arrow'
   | 'manaPotion'
   | 'healthPotion'
+  | 'sandPocket'
   | 'torch'
   | 'lantern'
   | 'edgelordLantern'
@@ -314,6 +315,8 @@ export interface ItemDef {
   ammo?: boolean;
   /** Gain this much mana whenever you take damage (Channeling Ring). */
   manaOnHit?: number;
+  /** Sand Pocket: stores up to 3kg of loose sand. */
+  sandPocket?: boolean;
   /** Multiplicative max-HP factor applied once on equip (0.8 = -20%). */
   hpMult?: number;
   /** Multiplicative max-sanity factor applied once on equip. */
@@ -979,6 +982,16 @@ export const ITEM_DEFS: ItemDef[] = [
     weight: 1,
     blurb: 'Bonus action: +2d3 HP. Consumed.',
     potion: 'health',
+  },
+  {
+    id: 'sandPocket',
+    name: 'Sand Pocket',
+    slot: 'utility',
+    rarity: 'mythical',
+    cost: g(0),
+    weight: 1,
+    blurb: 'Stores up to 3kg of sand. Bonus action: pour out or pick up 1kg at a time.',
+    sandPocket: true,
   },
   {
     id: 'torch',
