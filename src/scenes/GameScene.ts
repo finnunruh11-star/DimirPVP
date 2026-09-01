@@ -1390,6 +1390,7 @@ export class GameScene extends Phaser.Scene {
     this.gs.onLog = () => this.drawLog();
     this.gs.onMageDefeated = (target) => {
       this.queueCreatureDeath(target);
+      this.playDeathBurst(target);
       this.showDefeatSeal(target);
       if (this.raid && target === this.raidTarget) {
         this.raidVictory = true;
@@ -4644,6 +4645,12 @@ export class GameScene extends Phaser.Scene {
     this.syncScarabSprites();
     this.drawScarabHp();
     this.drawTargetHighlights(time);
+    // Health bars ease toward their true value, so keep drawing until they land.
+    // Aiming rings breathe, so they need the same continuous redraw.
+    if (this.barsSettling || (!this.reducedMotion && this.mode.startsWith('aiming'))) {
+      this.barsSettling = false;
+      this.redraw();
+    }
   }
 
   /** Shops and prep panels borrow the menu bed; combat keeps the arena bed. */
@@ -4713,6 +4720,7 @@ export class GameScene extends Phaser.Scene {
     const turnOwner = this.gs.current;
     this.gs.beginTurn();
     if (!turnOwner.isAI) playSound('turn.start');
+    this.showTurnBanner(turnOwner);
     if (this.raidPrepActive) this.maintainRaidEffigies();
     const oniTrigger = this.buildOniTurnEndTrigger();
     if (oniTrigger) {
@@ -10309,6 +10317,7 @@ export class GameScene extends Phaser.Scene {
     const g = this.gfxArenaAmbient;
     if (!g) return;
     g.clear();
+    this.drawLowHealthVignette(time);
     const theme = this.arenaTheme();
     const phase = this.reducedMotion ? 0 : time;
     const centerX = FIELD.x + FIELD.w / 2;
@@ -12766,10 +12775,13 @@ export class GameScene extends Phaser.Scene {
     fill = true,
   ): void {
     if (fill) g.fillStyle(color, 0.035).fillCircle(origin.x, origin.y, radius);
-    g.lineStyle(1, color, alpha).strokeCircle(origin.x, origin.y, radius);
+    // A slow breath so the ring reads as live rather than printed on the floor.
+    const breath = this.reducedMotion ? 0 : Math.sin(this.time.now / 420);
+    g.lineStyle(1, color, alpha * (0.82 + breath * 0.18)).strokeCircle(origin.x, origin.y, radius);
     const ticks = radius > 260 ? 20 : 12;
+    const drift = this.reducedMotion ? 0 : (this.time.now / 5200) % (Math.PI * 2);
     for (let index = 0; index < ticks; index++) {
-      const angle = (index / ticks) * Math.PI * 2;
+      const angle = (index / ticks) * Math.PI * 2 + drift;
       const inner = radius - (index % 2 === 0 ? 7 : 4);
       const outer = radius + (index % 2 === 0 ? 4 : 2);
       g.lineBetween(
@@ -13388,6 +13400,44 @@ export class GameScene extends Phaser.Scene {
   private setCharging(m: Mage, on: boolean): void {
     const rec = this.mageAnims.get(m);
     if (rec) rec.charging = on;
+    if (on) this.startCastGather(m);
+    else this.castGathers.get(m)?.remove();
+  }
+
+  private castGathers = new Map<Mage, Phaser.Time.TimerEvent>();
+
+  /** Motes drawn inward while a spell is held on the stack, so a cast has a wind-up. */
+  private startCastGather(m: Mage): void {
+    if (this.reducedMotion) return;
+    this.castGathers.get(m)?.remove();
+    const timer = this.time.addEvent({
+      delay: 190,
+      loop: true,
+      callback: () => {
+        const rec = this.mageAnims.get(m);
+        if (!m.alive || !rec?.charging) {
+          timer.remove();
+          this.castGathers.delete(m);
+          return;
+        }
+        const angle = Math.random() * Math.PI * 2;
+        const away = 52 + Math.random() * 26;
+        this.particleFx?.burst(
+          { x: m.x + Math.cos(angle) * away, y: m.y + Math.sin(angle) * away },
+          {
+            color: MENU_COLOR.brassLight,
+            count: 2,
+            speed: 0,
+            lifespan: 300,
+            shape: 'mote',
+            size: 9,
+            glow: true,
+            depth: 9.4,
+          }
+        );
+      },
+    });
+    this.castGathers.set(m, timer);
   }
 
   /** Queue a hit recoil to play once the damage dice have resolved. */
@@ -13722,12 +13772,14 @@ export class GameScene extends Phaser.Scene {
       }
       rec.lock = 'move';
       rec.sprite.play(bodyAnimationKey(m, 'run'), true);
+      const strides = this.startFootfalls(m, dist(from, to), FX_MOTION.move.duration);
       let settled = false;
       let timeout: Phaser.Time.TimerEvent | null = null;
       let tween: Phaser.Tweens.Tween | null = null;
       const finish = (snapToDestination = false): void => {
         if (settled) return;
         settled = true;
+        strides.remove();
         timeout?.remove(false);
         this.events.off(Phaser.Scenes.Events.SHUTDOWN, onShutdown);
         if (snapToDestination) {
@@ -13765,6 +13817,7 @@ export class GameScene extends Phaser.Scene {
     rec.posLocked = true;
     rec.sprite.setPosition(from.x, from.y + footY);
     rec.sprite.play(bodyAnimationKey(m, 'role'), true);
+    this.kickDust(from, 10, 150);
     this.tweens.add({
       targets: rec.sprite,
       x: m.x,
@@ -13774,8 +13827,47 @@ export class GameScene extends Phaser.Scene {
       onComplete: () => {
         rec.lock = null;
         rec.posLocked = false;
+        this.kickDust(m.pos, 8, 120);
       },
     });
+  }
+
+  /**
+   * Footfalls while a unit walks: a puff and a step sound on a fixed cadence, so
+   * a long march reads as more steps rather than a longer slide.
+   */
+  private startFootfalls(m: Mage, distance: number, duration: number): Phaser.Time.TimerEvent {
+    const steps = Math.max(2, Math.min(9, Math.round(distance / 46)));
+    return this.time.addEvent({
+      delay: Math.max(90, duration / steps),
+      repeat: steps - 1,
+      callback: () => {
+        if (!m.alive) return;
+        this.kickDust(m.pos, 3, 55);
+        playSound('move.step');
+      },
+    });
+  }
+
+  /** A low puff of ground dust at a unit's feet. */
+  private kickDust(at: Vec2, count: number, speed: number): void {
+    if (this.reducedMotion) return;
+    this.particleFx?.burst(
+      { x: at.x, y: at.y + MAGE_RADIUS * 0.8 },
+      {
+        color: 0xb9a689,
+        count,
+        speed,
+        lifespan: 420,
+        shape: 'smoke',
+        size: 22,
+        alpha: 0.3,
+        gravityY: -20,
+        spread: 22,
+        drag: 0.86,
+        depth: 4.6,
+      }
+    );
   }
 
   /** Pull every affected sprite inward without changing the model's settled position. */
@@ -13935,9 +14027,15 @@ export class GameScene extends Phaser.Scene {
       .strokeEllipse(m.x, bodyY, MAGE_RADIUS * 2.4, 17);
     if (active) {
       const markerY = m.y - MAGE_RADIUS - 36;
+      // The caret bobs so the eye finds the acting unit without reading the HUD.
+      const bob = this.reducedMotion ? 0 : Math.sin(this.time.now / 260) * 3;
+      const halo = 0.10 + (this.reducedMotion ? 0 : Math.sin(this.time.now / 340) * 0.05);
+      g.lineStyle(2, MENU_COLOR.brassLight, Math.max(0, halo * 3) * alpha)
+        .strokeEllipse(m.x, bodyY, MAGE_RADIUS * 3.1, 22);
       g.fillStyle(MENU_COLOR.brassLight, alpha);
-      g.fillTriangle(m.x - 7, markerY - 7, m.x + 7, markerY - 7, m.x, markerY + 1);
-      g.lineStyle(1, MENU_COLOR.ink, 0.8 * alpha).lineBetween(m.x - 4, markerY - 5, m.x + 4, markerY - 5);
+      g.fillTriangle(m.x - 7, markerY - 7 + bob, m.x + 7, markerY - 7 + bob, m.x, markerY + 1 + bob);
+      g.lineStyle(1, MENU_COLOR.ink, 0.8 * alpha)
+        .lineBetween(m.x - 4, markerY - 5 + bob, m.x + 4, markerY - 5 + bob);
     }
 
     // The mage body itself is drawn by its animated sprite (see syncMageSprites).
@@ -13946,16 +14044,156 @@ export class GameScene extends Phaser.Scene {
     const bw = 56;
     const bx = m.x - bw / 2;
     const by = m.y - MAGE_RADIUS - 26;
+    const hpFrac = m.maxHp > 0 ? m.hp / m.maxHp : 0;
+    const sanFrac = m.maxSanity > 0 ? m.sanity / m.maxSanity : 0;
+    const bar = this.barState(m, hpFrac, sanFrac);
     g.fillStyle(MENU_COLOR.pitch, 0.9).fillRect(bx - 2, by - 2, bw + 4, 16);
     g.fillStyle(MENU_COLOR.charcoalRaised, 1).fillRect(bx, by, bw, 6);
-    g.fillStyle(COLORS.hp, 1).fillRect(bx, by, bw * (m.hp / m.maxHp), 6);
+    // Chip bar: the ground just lost, still visible for a beat so the hit reads.
+    if (bar.hpChip > bar.hp) {
+      g.fillStyle(MENU_COLOR.blood, 0.85).fillRect(bx, by, bw * bar.hpChip, 6);
+    }
+    g.fillStyle(COLORS.hp, 1).fillRect(bx, by, bw * bar.hp, 6);
     g.fillStyle(MENU_COLOR.charcoalRaised, 1).fillRect(bx, by + 7, bw, 5);
-    g.fillStyle(COLORS.sanity, 1).fillRect(bx, by + 7, bw * (m.sanity / m.maxSanity), 5);
-    g.lineStyle(1, m.hp / Math.max(1, m.maxHp) <= 0.25 ? MENU_COLOR.blood : MENU_COLOR.brassDark, 0.9)
+    if (bar.sanityChip > bar.sanity) {
+      g.fillStyle(MENU_COLOR.blood, 0.7).fillRect(bx, by + 7, bw * bar.sanityChip, 5);
+    }
+    g.fillStyle(COLORS.sanity, 1).fillRect(bx, by + 7, bw * bar.sanity, 5);
+    const critical = hpFrac <= 0.25;
+    const pulse = critical && !this.reducedMotion ? 0.55 + Math.sin(this.time.now / 180) * 0.45 : 0.9;
+    g.lineStyle(1, critical ? MENU_COLOR.blood : MENU_COLOR.brassDark, pulse)
       .strokeRect(bx - 0.5, by - 0.5, bw + 1, 13);
 
     // Name + statuses.
     this.labelMage(m);
+  }
+
+  private barStates = new Map<Mage, { hp: number; hpChip: number; sanity: number; sanityChip: number }>();
+
+  /**
+   * Ease each bar toward its true value, with a slower trailing "chip" bar so a
+   * hit reads as an amount lost rather than a number that simply changed.
+   */
+  private barState(
+    m: Mage,
+    hp: number,
+    sanity: number
+  ): { hp: number; hpChip: number; sanity: number; sanityChip: number } {
+    let s = this.barStates.get(m);
+    if (!s || this.reducedMotion) {
+      s = { hp, hpChip: hp, sanity, sanityChip: sanity };
+      this.barStates.set(m, s);
+      return s;
+    }
+    const ease = (from: number, to: number, rate: number): number =>
+      Math.abs(to - from) < 0.002 ? to : from + (to - from) * rate;
+    s.hp = ease(s.hp, hp, 0.22);
+    s.sanity = ease(s.sanity, sanity, 0.22);
+    // The chip only ever drains, and only once the real bar has settled past it.
+    s.hpChip = s.hpChip < hp ? hp : ease(s.hpChip, s.hp, 0.06);
+    s.sanityChip = s.sanityChip < sanity ? sanity : ease(s.sanityChip, s.sanity, 0.06);
+    if (s.hp !== hp || s.sanity !== sanity || s.hpChip !== s.hp || s.sanityChip !== s.sanity) {
+      this.barsSettling = true;
+    }
+    return s;
+  }
+
+  /** Set while any health bar is mid-slide, so update() keeps the redraw going. */
+  private barsSettling = false;
+
+  private vignette?: Phaser.GameObjects.Graphics;
+
+  /** A breathing red frame while the mage you are playing is close to falling. */
+  private drawLowHealthVignette(time: number): void {
+    if (!this.vignette) {
+      this.vignette = this.add.graphics().setDepth(58).setScrollFactor(0);
+    }
+    const g = this.vignette;
+    g.clear();
+    if (this.gs.isOver || this.gs.mages.length === 0) return;
+    const me = this.viewMage;
+    const frac = me?.alive && me.maxHp > 0 ? me.hp / me.maxHp : 1;
+    if (frac > 0.3) return;
+    // Tightens and beats faster the closer to death you are.
+    const severity = 1 - frac / 0.3;
+    const beat = this.reducedMotion ? 0.5 : 0.5 + Math.sin(time / (260 - severity * 120)) * 0.5;
+    const alpha = (0.08 + severity * 0.13) * (0.55 + beat * 0.45);
+    const band = 26 + severity * 46;
+    for (let i = 0; i < 5; i++) {
+      const t = i / 4;
+      const a = alpha * (1 - t);
+      const inset = band * t;
+      g.lineStyle(band / 4, MENU_COLOR.blood, a);
+      g.strokeRect(inset, inset, GAME_WIDTH - inset * 2, GAME_HEIGHT - inset * 2);
+    }
+  }
+
+  private turnBanner?: Phaser.GameObjects.Container;
+
+  /** A sweep of the acting unit's name, so a turn change is felt, not read. */
+  private showTurnBanner(owner: Mage): void {
+    this.turnBanner?.destroy();
+    this.turnBanner = undefined;
+    if (this.gs.isOver) return;
+    const mine = !owner.isAI && !this.controllerIsAI(owner);
+    const tint = owner.team === 1 ? MENU_HEX.verdigris : '#d99286';
+    const root = this.add.container(GAME_WIDTH / 2, 122).setDepth(60);
+    const label = this.add
+      .text(0, 0, mine ? `${owner.name.toUpperCase()} — YOUR TURN` : owner.name.toUpperCase(), {
+        fontFamily: MENU_FONT.control,
+        fontSize: '15px',
+        fontStyle: 'bold',
+        color: tint,
+      })
+      .setOrigin(0.5);
+    const w = label.width + 44;
+    const plate = this.add.graphics();
+    plate.fillStyle(MENU_COLOR.pitch, 0.86).fillRect(-w / 2, -15, w, 30);
+    plate.lineStyle(1, MENU_COLOR.brassDark, 0.85).strokeRect(-w / 2, -15, w, 30);
+    plate.lineStyle(2, owner.team === 1 ? COLORS.team1 : COLORS.team2, 0.9)
+      .lineBetween(-w / 2, 15, w / 2, 15);
+    root.add([plate, label]);
+    this.turnBanner = root;
+    const clear = (): void => {
+      if (this.turnBanner === root) this.turnBanner = undefined;
+      root.destroy();
+    };
+    if (this.reducedMotion) {
+      this.time.delayedCall(700, clear);
+      return;
+    }
+    root.setAlpha(0);
+    label.setScale(0.9);
+    this.tweens.add({ targets: label, scale: 1, duration: 220, ease: 'Back.Out' });
+    this.tweens.add({
+      targets: root,
+      alpha: { from: 0, to: 1 },
+      y: { from: 108, to: 122 },
+      duration: 180,
+      ease: 'Quad.Out',
+      hold: 620,
+      yoyo: true,
+      onComplete: clear,
+    });
+  }
+
+  /** A body giving way: a ring, a scatter of ash and a slow settling smoke. */
+  private playDeathBurst(mage: Mage): void {
+    if (this.reducedMotion) return;
+    const at = { x: mage.x, y: mage.y };
+    const tint = mage.team === 1 ? COLORS.team1 : COLORS.team2;
+    this.particleFx?.burst(at, {
+      color: tint, count: 1, speed: 0, lifespan: 460, shape: 'ring', size: 46, glow: true, depth: 9.4,
+    });
+    this.particleFx?.burst(at, {
+      color: 0xd8cbb4, count: 18, speed: 190, lifespan: 620, shape: 'shard', size: 11,
+      gravityY: 620, tumble: true, drag: 0.6, stagger: 0.04, depth: 4.6,
+    });
+    this.particleFx?.burst(at, {
+      color: 0x6f6455, count: 7, speed: 60, lifespan: 1000, shape: 'smoke', size: 52,
+      alpha: 0.32, gravityY: -60, drag: 0.9,
+    });
+    this.impactFx?.shake('heavy');
   }
 
   private showDefeatSeal(mage: Mage): void {

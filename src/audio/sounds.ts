@@ -191,6 +191,10 @@ export const RECIPES = {
     k.noise({ dur: 0.12, gain: 0.24, filter: 'bandpass', freq: 500, freqTo: 2200, q: 1.3, attack: 0.02 });
     k.noise({ start: 0.1, dur: 0.16, gain: 0.18, filter: 'bandpass', freq: 2000, freqTo: 420, q: 1.3 });
   },
+  'move.step': (k: SynthKit) => {
+    k.noise({ dur: 0.05, gain: 0.07, filter: 'lowpass', freq: 900, freqTo: 260, attack: 0.001 });
+    k.tone({ type: 'sine', freq: 130, freqTo: 70, dur: 0.05, gain: 0.05 });
+  },
   'unit.death': (k: SynthKit) => {
     k.tone({ type: 'sine', freq: 185, freqTo: 44, dur: 0.9, gain: 0.34, reverb: 0.5 });
     k.noise({ kind: 'brown', dur: 0.8, gain: 0.2, filter: 'lowpass', freq: 520, freqTo: 110, reverb: 0.5 });

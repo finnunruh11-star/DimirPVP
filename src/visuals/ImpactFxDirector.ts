@@ -262,7 +262,30 @@ export class ImpactFxDirector {
     if (this.destroyed || this.reducedMotion()) return;
     const { duration, intensity } = IMPACT_FX.shake[weight];
     this.scene.cameras.main.shake(duration, intensity);
+    if (weight === 'seismic') this.punch(duration);
   }
+
+  /**
+   * A short lens push on the heaviest blows. It rides the camera's own zoom
+   * rather than a tween target so a second punch mid-recovery cannot strand it.
+   */
+  private punch(duration: number): void {
+    const cam = this.scene.cameras.main;
+    this.punchTween?.remove();
+    cam.setZoom(1.035);
+    this.punchTween = this.scene.tweens.add({
+      targets: cam,
+      zoom: 1,
+      duration: Math.max(180, duration),
+      ease: 'Quad.Out',
+      onComplete: () => {
+        this.punchTween = undefined;
+        cam.setZoom(1);
+      },
+    });
+  }
+
+  private punchTween?: Phaser.Tweens.Tween;
 
   /** A decree stamped on the field: the Order word's own mark. */
   sigil(at: Vec2, color: number, size: number): void {
@@ -293,6 +316,9 @@ export class ImpactFxDirector {
     this.sheets.destroy();
     this.hitstopTimer?.remove();
     this.hitstopTimer = undefined;
+    this.punchTween?.remove();
+    this.punchTween = undefined;
+    this.scene.cameras.main?.setZoom(1);
     for (const timer of this.timers) timer.remove();
     this.timers.clear();
     this.restoreTimeScale();
