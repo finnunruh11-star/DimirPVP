@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Turn-based mage duel with a word-based spell system and an MTG-style reaction stack.",
   "scripts": {
+    "start": "npm install --no-audit --no-fund && vite",
     "dev": "vite",
     "test": "tsx src/ui/menu/MenuModel.test.ts && tsx src/core/GameState.discharge.test.ts && tsx src/core/CombatRules.test.ts && tsx src/core/GameState.reality.test.ts && tsx src/core/GameState.vfx.test.ts",
     "build": "tsc --noEmit && vite build",

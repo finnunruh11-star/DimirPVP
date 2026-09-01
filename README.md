@@ -7,6 +7,18 @@ cooperative PvE runs.
 
 ## Run it
 
+Double-click **`start.bat`** (Windows) or **`start.sh`** (macOS / Linux). It checks
+for Node.js, installs everything, starts the server, and opens a browser tab.
+Leave the window open while you play; closing it stops the server.
+
+The same thing from a terminal:
+
+```bash
+npm start        # install, then serve http://localhost:5173
+```
+
+Already installed and just want the individual steps:
+
 ```bash
 npm install
 npm run dev      # serves http://localhost:5173
