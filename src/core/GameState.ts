@@ -21,6 +21,8 @@ import {
   RANGE_UNIT,
   SCARAB,
   SHADOW_RADIUS,
+  SAND_RADIUS,
+  SAND_TTL,
   SHADOW_TTL,
   TOTEM_TTL,
   VEIL,
@@ -219,11 +221,13 @@ export interface HazardZone {
   color: number;
 }
 
-export interface OrderDrainCurse {
-  ownerIndex: number;
-  ownerTeam: number;
-  roundsLeft: number;
-  triggeredItemIds: number[];
+/** A patch of loose sand. Unowned terrain: whoever stands on it may use it. */
+export interface SandPatch {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+  ttl: number;
 }
 
 /**
@@ -300,8 +304,11 @@ export class GameState {
   /** Timed global Hexcraft laws (Mind Shadow / Curse Corrode). */
   hexcraftGlobals: HexcraftGlobalEffect[] = [];
 
-  /** GEN Order Drain laws that punish enemies for explicitly targeting its team. */
-  orderDrainCurses: OrderDrainCurse[] = [];
+  /** Loose sand on the field. GEN's Sand spells need it and leave more of it. */
+  sand: SandPatch[] = [];
+
+  /** Whole-arena sand: the desert kingdom's home advantage made literal. */
+  desertArena = false;
 
   /** Persistent Veil Bind linking circles. */
   veilBindZones: VeilBindZone[] = [];
@@ -1126,31 +1133,6 @@ export class GameState {
     this.log(`The battlefield turns 90 degrees ${clockwise ? 'clockwise' : 'counterclockwise'}!`);
   }
 
-  addOrderDrainCurse(owner: Mage, rounds = 4): void {
-    const ownerIndex = this.mages.indexOf(owner);
-    const existing = this.orderDrainCurses.find((curse) => curse.ownerIndex === ownerIndex);
-    if (existing) {
-      existing.roundsLeft = Math.max(existing.roundsLeft, rounds);
-      existing.triggeredItemIds = [];
-    } else {
-      this.orderDrainCurses.push({
-        ownerIndex,
-        ownerTeam: owner.team,
-        roundsLeft: rounds,
-        triggeredItemIds: [],
-      });
-    }
-    this.log(`${owner.name} places every enemy under Order's Due for ${rounds} rounds.`);
-  }
-
-  private tickOrderDrainCurses(): void {
-    for (const curse of this.orderDrainCurses) {
-      curse.roundsLeft -= 1;
-      curse.triggeredItemIds = [];
-    }
-    this.orderDrainCurses = this.orderDrainCurses.filter((curse) => curse.roundsLeft > 0);
-  }
-
   private applyTwistRunes(bearer: Mage): void {
     const runes = bearer.statuses.filter((status) => status.kind === 'twistRune') as TwistRuneStatus[];
     for (const rune of runes) {
@@ -1937,10 +1919,10 @@ export class GameState {
         this.turnPtr = 0;
         this.round += 1;
         this.tickShadows();
+        this.tickSand();
         this.tickTotems();
         this.tickBarriers();
         this.tickGlobalEscalations();
-        this.tickOrderDrainCurses();
         this.tickNeedlepointDomains();
         this.tickHexcraftGlobals();
         this.tickVeilBindZones();
@@ -2261,6 +2243,40 @@ export class GameState {
   setCurrent(m: Mage): void {
     const idx = this.mages.indexOf(m);
     if (idx >= 0) this.currentIndex = idx;
+  }
+
+  // ---- Sand -----------------------------------------------------------------
+
+  /**
+   * Lay a patch of sand. Sand is unowned: it is terrain, not a claim, so either
+   * side can build on a patch the other one made.
+   */
+  addSand(at: Vec2, ttl = SAND_TTL): SandPatch {
+    const patch: SandPatch = {
+      id: this.nextId++,
+      x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x)),
+      y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y)),
+      radius: SAND_RADIUS,
+      ttl,
+    };
+    this.sand.push(patch);
+    return patch;
+  }
+
+  /** True where sand lies — always true in a desert, which is the whole point. */
+  isSandAt(pos: Vec2): boolean {
+    if (this.desertArena) return true;
+    return this.sand.some((patch) => dist(pos, { x: patch.x, y: patch.y }) <= patch.radius);
+  }
+
+  /** Whether a caster has sand to work with, at its feet or at what it is aiming at. */
+  hasSandFor(source: Mage, at?: Vec2 | null): boolean {
+    return this.isSandAt(source.pos) || (!!at && this.isSandAt(at));
+  }
+
+  tickSand(): void {
+    for (const patch of this.sand) patch.ttl -= 1;
+    this.sand = this.sand.filter((patch) => patch.ttl > 0);
   }
 
   // ---- Shadows --------------------------------------------------------------
@@ -4434,20 +4450,6 @@ export class GameState {
       declaredTarget.mine.golemState = 'waking';
       this.log(`${declaredTarget.name}'s runes kindle as it is targeted.`);
     }
-    for (const curse of this.orderDrainCurses) {
-      if (curse.triggeredItemIds.includes(item.id)) continue;
-      if (item.source.team === curse.ownerTeam || item.target?.team !== curse.ownerTeam) continue;
-      curse.triggeredItemIds.push(item.id);
-      const owner = this.mages[curse.ownerIndex];
-      if (!owner?.alive || !item.source.alive) continue;
-      drainDamage(
-        this.effectContext(owner, item.source, null),
-        item.source,
-        dmg(this.rng.roll('1d6').total, 'corrosive', 'physical'),
-        { canMiss: false }
-      );
-      this.log(`${item.source.name} targets ${item.target.name} and pays ${owner.name}'s due.`);
-    }
     this.stack.push(item);
   }
 
@@ -5187,11 +5189,11 @@ export class GameState {
   /** Training sandbox: wipe every transient field object (soft reset). */
   clearFieldObjects(): void {
     this.shadows = [];
+    this.sand = [];
     this.totems = [];
     this.scarabs = [];
     this.barriers = [];
     this.globalEscalations = [];
-    this.orderDrainCurses = [];
     this.needlepointDomains = [];
     this.hexcraftGlobals = [];
     this.veilBindZones = [];

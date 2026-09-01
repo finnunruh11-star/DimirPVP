@@ -188,7 +188,7 @@ export class GalleryScene extends Phaser.Scene {
             { id: 'shadow', label: 'Shadow', detail: 'Black word.' },
             { id: 'bind', label: 'Bind', detail: 'Blue reaction word.' },
             { id: 'fire', label: 'Fire', detail: 'Red word.' },
-            { id: 'order', label: 'Order', detail: 'White word.' },
+            { id: 'heal', label: 'Heal', detail: 'White word.' },
           ] as const,
           2,
           close,

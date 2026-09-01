@@ -956,6 +956,20 @@ export function placeShadow(ctx: EffectContext, at: Vec2, ttl?: number): void {
   ctx.log(`${ctx.caster.name} creates a shadow pool.`);
 }
 
+/**
+ * Scatter sand at `at`. Sand belongs to nobody: it is ground, and whoever
+ * stands on it may draw on it.
+ */
+export function placeSand(ctx: EffectContext, at: Vec2, ttl?: number): void {
+  ctx.game.addSand(at, ttl != null ? critScale(ctx, ttl) : undefined);
+  ctx.log(`Sand drifts across the ground.`);
+}
+
+/** Whether the caster has sand to work with, underfoot or where it is aiming. */
+export function hasSand(ctx: EffectContext, at?: Vec2 | null): boolean {
+  return ctx.game.hasSandFor(ctx.caster, at);
+}
+
 /** Strip every invisibility / veil status from `target`. Returns true if any. */
 export function dispelVeil(ctx: EffectContext, target: Mage): boolean {
   const before = target.statuses.length;

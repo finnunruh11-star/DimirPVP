@@ -363,10 +363,7 @@ export class SimpleAI {
       return true;
     });
     if (options.length === 0) return null;
-    const score = (spell: Spell): number =>
-      spell.words.length + (spell.words.includes('order') && spell.words.includes('drain')
-        ? Math.max(0, this.game.livingEnemiesOf(this.self).length - 1)
-        : 0);
+    const score = (spell: Spell): number => spell.words.length;
     options.sort((a, b) => score(b) - score(a));
     const top = options.filter((spell) => score(spell) === score(options[0]));
     return this.game.rng.pick(top);

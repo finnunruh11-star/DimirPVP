@@ -52,6 +52,7 @@ import {
   heal,
   placeHazardZone,
   placeRealityWedge,
+  placeSand,
   placeShadow,
   placeTotem,
   placeWall,
@@ -3136,392 +3137,46 @@ registerSpell({
   },
 });
 
-// ===========================================================================
-//  GEN EASTER-EGG SPELLS   (words: Order / Curse / Drain / Slash)
+//  GEN EASTER-EGG SPELLS   (words: Heal / Sand / Corrode / Pierce / Shadow)
 // ---------------------------------------------------------------------------
-//  Order is the white color word. Several of these spells describe exotic
-//  battlefield-command mechanics (target-locking, action-mirroring) that the
-//  engine cannot fully model; those are approximated with the closest existing
-//  primitives (stuns, debuffs, control labels, DoTs) and noted inline.
+//  Heal, Sand, Corrode and Pierce are all verbs, so every combination without
+//  Shadow is a class spell. Sand is the desert kingdom's whole defence: its
+//  spells need sand underfoot, and they leave more of it behind.
 // ===========================================================================
 
 registerSpell({
-  name: 'Slash',
-  words: ['slash'],
+  name: 'Heal',
+  words: ['heal'],
   actionType: 'main',
-  range: R(5),
-  targeting: 'point',
-  dc: 7,
-  aoe: { kind: 'cone', radius: R(5), degrees: 100 },
-  description:
-    '1d8 slashing damage in a 100° cone (range 5), then dash 2 in the aimed direction.',
-  visual: { preset: 'burst', color: 0xffe08a, size: 60, speed: 1.3 },
-  manualCastVisual: true,
-  cast(ctx) {
-    if (!ctx.targetPoint) return;
-    const amount = rollDice(ctx, '1d8', 'Slash');
-    slashCone(ctx, ctx.targetPoint, R(5));
-    coneDamage(ctx, ctx.targetPoint, R(5), 100, dmg(amount, 'slashing', 'physical'));
-    dash(ctx, ctx.caster, { toPoint: ctx.targetPoint, distance: R(2) });
-  },
-});
-
-registerSpell({
-  name: 'Order',
-  words: ['order'],
-  actionType: 'main',
-  range: R(20),
+  range: R(15),
   targeting: 'any',
+  dc: 6,
+  description: 'Restore 1d4 health to one target (range 15).',
+  visual: { preset: 'heal', color: 0x8fe6b4, size: 40, speed: 1.2 },
+  cast(ctx) {
+    const target = ctx.target ?? ctx.caster;
+    heal(ctx, target, rollDice(ctx, '1d4', 'Heal', target));
+  },
+});
+
+registerSpell({
+  name: 'Sand',
+  words: ['sand'],
+  actionType: 'main',
+  range: R(30),
+  targeting: 'enemy',
   dc: 7,
   description:
-    'Target an ally or enemy (range 20). Enemy: for 1 turn it can declare no hostile action at all — ' +
-    'attacks and any spell that reaches beyond its own side are unusable and cost nothing. ' +
-    'Ally: for 2 turns it deals +25% damage and healing, but may only touch the one entity you name.',
-  visual: { preset: 'beam', color: 0xf3ecd2, size: 6, speed: 1.1 },
-  manualCastVisual: true,
-  async cast(ctx) {
-    const target = ctx.target ?? ctx.caster;
-    ctx.vfx?.sigil?.(target.pos, target.team === ctx.caster.team ? 0xf3ecd2 : 0xd8c9a0, 96);
-    if (target.team !== ctx.caster.team) {
-      applyPacify(ctx, target, 1);
-      return;
-    }
-    // The mandate is the whole point: power for obedience. The caster names the
-    // one entity the ally may touch, which may be a foe, an ally, or itself.
-    const point = ctx.requestPoint
-      ? await ctx.requestPoint({
-          maxRange: R(99),
-          origin: ctx.caster.pos,
-          prompt: `Name the only entity ${target.name} may touch`,
-        })
-      : null;
-    let entity: Mage | null = null;
-    if (point) {
-      let best = Infinity;
-      for (const m of ctx.game.mages) {
-        if (!m.alive) continue;
-        const d = (m.pos.x - point.x) ** 2 + (m.pos.y - point.y) ** 2;
-        if (d < best) {
-          best = d;
-          entity = m;
-        }
-      }
-    }
-    // Headless or no pick: bind them to the caster — "only I matter".
-    const named = entity ?? ctx.caster;
-    ctx.vfx?.sigil?.(named.pos, 0xffe08a, 88);
-    applyOrderMandate(ctx, target, named, { duration: 2, potency: 1.25 });
-  },
-});
-
-registerSpell({
-  name: 'Curse Slash',
-  words: ['curse', 'slash'],
-  actionType: 'main',
-  range: R(5),
-  targeting: 'point',
-  dc: 10,
-  aoe: { kind: 'cone', radius: R(5), degrees: 120 },
-  description:
-    '1d8 slashing damage in a 120° cone (range 5). Every enemy hit gains a bleed stack that deals 1d3 per stack each turn (stacks up to 6), lasting 3 turns.',
-  visual: { preset: 'burst', color: 0xff6b8a, size: 64, speed: 1.2 },
-  manualCastVisual: true,
-  cast(ctx) {
-    if (!ctx.targetPoint) return;
-    const amount = rollDice(ctx, '1d8', 'Curse Slash');
-    slashCone(ctx, ctx.targetPoint, R(5));
-    const hits = coneDamage(ctx, ctx.targetPoint, R(5), 120, dmg(amount, 'slashing', 'physical'));
-    for (const h of hits) {
-      applyStackingDot(ctx, h, {
-        name: 'Bleed',
-        key: 'dot:bleed',
-        damage: dmg(0, 'slashing', 'physical'),
-        perStackSpec: '1d3',
-        maxStacks: 6,
-        refreshDuration: 3,
-      });
-    }
-  },
-});
-
-registerSpell({
-  name: 'Slash Drain',
-  words: ['drain', 'slash'],
-  actionType: 'main',
-  range: R(5),
-  targeting: 'point',
-  dc: 11,
-  aoe: { kind: 'cone', radius: R(5), degrees: 80 },
-  description:
-    '80° cone (range 5). Enemies in the narrow 5° center take 1d8 slashing damage and you dash 2 toward them; enemies elsewhere in the cone take 1d6 corrosive damage. All damage heals you for the amount dealt.',
-  visual: { preset: 'burst', color: 0x9ad67a, size: 66, speed: 1.2 },
-  manualCastVisual: true,
-  cast(ctx) {
-    if (!ctx.targetPoint) return;
-    const p = ctx.targetPoint;
-    slashCone(ctx, p, R(5));
-    const inner = ctx.game
-      .magesInCone(ctx.caster.pos, p, R(5), 5, ctx.caster)
-      .filter((m) => m.team !== ctx.caster.team);
-    const outer = ctx.game
-      .magesInCone(ctx.caster.pos, p, R(5), 80, ctx.caster)
-      .filter((m) => m.team !== ctx.caster.team);
-    const innerSet = new Set(inner);
-    for (const m of outer) {
-      if (innerSet.has(m)) {
-        // Core enemies take slashing + lifesteal (no corrosive), per the spec.
-        drainDamage(ctx, m, dmg(rollDice(ctx, '1d8', 'Slash Drain'), 'slashing', 'physical'), {
-          aoe: true,
-        });
-      } else {
-        drainDamage(ctx, m, dmg(rollDice(ctx, '1d6', 'Slash Drain'), 'corrosive', 'physical'), {
-          aoe: true,
-        });
-      }
-    }
-    if (inner.length > 0) dash(ctx, ctx.caster, { toPoint: p, distance: R(2) });
-  },
-});
-
-registerSpell({
-  name: 'Order Curse',
-  words: ['curse', 'order'],
-  actionType: 'main',
-  range: R(20),
-  targeting: 'enemy',
-  dc: 11,
-  description:
-    'For 5 turns the target is forced to repeat its actions and deals 2 less damage (range 20).',
-  visual: { preset: 'beam', color: 0xc9a0ff, size: 6, speed: 1.1 },
-  manualCastVisual: true,
+    'Scour one enemy for 3d3 corrosive damage (range 30) and leave a patch of sand under it. '
+    + 'The only Sand spell that needs no sand to cast.',
+  visual: { preset: 'burst', color: 0xe8c98a, size: 52, speed: 1.4 },
   cast(ctx) {
     if (!ctx.target) return;
-    ctx.vfx?.sigil?.(ctx.target.pos, 0xc9a0ff, 104);
-    // "Can only attack targets you targeted last turn" is not enforceable by the
-    // engine; represented as a control label plus a damage-sapping debuff.
-    applyControl(ctx, ctx.target, { name: 'Ordered', mode: 'repeat', duration: 5 });
-    applyDebuff(ctx, ctx.target, {
-      name: 'Ordered',
-      key: 'debuff:ordered',
-      duration: 5,
-      mods: { damageDealt: -2 },
-    });
+    const target = ctx.target;
+    dealDamage(ctx, target, dmg(rollDice(ctx, '3d3', 'Sand', target), 'corrosive', 'physical'));
+    placeSand(ctx, target.pos);
   },
 });
-
-registerSpell({
-  name: 'Order Slash',
-  words: ['order', 'slash'],
-  actionType: 'main',
-  range: R(5),
-  targeting: 'point',
-  dc: 11,
-  aoe: { kind: 'cone', radius: R(5), degrees: 120 },
-  description:
-    '1d8 slashing damage in a 120° cone (range 5). Every enemy hit is forced to repeat its action for 2 turns.',
-  visual: { preset: 'burst', color: 0xf3d08a, size: 64, speed: 1.2 },
-  manualCastVisual: true,
-  cast(ctx) {
-    if (!ctx.targetPoint) return;
-    const amount = rollDice(ctx, '1d8', 'Order Slash');
-    slashCone(ctx, ctx.targetPoint, R(5));
-    const hits = coneDamage(ctx, ctx.targetPoint, R(5), 120, dmg(amount, 'slashing', 'physical'));
-    for (const h of hits) {
-      // The "must hit a target you specify" compulsion is labelled as control;
-      // the engine does not enforce the forced target choice.
-      applyControl(ctx, h, { name: 'Commanded', mode: 'repeat', duration: 2 });
-    }
-  },
-});
-
-registerSpell({
-  name: "Order's Due",
-  words: ['drain', 'order'],
-  actionType: 'main',
-  range: 0,
-  targeting: 'none',
-  dc: 11,
-  description:
-    'For 4 rounds, whenever an enemy explicitly targets you or an ally, it first takes 1d6 corrosive damage and you heal for the damage dealt.',
-  visual: { preset: 'nova', color: 0x9ad67a, size: 46, speed: 1.1 },
-  cast(ctx) {
-    ctx.vfx?.sigil?.(ctx.caster.pos, 0x9ad67a, 120);
-    ctx.game.addOrderDrainCurse(ctx.caster, 4);
-  },
-});
-
-// ---------------------------------------------------------------------------
-//  GEN 3-WORD SPELLS
-// ---------------------------------------------------------------------------
-
-registerSpell({
-  name: 'Order Curse Drain',
-  words: ['order', 'curse', 'drain'],
-  actionType: 'main',
-  range: R(20),
-  targeting: 'enemy',
-  dc: 13,
-  description:
-    'Curse one enemy for 4 turns (range 20). It is forced to repeat its actions. Each turn it takes ' +
-    '1d6 corrosive damage — plus another 1d6 if it dealt no damage last turn — and you heal for all of it. ' +
-    'Whenever it damages one of your allies, the curse lasts 2 turns longer.',
-  visual: { preset: 'beam', color: 0x9ad67a, size: 7, speed: 1.1 },
-  manualCastVisual: true,
-  cast(ctx) {
-    if (!ctx.target) return;
-    ctx.vfx?.sigil?.(ctx.target.pos, 0x9ad67a, 112);
-    const ownerIndex = ctx.game.mages.indexOf(ctx.caster);
-    // The action-lock ("only repeat the next action, never forgotten, walking
-    // legal") is labelled as a compulsion; the engine does not fully enforce the
-    // restriction, but the draining curse below is modelled faithfully.
-    applyControl(ctx, ctx.target, { name: 'Ordered', mode: 'repeat', duration: 4 });
-    applyDot(ctx, ctx.target, {
-      name: "Order's Drain",
-      key: 'dot:order-curse-drain',
-      duration: 4,
-      damage: dmg(0, 'corrosive', 'physical'),
-      damageSpec: '1d6',
-      bonusNoDamageSpec: '1d6',
-      lifestealToIndex: ownerIndex,
-      extendOwnerTeam: ctx.caster.team,
-    });
-  },
-});
-
-registerSpell({
-  name: 'Curse Drain Slash',
-  words: ['curse', 'drain', 'slash'],
-  actionType: 'main',
-  range: R(5),
-  targeting: 'point',
-  dc: 13,
-  aoe: { kind: 'cone', radius: R(5), degrees: 120 },
-  description:
-    '1d6 slashing damage then 1d6 corrosive damage in a 120° cone (range 5). Every enemy hit gains 2 ' +
-    'bleed stacks (1d3 per stack each turn). You then heal 1d3 for each bleed stack on those enemies.',
-  visual: { preset: 'burst', color: 0xd66a9a, size: 66, speed: 1.2 },
-  manualCastVisual: true,
-  cast(ctx) {
-    if (!ctx.targetPoint) return;
-    const slash = rollDice(ctx, '1d6', 'Curse Drain Slash');
-    slashCone(ctx, ctx.targetPoint, R(5));
-    const hits = coneDamage(ctx, ctx.targetPoint, R(5), 120, dmg(slash, 'slashing', 'physical'));
-    let leech = 0;
-    for (const h of hits) {
-      dealDamage(ctx, h, dmg(rollDice(ctx, '1d6', 'Curse Drain Slash'), 'corrosive', 'physical'), {
-        aoe: true,
-      });
-      // Two stacks of bleed (one call per stack).
-      for (let i = 0; i < 2; i++) {
-        applyStackingDot(ctx, h, {
-          name: 'Bleed',
-          key: 'dot:bleed',
-          damage: dmg(0, 'slashing', 'physical'),
-          perStackSpec: '1d3',
-          maxStacks: 6,
-          refreshDuration: 3,
-        });
-      }
-      const bleed = h.statuses.find((s) => s.key === 'dot:bleed') as DotStatus | undefined;
-      const stacks = bleed?.stacks ?? 0;
-      let targetLeech = 0;
-      for (let i = 0; i < stacks; i++) {
-        targetLeech += rollDice(ctx, '1d3', 'Curse Drain Slash — leech');
-      }
-      leech += targetLeech;
-      if (targetLeech > 0) ctx.vfx?.drainParticles?.(h.pos, ctx.caster.pos);
-    }
-    if (leech > 0) heal(ctx, ctx.caster, leech);
-  },
-});
-
-registerSpell({
-  name: 'Order Drain Slash',
-  words: ['drain', 'order', 'slash'],
-  actionType: 'main',
-  range: R(5),
-  targeting: 'point',
-  dc: 13,
-  aoe: { kind: 'cone', radius: R(5), degrees: 120 },
-  description:
-    'Every enemy in a 120° cone (range 5) is set to the lowest HP among them. ' +
-    'You heal for the largest amount of HP removed from any single enemy, then dash 2 toward them.',
-  visual: { preset: 'nova', color: 0x8ad0c4, size: 60, speed: 1.1 },
-  manualCastVisual: true,
-  cast(ctx) {
-    if (!ctx.targetPoint) return;
-    const p = ctx.targetPoint;
-    slashCone(ctx, p, R(5));
-    ctx.vfx?.sigil?.(p, 0x8ad0c4, 108);
-    const foes = ctx.game
-      .magesInCone(ctx.caster.pos, p, R(5), 120, ctx.caster)
-      .filter((m) => m.alive && m.team !== ctx.caster.team);
-    if (foes.length > 0) {
-      const minHp = Math.min(...foes.map((f) => f.hp));
-      let mostEqualized = 0;
-      for (const f of foes) {
-        if (f.hp > minHp) {
-          const removed = f.hp - minHp;
-          mostEqualized = Math.max(mostEqualized, removed);
-          f.hp = minHp;
-          ctx.vfx?.hit?.(f);
-          ctx.vfx?.spellEffect?.(f, 'corrosive');
-          ctx.vfx?.drainParticles?.(f.pos, ctx.caster.pos);
-        }
-      }
-      ctx.log(`${ctx.caster.name} equalizes the cone to ${minHp} HP.`);
-      if (mostEqualized > 0) heal(ctx, ctx.caster, mostEqualized);
-    }
-    dash(ctx, ctx.caster, { toPoint: p, distance: R(2) });
-  },
-});
-
-registerSpell({
-  name: 'Order Curse Slash',
-  words: ['curse', 'order', 'slash'],
-  actionType: 'main',
-  range: R(20),
-  targeting: 'enemy',
-  dc: 13,
-  description:
-    'Bind an enemy and name an entity it must engage (range 20). On each of its next 3 turns it ' +
-    'gains a stack for failing to move toward that entity and a stack for failing to attack it. ' +
-    'After the third turn it is dealt 2d3 slashing for every stack.',
-  visual: { preset: 'beam', color: 0xf3d08a, size: 7, speed: 1.1 },
-  manualCastVisual: true,
-  async cast(ctx) {
-    if (!ctx.target) return;
-    const enemy = ctx.target;
-    ctx.vfx?.sigil?.(enemy.pos, 0xf3d08a, 104);
-    // Pick the "target entity" the enemy must chase and strike. Any mage is a
-    // legal choice, so take a point and snap to the nearest mage to it.
-    const point = ctx.requestPoint
-      ? await ctx.requestPoint({
-          maxRange: R(99),
-          origin: ctx.caster.pos,
-          prompt: 'Name the entity the enemy must engage',
-        })
-      : null;
-    let entity: Mage | null = null;
-    if (point) {
-      let best = Infinity;
-      for (const m of ctx.game.mages) {
-        if (!m.alive) continue;
-        const d = (m.pos.x - point.x) ** 2 + (m.pos.y - point.y) ** 2;
-        if (d < best) {
-          best = d;
-          entity = m;
-        }
-      }
-    }
-    // Headless / no selection: default to the caster ("come at me").
-    if (!entity) entity = ctx.caster;
-    // A second mark names the entity, so the pairing is readable on the field.
-    ctx.vfx?.sigil?.(entity.pos, 0xffe08a, 88);
-    applyOrderJudgment(ctx, enemy, entity, { evals: 3, perStackSpec: '2d3' });
-  },
-});
-
 // ===========================================================================
 //  FINN'S ADDITIONS — 3-WORD SPELLS   (set: 'finns')
 //  Only available when Finn's Additions is enabled on the start screen.

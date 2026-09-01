@@ -13,8 +13,8 @@ export type WordId =
   | 'twist'
   | 'reality'
   | 'drain'
-  | 'order'
-  | 'slash'
+  | 'heal'
+  | 'sand'
   | 'death'
   | 'fire'
   | 'lightning'
@@ -182,21 +182,21 @@ export const WORDS: Record<WordId, WordDef> = {
     blurb: 'Modifier: lose the rest of your turn, release the spell next turn at 150% power.',
   },
   // --- Secret words (GEN easter-egg loadout only; hidden from the menu grid) ---
-  order: {
-    id: 'order',
-    label: 'Order',
+  heal: {
+    id: 'heal',
+    label: 'Heal',
     grantsReaction: false,
     charges: 4,
     color: 0xf3ecd2,
-    blurb: 'White word. Commands, conditional buffs and action denial.',
+    blurb: 'White word. Restores health.',
   },
-  slash: {
-    id: 'slash',
-    label: 'Slash',
+  sand: {
+    id: 'sand',
+    label: 'Sand',
     grantsReaction: false,
     charges: 4,
-    color: 0xffe08a,
-    blurb: 'Slashing damage in cones, with a dash.',
+    color: 0xe8c98a,
+    blurb: 'White word. Corrosive grit, and it leaves sand behind. Far stronger where sand already lies.',
   },
 };
 
@@ -245,7 +245,8 @@ export const WORD_KIND: Record<WordId, WordKind> = {
   bind: 'verb',
   shatter: 'verb',
   twist: 'verb',
-  slash: 'verb',
+  heal: 'verb',
+  sand: 'verb',
   // Nouns — a thing.
   lightning: 'noun',
   mind: 'noun',
@@ -253,7 +254,6 @@ export const WORD_KIND: Record<WordId, WordKind> = {
   death: 'noun',
   shadow: 'noun',
   reality: 'noun',
-  order: 'noun',
   // Modifiers attach to another spell rather than forming one.
   subtle: 'modifier',
   delay: 'modifier',

@@ -42,7 +42,7 @@ export type SecretPreset = 'NAD' | 'KAT' | 'GEN' | 'SNIFF';
 const PRESET_LOADOUTS: Record<SecretPreset, readonly WordId[]> = {
   NAD: ['mind', 'shatter', 'twist', 'reality'],
   KAT: ['corrode', 'curse', 'shadow', 'drain', 'death'],
-  GEN: ['order', 'curse', 'drain', 'slash'],
+  GEN: ['heal', 'sand', 'corrode', 'pierce', 'shadow'],
   SNIFF: ['pierce', 'mind', 'veil', 'fire', 'lightning'],
 };
 

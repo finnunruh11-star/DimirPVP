@@ -56,6 +56,8 @@ export const MAX_WEAPON_REACTIONS = 2;
 // shadows; standing in one carries no blanket damage bonus of its own.
 export const SHADOW_RADIUS = 95;
 export const SHADOW_TTL = 3; // rounds before a shadow fades
+export const SAND_RADIUS = 110;
+export const SAND_TTL = 6; // sand outlasts shadow: it is terrain, not a spell
 
 // Abstract spell range. Designers pick a comparison number (5 = poor, 10 =
 // average, 15 = good) and the engine converts it to pixels with RANGE_UNIT.

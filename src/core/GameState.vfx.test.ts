@@ -62,9 +62,6 @@ const tests: [name: string, run: () => Promise<void>][] = [
       ['corrode', 'shadow', 'drain'],
       ['corrode', 'drain', 'death'],
       ['shadow', 'drain'],
-      ['drain', 'slash'],
-      ['curse', 'drain', 'slash'],
-      ['drain', 'order', 'slash'],
     ];
     for (const words of immediateDrainCombos) {
       const spell = getSpell(words);
@@ -222,34 +219,6 @@ const tests: [name: string, run: () => Promise<void>][] = [
     events.length = 0;
     teleport(game.effectContext(caster, foe, null), caster, { x: 800, y: 200 });
     equal(events, ['500->800'], 'Shadow teleport phase');
-  }],
-
-  ['sweeps a blade for every Slash cone', async () => {
-    const combos: WordId[][] = [
-      ['slash'],
-      ['curse', 'slash'],
-      ['drain', 'slash'],
-      ['order', 'slash'],
-      ['curse', 'drain', 'slash'],
-      ['drain', 'order', 'slash'],
-    ];
-    for (const words of combos) {
-      const caster = mage('Caster', 1, 300);
-      const foe = mage('Foe', 2, 420);
-      const game = new GameState([caster, foe], 29);
-      let blades = 0;
-      game.vfxSink = {
-        diceRoll: () => undefined,
-        slash: () => { blades += 1; },
-      } satisfies VfxSink;
-      const spell = getSpell(words);
-      assert(spell, `Expected ${words.join('+')} to be registered.`);
-
-      await spell.cast(game.effectContext(caster, null, { x: 500, y: 200 }));
-
-      equal(blades, 1, `${spell.name} blade sweep`);
-      assert(spell.manualCastVisual, `${spell.name} must let its blade be the attack.`);
-    }
   }],
 
   ['flashes every victim caught in an area effect', async () => {
