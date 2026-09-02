@@ -1,4 +1,4 @@
-﻿// =============================================================================
+// =============================================================================
 //  SPELL VISUALS
 // -----------------------------------------------------------------------------
 //  Every cast animation the scene can play: beams, projectiles, novas, conjures,
@@ -531,7 +531,7 @@ export class SpellVfx {
     });
   }
 
-  /** A conjured attack that simply erupts on the target â€” no projectile travel. */
+  /** A conjured attack that simply erupts on the target — no projectile travel. */
   conjure(at: Vec2, v: SpellVisual): Promise<void> {
     return new Promise((resolve) => {
       const speed = v.speed ?? 1;
@@ -670,7 +670,7 @@ export class SpellVfx {
   /**
    * Play a one-shot fx sprite sheet at a location, for ground-targeted spells.
    *  - `apexAtFrom`: anchor the sprite's apex at the caster and extend it toward
-   *    `at` (used for cones â€” the sheet faces left, so its apex is the right edge).
+   *    `at` (used for cones — the sheet faces left, so its apex is the right edge).
    *  - `aim`: rotate a point-centred sheet to face the cast direction.
    *  - `lengthPx`: the on-field size (cone length / blast diameter) in pixels.
    */
