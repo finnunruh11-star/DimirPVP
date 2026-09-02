@@ -1,4 +1,4 @@
-import Phaser from 'phaser';
+﻿import Phaser from 'phaser';
 import { SceneInput } from '../engine/SceneInput';
 import {
   DOCK_LOG,
@@ -67,6 +67,7 @@ import {
 import { TextEntry } from '../ui/cabinet/TextEntry';
 import { addCabinetWindow } from '../ui/cabinet/CabinetWindow';
 import { isReducedMotion, toggleMotionPreference } from '../ui/cabinet/motion';
+import { SpellVfx } from '../visuals/SpellVfx';
 import { playSound, playMusic, type SoundName } from '../audio';
 import {
   ACTIONS_PER_TURN,
@@ -460,7 +461,7 @@ const ANIM_SETS: AnimSet[] = [
 // they load the same way as the mage animation sets above.
 const FX_FRAME_SETS: AnimSet[] = [
   {
-    // A quick single swipe arc — plays on a basic weapon / unarmed strike.
+    // A quick single swipe arc â€” plays on a basic weapon / unarmed strike.
     key: 'fx-slash-arc',
     frames: globFrames(
       import.meta.glob('../../Pixel Art Animations - Slashes/128x128/Slash 1/color5/Frames/*.png', {
@@ -472,7 +473,7 @@ const FX_FRAME_SETS: AnimSet[] = [
     repeat: 0,
   },
   {
-    // A broad crescent sweep — plays on the 180° Cleave.
+    // A broad crescent sweep â€” plays on the 180Â° Cleave.
     key: 'fx-slash-sweep',
     frames: globFrames(
       import.meta.glob('../../Pixel Art Animations - Slashes/128x128/Slash 3/color5/frames/*.png', {
@@ -576,7 +577,7 @@ interface ArenaTheme {
 /**
  * One entry in the context-aware action menu / on-screen action list. The
  * registry that produces these is the single source of truth for "what can I do
- * right now", so adding a new action is just adding one entry — it then shows up
+ * right now", so adding a new action is just adding one entry â€” it then shows up
  * as a clickable button with its label, hotkey badge and description, and stays
  * filtered to only appear when relevant. Hotkeys remain optional shortcuts.
  */
@@ -585,11 +586,11 @@ interface ActionEntry {
   id: string;
   /** Button label, e.g. 'Move' or 'Cast Fireball'. */
   label: string;
-  /** Hotkey badge shown on the button, e.g. 'M' or '1–4 / Enter'. */
+  /** Hotkey badge shown on the button, e.g. 'M' or '1â€“4 / Enter'. */
   hotkey: string;
   /** One-line description of what the action does. */
   desc: string;
-  /** Whether the action can be used right now (false ⇒ greyed out with `reason`). */
+  /** Whether the action can be used right now (false â‡’ greyed out with `reason`). */
   enabled: boolean;
   /** Why the action is unavailable, shown when `enabled` is false. */
   reason?: string;
@@ -612,7 +613,7 @@ function dodgeTierLabel(t: DodgeTier): string {
     case 'quad':
       return 'a perfect evade + free bonus action';
     default:
-      return 'no match — the dodge fails';
+      return 'no match â€” the dodge fails';
   }
 }
 
@@ -897,7 +898,7 @@ export class GameScene extends Phaser.Scene {
   private swamprunGold = 0;
   /** Creatures spawned in the current wave, pending loot when it is cleared. */
   private swamprunWaveEnemies: Mage[] = [];
-  /** Wisp copies (spawned by a living wisp) — these drop no loot. */
+  /** Wisp copies (spawned by a living wisp) â€” these drop no loot. */
   private swamprunWispCopies = new Set<Mage>();
   /**
    * How many arrows each party member OWNS this wave. Every wave is its own
@@ -1108,6 +1109,7 @@ export class GameScene extends Phaser.Scene {
   private spectateAll = false;
   private spectateButton?: CabinetChip;
   private combatSpeed = 1;
+  private spellVfx!: SpellVfx;
   private reducedMotion = false;
   private combatSpeedButton?: CabinetChip;
   // A docked list of every living foe, so overlapping enemies can be targeted
@@ -1435,6 +1437,7 @@ export class GameScene extends Phaser.Scene {
 
     this.gs = new GameState(mages, config.seed);
     this.combatFeedback = new CombatFeedbackLayer(this, () => this.reducedMotion);
+    this.spellVfx = new SpellVfx(this, () => this.reducedMotion, () => this.combatSpeed);
     if (this.raid && this.raidBoss === 'reaper' && !canSpawnReaper(this.swamprunPartySize())) {
       this.raidBoss = 'lich';
       this.gs.log('The Reaper requires at least two party members. The Lich answers this solo Raid instead.');
@@ -1472,7 +1475,7 @@ export class GameScene extends Phaser.Scene {
       ) return;
       this.expeditionXpEnemies.add(target);
       this.addExpeditionXp(1);
-      this.gs.log(`${target.name} defeated — +1 XP.`);
+      this.gs.log(`${target.name} defeated â€” +1 XP.`);
       this.updateWaveHud();
     };
     this.gs.vfxSink = {
@@ -1485,11 +1488,11 @@ export class GameScene extends Phaser.Scene {
       },
       blink: (from, to, color) => {
         playSound('spell.blink');
-        this.vfxBlink(from, to, color);
+        this.spellVfx.blink(from, to, color);
       },
       slash: (at, angle, size) => {
         playSound('melee.slash');
-        void this.vfxSlash('fx-slash-arc', at, angle, size);
+        void this.spellVfx.slash('fx-slash-arc', at, angle, size);
       },
       pull: (mover, from, to) => {
         playSound('spell.pull');
@@ -1512,7 +1515,7 @@ export class GameScene extends Phaser.Scene {
       },
       boomerang: (from, to, color, size, speed) => {
         playSound('melee.slash');
-        return this.vfxBoomerang(from, to, color, size, speed);
+        return this.spellVfx.boomerang(from, to, color, size, speed);
       },
       summonPuff: (at, size) => {
         this.pendingSounds.push('spell.summon');
@@ -1527,10 +1530,10 @@ export class GameScene extends Phaser.Scene {
         this.queueImpact(mage, feedback);
       },
       shatterBurst: (at, size) => {
-        void this.vfxSpriteAt('fx-shatter', at, { lengthPx: size });
+        void this.spellVfx.spriteAt('fx-shatter', at, { lengthPx: size });
       },
       wedge: (apex, angle, halfAngle, range) => {
-        this.vfxWedge(apex, angle, halfAngle, range);
+        this.spellVfx.wedge(apex, angle, halfAngle, range);
       },
       lightningTrail: (segments) => this.setLightningTrail(segments),
       lightningDash: async (from, to, color) => {
@@ -1551,13 +1554,13 @@ export class GameScene extends Phaser.Scene {
       clearLightningTrail: () => this.clearLightningTrail(),
       quarterTurn: (clockwise) => {
         playSound('spell.cast');
-        this.vfxQuarterTurn(clockwise);
+        this.spellVfx.quarterTurn(clockwise);
       },
       boom: () => this.pendingSounds.push('spell.explode'),
       thunder: () => playSound('spell.thunder'),
       twistRune: (pivot, radius, clockwise) => {
         playSound('spell.cast');
-        this.vfxTwistRune(pivot, radius, clockwise);
+        this.spellVfx.twistRune(pivot, radius, clockwise);
       },
     };
     this.gs.subTargeter = {
@@ -1653,10 +1656,10 @@ export class GameScene extends Phaser.Scene {
       );
       if (sides.size < 2) {
         this.gs.victorySuspended = true;
-        this.gs.log('Only one side is present — victory checks are off. Press [P] to edit the fight.');
+        this.gs.log('Only one side is present â€” victory checks are off. Press [P] to edit the fight.');
       }
       this.gs.log(
-        `Memory loaded — "${this.memoryName}" (round ${this.gs.round}, ${this.gs.mages.length} entities).`
+        `Memory loaded â€” "${this.memoryName}" (round ${this.gs.round}, ${this.gs.mages.length} entities).`
       );
       this.startTurn();
       return;
@@ -1689,7 +1692,7 @@ export class GameScene extends Phaser.Scene {
         if (this.opponentLeft) return;
       } else {
         for (const mage of this.gs.mages) mage.assignFlatStats(4);
-        this.gs.log('Quick start — all stats are 4 and the party enters without starting gear.');
+        this.gs.log('Quick start â€” all stats are 4 and the party enters without starting gear.');
       }
       if (this.mineRun) {
         await this.setupMineExploration();
@@ -1715,7 +1718,7 @@ export class GameScene extends Phaser.Scene {
     for (const m of this.gs.mages) m.resetDodges();
     for (const m of this.gs.mages) m.resetCombatReactions();
     this.applyTrainingEnemyKind(this.mageByTeam(2), this.trainEnemyKind);
-    this.gs.log('Training sandbox — press [P] to open the training tools.');
+    this.gs.log('Training sandbox â€” press [P] to open the training tools.');
   }
 
   /** Scenario Lab: playable mages with flat stats, ready to be reshaped by hand. */
@@ -1727,7 +1730,7 @@ export class GameScene extends Phaser.Scene {
       m.resetDodges();
       m.resetCombatReactions();
     }
-    this.gs.log('Scenario Lab — press [P] to add entities, move them, kit them out, and save.');
+    this.gs.log('Scenario Lab â€” press [P] to add entities, move them, kit them out, and save.');
     this.gs.log('Victory checks are off while you build; switch them on in the lab to test the fight.');
   }
 
@@ -1755,10 +1758,10 @@ export class GameScene extends Phaser.Scene {
     for (const mage of this.gs.mages) mage.swamprunCurse = undefined;
     this.gs.log(
       this.mineRun
-        ? 'Mine Run — stone shifts in the dark. Survive as long as you can.'
+        ? 'Mine Run â€” stone shifts in the dark. Survive as long as you can.'
         : this.raid
-          ? `Raid — prepare against the effigies, then summon ${ENEMY_DEFS[this.raidBoss].name} when you are ready.`
-          : 'Swamprun — the swamp stirs. Survive as long as you can.'
+          ? `Raid â€” prepare against the effigies, then summon ${ENEMY_DEFS[this.raidBoss].name} when you are ready.`
+          : 'Swamprun â€” the swamp stirs. Survive as long as you can.'
     );
     this.spawnWave(1);
   }
@@ -1778,7 +1781,7 @@ export class GameScene extends Phaser.Scene {
     this.minePickaxes = [2];
     this.mineChestCursor = 0;
     this.mode = 'shop';
-    this.gs.log('Mine Run — the party enters a branching tunnel with one worn pickaxe (2 durability).');
+    this.gs.log('Mine Run â€” the party enters a branching tunnel with one worn pickaxe (2 durability).');
     this.updateWaveHud();
     this.redraw();
     await this.runMineExploration();
@@ -1829,7 +1832,7 @@ export class GameScene extends Phaser.Scene {
       this.gs.log(`The party's light reveals a ${spec} tunnel trap before it springs.`);
       await this.promptMineChoice(
         'TRAP SPOTTED',
-        `Active light reveals the mechanism  •  ${Math.round(dodgeChance * 100)}% evade chance`,
+        `Active light reveals the mechanism  â€¢  ${Math.round(dodgeChance * 100)}% evade chance`,
         `${target.name} sees the danger in time and prepares to cross the trapped passage.`,
         [{ id: 'dodge', label: 'Attempt to evade', color: '#9fe6a0' }]
       );
@@ -1866,7 +1869,7 @@ export class GameScene extends Phaser.Scene {
     }
     await this.promptMineChoice(
       spotted ? 'TRAP SPRINGS' : 'TUNNEL TRAP',
-      `${Math.round(dodgeChance * 100)}% evade chance failed  •  ${spec} rolled ${amount} damage.`,
+      `${Math.round(dodgeChance * 100)}% evade chance failed  â€¢  ${spec} rolled ${amount} damage.`,
       `${target.name} has ${target.hp}/${target.maxHp} HP remaining. The spent mechanism cannot trigger again.`,
       [{ id: 'continue', label: 'Keep moving', color: '#ffcf7a' }]
     );
@@ -1981,7 +1984,7 @@ export class GameScene extends Phaser.Scene {
     const amount = revealMineOre(room, this.gs.rng);
     const choice = await this.promptMineChoice(
       `${ore.name.toUpperCase()} DEPOSIT`,
-      `d3 reveals ${amount} vein${amount === 1 ? '' : 's'}  •  Mining value ${ore.miningValue}  •  Collapse after ${ore.failCount} failed strikes`,
+      `d3 reveals ${amount} vein${amount === 1 ? '' : 's'}  â€¢  Mining value ${ore.miningValue}  â€¢  Collapse after ${ore.failCount} failed strikes`,
       this.minePickaxes.length
         ? `Pickaxe durability: ${this.minePickaxes.join(', ')}. Each vein receives repeated d20 strikes until its total reaches ${ore.miningValue}. A natural 1 or 2 costs one durability.`
         : 'The party has no pickaxe. This deposit can be left intact and mined after finding a shop.',
@@ -2006,7 +2009,7 @@ export class GameScene extends Phaser.Scene {
     this.updateWaveHud();
     await this.promptMineChoice(
       `${ore.name.toUpperCase()} MINING RESULT`,
-      `${result.extracted} extracted  •  ${result.collapsed} collapsed  •  ${remaining} left  •  +${result.gold}g`,
+      `${result.extracted} extracted  â€¢  ${result.collapsed} collapsed  â€¢  ${remaining} left  â€¢  +${result.gold}g`,
       `${summary}\n\nPickaxe durability: ${this.minePickaxes.join(', ') || 'none'}.`,
       [{ id: 'continue', label: remaining > 0 ? 'Leave remaining ore' : 'Leave the deposit', color: '#9fe6a0' }],
       room
@@ -2034,7 +2037,7 @@ export class GameScene extends Phaser.Scene {
     for (;;) {
       const choice = await this.promptMineChoice(
         'MINE SUPPLY ROOM',
-        `Party gold: ${this.swamprunGold}g  •  Pickaxes: ${this.minePickaxes.join(', ') || 'none'}`,
+        `Party gold: ${this.swamprunGold}g  â€¢  Pickaxes: ${this.minePickaxes.join(', ') || 'none'}`,
         `A new pickaxe costs ${MINE_PICKAXE_COST}g and begins at 10 durability. The supply counter carries the complete Swamp Run shop stock.`,
         [
           {
@@ -2088,10 +2091,10 @@ export class GameScene extends Phaser.Scene {
     const title = node.kind === 'room'
       ? `LEAVE ROOM  //  STEP ${this.mineMaze?.steps ?? 0}`
       : `MINE MAP  //  STEP ${this.mineMaze?.steps ?? 0}`;
-    const subtitle = `Encounters cleared: ${this.swamprunWave}  •  Party gold: ${this.swamprunGold}g  •  Pickaxes: ${this.minePickaxes.length ? this.minePickaxes.join('/') : 'none'}`;
+    const subtitle = `Encounters cleared: ${this.swamprunWave}  â€¢  Party gold: ${this.swamprunGold}g  â€¢  Pickaxes: ${this.minePickaxes.length ? this.minePickaxes.join('/') : 'none'}`;
     this.mode = 'shop';
     if (this.online && this.localSeat !== 0) {
-      this.drawMineNavigationPrompt(node, title, `${subtitle}  •  Waiting for the party leader.`, false);
+      this.drawMineNavigationPrompt(node, title, `${subtitle}  â€¢  Waiting for the party leader.`, false);
       for (;;) {
         const message = await this.net!.recv();
         if (message.k === 'bye') return null;
@@ -2127,7 +2130,7 @@ export class GameScene extends Phaser.Scene {
     if (available.length === 0) return '';
     this.mode = 'shop';
     if (this.online && this.localSeat !== 0) {
-      this.drawMinePrompt(title, `${subtitle}  •  Waiting for the party leader.`, body, [], visual);
+      this.drawMinePrompt(title, `${subtitle}  â€¢  Waiting for the party leader.`, body, [], visual);
       for (;;) {
         const message = await this.net!.recv();
         if (message.k === 'bye') return '';
@@ -2530,7 +2533,7 @@ export class GameScene extends Phaser.Scene {
         await this.promptExpeditionColorIdentity(player);
       });
     }
-    this.gs.log('Expedition — enter the swamp, choose your depth, and make it back alive.');
+    this.gs.log('Expedition â€” enter the swamp, choose your depth, and make it back alive.');
     this.spawnWave(1);
   }
 
@@ -2551,24 +2554,24 @@ export class GameScene extends Phaser.Scene {
       if (this.raidPrepActive) {
         this.swamprunEncounterPower = def.power;
         this.gs.log(
-          `— RAID PREPARATION — equip your gear and build your stacks on the effigies. They cannot fight back and always return. Health, mana, and word charges refill for free from the action menu; summon ${def.name} there when you are ready. —`
+          `â€” RAID PREPARATION â€” equip your gear and build your stacks on the effigies. They cannot fight back and always return. Health, mana, and word charges refill for free from the action menu; summon ${def.name} there when you are ready. â€”`
         );
         for (let i = 0; i < RAID_PREP_EFFIGIES; i++) this.spawnRaidEffigy();
       } else {
         this.swamprunEncounterPower = def.power;
-        this.gs.log(`— RAID: ${def.name} —`);
+        this.gs.log(`â€” RAID: ${def.name} â€”`);
         this.raidTarget = this.spawnEnemy(this.raidBoss);
       }
     } else if (this.mineRun) {
       const spawns = mineWaveComposition(n, this.gs.rng, partySize);
-      this.gs.log(`— Mine encounter ${n}: ${spawns.length} foe${spawns.length === 1 ? '' : 's'} in the room —`);
+      this.gs.log(`â€” Mine encounter ${n}: ${spawns.length} foe${spawns.length === 1 ? '' : 's'} in the room â€”`);
       for (const spawn of spawns) this.spawnMineEnemy(spawn);
     } else {
       const encounter = rollSwamprunEncounter(n, this.gs.rng, partySize);
       this.swamprunEncounterPower = encounter.power;
       const region = encounter.deep ? 'Deep Swamps' : 'Standard Swamps';
       this.gs.log(
-        `— ${region}, ${encounter.depth}m — Power ${encounter.power}; ${encounter.kinds.length} foe${encounter.kinds.length === 1 ? '' : 's'} emerge! —`
+        `â€” ${region}, ${encounter.depth}m â€” Power ${encounter.power}; ${encounter.kinds.length} foe${encounter.kinds.length === 1 ? '' : 's'} emerge! â€”`
       );
       for (const kind of encounter.kinds) this.spawnEnemy(kind);
     }
@@ -2766,7 +2769,7 @@ export class GameScene extends Phaser.Scene {
     const def = ENEMY_DEFS[this.raidBoss];
     this.swamprunEncounterPower = def.power;
     this.raidTarget = this.spawnEnemy(this.raidBoss);
-    this.gs.log(`— Effigies removed. ${def.name} enters combat. —`);
+    this.gs.log(`â€” Effigies removed. ${def.name} enters combat. â€”`);
     this.syncMageSprites();
     this.updateWaveHud();
     this.redraw();
@@ -2852,7 +2855,7 @@ export class GameScene extends Phaser.Scene {
   /**
    * Between-wave interlude: auto-sell the fallen wave's loot for gold, patch the
    * survivors up, let them shop, then unleash the next wave. Clearing a wave
-   * never ends the run — it only opens the shop and escalates.
+   * never ends the run â€” it only opens the shop and escalates.
    */
   private async runWaveInterlude(): Promise<boolean> {
     if (this.swamprunInterludeActive) return false;
@@ -2972,7 +2975,7 @@ export class GameScene extends Phaser.Scene {
       const shares = grossGold - singlePlayerGold;
       for (const player of players) this.addExpeditionGold(player, playerGold);
       this.swamprunWaveEnemies = [];
-      const drops = tally.length ? ` — salvage: ${tally.join(', ')}` : '';
+      const drops = tally.length ? ` â€” salvage: ${tally.join(', ')}` : '';
       const shareText = shares > 0 ? ` (${shares}g paid to permanent recruits)` : '';
       this.gs.log(
         `Wave ${this.swamprunWave} cleared! ${kills} XP earned. Each player receives ${playerGold}g (${Math.round(playerRate * 100)}%)${shareText}${drops}.`
@@ -2984,7 +2987,7 @@ export class GameScene extends Phaser.Scene {
     gold += supplyGold;
     this.swamprunGold += gold;
     this.swamprunWaveEnemies = [];
-    const drops = tally.length ? ` — salvage: ${tally.join(', ')}` : '';
+    const drops = tally.length ? ` â€” salvage: ${tally.join(', ')}` : '';
     const supplyText = supplyGold > 0 ? ` (${supplyGold}g party supplies)` : '';
     this.gs.log(
       `${this.mineRun ? 'Encounter' : 'Wave'} ${this.swamprunWave} cleared! Sold loot for ${gold}g${supplyText}${drops}. Party gold: ${this.swamprunGold}g.`
@@ -3236,7 +3239,7 @@ export class GameScene extends Phaser.Scene {
           : `Mine Run  Maze step ${this.mineMaze?.steps ?? 0}  Encounters: ${this.swamprunWave}  Gold: ${this.swamprunGold}g  Pickaxes: ${this.minePickaxes.join(', ') || 'none'}`
         : this.raid
           ? this.raidPrepActive
-            ? `RAID PREP  Effigies: ${alive}  Action menu → free restores  •  Summon ${ENEMY_DEFS[this.raidBoss].name} when ready`
+            ? `RAID PREP  Effigies: ${alive}  Action menu â†’ free restores  â€¢  Summon ${ENEMY_DEFS[this.raidBoss].name} when ready`
             : `RAID  ${ENEMY_DEFS[this.raidBoss].name}  ${this.raidTarget?.alive ? 'ACTIVE' : 'DEFEATED'}  Foes: ${alive}`
           : `${swamprunDepth(this.swamprunWave)}m  Power ${this.swamprunEncounterPower}  Foes: ${alive}  Gold: ${this.swamprunGold}g${this.swamprunCurse ? `  Curse: ${this.swamprunCurse}` : ''}`;
     if (!this.swamprunHudText) {
@@ -4100,7 +4103,7 @@ export class GameScene extends Phaser.Scene {
       title: this.mineRun
         ? `${mage.name.toUpperCase()} / MINE SUPPLY SHOP`
         : `${mage.name.toUpperCase()} / WAVE ${this.swamprunWave} SHOP`,
-      subtitle: `Party gold ${this.swamprunGold}g / Carry ${mage.carriedWeight()}/${Number.isFinite(capacity) ? capacity : '∞'}kg${overCapacity ? ' / OVER CAPACITY' : ''}`,
+      subtitle: `Party gold ${this.swamprunGold}g / Carry ${mage.carriedWeight()}/${Number.isFinite(capacity) ? capacity : 'âˆž'}kg${overCapacity ? ' / OVER CAPACITY' : ''}`,
       message: this.swampShopMsg,
       mode,
       gold: this.swamprunGold,
@@ -4181,9 +4184,9 @@ export class GameScene extends Phaser.Scene {
       if (m.team === 1 && m.alive) m.swamprunRest(this.gs.rng);
     }
     this.gs.log(
-      `${mage.name} calls a rest for ${SWAMP_REST_COST}g — the party recovers. Party gold: ${this.swamprunGold}g.`
+      `${mage.name} calls a rest for ${SWAMP_REST_COST}g â€” the party recovers. Party gold: ${this.swamprunGold}g.`
     );
-    return 'Party rested — half HP, mana, sanity and word charges restored.';
+    return 'Party rested â€” half HP, mana, sanity and word charges restored.';
   }
 
   /** Buy a +1d3 to a chosen stat. Each purchase this shop raises the next by 1g. */
@@ -4328,14 +4331,14 @@ export class GameScene extends Phaser.Scene {
     this.gs.log(`Stat dice: ${this.statDice.map((d) => `${d.spec}=${d.value}`).join(', ')}`);
 
     if (this.online && this.net) {
-      // AI seats allocate deterministically on every client — no network needed.
+      // AI seats allocate deterministically on every client â€” no network needed.
       for (const m of this.gs.mages) {
         if (m.isAI) m.applyStatAllocation(this.statDice, aiAssignment(this.statDice));
       }
       const humanCount = this.gs.mages.filter((m) => !m.isAI).length;
       const mySeat = this.localSeat;
       const myMage = this.mageBySeat(mySeat);
-      const myOrder = await this.promptAssignment(`${myMage.name} — assign your dice`);
+      const myOrder = await this.promptAssignment(`${myMage.name} â€” assign your dice`);
       if (this.opponentLeft) return;
       this.net.send({ k: 'assign', seat: mySeat, order: myOrder });
       this.showAssignWaiting();
@@ -4357,7 +4360,7 @@ export class GameScene extends Phaser.Scene {
         if (m.isAI) {
           m.applyStatAllocation(this.statDice, aiAssignment(this.statDice));
         } else {
-          const order = await this.promptAssignment(`${m.name} — assign your dice`);
+          const order = await this.promptAssignment(`${m.name} â€” assign your dice`);
           m.applyStatAllocation(this.statDice, order);
         }
       }
@@ -4594,7 +4597,7 @@ export class GameScene extends Phaser.Scene {
       if (m.arrows > 0) worn.push(`${m.arrows} arrows`);
       const bag = m.bag.map((id) => getItem(id).name);
       const bagText = bag.length ? `   (in bag: ${bag.join(', ')})` : '';
-      this.gs.log(`${m.name} equips — ${worn.length ? worn.join(', ') : 'nothing'}.${bagText}`);
+      this.gs.log(`${m.name} equips â€” ${worn.length ? worn.join(', ') : 'nothing'}.${bagText}`);
     }
   }
 
@@ -4679,15 +4682,15 @@ export class GameScene extends Phaser.Scene {
     const rarityName = rarity.charAt(0).toUpperCase() + rarity.slice(1);
     const gambler = this.gamblerResolve !== null;
     const title = gambler
-      ? `${this.shopMage.name} — Gambler's Blade (${this.gamblerRound}/${this.gamblerTotal})`
+      ? `${this.shopMage.name} â€” Gambler's Blade (${this.gamblerRound}/${this.gamblerTotal})`
       : this.swampStartDraftActive
-        ? `${this.shopMage.name} — Choose a starting item`
-        : `${this.shopMage.name} — Draft ${this.shopRound}/${DRAFT_ROUNDS}`;
+        ? `${this.shopMage.name} â€” Choose a starting item`
+        : `${this.shopMage.name} â€” Draft ${this.shopRound}/${DRAFT_ROUNDS}`;
     const count = gambler ? 3 : this.shopOptions.length;
     this.shopPanel?.destroy();
     this.shopPanel = new ItemDraftView(this, {
       title,
-      subtitle: `A ${rarityName} set appears — choose one of ${count} (carry ${cap}kg).`,
+      subtitle: `A ${rarityName} set appears â€” choose one of ${count} (carry ${cap}kg).`,
       options: this.shopLocked ? [] : this.shopOptions,
       picks: this.shopPicks,
       locked: this.shopLocked,
@@ -4774,7 +4777,7 @@ export class GameScene extends Phaser.Scene {
   private async startTurn(): Promise<void> {
     if (this.mineRun && this.mineExploring) return;
     // Swamprun: if the last wave has fallen, the between-wave interlude (loot +
-    // shop + next wave) runs before we check for a match end — clearing a wave
+    // shop + next wave) runs before we check for a match end â€” clearing a wave
     // never ends the run.
     if (this.swamprunWaveCleared() && (await this.runWaveInterlude())) return this.startTurn();
     if (this.gs.isOver) return this.endGame();
@@ -4813,7 +4816,7 @@ export class GameScene extends Phaser.Scene {
     // recoils it queued right away as the HP changes become visible.
     this.flushHits();
 
-    // Swamprun: a creature's own turn-start DoT tick can empty the board — run
+    // Swamprun: a creature's own turn-start DoT tick can empty the board â€” run
     // the interlude rather than declaring the run over, and skip a creature that
     // just died.
     if (this.swamprunWaveCleared() && (await this.runWaveInterlude())) return this.startTurn();
@@ -5066,7 +5069,7 @@ export class GameScene extends Phaser.Scene {
         y: Math.min(FIELD.y + FIELD.h - 20, Math.max(FIELD.y + 20, res.summonAt.y)),
       };
       this.spawnEnemy('zombie', at);
-      await this.vfxSummonPuff(at, MAGE_RADIUS * 3.2);
+      await this.spellVfx.summonPuff(at, MAGE_RADIUS * 3.2);
     }
     this.redraw();
     await this.delay(300);
@@ -5102,7 +5105,7 @@ export class GameScene extends Phaser.Scene {
           y: Math.min(FIELD.y + FIELD.h - 20, Math.max(FIELD.y + 20, knight.y + Math.sin(angle) * radius)),
         };
         this.spawnEnemy(kinds[index], at);
-        summonPuffs.push(this.vfxSummonPuff(at, MAGE_RADIUS * 3.2));
+        summonPuffs.push(this.spellVfx.summonPuff(at, MAGE_RADIUS * 3.2));
       }
       await Promise.all(summonPuffs);
       this.gs.log(
@@ -5173,11 +5176,11 @@ export class GameScene extends Phaser.Scene {
       case 'scarab':
         me.spend(me.attackIsBonusAction() ? 'bonus' : 'main');
         this.gs.attackScarab(me, d.scarab);
-        await this.vfxBurst({ x: d.scarab.x, y: d.scarab.y }, 0xffffff, 24, 1.2);
+        await this.spellVfx.burst({ x: d.scarab.x, y: d.scarab.y }, 0xffffff, 24, 1.2);
         this.redraw();
         break;
       case 'power': {
-        // A bespoke Lich power: costs a main action, but no mana / charges / DC —
+        // A bespoke Lich power: costs a main action, but no mana / charges / DC â€”
         // it always resolves. Resolved straight through the stack.
         me.spend('main');
         await this.runStack(this.gs.makeSpellItem(me, d.spell, d.target, null));
@@ -5268,7 +5271,7 @@ export class GameScene extends Phaser.Scene {
     return this.gs.mages.find((m) => m.team === team) ?? this.gs.mages[0];
   }
 
-  /** A mage's seat index (its position in the shared mage list) — the wire id. */
+  /** A mage's seat index (its position in the shared mage list) â€” the wire id. */
   private seatOf(m: Mage): number {
     return this.gs.mages.indexOf(m);
   }
@@ -5293,7 +5296,7 @@ export class GameScene extends Phaser.Scene {
     void this.applyTurnCommand(cmd);
   }
 
-  /** Apply a turn command — spending costs and running the stack identically on both peers. */
+  /** Apply a turn command â€” spending costs and running the stack identically on both peers. */
   private async applyTurnCommand(
     cmd: TurnCommand,
     opts: { actor?: Mage; freeBonus?: boolean; queueOnly?: boolean } = {}
@@ -5351,7 +5354,7 @@ export class GameScene extends Phaser.Scene {
           me.channeledCast = { spell, target: aimed, point, point2, modifiers: mods };
           me.actions = { move: 0, main: 0, bonus: 0 };
           this.gs.log(
-            `${me.name} begins channelling ${spell.name} — they can do nothing else until it breaks free.`
+            `${me.name} begins channelling ${spell.name} â€” they can do nothing else until it breaks free.`
           );
           break;
         }
@@ -5623,7 +5626,7 @@ export class GameScene extends Phaser.Scene {
         const firstAbility = abilityIds.length ? getItem(abilityIds[0]).weaponAbility : undefined;
         const weaponActionLabel =
           firstAbility === 'blackBellMode'
-            ? `Black Bell — ${me.blackBellCondense ? 'Condense' : 'Toll'}`
+            ? `Black Bell â€” ${me.blackBellCondense ? 'Condense' : 'Toll'}`
             : firstAbility === 'shadowDaggerTeleport'
               ? 'Dagger of Shadow'
             : 'Weapon Action';
@@ -5704,7 +5707,7 @@ export class GameScene extends Phaser.Scene {
             description: `${me.name} focuses.`,
             resolve: (game) => {
               game.log(
-                `${me.name} focuses — the next word spell this turn costs half mana and rolls its DC twice.`
+                `${me.name} focuses â€” the next word spell this turn costs half mana and rolls its DC twice.`
               );
             },
           })
@@ -5715,14 +5718,14 @@ export class GameScene extends Phaser.Scene {
         spend('main');
         me.cleaveUsed = true;
         const aim = { x: cmd.x, y: cmd.y };
-        // A broad crescent sweep in front of the swinger dresses the 180° arc.
+        // A broad crescent sweep in front of the swinger dresses the 180Â° arc.
         const reach = me.activeWeapon()?.rangePx ?? MELEE_RANGE;
         const dir = Math.atan2(aim.y - me.pos.y, aim.x - me.pos.x);
         const center = {
           x: me.pos.x + Math.cos(dir) * reach * 0.55,
           y: me.pos.y + Math.sin(dir) * reach * 0.55,
         };
-        void this.vfxSlash('fx-slash-sweep', center, dir, reach * 2.6);
+        void this.spellVfx.slash('fx-slash-sweep', center, dir, reach * 2.6);
         await runAction(
           this.gs.makeActionItem({
             source: me,
@@ -6063,7 +6066,7 @@ export class GameScene extends Phaser.Scene {
       this.gs.restoreEdgelordCaptives().length > 0
     ) this.syncMageSprites();
     // Swamprun: if the acting player's blow cleared the wave, run the between-wave
-    // interlude (loot + shop + next wave) before the game-over check — otherwise
+    // interlude (loot + shop + next wave) before the game-over check â€” otherwise
     // the run would freeze on an empty board.
     const restartedCombat = this.swamprunWaveCleared() ? await this.runWaveInterlude() : false;
     if (this.gs.isOver) {
@@ -6146,13 +6149,13 @@ export class GameScene extends Phaser.Scene {
         spec: '1d20',
         total: roll.total,
         rolls: roll.rolls,
-        label: 'Subtle — silent?',
+        label: 'Subtle â€” silent?',
         seq: this.vfxSeq++,
       },
     ];
     item.silent = roll.total >= 11;
     this.gs.log(
-      `${item.source.name} casts subtly: 1d20=${roll.total} vs DC 11 — ${
+      `${item.source.name} casts subtly: 1d20=${roll.total} vs DC 11 â€” ${
         item.silent ? 'utterly silent; nothing may answer it.' : 'the casting is heard.'
       }`
     );
@@ -6180,7 +6183,7 @@ export class GameScene extends Phaser.Scene {
    * steps of a multi-step spell) so opponents may spend their reaction against a
    * synthetic no-op trigger. Reuses the normal stack-resolution loop so any
    * reaction cast here resolves exactly as it would during a regular action.
-   * Only counter-magic is offered — never a Dodge/Block/Bash (nothing to defend).
+   * Only counter-magic is offered â€” never a Dodge/Block/Bash (nothing to defend).
    */
   private async offerReactionWindow(
     source: Mage,
@@ -6196,7 +6199,7 @@ export class GameScene extends Phaser.Scene {
     });
     trigger.noPhysicalReaction = true;
     if (opts.at) trigger.targetPoint = opts.at;
-    // Skip the window entirely when nobody could answer it — keeps play snappy
+    // Skip the window entirely when nobody could answer it â€” keeps play snappy
     // and avoids exchanging empty reaction messages online. Deterministic on
     // both peers because it reads only shared game state.
     if (!this.reactorsFor(trigger).some((r) => this.reactorCanRespond(r, trigger))) return;
@@ -6217,7 +6220,7 @@ export class GameScene extends Phaser.Scene {
    * windows ({@link offerReactionWindow}) can re-enter the exact same logic.
    */
   private async resolveStackLoop(): Promise<void> {
-    // `${itemId}:${seat}` — a reactor has already had its window on that item.
+    // `${itemId}:${seat}` â€” a reactor has already had its window on that item.
     const passed = new Set<string>();
     while (this.gs.stack.length > 0) {
       const top = this.gs.stack[this.gs.stack.length - 1];
@@ -6433,11 +6436,11 @@ export class GameScene extends Phaser.Scene {
       return item;
     }
 
-    // Ground covered since the attack was declared beats it outright — this is
+    // Ground covered since the attack was declared beats it outright â€” this is
     // what makes a movement spell answer a swing, an arrow or a bolt.
     if (this.gs.attackEvaded(item)) {
       this.gs.log(
-        `${item.target?.name ?? 'The target'} is already gone — ${item.label} strikes empty ground.`
+        `${item.target?.name ?? 'The target'} is already gone â€” ${item.label} strikes empty ground.`
       );
       if (item.kind === 'spell') this.setCharging(item.source, false);
       await this.delay(150);
@@ -6480,7 +6483,7 @@ export class GameScene extends Phaser.Scene {
     this.gs.resolvingSpell = null;
     // A hostile single-target spell that dealt no instant damage (no hit overlay
     // was queued for its foe) paints the "disrupt" sheet on the target instead,
-    // so pure control spells (Mind, Bind, Twist, …) still read as landing.
+    // so pure control spells (Mind, Bind, Twist, â€¦) still read as landing.
     if (item.kind === 'spell' && item.spell?.targeting === 'enemy' && item.target) {
       const struck = this.pendingEffects.some((e) => e.mage === item.target);
       if (!struck) {
@@ -6488,7 +6491,7 @@ export class GameScene extends Phaser.Scene {
         this.pendingSounds.push('spell.impact');
       }
     }
-    // 3) Show the dice that were rolled (roll → settle → linger), then the
+    // 3) Show the dice that were rolled (roll â†’ settle â†’ linger), then the
     //    HP/sanity changes become visible on the next redraw.
     await this.playPendingDice();
     // 4) Now that the damage dice have settled, play the recoil on anyone hit,
@@ -6521,7 +6524,7 @@ export class GameScene extends Phaser.Scene {
       spec: focused ? '2d20 (keep higher)' : '1d20',
       total: best.total,
       rolls: naturalRolls,
-      label: `${spell.name} — success?${focused ? ' (focus)' : ''}`,
+      label: `${spell.name} â€” success?${focused ? ' (focus)' : ''}`,
       seq: this.vfxSeq++,
     });
     let ok = Dev.autoSuccess || best.total >= dc;
@@ -6533,7 +6536,7 @@ export class GameScene extends Phaser.Scene {
       luckSpent = source.spendLuck(dc - best.total);
       ok = true;
     }
-    const luckNote = luckSpent > 0 ? ` (+${luckSpent} luck → ${source.luck} left)` : '';
+    const luckNote = luckSpent > 0 ? ` (+${luckSpent} luck â†’ ${source.luck} left)` : '';
     // A natural 20 on the kept die is a critical: the spell's damage (or its
     // area / duration) is doubled during resolution. Spells flagged noCrit
     // (Life / Hexcraft class variants) succeed on a 20 but never double.
@@ -6542,7 +6545,7 @@ export class GameScene extends Phaser.Scene {
       ? `2d20=[${naturalRolls.join(', ')}], kept ${best.total}`
       : `1d20=${best.total}`;
     this.gs.log(
-      `${source.name}'s ${spell.name}: ${rollText} vs DC ${dc} — ${ok ? 'success!' : 'fizzles.'}${luckNote}${crit ? ' CRITICAL — natural 20!' : ''}`
+      `${source.name}'s ${spell.name}: ${rollText} vs DC ${dc} â€” ${ok ? 'success!' : 'fizzles.'}${luckNote}${crit ? ' CRITICAL â€” natural 20!' : ''}`
     );
     // A failed spell can still pay out through gear (Soul Battery / Locket / Tantrum).
     if (!ok) {
@@ -6598,7 +6601,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Every living enemy of `top.source`, ordered by initiative — the sequence in
+   * Every living enemy of `top.source`, ordered by initiative â€” the sequence in
    * which they are offered a reaction window against the action.
    */
   private reactorsFor(top: StackItem): Mage[] {
@@ -6625,7 +6628,7 @@ export class GameScene extends Phaser.Scene {
   /**
    * True if `reactor` may open a reaction window against `top`. A single window
    * offers every reaction the mage can afford: a counter-spell / colour ability,
-   * the Needle of Serenity, and — when `top` is an attack aimed at the reactor —
+   * the Needle of Serenity, and â€” when `top` is an attack aimed at the reactor â€”
    * a Dodge, Block or shield-Bash.
    */
   private reactorCanRespond(reactor: Mage, top: StackItem): boolean {
@@ -6635,15 +6638,15 @@ export class GameScene extends Phaser.Scene {
     if (!top.allowCurrentReaction && reactor === this.gs.current) return false;
     if (!top.allowCurrentReaction && reactor === this.puppet?.owner) return false;
     // Physical reactions are meaningless against non-attack triggers (end of
-    // turn, a blink step) — only counter-magic answers those.
+    // turn, a blink step) â€” only counter-magic answers those.
     const physical = !top.noPhysicalReaction && this.isIncomingAttack(top, reactor);
     // A Dexterity dodge is a separate per-combat resource, independent of the
-    // single reaction allowed each turn cycle — offer it whenever it is ready.
+    // single reaction allowed each turn cycle â€” offer it whenever it is ready.
     if (physical && this.canDodge(reactor)) return true;
     // Every other reaction spends the one reaction available per turn cycle.
     if (reactor.reactedThisCycle) return false;
     if (this.canNeedle(reactor, top)) return true;
-    // Open the window whenever the mage still has their reaction available —
+    // Open the window whenever the mage still has their reaction available â€”
     // even if temporarily out of mana or charges. The cast attempt will fail
     // inside castReaction with the real reason rather than a misleading one.
     if (reactor.hasReaction()) return true;
@@ -6678,7 +6681,7 @@ export class GameScene extends Phaser.Scene {
 
   /**
    * True if the reactor can spend a Needle of Serenity on `top`. The Needle only
-   * answers *abilities* (colour abilities) and weapon / unarmed strikes — never
+   * answers *abilities* (colour abilities) and weapon / unarmed strikes â€” never
    * base mechanics such as walking (moves) or casting spells (word spells).
    */
   private canNeedle(reactor: Mage, top: StackItem): boolean {
@@ -6698,30 +6701,30 @@ export class GameScene extends Phaser.Scene {
       if (ban.kind === 'item') {
         src.bannedItemIds.add(ban.itemId);
         this.gs.log(
-          `${reactor.name}'s Needle of Serenity stifles the action — ${src.name}'s ${getItem(ban.itemId).name} is disabled forever.`
+          `${reactor.name}'s Needle of Serenity stifles the action â€” ${src.name}'s ${getItem(ban.itemId).name} is disabled forever.`
         );
       } else {
         src.bannedAbilityIds.add(ban.key);
         this.gs.log(
-          `${reactor.name}'s Needle of Serenity stifles ${ban.label} — ${src.name} can never use it again.`
+          `${reactor.name}'s Needle of Serenity stifles ${ban.label} â€” ${src.name} can never use it again.`
         );
       }
     } else if (top.kind === 'spell' && top.spell && this.isColorAbility(top.spell)) {
       src.bannedAbilityIds.add(top.spell.id);
       this.gs.log(
-        `${reactor.name}'s Needle of Serenity stifles ${top.spell.name} — ${src.name} can never use it again.`
+        `${reactor.name}'s Needle of Serenity stifles ${top.spell.name} â€” ${src.name} can never use it again.`
       );
     } else if (top.kind === 'melee') {
       const wid = src.activeWeaponId();
       if (wid) {
         src.bannedItemIds.add(wid);
         this.gs.log(
-          `${reactor.name}'s Needle of Serenity stifles the strike — ${src.name}'s ${getItem(wid).name} is disabled forever.`
+          `${reactor.name}'s Needle of Serenity stifles the strike â€” ${src.name}'s ${getItem(wid).name} is disabled forever.`
         );
       } else {
         src.unarmedBanned = true;
         this.gs.log(
-          `${reactor.name}'s Needle of Serenity stifles the strike — ${src.name} can never strike unarmed again.`
+          `${reactor.name}'s Needle of Serenity stifles the strike â€” ${src.name} can never strike unarmed again.`
         );
       }
     } else {
@@ -6765,7 +6768,7 @@ export class GameScene extends Phaser.Scene {
     if (aiControlled) {
       // Dev: a passive AI never reacts. Training dummies stay inert too.
       if (Dev.aiPassive || reactor.trainingPassive) return null;
-      // Prefer a counter-spell / colour ability if the AI wants one…
+      // Prefer a counter-spell / colour ability if the AI wants oneâ€¦
       const ai = this.aiFor(reactor);
       let r: ReturnType<SimpleAI['chooseReaction']> = null;
       try {
@@ -6776,7 +6779,7 @@ export class GameScene extends Phaser.Scene {
         return null;
       }
       if (r) return { spell: r.spell, target: r.target, point: r.point };
-      // …otherwise defend against an incoming attack: dodge first (fully shrugs
+      // â€¦otherwise defend against an incoming attack: dodge first (fully shrugs
       // off the blow for a per-combat charge), then a bash, then a block.
       if (this.isIncomingAttack(top, reactor)) {
         if (this.canDodge(reactor)) return { dodge: true };
@@ -6851,7 +6854,7 @@ export class GameScene extends Phaser.Scene {
         key: 'H',
         run: actionHotkey('H', () => {
           if (this.mode === 'aiming-wall') {
-            this.wallAimAngle += Math.PI / 12; // rotate 15°
+            this.wallAimAngle += Math.PI / 12; // rotate 15Â°
             this.redraw();
             return;
           }
@@ -7047,7 +7050,7 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  /** The mage currently giving input — the reactor during a reaction window. */
+  /** The mage currently giving input â€” the reactor during a reaction window. */
   private get actor(): Mage {
     return this.dodgeBonusActor ?? this.reactor ?? this.subtargetSource ?? this.gs.current;
   }
@@ -7114,12 +7117,12 @@ export class GameScene extends Phaser.Scene {
   /**
    * Who actually pilots `m` right now. Normally that is `m` itself, but while
    * minds are swapped (Reality Mind) each mage is driven by the other's
-   * controller. The swap only has teeth when exactly one duellist is an AI —
+   * controller. The swap only has teeth when exactly one duellist is an AI â€”
    * otherwise (hotseat or AI-vs-AI) it is a harmless no-op.
    */
   private controllerIsAI(m: Mage): boolean {
     // Spectate mode: hand every seat to the AI so the match plays itself.
-    // Offline only — flipping a live human to AI online would desync peers.
+    // Offline only â€” flipping a live human to AI online would desync peers.
     if (this.spectateAll && !this.online) return true;
     if (this.gs.controlSwapped && this.gs.mages[0].isAI !== this.gs.mages[1].isAI) {
       return this.gs.opponentOf(m).isAI;
@@ -7204,7 +7207,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (me.blocksCasting()) {
-      this.flashHint('Both hands full — drop an item (G) to cast.');
+      this.flashHint('Both hands full â€” drop an item (G) to cast.');
       return;
     }
 
@@ -7314,7 +7317,7 @@ export class GameScene extends Phaser.Scene {
     if (pool <= 0 && !Dev.infiniteActions)
       return this.flashHint(bonusAtk ? 'That attack needs a bonus action.' : 'Melee needs a main action.');
     if (this.gs.current.outOfAmmo())
-      return this.flashHint('Out of arrows — buy more or switch weapons.');
+      return this.flashHint('Out of arrows â€” buy more or switch weapons.');
     this.pendingSpell = null;
     this.mode = 'aiming-melee';
     this.flashHint('Melee attack: click an enemy in range.', true);
@@ -7402,7 +7405,7 @@ export class GameScene extends Phaser.Scene {
     );
   }
 
-  /** Cleave: pick a direction, then sweep a 180° arc for double melee damage. */
+  /** Cleave: pick a direction, then sweep a 180Â° arc for double melee damage. */
   private beginCleave(): void {
     if (this.mode === 'reaction') return;
     if (!this.humanActive) return;
@@ -7413,7 +7416,7 @@ export class GameScene extends Phaser.Scene {
       return this.flashHint('Cleave is a main action.');
     this.pendingSpell = null;
     this.mode = 'aiming-cleave';
-    this.flashHint('Click a direction to swing your 180° cleave.', false, 'info');
+    this.flashHint('Click a direction to swing your 180Â° cleave.', false, 'info');
     this.redraw();
   }
 
@@ -7437,7 +7440,7 @@ export class GameScene extends Phaser.Scene {
     const summon = this.pickCommandSummon(summons);
     this.submitTurn({ t: 'command', summon: this.seatOf(summon) });
     const extra =
-      summons.length > 1 ? ' (nearest your cursor — hover another and re-Command to switch)' : '';
+      summons.length > 1 ? ' (nearest your cursor â€” hover another and re-Command to switch)' : '';
     this.flashHint(
       `Commanding ${summon.name}${extra}: move (M) and attack (A/I), then it returns control. Press E to release early.`,
       true
@@ -7474,7 +7477,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.humanActiveOrInventory) return;
     const me = this.gs.current;
     if (me.isItemBanned(itemId)) return this.flashHint('That item has been stifled forever.');
-    if (me.swordFormLocked()) return this.flashHint('Locked in sword form — cannot throw.');
+    if (me.swordFormLocked()) return this.flashHint('Locked in sword form â€” cannot throw.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Throwing takes a bonus action.');
     if (me.utility.indexOf(itemId) < 0) return this.flashHint('Nothing to throw.');
@@ -7561,7 +7564,7 @@ export class GameScene extends Phaser.Scene {
     if (choice === 'attack') {
       this.pendingSpell = null;
       this.mode = 'aiming-eldritch';
-      this.flashHint('Click any enemy — eldritch truth ignores all defenses.', false, 'info');
+      this.flashHint('Click any enemy â€” eldritch truth ignores all defenses.', false, 'info');
       this.redraw();
       return;
     }
@@ -7643,7 +7646,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   // ===========================================================================
-  //  ACTION MENU  —  a context-aware, click-to-use list of everything the
+  //  ACTION MENU  â€”  a context-aware, click-to-use list of everything the
   //  current mage can do this instant. Built from a data-driven registry so
   //  new actions appear automatically; a player never has to memorise hotkeys.
   // ===========================================================================
@@ -7665,9 +7668,9 @@ export class GameScene extends Phaser.Scene {
     entries.push({
       id: 'cast',
       label: spell ? `Cast ${spell.name}` : 'Cast spell',
-      hotkey: '1–4 / Enter',
+      hotkey: '1â€“4 / Enter',
       desc: spell
-        ? `${spell.actionType} action · ${this.spellManaCost(me, spell)} mana`
+        ? `${spell.actionType} action Â· ${this.spellManaCost(me, spell)} mana`
         : 'Click words in the panel to compose a spell, then cast.',
       enabled: !!spell && (affordSpell || inf) && !me.hasCastThisTurn && !me.blocksCasting(),
       reason: !spell
@@ -7675,7 +7678,7 @@ export class GameScene extends Phaser.Scene {
         : me.hasCastThisTurn
           ? 'Already cast a spell this turn.'
           : me.blocksCasting()
-            ? 'Both hands full — drop an item to cast.'
+            ? 'Both hands full â€” drop an item to cast.'
             : 'Not enough charges / mana / actions.',
       run: () => this.onCast(),
     });
@@ -7686,8 +7689,8 @@ export class GameScene extends Phaser.Scene {
       entries.push({
         id: `ability-${ab.id}`,
         label: `Cast ${ab.name}`,
-        hotkey: i === 0 ? 'Z' : i === 1 ? 'X' : '—',
-        desc: `Colour ability · ${this.abilityChargeCost(me, ab)}c / ${this.abilityManaCost(me, ab)}m · ${left} left this combat`,
+        hotkey: i === 0 ? 'Z' : i === 1 ? 'X' : 'â€”',
+        desc: `Colour ability Â· ${this.abilityChargeCost(me, ab)}c / ${this.abilityManaCost(me, ab)}m Â· ${left} left this combat`,
         enabled:
           this.canAffordAbility(me, ab) &&
           (me.actions.bonus > 0 || inf || !!ab.freeAction) &&
@@ -7738,7 +7741,7 @@ export class GameScene extends Phaser.Scene {
       id: 'leap',
       label: 'Leap',
       hotkey: 'L',
-      desc: `Bound a d6 distance in any direction · ${me.leapsLeft()} left this combat.`,
+      desc: `Bound a d6 distance in any direction Â· ${me.leapsLeft()} left this combat.`,
       enabled: (me.actions.bonus > 0 || inf) && me.leapsLeft() > 0,
       reason: me.leapsLeft() <= 0 ? 'No leaps left this combat.' : 'Needs a bonus action.',
       run: () => this.beginLeap(),
@@ -7755,13 +7758,13 @@ export class GameScene extends Phaser.Scene {
       run: () => this.castFocus(),
     });
 
-    // Cleave (main action; needs a weapon; 180° double-damage sweep).
+    // Cleave (main action; needs a weapon; 180Â° double-damage sweep).
     const cleaveWeapon = me.activeWeapon();
     entries.push({
       id: 'cleave',
       label: 'Cleave',
       hotkey: 'V',
-      desc: 'Sweep a 180° arc for double melee damage (once per combat).',
+      desc: 'Sweep a 180Â° arc for double melee damage (once per combat).',
       enabled: (me.actions.main > 0 || inf) && !me.cleaveUsed && !!cleaveWeapon,
       reason: !cleaveWeapon
         ? 'Need a weapon in hand.'
@@ -7897,7 +7900,7 @@ export class GameScene extends Phaser.Scene {
         id: 'deaths-angel-wings',
         label: me.deathsAngelFlightTurns > 0 ? 'Extend Deaths Angel Wings' : 'Unfurl Deaths Angel Wings',
         hotkey: 'S',
-        desc: `${me.deathsAngelEnergy} Energy · ${me.deathsAngelFlightTurns} flight turns · spend 1 for +2 turns.`,
+        desc: `${me.deathsAngelEnergy} Energy Â· ${me.deathsAngelFlightTurns} flight turns Â· spend 1 for +2 turns.`,
         enabled:
           (me.actions.bonus > 0 || inf) &&
           me.deathsAngelEnergy > 0 &&
@@ -8037,7 +8040,7 @@ export class GameScene extends Phaser.Scene {
     entries.push({
       id: 'react-cast',
       label: spell ? `Cast ${spell.name}` : 'Cast reaction spell',
-      hotkey: '1–4 / Enter',
+      hotkey: '1â€“4 / Enter',
       desc: spell ? 'Respond with the composed spell.' : 'Click words in the panel, then cast.',
       enabled: !!spell && castable.some((s) => s.id === spell.id),
       reason: spell ? 'That spell can\u2019t be cast as a reaction now.' : 'Select a reaction spell first.',
@@ -8049,8 +8052,8 @@ export class GameScene extends Phaser.Scene {
       entries.push({
         id: `react-ability-${ab.id}`,
         label: `Cast ${ab.name}`,
-        hotkey: i === 0 ? 'Z' : i === 1 ? 'X' : '—',
-        desc: `Colour ability reaction · ${this.abilityChargeCost(reactor, ab)}c / ${this.abilityManaCost(reactor, ab)}m`,
+        hotkey: i === 0 ? 'Z' : i === 1 ? 'X' : 'â€”',
+        desc: `Colour ability reaction Â· ${this.abilityChargeCost(reactor, ab)}c / ${this.abilityManaCost(reactor, ab)}m`,
         enabled: true,
         run: () => this.castAbilityReaction(i),
       });
@@ -8066,7 +8069,7 @@ export class GameScene extends Phaser.Scene {
       run: () => this.chooseNeedleReaction(),
     });
 
-    // Defensive reactions — available to any mage with the gear or stamina,
+    // Defensive reactions â€” available to any mage with the gear or stamina,
     // but only against an actual attack (never an end-of-turn or blink trigger).
     const physical = !top.noPhysicalReaction && this.isIncomingAttack(top, reactor);
     entries.push({
@@ -8091,7 +8094,7 @@ export class GameScene extends Phaser.Scene {
       id: 'weapon',
       label: 'Weapon strike',
       hotkey: 'A',
-      desc: `Strike the attacker with your weapon (white identity · ${Math.max(0, MAX_WEAPON_REACTIONS - reactor.weaponReactionsUsed)} left).`,
+      desc: `Strike the attacker with your weapon (white identity Â· ${Math.max(0, MAX_WEAPON_REACTIONS - reactor.weaponReactionsUsed)} left).`,
       enabled: physical && this.canWeaponReact(reactor, top),
       reason: 'No weapon reactions left, or the attacker is out of reach.',
       run: () => this.chooseWeaponReaction(),
@@ -8297,7 +8300,7 @@ export class GameScene extends Phaser.Scene {
       this.reactionPendingSpell = null;
       this.aimingSource = null;
       this.mode = 'reaction';
-      this.flashHint('Reaction — [1-5]+Enter to cast, or Space/E to pass.', false, 'info');
+      this.flashHint('Reaction â€” [1-5]+Enter to cast, or Space/E to pass.', false, 'info');
       this.redraw();
       return;
     }
@@ -8333,7 +8336,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.humanActive) return;
     const me = this.gs.current;
     if (me.swordFormLocked())
-      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+      return this.flashHint('The bound greatshield locks your bag â€” swap to shield form first.');
     const droppable = me.hands.filter((id) => !getItem(id).permanentlyBinding);
     if (droppable.length === 0) return this.flashHint('Every held item is permanently bound.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
@@ -8350,7 +8353,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.humanActive) return;
     const me = this.gs.current;
     if (me.swordFormLocked())
-      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+      return this.flashHint('The bound greatshield locks your bag â€” swap to shield form first.');
     if (!me.hasFreeHand()) return this.flashHint('Both hands are full.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Picking up an item needs a bonus action.');
@@ -8370,7 +8373,7 @@ export class GameScene extends Phaser.Scene {
     const me = this.gs.current;
     if (me.isItemBanned(itemId)) return this.flashHint('That item has been stifled forever.');
     if (me.swordFormLocked())
-      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+      return this.flashHint('The bound greatshield locks your bag â€” swap to shield form first.');
     if (!me.utility.includes(itemId) || !getItem(itemId).potion) return;
     const potion = getItem(itemId).potion;
     if (potion === 'mana' && me.mana >= me.maxMana)
@@ -8389,7 +8392,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.humanActiveOrInventory) return;
     const me = this.gs.current;
     if (me.swordFormLocked())
-      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+      return this.flashHint('The bound greatshield locks your bag â€” swap to shield form first.');
     if (!me.hands.includes(itemId)) return;
     if (getItem(itemId).permanentlyBinding)
       return this.flashHint(`${getItem(itemId).name} is permanently bound.`);
@@ -8417,13 +8420,13 @@ export class GameScene extends Phaser.Scene {
     if (!this.humanActiveOrInventory) return;
     const me = this.gs.current;
     if (me.swordFormLocked())
-      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+      return this.flashHint('The bound greatshield locks your bag â€” swap to shield form first.');
     if (!me.bag.includes(itemId)) return;
     if (!me.canEquipFromBag(itemId)) {
       const slot = getItem(itemId).slot;
       return this.flashHint(
         slot === 'hand'
-          ? 'Both hands are full — unequip something first.'
+          ? 'Both hands are full â€” unequip something first.'
           : `Your ${slot} slot is taken by something you cannot remove.`
       );
     }
@@ -8439,7 +8442,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.humanActiveOrInventory) return;
     const me = this.gs.current;
     if (me.swordFormLocked())
-      return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+      return this.flashHint('The bound greatshield locks your bag â€” swap to shield form first.');
     if (!me.hands.includes(itemId)) return;
     if (getItem(itemId).permanentlyBinding)
       return this.flashHint(`${getItem(itemId).name} is permanently bound.`);
@@ -8629,7 +8632,7 @@ export class GameScene extends Phaser.Scene {
     const capacity = mage.carryCap();
     this.invPanel = new InventoryView(this, {
       mageName: mage.name,
-      carry: `Carry ${mage.carriedWeight()}/${Number.isFinite(capacity) ? capacity : '∞'} kg`,
+      carry: `Carry ${mage.carriedWeight()}/${Number.isFinite(capacity) ? capacity : 'âˆž'} kg`,
       readOnly,
       equipment,
       supplies,
@@ -8694,7 +8697,7 @@ export class GameScene extends Phaser.Scene {
       this.menuClickGuard = false;
       return;
     }
-    // Right-click anywhere opens the context action menu — a mouse-only way to
+    // Right-click anywhere opens the context action menu â€” a mouse-only way to
     // reach every action without knowing any hotkeys.
     if (p.rightButtonDown()) {
       this.toggleActionMenu();
@@ -8709,7 +8712,7 @@ export class GameScene extends Phaser.Scene {
       const origin = this.subtargetOrigin ?? me.pos;
       const capped = stepTowards(origin, pt, this.subtargetRange);
       if (this.subtargetMinRange && dist(origin, capped) < this.subtargetMinRange - 0.5) {
-        this.flashHint('Too close — aim farther away.');
+        this.flashHint('Too close â€” aim farther away.');
         return;
       }
       this.finishSubtarget(capped);
@@ -8854,7 +8857,7 @@ export class GameScene extends Phaser.Scene {
       if (!spell) return;
       const capped = stepTowards(me.pos, pt, spell.range);
       if (spell.minRange && dist(me.pos, capped) < spell.minRange - 0.5) {
-        this.flashHint('Too close — aim farther away.');
+        this.flashHint('Too close â€” aim farther away.');
         return;
       }
       // Two-point cone (Reality Shatter): the first click captures one edge; the
@@ -9026,7 +9029,7 @@ export class GameScene extends Phaser.Scene {
     if (fromLife > 0 && me.profile.blackSecondaryTier) {
       // Black-secondary casters may spend up to 2 charges they don't have by
       // paying HP instead: each skipped charge costs 5% of max HP (rounded up,
-      // min 1) — and this CAN drop them to 0 and kill them, with no warning.
+      // min 1) â€” and this CAN drop them to 0 and kill them, with no warning.
       fromLife = Math.min(fromLife, 2);
       fromCharges = charge - fromLife;
       const per = Math.max(1, Math.ceil(me.maxHp * 0.05));
@@ -9092,12 +9095,12 @@ export class GameScene extends Phaser.Scene {
       if (ability.rotatableWall) {
         this.wallAimAngle = 0;
         this.mode = 'aiming-wall';
-        this.flashHint(`${ability.name} — move to place, [H] rotate, click to confirm.`);
+        this.flashHint(`${ability.name} â€” move to place, [H] rotate, click to confirm.`);
         this.redraw();
         return;
       }
       this.mode = 'aiming-point';
-      this.flashHint(`${ability.name} — click a destination within range.`);
+      this.flashHint(`${ability.name} â€” click a destination within range.`);
       this.redraw();
       return;
     }
@@ -9105,7 +9108,7 @@ export class GameScene extends Phaser.Scene {
     this.pendingAbility = ability;
     this.pendingSpell = ability;
     this.mode = 'aiming-spell';
-    this.flashHint(`${ability.name} — click a valid target.`);
+    this.flashHint(`${ability.name} â€” click a valid target.`);
     this.redraw();
   }
 
@@ -9148,7 +9151,7 @@ export class GameScene extends Phaser.Scene {
           : '';
       const dodge = physical && this.canDodge(reactor) ? `  [D] dodge (${reactor.dodgesRemaining})` : '';
       this.flashHint(
-        `${reactor.name}: REACTION — [1-5]+Enter to cast${abil}${block}${bash}${weapon}${needle}${dodge}, or Space/E to pass.`
+        `${reactor.name}: REACTION â€” [1-5]+Enter to cast${abil}${block}${bash}${weapon}${needle}${dodge}, or Space/E to pass.`
       );
       this.redraw();
     });
@@ -9158,7 +9161,7 @@ export class GameScene extends Phaser.Scene {
   private castReaction(): void {
     if (!this.reactor || !this.reactionTop) return;
     if (this.reactor.blocksCasting()) {
-      this.flashHint('Both hands full — drop an item (G) to cast.');
+      this.flashHint('Both hands full â€” drop an item (G) to cast.');
       return;
     }
     const spell = this.currentComboSpell();
@@ -9212,7 +9215,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Flip the auto-pass toggle. Can be used at any time — including while a
+   * Flip the auto-pass toggle. Can be used at any time â€” including while a
    * reaction window is open, in which case the current prompt passes at once.
    */
   private toggleAutoPass(): void {
@@ -9220,8 +9223,8 @@ export class GameScene extends Phaser.Scene {
     this.refreshAutoPassButton();
     this.flashHint(
       this.autoPassReactions
-        ? 'Auto-pass ON — reactions will pass automatically. [O] to turn off.'
-        : 'Auto-pass OFF — you will be prompted for reactions. [O] to turn on.'
+        ? 'Auto-pass ON â€” reactions will pass automatically. [O] to turn off.'
+        : 'Auto-pass OFF â€” you will be prompted for reactions. [O] to turn on.'
     );
     // If a reaction prompt is currently open, resolve it as a pass immediately.
     if (this.autoPassReactions && this.mode === 'reaction') this.onReactionPass();
@@ -9249,8 +9252,8 @@ export class GameScene extends Phaser.Scene {
     this.refreshSpectateButton();
     this.flashHint(
       this.spectateAll
-        ? 'Spectate ON — the AI now plays every side. [Y] to take back control.'
-        : 'Spectate OFF — you regain control on the next turn. [Y] to watch again.'
+        ? 'Spectate ON â€” the AI now plays every side. [Y] to take back control.'
+        : 'Spectate OFF â€” you regain control on the next turn. [Y] to watch again.'
     );
     // If we are idling on a human turn, let the AI take it over right now.
     if (this.spectateAll && this.mode === 'idle') void this.driveSpectatedTurn();
@@ -9332,7 +9335,7 @@ export class GameScene extends Phaser.Scene {
       .text(
         width / 2,
         13,
-        this.showTargetList ? `${targetHeading}  ${count}` : `${targetHeading}  ${count}  ·  CLOSED`,
+        this.showTargetList ? `${targetHeading}  ${count}` : `${targetHeading}  ${count}  Â·  CLOSED`,
         {
         fontFamily: MENU_FONT.control,
         fontSize: '12px',
@@ -9383,7 +9386,7 @@ export class GameScene extends Phaser.Scene {
         .setOrigin(0, 0);
       const vitals =
         !m.sanityImmune && m.maxSanity > 0
-          ? `${m.hp}/${m.maxHp} HP · ${m.sanity} SAN`
+          ? `${m.hp}/${m.maxHp} HP Â· ${m.sanity} SAN`
           : `${m.hp}/${m.maxHp} HP`;
       const txt = this.add
         .text(9, y + 4, `${m.name}  ${vitals}`, {
@@ -9576,7 +9579,7 @@ export class GameScene extends Phaser.Scene {
     panel.setVisible(true);
     const rng = Number.isFinite(spell.range) ? `range ${spell.range}` : 'any range';
     const mana = this.spellManaCost(me, spell);
-    title.setText(`${spell.name}  —  ${spell.actionType}, ${rng}, ${mana} mana`);
+    title.setText(`${spell.name}  â€”  ${spell.actionType}, ${rng}, ${mana} mana`);
     if (body.text !== spell.description) {
       body.setText(spell.description);
       this.spellInfoScroll = 0;
@@ -9607,10 +9610,10 @@ export class GameScene extends Phaser.Scene {
   /**
    * Resolve a Dexterity dodge in the damage window, called the moment before an
    * incoming strike would apply its effect. Rolls floor(Dex/2)d6 and reads it:
-   *  - no pair  → the dodge fails; the action lands normally.
-   *  - a pair   → the whole action is negated (no damage, no hex) and the dodger
+   *  - no pair  â†’ the dodge fails; the action lands normally.
+   *  - a pair   â†’ the whole action is negated (no damage, no hex) and the dodger
    *               slips aside up to (2 + Dex/10) range-units.
-  *  - triple+  → as a pair, then opens one action-free bonus-action window.
+  *  - triple+  â†’ as a pair, then opens one action-free bonus-action window.
   * Returns the rolled tier; every tier except `none` avoids the strike.
    */
   private async performDodge(reactor: Mage, top: StackItem): Promise<DodgeTier> {
@@ -9630,7 +9633,7 @@ export class GameScene extends Phaser.Scene {
     await this.playPendingDice();
     const tier = analyzeDodge(roll.rolls);
     this.gs.log(
-      `${reactor.name} rolls a dodge [${roll.rolls.join(', ')}] → ${dodgeTierLabel(tier)}.`
+      `${reactor.name} rolls a dodge [${roll.rolls.join(', ')}] â†’ ${dodgeTierLabel(tier)}.`
     );
     if (tier === 'none') {
       this.gs.log(`${reactor.name} fails to dodge. The attack lands.`);
@@ -9650,7 +9653,7 @@ export class GameScene extends Phaser.Scene {
     } else {
       dest = await this.requestSubtargetPoint(reactor, {
         maxRange: range,
-        prompt: `${reactor.name}: dodge — pick where to slip (Esc to hold ground).`,
+        prompt: `${reactor.name}: dodge â€” pick where to slip (Esc to hold ground).`,
       });
     }
     if (dest) this.dodgeMove(reactor, dest);
@@ -10819,7 +10822,7 @@ export class GameScene extends Phaser.Scene {
     // Docked, the column panel is already painted behind it.
     this.historyBg.setSize(w, h).setVisible(expanded);
     this.historyTitle
-      .setText(expanded ? 'COMBAT RECORD  ·  CLOSE' : 'COMBAT RECORD')
+      .setText(expanded ? 'COMBAT RECORD  Â·  CLOSE' : 'COMBAT RECORD')
       .setPosition(SPACE.sm, 6)
       .setFontSize(expanded ? 18 : 12);
 
@@ -10922,7 +10925,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // ─── Dev resource editor ─────────────────────────────────────────────────
+  // â”€â”€â”€ Dev resource editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   /** Open / close the cheat overlay that edits any entity's live resources. */
   private toggleDevResources(): void {
@@ -11008,7 +11011,7 @@ export class GameScene extends Phaser.Scene {
     let py = top - 4;
     entities.forEach((m, i) => {
       const on = i === this.devResIndex;
-      const label = `${m.name}${m.isSummon ? ' *' : ''}${m.alive ? '' : ' †'}`;
+      const label = `${m.name}${m.isSummon ? ' *' : ''}${m.alive ? '' : ' â€ '}`;
       if (px > GAME_WIDTH / 2 + 360) {
         px = left + 62;
         py += 28;
@@ -11241,10 +11244,10 @@ export class GameScene extends Phaser.Scene {
       '#ff9a9a',
       '#4a1a1a',
     );
-    this.devResLabel(left, bottom + 40, '* summon   † dead', TEXT.dim);
+    this.devResLabel(left, bottom + 40, '* summon   â€  dead', TEXT.dim);
   }
 
-  // ─── Scenario Lab (build & save a fight) ─────────────────────────────────
+  // â”€â”€â”€ Scenario Lab (build & save a fight) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   /** Open / close the Scenario Lab. Also available in Memory mode for tweaks. */
   private toggleScenarioLab(): void {
@@ -11404,7 +11407,7 @@ export class GameScene extends Phaser.Scene {
   private refreshScenarioStats(left: number, top: number): void {
     const { target: t, y: rowY } = this.scenarioTargetRow(left, top);
     if (!t) return;
-    this.scenarioTitle!.setText(`SCENARIO LAB — STATS: ${t.name}`);
+    this.scenarioTitle!.setText(`SCENARIO LAB â€” STATS: ${t.name}`);
     let y = rowY;
     const stat = (label: string, get: () => number, set: (value: number) => void): void => {
       this.scenarioLabel(left, y, `${label}: ${get()}`);
@@ -11474,7 +11477,7 @@ export class GameScene extends Phaser.Scene {
       const b = this.scenarioButton(
         bx,
         y,
-        preset ? `Apply "${preset.name}"` : `Slot ${slot + 1} — empty`,
+        preset ? `Apply "${preset.name}"` : `Slot ${slot + 1} â€” empty`,
         () => {
           if (!preset) return;
           this.applyPresetToEntity(t, preset);
@@ -11498,11 +11501,11 @@ export class GameScene extends Phaser.Scene {
     const { target: t, y: rowY } = this.scenarioTargetRow(left, top);
     if (!t) return;
     const { base, modifiers } = splitModifiers(t.loadout);
-    this.scenarioTitle!.setText(`SCENARIO LAB — WORDS: ${t.name}`);
+    this.scenarioTitle!.setText(`SCENARIO LAB â€” WORDS: ${t.name}`);
     this.scenarioLabel(
       left,
       rowY,
-      `Words ${base.length}/${LOADOUT_SIZE} — click to add or remove. Colour identity and charges update instantly.`,
+      `Words ${base.length}/${LOADOUT_SIZE} â€” click to add or remove. Colour identity and charges update instantly.`,
       TEXT.dim,
     );
 
@@ -11523,7 +11526,7 @@ export class GameScene extends Phaser.Scene {
       this.scenarioButton(
         left + Math.floor(i / perCol) * colW,
         y0 + (i % perCol) * step,
-        `${on ? '✓ ' : ''}${WORDS[word].label}${secret ? ' *' : ''}`,
+        `${on ? 'âœ“ ' : ''}${WORDS[word].label}${secret ? ' *' : ''}`,
         () => {
           if (on) setWords([...base.filter((w) => w !== word), ...modifiers]);
           else if (base.length < LOADOUT_SIZE) setWords([...base, word, ...modifiers]);
@@ -11564,7 +11567,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private refreshScenarioRoster(left: number, top: number): void {
-    this.scenarioTitle!.setText(`SCENARIO LAB — ROSTER (${this.gs.mages.length})`);
+    this.scenarioTitle!.setText(`SCENARIO LAB â€” ROSTER (${this.gs.mages.length})`);
     this.scenarioLabel(
       left,
       top,
@@ -11578,7 +11581,7 @@ export class GameScene extends Phaser.Scene {
       this.scenarioLabel(
         left,
         y,
-        `${i + 1}. ${m.name}${m.isSummon ? ' *' : ''} — T${m.team} · ${m.hp}/${m.maxHp} HP${acting ? ' · acting' : ''}`,
+        `${i + 1}. ${m.name}${m.isSummon ? ' *' : ''} â€” T${m.team} Â· ${m.hp}/${m.maxHp} HP${acting ? ' Â· acting' : ''}`,
         acting ? '#ffd27a' : m.alive ? TEXT.body : TEXT.dim,
       );
       let bx = left + 400;
@@ -11605,15 +11608,15 @@ export class GameScene extends Phaser.Scene {
         m.isAI ? '#4a3a1a' : '#20342b',
       );
       bx += ai.width + 6;
-      this.scenarioButton(bx, y - 4, '✕', () => this.removeScenarioEntity(m), '#ff8a8a', '#3a1a1a');
+      this.scenarioButton(bx, y - 4, 'âœ•', () => this.removeScenarioEntity(m), '#ff8a8a', '#3a1a1a');
       y += 30;
     });
     const hidden = this.gs.mages.length - visible.length;
-    if (hidden > 0) this.scenarioLabel(left, y, `…and ${hidden} more.`, TEXT.dim);
+    if (hidden > 0) this.scenarioLabel(left, y, `â€¦and ${hidden} more.`, TEXT.dim);
   }
 
   private refreshScenarioSpawn(left: number, top: number): void {
-    this.scenarioTitle!.setText('SCENARIO LAB — PLACE ENTITIES');
+    this.scenarioTitle!.setText('SCENARIO LAB â€” PLACE ENTITIES');
     this.scenarioLabel(left, top, 'Team for new entities:');
     let bx = left + 190;
     for (const team of [1, 2, 3, 4]) {
@@ -11664,7 +11667,7 @@ export class GameScene extends Phaser.Scene {
         // The same pointerdown also reaches the field handler; swallow it.
         this.menuClickGuard = true;
         this.closeScenarioLab();
-        this.flashHint(`Placing ${entry.label} — click the field. Esc to stop.`, true);
+        this.flashHint(`Placing ${entry.label} â€” click the field. Esc to stop.`, true);
       }, entry.color);
     });
   }
@@ -11672,8 +11675,8 @@ export class GameScene extends Phaser.Scene {
   private refreshScenarioGear(left: number, top: number): void {
     const { target, y: rowY } = this.scenarioTargetRow(left, top);
     if (!target) return;
-    this.scenarioTitle!.setText(`SCENARIO LAB — GEAR: ${target.name}`);
-    this.scenarioLabel(left, rowY - 8, 'Click a name to give it; ✕ removes one.', TEXT.dim);
+    this.scenarioTitle!.setText(`SCENARIO LAB â€” GEAR: ${target.name}`);
+    this.scenarioLabel(left, rowY - 8, 'Click a name to give it; âœ• removes one.', TEXT.dim);
 
     const colW = 232;
     const step = 24;
@@ -11682,7 +11685,7 @@ export class GameScene extends Phaser.Scene {
     ITEM_DEFS.forEach((def, i) => {
       const x = left + Math.floor(i / perCol) * colW;
       const y = y0 + (i % perCol) * step;
-      this.scenarioButton(x, y, '✕', () => {
+      this.scenarioButton(x, y, 'âœ•', () => {
         this.gs.removeItem(target, def.id);
         this.refreshScenarioLab();
         this.redraw();
@@ -11701,7 +11704,7 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'scenario-move';
     this.menuClickGuard = true;
     this.closeScenarioLab();
-    this.flashHint(`Moving ${m.name} — click the field. Esc cancels.`, true);
+    this.flashHint(`Moving ${m.name} â€” click the field. Esc cancels.`, true);
   }
 
   /** Handle a field click while a lab tool is armed. Returns true if consumed. */
@@ -11793,7 +11796,7 @@ export class GameScene extends Phaser.Scene {
    */
   private removeScenarioEntity(m: Mage): void {
     if (m === this.gs.current) {
-      this.flashHint('That entity is taking its turn — end the turn first.');
+      this.flashHint('That entity is taking its turn â€” end the turn first.');
       return;
     }
     const removed = this.gs.mages.indexOf(m);
@@ -11897,7 +11900,7 @@ export class GameScene extends Phaser.Scene {
           const saved = downloadScenario(this.gs, value.trim() || suggestion);
           this.memoryName = saved.name;
           this.gs.log(`Scenario saved as "${saved.name}".`);
-          this.flashHint(`Saved "${saved.name}" — load it from the Memory menu.`);
+          this.flashHint(`Saved "${saved.name}" â€” load it from the Memory menu.`);
         } catch {
           this.flashHint('Could not save that scenario.');
         }
@@ -11920,7 +11923,7 @@ export class GameScene extends Phaser.Scene {
 
   /**
    * Replace the live roster, field and turn order with a saved fight. Safe only
-   * from the lab, which can be opened solely while the scene is idle — no turn
+   * from the lab, which can be opened solely while the scene is idle â€” no turn
    * is mid-resolution, so restarting the turn loop cannot orphan an await.
    */
   private adoptScenario(scenario: Scenario): void {
@@ -11951,13 +11954,13 @@ export class GameScene extends Phaser.Scene {
     this.resetSelection();
     this.restyleCreatureSprites();
     this.gs.log(
-      `Memory loaded — "${scenario.name}" (round ${this.gs.round}, ${mages.length} entities).`
+      `Memory loaded â€” "${scenario.name}" (round ${this.gs.round}, ${mages.length} entities).`
     );
     this.mode = 'busy';
     void this.startTurn();
   }
 
-  // ─── Training sandbox overlay ────────────────────────────────────────────
+  // â”€â”€â”€ Training sandbox overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   private toggleTrainingOverlay(): void {
     if (!this.training) return;
@@ -12138,12 +12141,12 @@ export class GameScene extends Phaser.Scene {
     const left = GAME_WIDTH / 2 - 380;
     const top = GAME_HEIGHT / 2 - 258;
     this.trainTitle!.setText(
-      `ITEMS — name = give, ✕ = remove  (Target: ${this.trainTarget === 1 ? 'Player' : 'Enemy'})`,
+      `ITEMS â€” name = give, âœ• = remove  (Target: ${this.trainTarget === 1 ? 'Player' : 'Enemy'})`,
     );
     const back = this.trainButton(
       left,
       top,
-      '← Back',
+      'â† Back',
       () => {
         this.trainPage = 'main';
         this.refreshTrainingOverlay();
@@ -12181,7 +12184,7 @@ export class GameScene extends Phaser.Scene {
       this.trainButton(
         x,
         y,
-        '✕',
+        'âœ•',
         () => {
           this.gs.removeItem(target, def.id);
           this.refreshTrainingOverlay();
@@ -12306,7 +12309,7 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'idle';
     this.resetSelection();
     this.syncMageSprites();
-    this.gs.log('Training: field reset — HP, mana, positions and effects restored.');
+    this.gs.log('Training: field reset â€” HP, mana, positions and effects restored.');
     this.redraw();
     this.gs.startRound();
     void this.startTurn();
@@ -12626,7 +12629,7 @@ export class GameScene extends Phaser.Scene {
       this.scarabFrameCount = Math.max(1, keys.length);
       this.scarabAnimReady = keys.length > 0;
     } catch {
-      // Decoding failed — fall back silently to the static first frame.
+      // Decoding failed â€” fall back silently to the static first frame.
     }
   }
 
@@ -12666,10 +12669,10 @@ export class GameScene extends Phaser.Scene {
         const baseScale = (SCARAB.radius * 3.6) / srcH;
         sprite.setScale(baseScale);
         // Two independent hashes so each scarab gets its own crawl pace AND its
-        // own leg-animation tempo — the swarm spreads across a wide, slow range.
+        // own leg-animation tempo â€” the swarm spreads across a wide, slow range.
         const h1 = this.scarabHash(sc.id, 12.9898);
         const h2 = this.scarabHash(sc.id, 78.233);
-        // Very low easing (~0.012–0.05) => deliberate, drawn-out crawling.
+        // Very low easing (~0.012â€“0.05) => deliberate, drawn-out crawling.
         const glide = 0.012 + h1 * 0.04;
         // Leg tempo wanders from a sluggish 0.18 up to 0.7.
         const speed = 0.18 + h2 * 0.52;
@@ -12703,8 +12706,8 @@ export class GameScene extends Phaser.Scene {
       const dx = rec.disp.x - prevX;
       if (Math.abs(dx) > 0.05) spr.setFlipX(dx < 0);
 
-      // Fire a one-shot cue when a scarab bites (attached→returning) or delivers
-      // its heal back home (returning→seeking).
+      // Fire a one-shot cue when a scarab bites (attachedâ†’returning) or delivers
+      // its heal back home (returningâ†’seeking).
       if (sc.state !== rec.prevState) {
         if (rec.prevState === 'attached' && sc.state === 'returning') {
           this.playScarabCue(rec, 'attack');
@@ -12734,7 +12737,7 @@ export class GameScene extends Phaser.Scene {
     spr.setScale(rec.baseScale);
     spr.setAngle(0);
     if (kind === 'attack') {
-      // Sharp red lunge with a quick shake — a bite.
+      // Sharp red lunge with a quick shake â€” a bite.
       spr.setTint(0xff5a5a);
       spr.anims.timeScale = rec.speed * 2.6;
       this.tweens.add({
@@ -12749,7 +12752,7 @@ export class GameScene extends Phaser.Scene {
         onComplete: () => this.endScarabCue(rec),
       });
     } else {
-      // Soft green swell — a heal delivered home.
+      // Soft green swell â€” a heal delivered home.
       spr.setTint(0x8effc4);
       spr.anims.timeScale = rec.speed * 1.5;
       this.tweens.add({
@@ -12791,7 +12794,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Draw the 45° "reality break" wedges where movement is forbidden. */
+  /** Draw the 45Â° "reality break" wedges where movement is forbidden. */
   private drawMutivargZones(g: Phaser.GameObjects.Graphics): void {
     for (const z of this.gs.mutivargZones) {
       const tint = z.owner === 1 ? COLORS.team1 : COLORS.team2;
@@ -13018,7 +13021,7 @@ export class GameScene extends Phaser.Scene {
     // While aiming, the origin is the active source (current mage on a turn, or
     // the reactor while reaction-aiming). When merely previewing a selected
     // combo, anchor the range to the mage whose hand is shown (the reactor
-    // during a reaction, the local player online) — never the enemy.
+    // during a reaction, the local player online) â€” never the enemy.
     const me = aiming ? (this.aimingSource ?? this.gs.current) : this.viewMage;
     if (this.controllerIsAI(me) && !aiming) return;
 
@@ -13066,7 +13069,7 @@ export class GameScene extends Phaser.Scene {
       this.drawMeasuredRange(g, me.pos, range);
     }
 
-    // Owned shadows extend reach — outline them as alternate cast origins.
+    // Owned shadows extend reach â€” outline them as alternate cast origins.
     if (aiming && (this.mode === 'aiming-spell' || this.mode === 'aiming-point') && Number.isFinite(range)) {
       for (const s of this.gs.shadowsOf(me.team)) {
         this.drawMeasuredRange(g, s, range, MENU_COLOR.amethyst, 0.55, false);
@@ -13526,7 +13529,7 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** True while a physical binding — not terrain — holds this mage in place. */
+  /** True while a physical binding â€” not terrain â€” holds this mage in place. */
   private isPhysicallyRooted(m: Mage): boolean {
     return m.statuses.some(
       (s) => s.kind === 'stun' && s.stunType === 'movement' && s.physicalRoot === true
@@ -13776,8 +13779,8 @@ export class GameScene extends Phaser.Scene {
     if (summonPuffs.length > 0) this.redraw();
     await Promise.all([
       ...queued.map((effect) => this.triggerEffect(effect.mage, effect.kind)),
-      ...drains.map((drain) => this.vfxDrainParticles(drain.from, drain.to)),
-      ...summonPuffs.map((puff) => this.vfxSummonPuff(puff.at, puff.size)),
+      ...drains.map((drain) => this.spellVfx.drainParticles(drain.from, drain.to)),
+      ...summonPuffs.map((puff) => this.spellVfx.summonPuff(puff.at, puff.size)),
     ]);
   }
 
@@ -14355,7 +14358,7 @@ export class GameScene extends Phaser.Scene {
     const tint = owner.team === 1 ? MENU_HEX.verdigris : '#d99286';
     const root = this.add.container(GAME_WIDTH / 2, 122).setDepth(60);
     const label = this.add
-      .text(0, 0, mine ? `${owner.name.toUpperCase()} — YOUR TURN` : owner.name.toUpperCase(), {
+      .text(0, 0, mine ? `${owner.name.toUpperCase()} â€” YOUR TURN` : owner.name.toUpperCase(), {
         fontFamily: MENU_FONT.control,
         fontSize: '15px',
         fontStyle: 'bold',
@@ -14478,15 +14481,15 @@ export class GameScene extends Phaser.Scene {
         s.kind === 'soulRend' ||
         s.kind === 'reap' ||
         s.kind === 'deathCurse'
-          ? `${s.name} ×${s.stacks}`
+          ? `${s.name} Ã—${s.stacks}`
           : Number.isFinite(s.duration) && s.duration > 0
-            ? `${s.name} ⌛${s.duration}`
+            ? `${s.name} âŒ›${s.duration}`
             : s.name
           );
     const statuses = [
       ...statusEntries.slice(0, 2),
       ...(statusEntries.length > 2 ? [`+${statusEntries.length - 2}`] : []),
-    ].join(' · ');
+    ].join(' Â· ');
     const mineDetails = m.mine
       ? [
           `LV ${m.mine.level}`,
@@ -14494,16 +14497,16 @@ export class GameScene extends Phaser.Scene {
           m.mine.golemState ? m.mine.golemState.toUpperCase() : '',
           m.mine.stones != null ? `S${m.mine.stones}` : '',
           m.mine.charges != null ? `C${m.mine.charges}` : '',
-        ].filter(Boolean).join(' · ')
+        ].filter(Boolean).join(' Â· ')
       : '';
     const lantern = m.hasEdgelordLantern()
-      ? `LANTERN ${m.edgelordLanternActive ? 'ACTIVE' : 'DORMANT'} · ${this.gs.edgelordCaptives(m).length} CAPTIVE`
+      ? `LANTERN ${m.edgelordLanternActive ? 'ACTIVE' : 'DORMANT'} Â· ${this.gs.edgelordCaptives(m).length} CAPTIVE`
       : '';
     const wings = m.hasDeathsAngelWings()
-      ? `WINGS E${m.deathsAngelEnergy}${m.deathsAngelFlightTurns > 0 ? ` · FLY ${m.deathsAngelFlightTurns}` : ''}`
+      ? `WINGS E${m.deathsAngelEnergy}${m.deathsAngelFlightTurns > 0 ? ` Â· FLY ${m.deathsAngelFlightTurns}` : ''}`
       : '';
     t.setText(
-      `${m.name}${mineDetails ? ` · ${mineDetails}` : ''}${lantern ? `\n${lantern}` : ''}${wings ? `\n${wings}` : ''}${statuses ? `\n${statuses}` : ''}`
+      `${m.name}${mineDetails ? ` Â· ${mineDetails}` : ''}${lantern ? `\n${lantern}` : ''}${wings ? `\n${wings}` : ''}${statuses ? `\n${statuses}` : ''}`
     );
     t.setColor(m.hp / Math.max(1, m.maxHp) <= 0.25 ? '#d99286' : MENU_HEX.bone);
     t.setPosition(m.x, m.y + MAGE_RADIUS + 15).setVisible(true);
@@ -14599,9 +14602,9 @@ export class GameScene extends Phaser.Scene {
       this.turnText.setFontSize('16px').setText(`YOUR REACTION\n${this.reactor.name} vs ${source}`);
     } else {
       const cur = this.gs.current;
-      const swap = this.gs.controlSwapped ? '   ⟲ MINDS SWAPPED' : '';
+      const swap = this.gs.controlSwapped ? '   âŸ² MINDS SWAPPED' : '';
       const needlepoint = this.gs.needlepointDomains.length
-        ? `   ◈ NEEDLEPOINT ${Math.max(...this.gs.needlepointDomains.map((domain) => domain.roundsLeft))}`
+        ? `   â—ˆ NEEDLEPOINT ${Math.max(...this.gs.needlepointDomains.map((domain) => domain.roundsLeft))}`
         : '';
       const hexcraft = this.gs.hexcraftGlobals
         .map((effect) =>
@@ -14609,20 +14612,20 @@ export class GameScene extends Phaser.Scene {
             ? `MIND SHADOW ${effect.roundsLeft}`
             : `CURSE CORRODE ${effect.roundsLeft}`
         )
-        .map((label) => `   ◈ ${label}`)
+        .map((label) => `   â—ˆ ${label}`)
         .join('');
       const state = `${swap}${needlepoint}${hexcraft}`.trim();
       this.turnText
         .setFontSize(state ? '13px' : '17px')
         .setText(this.gs.isOver
           ? ''
-          : `ROUND ${this.gs.round}  ·  ${cur.name}${this.controllerIsAI(cur) ? '  ·  AI' : ''}${state ? `\n${state}` : ''}`);
+          : `ROUND ${this.gs.round}  Â·  ${cur.name}${this.controllerIsAI(cur) ? '  Â·  AI' : ''}${state ? `\n${state}` : ''}`);
     }
 
     const spell = this.currentComboSpell();
     const sel = this.selectedWords().map((w) => WORDS[w].label).join(' + ');
     if (this.selectedIdx.length === 0) {
-      this.comboText.setText('Selection: —');
+      this.comboText.setText('Selection: â€”');
     } else if (spell) {
       const rng = Number.isFinite(spell.range) ? `rng ${spell.range}` : 'any range';
       const mana = this.spellManaCost(me, spell);
@@ -14631,15 +14634,15 @@ export class GameScene extends Phaser.Scene {
         ? `\n${mods
             .map((w) =>
               w === 'subtle'
-                ? 'Subtle ×0.8, silent on 11+'
+                ? 'Subtle Ã—0.8, silent on 11+'
                 : w === 'channel'
-                  ? 'Channel: hold a turn, ×1.5'
+                  ? 'Channel: hold a turn, Ã—1.5'
                   : 'Delay: fires next turn'
             )
-            .join(' · ')}`
+            .join(' Â· ')}`
         : '';
       this.comboText.setText(
-        `${spell.name}\n${spell.actionType} · ${rng} · ${mana} mana${modNote}`
+        `${spell.name}\n${spell.actionType} Â· ${rng} Â· ${mana} mana${modNote}`
       );
       this.comboText.setColor(MENU_HEX.brassLight);
     } else {
@@ -14681,7 +14684,7 @@ export class GameScene extends Phaser.Scene {
             : wordColor === 'black'
               ? MENU_COLOR.amethyst
               : MENU_COLOR.brass;
-      const meta = `${charges} CHARGE${charges === 1 ? '' : 'S'}${WORDS[w].grantsReaction ? ' · REACTION' : ''}`;
+      const meta = `${charges} CHARGE${charges === 1 ? '' : 'S'}${WORDS[w].grantsReaction ? ' Â· REACTION' : ''}`;
       plate.setCopy(`${i + 1}  ${WORDS[w].label}`, meta, accent);
       plate.setSelectedOrder(on ? this.selectedIdx.indexOf(i) + 1 : 0);
       plate.setAlpha(charges > 0 || isModifierWord(w) ? 1 : 0.58);
@@ -14734,7 +14737,7 @@ export class GameScene extends Phaser.Scene {
       ? `STR ${me.effectiveStr()}  DEX ${me.effectiveDex()}%  INT ${me.effectiveInt()}  Luck ${me.luck}/${me.maxLuck}`
       : 'stats unassigned';
     // Gear, bag and weight live in the inventory overlay ([I]) to keep this glanceable.
-    this.resourceText.setText(`${identity} · ${stats}\n${abilText}`);
+    this.resourceText.setText(`${identity} Â· ${stats}\n${abilText}`);
   }
 
   /**
@@ -14837,7 +14840,7 @@ export class GameScene extends Phaser.Scene {
   /** Everything a player can legitimately learn by looking at a combatant. */
   private inspectCard(m: Mage): string {
     const lines: string[] = [
-      `${m.name}${m.isSummon ? ' (summon)' : ''}  ·  ${m.hp}/${m.maxHp} HP  ·  ${m.sanity}/${m.maxSanity} mind`,
+      `${m.name}${m.isSummon ? ' (summon)' : ''}  Â·  ${m.hp}/${m.maxHp} HP  Â·  ${m.sanity}/${m.maxSanity} mind`,
     ];
 
     const defences: string[] = [];
@@ -14850,7 +14853,7 @@ export class GameScene extends Phaser.Scene {
     if (m.intrinsicResistTypes.length) defences.push(`Resists: ${m.intrinsicResistTypes.join(', ')}`);
     if (m.intrinsicWeakTypes.length) defences.push(`Weak: ${m.intrinsicWeakTypes.join(', ')}`);
     if (m.displacementWeak) defences.push('Easily displaced');
-    if (defences.length) lines.push(defences.join('  ·  '));
+    if (defences.length) lines.push(defences.join('  Â·  '));
 
     const weaponId = m.activeWeaponId();
     if (weaponId) lines.push(`Armed: ${getItem(weaponId).name}`);
@@ -14860,19 +14863,19 @@ export class GameScene extends Phaser.Scene {
 
     for (const status of m.statuses) {
       const left = Number.isFinite(status.duration) ? ` (${status.duration})` : '';
-      lines.push(`${status.name}${left} — ${this.statusBlurb(status)}`);
+      lines.push(`${status.name}${left} â€” ${this.statusBlurb(status)}`);
     }
     return lines.join('\n');
   }
 
-  /** A short " → …" suffix describing what a stacked action is aimed at. */
+  /** A short " â†’ â€¦" suffix describing what a stacked action is aimed at. */
   private stackTargetLabel(it: StackItem): string {
     if (it.target) {
-      if (it.kind === 'move' || it.kind === 'melee') return ` → dash onto ${it.target.name}`;
-      return ` → targeting ${it.target.name}`;
+      if (it.kind === 'move' || it.kind === 'melee') return ` â†’ dash onto ${it.target.name}`;
+      return ` â†’ targeting ${it.target.name}`;
     }
     if (it.targetPoint) {
-      return it.kind === 'move' ? ' → moving to marked spot' : ' → aimed at a location';
+      return it.kind === 'move' ? ' â†’ moving to marked spot' : ' â†’ aimed at a location';
     }
     return '';
   }
@@ -14902,19 +14905,19 @@ export class GameScene extends Phaser.Scene {
     const p = this.pointer;
     for (const b of this.gs.barriers) {
       if (barrierContains(b, p)) {
-        return 'Reality break — a rift no mage can enter. A mage that runs into it stops at the edge and is rooted; dashes and movement spells end at its border. Blocks everyone, including its caster.';
+        return 'Reality break â€” a rift no mage can enter. A mage that runs into it stops at the edge and is rooted; dashes and movement spells end at its border. Blocks everyone, including its caster.';
       }
     }
     for (const s of this.gs.shadows) {
       if (dist(p, s) <= s.radius) {
-        return 'Shadow pool — its owner may cast spells from here (extending their reach), and any mage standing inside takes extra spell damage.';
+        return 'Shadow pool â€” its owner may cast spells from here (extending their reach), and any mage standing inside takes extra spell damage.';
       }
     }
     for (const t of this.gs.totems) {
       if (dist(p, t) <= t.radius) {
         return t.lifesteal
-          ? 'Corrosion totem — each round it saps the health of mages within its aura and heals its owner for the damage dealt.'
-          : 'Corrosion totem — each round it saps the health of every mage standing within its aura.';
+          ? 'Corrosion totem â€” each round it saps the health of mages within its aura and heals its owner for the damage dealt.'
+          : 'Corrosion totem â€” each round it saps the health of every mage standing within its aura.';
       }
     }
     for (const pool of this.gs.corrosionPools) {
@@ -14948,7 +14951,7 @@ export class GameScene extends Phaser.Scene {
 
   /**
    * Sticky prompts ask for a choice and stay lit. Everything else is a refusal,
-   * so it also gets a sound and a pulse at the cursor — the hint line alone sits
+   * so it also gets a sound and a pulse at the cursor â€” the hint line alone sits
    * too far from where the player is looking to be noticed.
    */
   private flashHint(msg: string, sticky = false, tone: 'deny' | 'info' = 'deny'): void {
@@ -15095,13 +15098,13 @@ export class GameScene extends Phaser.Scene {
   private playActionVisual(item: StackItem): Promise<void> {
     if (item.kind === 'move') return this.animateMove(item.source, item.targetPoint ?? item.source.pos);
     // Generic actions (item use / throw / Eldritch / Thunder / weapon action)
-    // paint their own effects inside resolve — no default cast animation.
+    // paint their own effects inside resolve â€” no default cast animation.
     if (item.kind === 'action') {
       const at = item.target?.pos ?? item.targetPoint ?? item.source.pos;
       const preset = item.actionVisual ? ACTION_FX_PRESETS[item.actionVisual] : undefined;
       switch (preset?.kind) {
         case 'burst':
-          return this.vfxBurst(at, preset.color, preset.reach, preset.speed);
+          return this.spellVfx.burst(at, preset.color, preset.reach, preset.speed);
         case 'lightning':
           return this.vfxLightningBolt(item.source.pos, at);
         case 'lightningImpact':
@@ -15124,9 +15127,9 @@ export class GameScene extends Phaser.Scene {
         // struck foe, aimed along the attack direction.
         if (this.anims.exists('fx-slash-arc')) {
           const angle = Math.atan2(at.y - from.y, at.x - from.x);
-          return this.vfxSlash('fx-slash-arc', at, angle, MAGE_RADIUS * 4.2);
+          return this.spellVfx.slash('fx-slash-arc', at, angle, MAGE_RADIUS * 4.2);
         }
-        return this.vfxBurst(at, 0xffffff, 34, 1.6);
+        return this.spellVfx.burst(at, 0xffffff, 34, 1.6);
       };
       return item.target ? this.telegraphStrike(item.target).then(strike) : strike();
     }
@@ -15144,13 +15147,13 @@ export class GameScene extends Phaser.Scene {
     }
 
     // Ground-targeted elemental spells paint their sprite sheet where they land
-    // (the aimed point / area), not on a foe — so the impact reads as hitting
+    // (the aimed point / area), not on a foe â€” so the impact reads as hitting
     // the ground. Enemy-targeted variants keep their on-target hit overlay.
     if (item.kind === 'spell' && item.spell && item.spell.targeting === 'point') {
       const spell = item.spell;
       const point = to ?? from;
       // Reality Shatter paints its own stretched wedge from inside its cast
-      // (after the player sets the second edge point) — no default cast burst.
+      // (after the player sets the second edge point) â€” no default cast burst.
       if (spell.words.includes('reality') && spell.words.includes('shatter')) {
         return Promise.resolve();
       }
@@ -15158,19 +15161,19 @@ export class GameScene extends Phaser.Scene {
         const cone = spell.aoe?.kind === 'cone';
         if (spell.words.includes('shatter')) {
           return cone
-            ? this.vfxSpriteAt('fx-shatter', point, {
+            ? this.spellVfx.spriteAt('fx-shatter', point, {
                 from,
                 apexAtFrom: true,
                 lengthPx: Math.min(spell.aoe?.radius ?? 200, 360),
               })
-            : this.vfxSpriteAt('fx-shatter', point, {
+            : this.spellVfx.spriteAt('fx-shatter', point, {
                 from,
                 aim: true,
                 lengthPx: (spell.aoe?.radius ?? 60) * 2.2,
               });
         }
         if (spell.words.includes('corrode')) {
-          return this.vfxSpriteAt('fx-dot', point, {
+          return this.spellVfx.spriteAt('fx-dot', point, {
             lengthPx: (spell.aoe?.radius ?? 40) * 2.4,
           });
         }
@@ -15179,17 +15182,17 @@ export class GameScene extends Phaser.Scene {
 
     switch (v.preset) {
       case 'projectile':
-        return to ? this.vfxProjectile(from, to, v) : this.vfxBurst(from, v.color, 28, v.speed ?? 1);
+        return to ? this.spellVfx.projectile(from, to, v) : this.spellVfx.burst(from, v.color, 28, v.speed ?? 1);
       case 'beam':
-        return to ? this.vfxBeam(from, to, v) : this.vfxBurst(from, v.color, 24, v.speed ?? 1);
+        return to ? this.spellVfx.beam(from, to, v) : this.spellVfx.burst(from, v.color, 24, v.speed ?? 1);
       case 'burst':
-        return this.vfxBurst(to ?? from, v.color, v.size ?? 45, v.speed ?? 1);
+        return this.spellVfx.burst(to ?? from, v.color, v.size ?? 45, v.speed ?? 1);
       case 'nova':
-        return this.vfxNova(to ?? from, v);
+        return this.spellVfx.nova(to ?? from, v);
       case 'conjure':
-        return this.vfxConjure(to ?? from, v);
+        return this.spellVfx.conjure(to ?? from, v);
       case 'heal':
-        return this.vfxHeal(to ?? from, v);
+        return this.spellVfx.heal(to ?? from, v);
     }
     return Promise.resolve();
   }
@@ -15209,738 +15212,6 @@ export class GameScene extends Phaser.Scene {
     return { preset: 'projectile', color, size: 10, speed: 1 };
   }
 
-  private vfxBeam(from: Vec2, to: Vec2, visual: SpellVisual): Promise<void> {
-    const distance = dist(from, to);
-    if (distance < 3) return this.vfxBurst(to, visual.color, 24, visual.speed ?? 1);
-
-    return new Promise((resolve) => {
-      const speed = Math.max(0.25, visual.speed ?? 1);
-      const thickness = Phaser.Math.Clamp(visual.size ?? 6, 3, 16);
-      const unit = { x: (to.x - from.x) / distance, y: (to.y - from.y) / distance };
-      const perpendicular = { x: -unit.y, y: unit.x };
-      const start = {
-        x: from.x + unit.x * (MAGE_RADIUS * 0.55),
-        y: from.y + unit.y * (MAGE_RADIUS * 0.55),
-      };
-      const end = {
-        x: to.x - unit.x * Math.min(5, thickness * 0.5),
-        y: to.y - unit.y * Math.min(5, thickness * 0.5),
-      };
-      const length = Math.max(1, dist(start, end));
-      const segments = Phaser.Math.Clamp(Math.ceil(length / 18), 14, 52);
-      const duration = this.reducedMotion
-        ? 120
-        : Phaser.Math.Clamp(FX_TWEEN.beam.duration / speed, 230, 520);
-      const seed = (
-        from.x * 0.017 +
-        from.y * 0.029 +
-        to.x * 0.041 +
-        to.y * 0.053 +
-        (visual.color & 0xfff) * 0.001
-      ) % (Math.PI * 2);
-      const curveBias = Math.sin(seed * 2.31) * Math.min(22, length * 0.045);
-      const graphics = this.add
-        .graphics()
-        .setDepth(31)
-        .setBlendMode(Phaser.BlendModes.ADD);
-      const state = { life: 0 };
-      let impactStarted = false;
-
-      const pointAt = (amount: number, phase: number, lane = 0): Vec2 => {
-        const envelope = Math.sin(Math.PI * amount);
-        const broadCurve = envelope * curveBias;
-        const primaryWave = Math.sin(amount * Math.PI * 4 + phase + seed) * thickness * 0.62;
-        const secondaryWave = Math.sin(amount * Math.PI * 9 - phase * 1.37 + seed * 0.7) * thickness * 0.24;
-        const laneMotion = lane * thickness * (
-          0.68 + 0.16 * Math.sin(amount * Math.PI * 6 + phase * 0.73 + seed)
-        );
-        const offset = envelope * (broadCurve + primaryWave + secondaryWave + laneMotion);
-        return {
-          x: Phaser.Math.Linear(start.x, end.x, amount) + perpendicular.x * offset,
-          y: Phaser.Math.Linear(start.y, end.y, amount) + perpendicular.y * offset,
-        };
-      };
-
-      const buildPath = (reveal: number, phase: number, lane = 0): Vec2[] => {
-        if (reveal <= 0) return [start];
-        const count = Math.max(1, Math.floor(segments * reveal));
-        const points: Vec2[] = [];
-        for (let index = 0; index <= count; index++) {
-          points.push(pointAt(Math.min(reveal, index / segments), phase, lane));
-        }
-        const finalAmount = Math.min(1, reveal);
-        const lastAmount = count / segments;
-        if (lastAmount < finalAmount) points.push(pointAt(finalAmount, phase, lane));
-        return points;
-      };
-
-      const strokePath = (points: readonly Vec2[], width: number, color: number, alpha: number): void => {
-        if (points.length < 2 || alpha <= 0) return;
-        graphics.lineStyle(Math.max(1, width), color, Phaser.Math.Clamp(alpha, 0, 1));
-        graphics.beginPath();
-        graphics.moveTo(points[0].x, points[0].y);
-        for (let index = 1; index < points.length; index++) {
-          graphics.lineTo(points[index].x, points[index].y);
-        }
-        graphics.strokePath();
-      };
-
-      const render = (): void => {
-        if (!graphics.active) return;
-        const life = state.life;
-        const reveal = Phaser.Math.Clamp(life / 0.27, 0, 1);
-        const attack = Phaser.Math.Clamp(life / 0.1, 0, 1);
-        const decay = life < 0.62 ? 1 : Phaser.Math.Clamp(1 - (life - 0.62) / 0.38, 0, 1);
-        const opacity = attack * decay;
-        const phase = this.reducedMotion ? seed : seed + life * Math.PI * 11;
-        const breathing = 0.9 + Math.sin(life * Math.PI * 18 + seed) * 0.1;
-        const centre = buildPath(reveal, phase);
-
-        graphics.clear();
-        strokePath(centre, thickness * 5.2 * breathing, visual.color, 0.1 * opacity);
-        strokePath(centre, thickness * 2.5 * breathing, visual.color, 0.54 * opacity);
-        strokePath(centre, thickness * 1.12, visual.color, 0.96 * opacity);
-        strokePath(centre, thickness * 0.36, 0xffffff, 0.98 * opacity);
-
-        if (!this.reducedMotion) {
-          const upper = buildPath(reveal, phase + 0.9, 1);
-          const lower = buildPath(reveal, phase - 1.1, -1);
-          strokePath(upper, thickness * 0.34, visual.color, 0.44 * opacity);
-          strokePath(upper, thickness * 0.12, 0xffffff, 0.58 * opacity);
-          strokePath(lower, thickness * 0.3, visual.color, 0.36 * opacity);
-
-          for (let index = 0; index < 4; index++) {
-            const knotAmount = (life * 2.15 + index * 0.247) % 1;
-            if (knotAmount > reveal) continue;
-            const knot = pointAt(knotAmount, phase, index % 2 ? 0.28 : -0.28);
-            const knotRadius = thickness * (0.32 + (index % 3) * 0.08);
-            graphics.fillStyle(visual.color, 0.45 * opacity).fillCircle(knot.x, knot.y, knotRadius * 2.2);
-            graphics.fillStyle(0xffffff, 0.82 * opacity).fillCircle(knot.x, knot.y, knotRadius);
-          }
-
-          for (let index = 0; index < 6; index++) {
-            const sparkAmount = Phaser.Math.Clamp(reveal * ((index + 1) / 7), 0, 1);
-            const spark = pointAt(sparkAmount, phase + index * 0.83);
-            const scatter = Math.sin(phase * 1.7 + index * 2.41) * thickness * (2.1 + index * 0.08);
-            const sparkX = spark.x + perpendicular.x * scatter;
-            const sparkY = spark.y + perpendicular.y * scatter;
-            graphics.fillStyle(index % 2 ? visual.color : 0xffffff, 0.42 * opacity)
-              .fillCircle(sparkX, sparkY, Math.max(1, thickness * 0.15));
-          }
-        }
-
-        const sourcePulse = thickness * (1.7 + attack * 0.9);
-        graphics.fillStyle(visual.color, 0.18 * opacity).fillCircle(start.x, start.y, sourcePulse * 1.7);
-        graphics.lineStyle(Math.max(1, thickness * 0.22), 0xffffff, 0.74 * opacity)
-          .strokeCircle(start.x, start.y, sourcePulse);
-
-        if (reveal > 0.72) {
-          const impact = Phaser.Math.Clamp((reveal - 0.72) / 0.28, 0, 1);
-          const impactRadius = thickness * (1.4 + impact * 2.8);
-          graphics.fillStyle(visual.color, 0.22 * opacity).fillCircle(end.x, end.y, impactRadius * 1.5);
-          graphics.lineStyle(Math.max(1, thickness * 0.26), 0xffffff, (1 - impact * 0.45) * opacity)
-            .strokeCircle(end.x, end.y, impactRadius);
-        }
-
-        if (!impactStarted && reveal >= 1) {
-          impactStarted = true;
-          void this.vfxBurst(to, visual.color, Math.max(20, thickness * 3.1), speed * 1.45);
-        }
-      };
-
-      let settled = false;
-      const finish = (): void => {
-        if (settled) return;
-        settled = true;
-        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
-        this.tweens.killTweensOf(state);
-        if (graphics.active) graphics.destroy();
-        resolve();
-      };
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
-      render();
-      this.tweens.add({
-        targets: state,
-        life: 1,
-        duration,
-        ease: FX_TWEEN.beam.ease,
-        onUpdate: render,
-        onComplete: finish,
-      });
-    });
-  }
-
-  private vfxDrainParticles(from: Vec2, to: Vec2): Promise<void> {
-    const distance = dist(from, to);
-    if (distance < 3) return Promise.resolve();
-
-    return new Promise((resolve) => {
-      const count = this.reducedMotion ? 12 : 34;
-      const duration = this.reducedMotion ? 220 : Phaser.Math.Clamp(distance * 1.55, 460, 760);
-      const midpointY = (from.y + to.y) * 0.5;
-      const arcHeight = this.reducedMotion ? 28 : Phaser.Math.Clamp(distance * 0.3, 58, 138);
-      const upwardRoom = Math.max(18, midpointY - FIELD.y - 16);
-      const downwardRoom = Math.max(18, FIELD.y + FIELD.h - midpointY - 16);
-      const colors = [0x153d29, 0x1e5636, 0x2b6f42, 0x3f8752];
-      const particles: { root: Phaser.GameObjects.Container; progress: { value: number } }[] = [];
-      let remaining = count;
-      let settled = false;
-
-      const finish = (): void => {
-        if (settled) return;
-        settled = true;
-        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
-        for (const particle of particles) {
-          this.tweens.killTweensOf(particle.progress);
-          if (particle.root.active) particle.root.destroy(true);
-        }
-        resolve();
-      };
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
-
-      for (let index = 0; index < count; index++) {
-        const phase = index * 2.39996;
-        const sourceSpread = 5 + (index % 7) * 1.8;
-        const start = {
-          x: from.x + Math.cos(phase) * sourceSpread,
-          y: from.y + Math.sin(phase) * sourceSpread,
-        };
-        const radius = 2.6 + (index % 4) * 0.55;
-        const root = this.add.container(start.x, start.y).setDepth(32);
-        const halo = this.add
-          .circle(0, 0, radius * 2.25, 0x4c9d61, 0.2)
-          .setBlendMode(Phaser.BlendModes.ADD);
-        const ball = this.add
-          .circle(0, 0, radius, colors[index % colors.length], 0.98)
-          .setStrokeStyle(1, 0x8fc99b, 0.82);
-        const glint = this.add.circle(-radius * 0.28, -radius * 0.28, Math.max(0.8, radius * 0.26), 0xc5e3bd, 0.78);
-        root.add([halo, ball, glint]);
-        root.setAlpha(0);
-        const progress = { value: 0 };
-        particles.push({ root, progress });
-        const laneDirection = index % 2 === 0 ? -1 : 1;
-        const laneRoom = laneDirection < 0 ? upwardRoom : downwardRoom;
-        const laneArc = Math.min(arcHeight * (0.78 + (index % 6) * 0.065), laneRoom);
-        const sidewaysDrift = ((index % 7) - 3) * 1.8;
-        this.tweens.add({
-          targets: progress,
-          value: 1,
-          delay: index * (this.reducedMotion ? 7 : 14),
-          duration: duration + (index % 5) * 24,
-          ease: 'Sine.In',
-          onUpdate: () => {
-            const amount = progress.value;
-            const parabola = 4 * amount * (1 - amount);
-            const fadeIn = Phaser.Math.Clamp(amount / 0.08, 0, 1);
-            const fadeOut = Phaser.Math.Clamp((1 - amount) / 0.1, 0, 1);
-            root
-              .setPosition(
-                Phaser.Math.Linear(start.x, to.x, amount) + sidewaysDrift * parabola,
-                Phaser.Math.Linear(start.y, to.y, amount) + laneDirection * laneArc * parabola
-              )
-              .setAlpha(fadeIn * fadeOut)
-              .setScale(0.82 + Math.sin(Math.PI * amount) * 0.28 - amount * 0.24);
-          },
-          onComplete: () => {
-            if (root.active) root.destroy(true);
-            remaining -= 1;
-            if (remaining === 0) finish();
-          },
-        });
-      }
-    });
-  }
-
-  /** Implode at a departure point and bloom at an arrival point. */
-  private vfxBlink(from: Vec2, to: Vec2, color: number): void {
-    if (dist(from, to) < 2) return;
-    this.vfxBlinkGate(from, color, 'out');
-    this.vfxBlinkGate(to, color, 'in');
-  }
-
-  private vfxBlinkGate(at: Vec2, color: number, phase: 'out' | 'in'): void {
-    const leaving = phase === 'out';
-    const duration = this.reducedMotion ? 120 : leaving ? 200 : 270;
-    const parts: Phaser.GameObjects.GameObject[] = [];
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
-      for (const part of parts) {
-        this.tweens.killTweensOf(part);
-        if (part.active) part.destroy();
-      }
-    };
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
-
-    const ring = this.add
-      .circle(at.x, at.y, MAGE_RADIUS * (leaving ? 1.6 : 0.4))
-      .setStrokeStyle(3, color, 0.9)
-      .setDepth(30.5)
-      .setBlendMode(Phaser.BlendModes.ADD);
-    const core = this.add
-      .circle(at.x, at.y, MAGE_RADIUS * 0.55, color, leaving ? 0.45 : 0.7)
-      .setDepth(30.4)
-      .setBlendMode(Phaser.BlendModes.ADD);
-    parts.push(ring, core);
-    this.tweens.add({
-      targets: ring,
-      scale: leaving ? 0.15 : 3.1,
-      alpha: 0,
-      duration,
-      ease: leaving ? 'Cubic.In' : 'Cubic.Out',
-    });
-    this.tweens.add({
-      targets: core,
-      scale: leaving ? 0.1 : 1.9,
-      alpha: 0,
-      duration: duration * 0.85,
-      ease: 'Sine.Out',
-    });
-
-    const shardCount = this.reducedMotion ? 0 : 8;
-    for (let index = 0; index < shardCount; index++) {
-      const angle = (Math.PI * 2 * index) / shardCount + (leaving ? 0.35 : 0);
-      const near = MAGE_RADIUS * 0.35;
-      const far = MAGE_RADIUS * 2.1;
-      const shard = this.add
-        .rectangle(
-          at.x + Math.cos(angle) * (leaving ? far : near),
-          at.y + Math.sin(angle) * (leaving ? far : near),
-          11,
-          2.6,
-          color,
-          0.95
-        )
-        .setRotation(angle)
-        .setDepth(30.6)
-        .setBlendMode(Phaser.BlendModes.ADD);
-      parts.push(shard);
-      this.tweens.add({
-        targets: shard,
-        x: at.x + Math.cos(angle) * (leaving ? near : far),
-        y: at.y + Math.sin(angle) * (leaving ? near : far),
-        alpha: 0,
-        duration,
-        ease: leaving ? 'Cubic.In' : 'Cubic.Out',
-      });
-    }
-    this.time.delayedCall(duration + 40, finish);
-  }
-
-  private vfxBoomerang(
-    from: Vec2,
-    to: Vec2,
-    color: number,
-    size: number,
-    speed: number
-  ): Promise<void> {
-    const distance = dist(from, to);
-    if (distance < 3) return Promise.resolve();
-
-    return new Promise((resolve) => {
-      const unit = { x: (to.x - from.x) / distance, y: (to.y - from.y) / distance };
-      const perpendicular = { x: -unit.y, y: unit.x };
-      const arc = this.reducedMotion ? 0 : Math.min(74, Math.max(24, distance * 0.16));
-      const duration = this.reducedMotion
-        ? 110
-        : Phaser.Math.Clamp((distance / (760 * Math.max(0.25, speed))) * 1000, 220, 620);
-      const root = this.add.container(from.x, from.y).setDepth(32);
-      const glow = this.add
-        .circle(0, 0, size * 1.15, color, 0.2)
-        .setBlendMode(Phaser.BlendModes.ADD);
-      const shard = this.add
-        .polygon(
-          0,
-          0,
-          [
-            -size * 1.35, 0,
-            -size * 0.2, -size * 0.55,
-            size * 1.4, 0,
-            -size * 0.2, size * 0.55,
-          ],
-          color,
-          1
-        )
-        .setStrokeStyle(Math.max(1, size * 0.14), 0xf4eaff, 0.92);
-      const core = this.add
-        .circle(size * 0.15, 0, Math.max(1.5, size * 0.18), 0xffffff, 0.9)
-        .setBlendMode(Phaser.BlendModes.ADD);
-      root.add([glow, shard, core]);
-
-      const progress = { value: 0 };
-      let settled = false;
-      const finish = (): void => {
-        if (settled) return;
-        settled = true;
-        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
-        this.tweens.killTweensOf(progress);
-        if (root.active) root.destroy(true);
-        resolve();
-      };
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
-      this.tweens.add({
-        targets: progress,
-        value: 1,
-        duration,
-        ease: 'Sine.InOut',
-        onUpdate: () => {
-          const amount = progress.value;
-          const lift = Math.sin(Math.PI * amount) * arc;
-          root
-            .setPosition(
-              Phaser.Math.Linear(from.x, to.x, amount) + perpendicular.x * lift,
-              Phaser.Math.Linear(from.y, to.y, amount) + perpendicular.y * lift
-            )
-            .setRotation(Math.atan2(unit.y, unit.x) + amount * Math.PI * 7);
-          glow.setAlpha(0.14 + Math.sin(amount * Math.PI * 6) * 0.08);
-        },
-        onComplete: finish,
-      });
-    });
-  }
-
-  private vfxSummonPuff(at: Vec2, size: number): Promise<void> {
-    const key = 'fx-summon-smoke';
-    if (!this.anims.exists(key)) return Promise.resolve();
-    return new Promise((resolve) => {
-      const sprite = this.add
-        .sprite(at.x, at.y, key, 0)
-        .setDepth(10)
-        .setDisplaySize(size, size);
-      let settled = false;
-      const finish = (): void => {
-        if (settled) return;
-        settled = true;
-        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
-        if (sprite.active) sprite.destroy();
-        resolve();
-      };
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
-      sprite.play(key);
-      sprite.once('animationcomplete', finish);
-    });
-  }
-
-  private vfxProjectile(from: Vec2, to: Vec2, visual: SpellVisual): Promise<void> {
-    const distance = dist(from, to);
-    if (distance < 3) return this.vfxBurst(to, visual.color, 28, visual.speed ?? 1);
-
-    return new Promise((resolve) => {
-      const speed = Math.max(0.25, visual.speed ?? 1);
-      const radius = Phaser.Math.Clamp(visual.size ?? 10, 5, 18);
-      const unit = { x: (to.x - from.x) / distance, y: (to.y - from.y) / distance };
-      const start = {
-        x: from.x + unit.x * (MAGE_RADIUS * 0.65),
-        y: from.y + unit.y * (MAGE_RADIUS * 0.65),
-      };
-      const end = { x: to.x - unit.x * 4, y: to.y - unit.y * 4 };
-      const arc = this.reducedMotion ? 0 : Math.min(28, distance * 0.065);
-      const duration = this.reducedMotion
-        ? 90
-        : Phaser.Math.Clamp(
-          (distance / (FX_TWEEN.projectile.pixelsPerSecond * speed)) * 1000,
-          FX_TWEEN.projectile.minDuration,
-          FX_TWEEN.projectile.maxDuration,
-        );
-
-      const root = this.add.container(start.x, start.y).setDepth(31);
-      const tail = this.add
-        .rectangle(-radius * 0.8, 0, radius * 3.4, radius * 1.25, visual.color, 0.24)
-        .setOrigin(1, 0.5)
-        .setBlendMode(Phaser.BlendModes.ADD);
-      const innerTail = this.add
-        .rectangle(-radius * 0.35, 0, radius * 2.25, Math.max(2, radius * 0.42), 0xffffff, 0.58)
-        .setOrigin(1, 0.5)
-        .setBlendMode(Phaser.BlendModes.ADD);
-      const aura = this.add
-        .circle(0, 0, radius * 1.6, visual.color, 0.24)
-        .setBlendMode(Phaser.BlendModes.ADD);
-      const body = this.add.circle(0, 0, radius, visual.color, 0.96);
-      const core = this.add
-        .circle(-radius * 0.12, -radius * 0.12, Math.max(2, radius * 0.38), 0xffffff, 0.92)
-        .setBlendMode(Phaser.BlendModes.ADD);
-      root.add([tail, innerTail, aura, body, core]);
-      root.setScale(this.reducedMotion ? 1 : 0.72);
-
-      const progress = { value: 0 };
-      let settled = false;
-      const finish = (): void => {
-        if (settled) return;
-        settled = true;
-        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
-        this.tweens.killTweensOf(root);
-        this.tweens.killTweensOf(aura);
-        this.tweens.killTweensOf(progress);
-        if (root.active) root.destroy(true);
-        resolve();
-      };
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
-
-      if (!this.reducedMotion) {
-        this.tweens.add({
-          targets: root,
-          scale: 1,
-          duration: Math.min(130, duration * 0.4),
-          ease: 'Back.Out',
-        });
-        this.tweens.add({
-          targets: aura,
-          scale: 1.28,
-          alpha: 0.12,
-          duration: 90,
-          yoyo: true,
-          repeat: -1,
-          ease: 'Sine.InOut',
-        });
-      }
-
-      this.tweens.add({
-        targets: progress,
-        value: 1,
-        duration,
-        ease: FX_TWEEN.projectile.ease,
-        onUpdate: () => {
-          const amount = progress.value;
-          const x = Phaser.Math.Linear(start.x, end.x, amount);
-          const y = Phaser.Math.Linear(start.y, end.y, amount) - Math.sin(Math.PI * amount) * arc;
-          const tangentX = end.x - start.x;
-          const tangentY = end.y - start.y - Math.cos(Math.PI * amount) * Math.PI * arc;
-          root.setPosition(x, y).setRotation(Math.atan2(tangentY, tangentX));
-        },
-        onComplete: () => {
-          this.tweens.killTweensOf(aura);
-          if (root.active) root.destroy(true);
-          void this.vfxBurst(to, visual.color, Math.max(26, radius * 3.1), speed).then(finish);
-        },
-      });
-    });
-  }
-
-  /** A conjured attack that simply erupts on the target — no projectile travel. */
-  private vfxConjure(at: Vec2, v: SpellVisual): Promise<void> {
-    return new Promise((resolve) => {
-      const speed = v.speed ?? 1;
-      const size = v.size ?? 26;
-      // A quick gathering flash, then a sharp shockwave at the target.
-      const spark = this.add.circle(at.x, at.y, size * 0.4, 0xffffff, 0.9).setDepth(31);
-      this.tweens.add({
-        targets: spark,
-        scale: { from: 0.2, to: 1.6 },
-        alpha: { from: 0.9, to: 0 },
-        duration: FX_TWEEN.conjureGather.duration / speed,
-        ease: FX_TWEEN.conjureGather.ease,
-        onComplete: () => spark.destroy(),
-      });
-      // A few jagged shards stabbing inward.
-      for (let i = 0; i < 6; i++) {
-        const ang = (Math.PI * 2 * i) / 6;
-        const r0 = size * 1.8;
-        const shard = this.add
-          .circle(at.x + Math.cos(ang) * r0, at.y + Math.sin(ang) * r0, size * 0.22, v.color, 1)
-          .setDepth(31);
-        this.tweens.add({
-          targets: shard,
-          x: at.x,
-          y: at.y,
-          alpha: { from: 1, to: 0.2 },
-          duration: FX_TWEEN.conjureShard.duration / speed,
-          ease: FX_TWEEN.conjureShard.ease,
-          onComplete: () => shard.destroy(),
-        });
-      }
-      this.vfxBurst(at, v.color, size * 2.2, speed).then(resolve);
-    });
-  }
-
-  /** A positive glow with rising sparkles on the target (heals / buffs / team). */
-  private vfxHeal(at: Vec2, v: SpellVisual): Promise<void> {
-    return new Promise((resolve) => {
-      const speed = v.speed ?? 1;
-      const size = v.size ?? 30;
-      // A soft glow that swells and fades around the target.
-      const glow = this.add.circle(at.x, at.y, size, v.color, 0.5).setDepth(29);
-      glow.setStrokeStyle(3, 0xffffff, 0.8);
-      this.tweens.add({
-        targets: glow,
-        scale: { from: 0.4, to: 1.5 },
-        alpha: { from: 0.6, to: 0 },
-        duration: FX_TWEEN.healGlow.duration / speed,
-        ease: FX_TWEEN.healGlow.ease,
-        onComplete: () => glow.destroy(),
-      });
-      // Rising sparkles.
-      for (let i = 0; i < 8; i++) {
-        const dx = (i / 7 - 0.5) * size * 2;
-        const sparkle = this.add
-          .circle(at.x + dx, at.y + size * 0.6, 3, 0xffffff, 1)
-          .setDepth(31);
-        this.tweens.add({
-          targets: sparkle,
-          y: at.y - size * 1.2,
-          alpha: { from: 1, to: 0 },
-          duration: FX_TWEEN.healSparkle.duration / speed,
-          delay: (i * FX_TWEEN.healSparkle.stagger) / speed,
-          ease: FX_TWEEN.healSparkle.ease,
-          onComplete: () => sparkle.destroy(),
-        });
-      }
-      this.time.delayedCall((FX_TWEEN.healGlow.duration + 20) / speed, resolve);
-    });
-  }
-
-  private vfxBurst(at: Vec2, color: number, reach: number, speed: number): Promise<void> {
-    return new Promise((resolve) => {
-      const ring = this.add.circle(at.x, at.y, Math.max(8, reach), color, 0.2).setDepth(31);
-      ring.setStrokeStyle(3, color, 1);
-      ring.setScale(0.15);
-      ring.setAlpha(0.95);
-      this.tweens.add({
-        targets: ring,
-        scale: 1,
-        alpha: 0,
-        duration: FX_TWEEN.burst.duration / (speed || 1),
-        ease: FX_TWEEN.burst.ease,
-        onComplete: () => {
-          ring.destroy();
-          resolve();
-        },
-      });
-    });
-  }
-
-  private vfxNova(at: Vec2, v: SpellVisual): Promise<void> {
-    return this.vfxBurst(at, v.color, v.size ?? 55, v.speed ?? 1);
-  }
-
-  private vfxQuarterTurn(clockwise: boolean): void {
-    const camera = this.cameras.main;
-    this.tweens.add({
-      targets: camera,
-      rotation: clockwise ? Math.PI / 2 : -Math.PI / 2,
-      duration: FX_TWEEN.quarterTurn.duration / this.combatSpeed,
-      yoyo: true,
-      hold: FX_TWEEN.quarterTurn.hold / this.combatSpeed,
-      ease: FX_TWEEN.quarterTurn.ease,
-    });
-  }
-
-  private vfxTwistRune(pivot: Vec2, radius: number, clockwise: boolean): void {
-    const ring = this.add.circle(pivot.x, pivot.y, radius, 0xb8c878, 0.08).setDepth(30);
-    ring.setStrokeStyle(4, 0xdfffa8, 0.9);
-    const marker = this.add.circle(pivot.x + radius, pivot.y, 7, 0xffffff, 1).setDepth(31);
-    const progress = { angle: 0 };
-    this.tweens.add({
-      targets: progress,
-      angle: clockwise ? -Math.PI / 2 : Math.PI / 2,
-      duration: FX_TWEEN.twistMarker.duration / this.combatSpeed,
-      ease: FX_TWEEN.twistMarker.ease,
-      onUpdate: () => {
-        marker.setPosition(
-          pivot.x + Math.cos(progress.angle) * radius,
-          pivot.y + Math.sin(progress.angle) * radius
-        );
-      },
-      onComplete: () => marker.destroy(),
-    });
-    this.tweens.add({
-      targets: ring,
-      scale: { from: 0.25, to: 1 },
-      alpha: { from: 0.9, to: 0 },
-      duration: FX_TWEEN.twistRune.duration / this.combatSpeed,
-      ease: FX_TWEEN.twistRune.ease,
-      onComplete: () => ring.destroy(),
-    });
-  }
-
-  /**
-   * Play a one-shot fx sprite sheet at a location, for ground-targeted spells.
-   *  - `apexAtFrom`: anchor the sprite's apex at the caster and extend it toward
-   *    `at` (used for cones — the sheet faces left, so its apex is the right edge).
-   *  - `aim`: rotate a point-centred sheet to face the cast direction.
-   *  - `lengthPx`: the on-field size (cone length / blast diameter) in pixels.
-   */
-  private vfxSpriteAt(
-    key: string,
-    at: Vec2,
-    opts: { from?: Vec2; apexAtFrom?: boolean; aim?: boolean; lengthPx: number }
-  ): Promise<void> {
-    return new Promise((resolve) => {
-      if (!this.anims.exists(key)) {
-        resolve();
-        return;
-      }
-      const spr = this.add.sprite(at.x, at.y, key).setDepth(9);
-      const frameW = spr.width || 1;
-      const frameH = spr.height || 1;
-      if (opts.apexAtFrom && opts.from) {
-        // Cone: apex at the caster, body fanning out toward the aimed point.
-        spr.setOrigin(1, 0.5);
-        spr.setPosition(opts.from.x, opts.from.y);
-        spr.setScale(opts.lengthPx / frameW);
-        const ang = Math.atan2(at.y - opts.from.y, at.x - opts.from.x);
-        spr.setRotation(ang - Math.PI); // the sheet's cone faces left by default
-      } else {
-        spr.setOrigin(0.5, 0.5);
-        spr.setScale(opts.lengthPx / frameH);
-        if (opts.aim && opts.from) {
-          const ang = Math.atan2(at.y - opts.from.y, at.x - opts.from.x);
-          spr.setRotation(ang - Math.PI);
-        }
-      }
-      spr.play(key);
-      spr.once('animationcomplete', () => {
-        spr.destroy();
-        resolve();
-      });
-    });
-  }
-
-  /**
-   * Play a one-shot slash animation (from the Pixel Art Slashes library) centred
-   * at `at`, rotated to `angle` (the sheets face right by default), and scaled so
-   * its width spans `sizePx`. Used to dress up melee strikes and the Cleave sweep.
-   */
-  private vfxSlash(animKey: string, at: Vec2, angle: number, sizePx: number): Promise<void> {
-    return new Promise((resolve) => {
-      const firstFrame = `${animKey}-0`;
-      if (!this.anims.exists(animKey) || !this.textures.exists(firstFrame)) {
-        resolve();
-        return;
-      }
-      const spr = this.add.sprite(at.x, at.y, firstFrame).setDepth(32);
-      const frameW = spr.width || 1;
-      spr.setOrigin(0.5, 0.5);
-      spr.setScale(sizePx / frameW);
-      spr.setRotation(angle);
-      spr.play(animKey);
-      spr.once('animationcomplete', () => {
-        spr.destroy();
-        resolve();
-      });
-    });
-  }
-
-  /**
-   * Paint the shatter cone stretched to fill a reality wedge barrier: the sheet's
-   * apex is pinned to `apex` and its body is scaled non-uniformly so its length
-   * matches `range` and its far-edge width matches the wedge's arc (`halfAngle`).
-   * The sheet's cone faces left by default, so we rotate it to open toward `angle`.
-   */
-  private vfxWedge(apex: Vec2, angle: number, halfAngle: number, range: number): void {
-    const key = 'fx-shatter';
-    if (!this.anims.exists(key)) return;
-    const spr = this.add.sprite(apex.x, apex.y, key).setDepth(9);
-    const frameW = spr.width || 1;
-    const frameH = spr.height || 1;
-    spr.setOrigin(1, 0.5); // apex sits at the sheet's right edge
-    spr.setRotation(angle - Math.PI); // the sheet's cone faces left by default
-    const farWidth = 2 * range * Math.tan(halfAngle);
-    spr.setScale(range / frameW, Math.max(farWidth, 1) / frameH);
-    spr.play(key);
-    spr.once('animationcomplete', () => spr.destroy());
-  }
 
   // ===========================================================================
   //  DICE WINDOW
@@ -16043,5 +15314,6 @@ interface ReactionChoice {
 }
 
 function dots(remaining: number, total: number): string {
-  return '●'.repeat(Math.max(0, remaining)) + '○'.repeat(Math.max(0, total - remaining)) || '—';
+  return 'â—'.repeat(Math.max(0, remaining)) + 'â—‹'.repeat(Math.max(0, total - remaining)) || 'â€”';
 }
+
