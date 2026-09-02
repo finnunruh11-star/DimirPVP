@@ -86,6 +86,49 @@ export const RECIPES = {
     k.noise({ dur: 0.16, gain: 0.32, filter: 'bandpass', freq: 3600, freqTo: 700, q: 1.4, attack: 0.006 });
     k.tone({ type: 'triangle', freq: 2100, freqTo: 900, dur: 0.1, gain: 0.06, reverb: 0.25 });
   },
+  'melee.swing': (k: SynthKit) => {
+    // Air dragged around a committed swing. Fired as the arm uncoils, so the
+    // pass-through peaks on the frame the weapon actually arrives.
+    k.noise({ dur: 0.085, gain: 0.19, filter: 'bandpass', freq: 700, freqTo: 2800, q: 1.1, attack: 0.03 });
+    k.noise({ start: 0.055, dur: 0.11, gain: 0.28, filter: 'bandpass', freq: k.rand(3100, 3700), freqTo: 560, q: 1.3 });
+    k.tone({ type: 'triangle', freq: k.rand(320, 380), freqTo: 110, dur: 0.1, gain: 0.05 });
+  },
+  'melee.contact': (k: SynthKit) => {
+    // The weapon arriving. Deliberately dry and small: the wound itself lands
+    // later, with the number, and two big impacts in a row would only smear.
+    k.noise({ dur: 0.022, gain: 0.22, filter: 'bandpass', freq: k.rand(1100, 1500), q: 1.4, attack: 0.001 });
+    k.tone({ type: 'sine', freq: k.rand(150, 182), freqTo: 80, dur: 0.07, gain: 0.18 });
+  },
+  'hit.slash': (k: SynthKit) => {
+    // A cut, not a swish: an edge transient over a wet body and a short tail.
+    k.noise({ dur: 0.028, gain: 0.42, filter: 'highpass', freq: 2700, attack: 0.001 });
+    k.noise({ dur: 0.085, gain: 0.3, filter: 'bandpass', freq: k.rand(1450, 1900), q: 1.1, attack: 0.001 });
+    k.tone({ type: 'sine', freq: k.rand(195, 235), freqTo: 62, dur: 0.16, gain: 0.4 });
+    k.noise({ kind: 'brown', dur: 0.18, gain: 0.13, filter: 'lowpass', freq: 620, reverb: 0.18 });
+  },
+  'hit.pierce': (k: SynthKit) => {
+    // An arrow finding its mark: a hard tick, a tight thump, a shaft still ringing.
+    k.noise({ dur: 0.02, gain: 0.4, filter: 'highpass', freq: 3400, attack: 0.001 });
+    k.tone({ type: 'sine', freq: k.rand(210, 250), freqTo: 74, dur: 0.11, gain: 0.44 });
+    k.tone({
+      type: 'triangle', freq: k.rand(620, 730), freqTo: 470,
+      start: 0.02, dur: 0.19, gain: 0.07, reverb: 0.22,
+    });
+  },
+  'bow.draw': (k: SynthKit) => {
+    // String and stave under load: a creak that tightens as it is pulled.
+    k.noise({
+      dur: 0.22, gain: 0.1, filter: 'bandpass', freq: 420, freqTo: 900, q: 4.5,
+      attack: 0.06, flicker: { rate: 26, depth: 0.5 },
+    });
+    k.tone({ type: 'triangle', freq: 150, freqTo: 205, dur: 0.2, gain: 0.05, attack: 0.05 });
+  },
+  'bow.release': (k: SynthKit) => {
+    // The string snapping flat, then the shaft tearing away from the stave.
+    k.tone({ type: 'triangle', freq: k.rand(340, 400), freqTo: 118, dur: 0.09, gain: 0.24 });
+    k.noise({ dur: 0.045, gain: 0.3, filter: 'bandpass', freq: 2400, q: 1.6, attack: 0.001 });
+    k.noise({ start: 0.03, dur: 0.16, gain: 0.15, filter: 'bandpass', freq: 3000, freqTo: 1100, q: 1.2 });
+  },
   'hit.block': (k: SynthKit) => {
     k.noise({ dur: 0.035, gain: 0.34, filter: 'highpass', freq: 2600, attack: 0.001 });
     k.tone({ type: 'triangle', freq: 1150, dur: 0.16, gain: 0.12, reverb: 0.3 });

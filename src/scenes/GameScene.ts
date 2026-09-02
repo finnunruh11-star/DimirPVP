@@ -168,6 +168,7 @@ import {
   rollRarity,
   draftChoices,
   rarityRank,
+  isRangedWeapon,
   DRAFT_ROUNDS,
   RARITY_COLOR,
   setActiveItemSets,
@@ -188,8 +189,10 @@ import type {
 } from '../effects/effects';
 import {
   ACTION_FX_PRESETS,
+  BOW_SHOT,
   FX_MOTION,
   FX_TWEEN,
+  MELEE_SWING,
   SPELL_IMPACT_WEIGHT,
   type ImpactWeight,
 } from '../effects/FxPresets';
@@ -217,8 +220,8 @@ const DAMAGE_SOUND: Record<string, SoundName> = {
   fire: 'spell.fire',
   heat: 'spell.fire',
   shatter: 'spell.shatter',
-  slashing: 'melee.slash',
-  pierce: 'melee.slash',
+  slashing: 'hit.slash',
+  pierce: 'hit.pierce',
 };
 
 /** Words that bring their own sound, so the generic spell voice stays off. */
@@ -508,6 +511,8 @@ interface MageAnim {
   lock: 'move' | 'dash' | 'pull' | 'attack' | 'hit' | 'death' | null;
   /** A sprite-position tween owns the position; don't snap to logical. */
   posLocked: boolean;
+  /** A swing tween owns the held weapon's placement; leave it alone. */
+  heldLocked?: boolean;
   /** The attack-charge loop is the current resting animation. */
   charging: boolean;
   /** A fatal hit is queued but waits for the damage dice to settle. */
@@ -13038,6 +13043,20 @@ export class GameScene extends Phaser.Scene {
       g.generateTexture(key, 32, 32);
       g.destroy();
     }
+    this.buildArrowTexture();
+  }
+
+  /** One loosed shaft, drawn pointing right so it can be rotated to its heading. */
+  private buildArrowTexture(): void {
+    if (this.textures.exists('fx-arrow')) return;
+    const g = this.make.graphics({ x: 0, y: 0 }, false);
+    g.fillStyle(0x3a2417, 1).fillRect(4, 5, 22, 3);
+    g.fillStyle(0x87552c, 1).fillRect(4, 5, 22, 2);
+    g.fillStyle(0xe0bd78, 1).fillRect(2, 4, 6, 1).fillRect(2, 8, 6, 1);
+    g.fillStyle(0x424a50, 1).fillTriangle(24, 2, 32, 6.5, 24, 11);
+    g.fillStyle(0xe1e7e5, 1).fillTriangle(25, 4, 30, 6.5, 25, 9);
+    g.generateTexture('fx-arrow', 32, 13);
+    g.destroy();
   }
 
   private heldWeaponKind(mage: Mage, itemId: ItemId): HeldWeaponKind {
@@ -13075,6 +13094,10 @@ export class GameScene extends Phaser.Scene {
       rec.held.setTexture(key);
     }
     rec.heldVisualKey = key;
+    if (rec.heldLocked) {
+      rec.held.setAlpha(alpha).setVisible(true);
+      return;
+    }
 
     const facing = rec.sprite.flipX ? -1 : 1;
     const visualScale = mage.mine ? mineEnemyVisual(mage).scale : 1;
@@ -13228,8 +13251,12 @@ export class GameScene extends Phaser.Scene {
         s.setAngle(0);
       }
       if (m.mine) this.styleMineEnemySprite(m);
-      if (!rec.posLocked) s.setPosition(m.x, m.y + footY + this.mineSpriteBob(m));
-      s.setFlipX(customCreature ? this.creatureShouldFlipX(m) : m.team === 2);
+      // A position-locked animation owns where the body stands and which way
+      // it faces, so a mid-swing redraw cannot spin it back to its team side.
+      if (!rec.posLocked) {
+        s.setPosition(m.x, m.y + footY + this.mineSpriteBob(m));
+        s.setFlipX(customCreature ? this.creatureShouldFlipX(m) : m.team === 2);
+      }
       if (!m.alive) {
         const showingDeath =
           customCreature && !rec.deathComplete && (rec.deathPending || rec.lock === 'death');
@@ -13416,6 +13443,15 @@ export class GameScene extends Phaser.Scene {
     return SPELL_IMPACT_WEIGHT[comboKey(spell.words)];
   }
 
+  /** The face of a body a known blow landed on, so its art meets the weapon. */
+  private struckSide(mage: Mage, angle: number | undefined): Vec2 {
+    if (angle == null) return { x: mage.x, y: mage.y };
+    return {
+      x: mage.x - Math.cos(angle) * MAGE_RADIUS * 0.4,
+      y: mage.y - Math.sin(angle) * MAGE_RADIUS * 0.4,
+    };
+  }
+
   /**
    * Play every queued impact reaction and clear the queue. A burst that
    * reaches several bodies staggers their recoils into a readable cascade
@@ -13440,7 +13476,7 @@ export class GameScene extends Phaser.Scene {
             const weight = shaken ? undefined : impact.weight;
             if (weight) shaken = true;
             this.impactFx.play({
-              at: { x: impact.mage.x, y: impact.mage.y },
+              at: this.struckSide(impact.mage, impact.angle),
               feedback: impact.feedback,
               severity: impact.severity,
               angle: impact.angle,
@@ -13671,25 +13707,280 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  /** Hold the weapon in a pose: rotation is mirrored by facing. */
+  private poseHeldWeapon(rec: MageAnim, rot: number, lift: number, reach: number): void {
+    const held = rec.held;
+    if (!held) return;
+    const facing = rec.sprite.flipX ? -1 : 1;
+    held
+      .setPosition(
+        rec.sprite.x + facing * (MAGE_RADIUS * 0.48 + reach),
+        rec.sprite.y - MAGE_RADIUS * 1.15 + lift
+      )
+      .setFlipX(facing < 0)
+      .setRotation(facing * rot);
+  }
+
+  /** A dimming copy of the weapon left behind in the arc it just cut. */
+  private dropWeaponGhost(rec: MageAnim): void {
+    const held = rec.held;
+    if (!held || !rec.heldVisualKey) return;
+    const ghost = this.add
+      .image(held.x, held.y, rec.heldVisualKey)
+      .setOrigin(held.originX, held.originY)
+      .setDisplaySize(held.displayWidth, held.displayHeight)
+      .setFlipX(held.flipX)
+      .setRotation(held.rotation)
+      .setAlpha(MELEE_SWING.trail.alpha)
+      .setTint(0xd9e6ef)
+      .setDepth(5.15);
+    this.tweens.add({
+      targets: ghost,
+      alpha: 0,
+      duration: MELEE_SWING.trail.fadeMs,
+      ease: 'Quad.Out',
+      onComplete: () => ghost.destroy(),
+    });
+  }
+
   /**
-   * A ring that snaps inward onto the victim just before a blow lands. The beat
-   * of anticipation is what makes the impact itself read as heavy.
+   * One leg of a strike: glide the body between two points while the weapon
+   * eases between two poses, so the arm and the blade move as one thing.
    */
-  private telegraphStrike(target: Mage): Promise<void> {
-    if (this.reducedMotion) return Promise.resolve();
+  private strikePhase(
+    rec: MageAnim,
+    from: Vec2,
+    to: Vec2,
+    fromPose: { rot: number; lift: number; reach: number },
+    toPose: { rot: number; lift: number; reach: number },
+    duration: number,
+    ease: string,
+    ghosts = 0,
+  ): Promise<void> {
     return new Promise((resolve) => {
-      const g = this.add.graphics({ x: target.x, y: target.y }).setDepth(57);
-      g.lineStyle(3, MENU_COLOR.brassLight, 0.95).strokeCircle(0, 0, MAGE_RADIUS + 6);
+      const p = { t: 0 };
+      let dropped = 0;
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        resolve();
+      };
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
       this.tweens.add({
-        targets: g,
-        scale: { from: 2.1, to: 1 },
-        alpha: { from: 0.15, to: 1 },
-        duration: 130,
-        ease: 'Quad.In',
-        onComplete: () => {
-          g.destroy();
-          resolve();
+        targets: p,
+        t: 1,
+        duration,
+        ease,
+        onUpdate: () => {
+          rec.sprite.setPosition(
+            Phaser.Math.Linear(from.x, to.x, p.t),
+            Phaser.Math.Linear(from.y, to.y, p.t)
+          );
+          this.poseHeldWeapon(
+            rec,
+            Phaser.Math.Linear(fromPose.rot, toPose.rot, p.t),
+            Phaser.Math.Linear(fromPose.lift, toPose.lift, p.t),
+            Phaser.Math.Linear(fromPose.reach, toPose.reach, p.t)
+          );
+          while (dropped < ghosts && p.t >= (dropped + 1) / (ghosts + 1)) {
+            dropped += 1;
+            this.dropWeaponGhost(rec);
+          }
         },
+        onComplete: finish,
+        onStop: finish,
+      });
+    });
+  }
+
+  /** Where a blow aimed from `from` actually meets the body standing at `at`. */
+  private contactPoint(from: Vec2, at: Vec2): { angle: number; contact: Vec2 } {
+    const gap = dist(from, at);
+    if (gap < 1) return { angle: 0, contact: { ...at } };
+    const angle = Math.atan2(at.y - from.y, at.x - from.x);
+    return {
+      angle,
+      contact: {
+        x: at.x - Math.cos(angle) * MAGE_RADIUS * 0.72,
+        y: at.y - Math.sin(angle) * MAGE_RADIUS * 0.72,
+      },
+    };
+  }
+
+  /** Turn a body toward what it is striking, honouring each sheet's own facing. */
+  private faceStrike(rec: MageAnim, source: Mage, at: Vec2): void {
+    const kind = creatureSpriteKind(source);
+    const nativeFacesRight = !kind || kind === 'wisp' || kind === 'defender';
+    const targetIsRight = at.x > source.x;
+    rec.sprite.setFlipX(nativeFacesRight ? !targetIsRight : targetIsRight);
+  }
+
+  /** The moment the weapon bites: the arc, the sparks and the cut itself. */
+  private strikeContact(at: Vec2, angle: number, sweep: boolean): void {
+    playSound('melee.contact');
+    if (sweep && this.anims.exists('fx-slash-arc')) {
+      void this.spellVfx.slash('fx-slash-arc', at, angle, MAGE_RADIUS * 3.6);
+    }
+    if (this.reducedMotion) return;
+    const centre = Phaser.Math.RadToDeg(angle);
+    this.particleFx?.burst(at, {
+      color: 0xf6ecd2,
+      count: sweep ? 9 : 6,
+      speed: sweep ? 320 : 250,
+      lifespan: 250,
+      shape: 'spark',
+      size: sweep ? 19 : 15,
+      glow: true,
+      drag: 0.9,
+      alignToTravel: true,
+      angle: { min: centre - 44, max: centre + 44 },
+      depth: 9.6,
+    });
+  }
+
+  /**
+   * A basic weapon strike played as one motion: the body coils away from its
+   * target, drives through it, and the arc lands where the weapon meets flesh.
+   * Resolves on contact so the damage that follows reads as this blow landing.
+   */
+  private async playMeleeStrike(source: Mage, at: Vec2): Promise<void> {
+    const rec = this.mageAnims.get(source);
+    const from = { x: source.x, y: source.y };
+    const { angle, contact } = this.contactPoint(from, at);
+    this.startBodyAttack(source);
+
+    if (!rec || this.reducedMotion) {
+      playSound('melee.swing');
+      this.strikeContact(contact, angle, true);
+      await this.delay(MELEE_SWING.contactMs);
+      return;
+    }
+
+    const footY = MAGE_RADIUS * 1.4;
+    const home = { x: source.x, y: source.y + footY };
+    const along = (px: number): Vec2 => ({
+      x: home.x + Math.cos(angle) * px,
+      y: home.y + Math.sin(angle) * px,
+    });
+    const step = Phaser.Math.Clamp(dist(from, at) - MAGE_RADIUS * 1.6, 0, MELEE_SWING.lungePx);
+    this.faceStrike(rec, source, at);
+    rec.posLocked = true;
+    rec.heldLocked = !!rec.held;
+
+    await this.strikePhase(
+      rec, home, along(-MELEE_SWING.coilPx),
+      MELEE_SWING.recover.pose, MELEE_SWING.coil.pose,
+      MELEE_SWING.coil.ms, MELEE_SWING.coil.ease
+    );
+    playSound('melee.swing');
+    await this.strikePhase(
+      rec, along(-MELEE_SWING.coilPx), along(step),
+      MELEE_SWING.coil.pose, MELEE_SWING.strike.pose,
+      MELEE_SWING.strike.ms, MELEE_SWING.strike.ease,
+      MELEE_SWING.trail.count
+    );
+
+    this.strikeContact(contact, angle, true);
+    void this.strikePhase(
+      rec, along(step), home,
+      MELEE_SWING.strike.pose, MELEE_SWING.recover.pose,
+      MELEE_SWING.recover.ms, MELEE_SWING.recover.ease
+    ).then(() => {
+      rec.posLocked = false;
+      rec.heldLocked = false;
+    });
+    await this.delay(MELEE_SWING.contactMs);
+  }
+
+  /**
+   * A bow shot: the stave loads, the string goes, and the shaft carries the
+   * distance itself. Resolves when the arrow arrives, so the wound lands with it.
+   */
+  private async playBowShot(source: Mage, at: Vec2): Promise<void> {
+    const rec = this.mageAnims.get(source);
+    const from = { x: source.x, y: source.y };
+    const nock = { x: source.x, y: source.y - MAGE_RADIUS * 0.95 };
+    const { angle, contact } = this.contactPoint(from, at);
+    this.startBodyAttack(source);
+
+    if (!rec || this.reducedMotion) {
+      playSound('bow.release');
+      await this.flyArrow(nock, contact);
+      this.strikeContact(contact, angle, false);
+      return;
+    }
+
+    const footY = MAGE_RADIUS * 1.4;
+    const home = { x: source.x, y: source.y + footY };
+    this.faceStrike(rec, source, at);
+    rec.posLocked = true;
+    rec.heldLocked = !!rec.held;
+
+    playSound('bow.draw');
+    await this.strikePhase(
+      rec, home, home,
+      BOW_SHOT.recover.pose, BOW_SHOT.draw.pose,
+      BOW_SHOT.draw.ms, BOW_SHOT.draw.ease
+    );
+    playSound('bow.release');
+    void this.strikePhase(
+      rec, home, home,
+      BOW_SHOT.draw.pose, BOW_SHOT.loose.pose,
+      BOW_SHOT.loose.ms, BOW_SHOT.loose.ease
+    ).then(() =>
+      this.strikePhase(
+        rec, home, home,
+        BOW_SHOT.loose.pose, BOW_SHOT.recover.pose,
+        BOW_SHOT.recover.ms, BOW_SHOT.recover.ease
+      )
+    ).then(() => {
+      rec.posLocked = false;
+      rec.heldLocked = false;
+    });
+    await this.flyArrow(nock, contact);
+    this.strikeContact(contact, angle, false);
+  }
+
+  /** Carry one arrow from the bow to the body it was loosed at. */
+  private flyArrow(from: Vec2, to: Vec2): Promise<void> {
+    if (!this.textures.exists('fx-arrow')) return this.delay(90);
+    return new Promise((resolve) => {
+      const travel = dist(from, to);
+      const duration = Phaser.Math.Clamp(
+        (travel / BOW_SHOT.arrow.pixelsPerSecond) * 1000,
+        BOW_SHOT.arrow.minMs,
+        BOW_SHOT.arrow.maxMs
+      );
+      // A shaft that far outruns gravity still dips a little; the dip is what
+      // stops the flight reading as a straight line slid across the board.
+      const arc = this.reducedMotion ? 0 : Math.min(BOW_SHOT.arrow.arcPx, travel * 0.12);
+      const shaft = this.add.image(from.x, from.y, 'fx-arrow').setDepth(9.5).setOrigin(0.5, 0.5);
+      const p = { t: 0 };
+      let last = { ...from };
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        if (shaft.active) shaft.destroy();
+        resolve();
+      };
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+      this.tweens.add({
+        targets: p,
+        t: 1,
+        duration,
+        ease: 'Linear',
+        onUpdate: () => {
+          const x = Phaser.Math.Linear(from.x, to.x, p.t);
+          const y = Phaser.Math.Linear(from.y, to.y, p.t) - arc * 4 * p.t * (1 - p.t);
+          shaft.setPosition(x, y).setRotation(Math.atan2(y - last.y, x - last.x));
+          last = { x, y };
+        },
+        onComplete: finish,
+        onStop: finish,
       });
     });
   }
@@ -14887,19 +15178,13 @@ export class GameScene extends Phaser.Scene {
 
     if (item.kind === 'melee') {
       const at = item.target?.pos ?? from;
-      const creatureKind = creatureSpriteKind(item.source);
-      if (creatureKind) this.startBodyAttack(item.source);
-      if (creatureKind === 'wisp') return this.playWispAttackFx(at, item.source);
-      const strike = (): Promise<void> => {
-        // A basic weapon / unarmed strike sweeps a quick slash arc across the
-        // struck foe, aimed along the attack direction.
-        if (this.anims.exists('fx-slash-arc')) {
-          const angle = Math.atan2(at.y - from.y, at.x - from.x);
-          return this.spellVfx.slash('fx-slash-arc', at, angle, MAGE_RADIUS * 4.2);
-        }
-        return this.spellVfx.burst(at, 0xffffff, 34, 1.6);
-      };
-      return item.target ? this.telegraphStrike(item.target).then(strike) : strike();
+      if (creatureSpriteKind(item.source) === 'wisp') {
+        this.startBodyAttack(item.source);
+        return this.playWispAttackFx(at, item.source);
+      }
+      return isRangedWeapon(item.source.activeWeapon())
+        ? this.playBowShot(item.source, at)
+        : this.playMeleeStrike(item.source, at);
     }
 
     if (item.kind === 'spell' && item.spell?.manualCastVisual) return Promise.resolve();

@@ -24,6 +24,32 @@ export const FX_MOTION = {
   pull: { duration: 550, ease: 'Sine.In' },
 } as const;
 
+/**
+ * A basic weapon strike, shaped as one motion: coil away from the target, drive
+ * through it, then settle. The poses are the held weapon's rotation (radians,
+ * mirrored by facing), vertical lift and reach out from the grip.
+ */
+export const MELEE_SWING = {
+  coilPx: 7,
+  /** How far the body may actually travel into the blow. */
+  lungePx: 26,
+  coil: { ms: 135, ease: 'Sine.Out', pose: { rot: -0.85, lift: -3, reach: -6 } },
+  strike: { ms: 85, ease: 'Quad.In', pose: { rot: 1.78, lift: 7, reach: 10 } },
+  recover: { ms: 250, ease: 'Sine.Out', pose: { rot: 0.38, lift: 0, reach: 0 } },
+  /** Beat held after contact before the damage is allowed to land. */
+  contactMs: 70,
+  /** Blade ghosts dropped through the strike arc. */
+  trail: { count: 3, alpha: 0.42, fadeMs: 170 },
+} as const;
+
+/** A bow shot: draw the stave, loose, and let the shaft carry the distance. */
+export const BOW_SHOT = {
+  draw: { ms: 190, ease: 'Sine.Out', pose: { rot: -0.34, lift: -2, reach: -7 } },
+  loose: { ms: 70, ease: 'Quad.Out', pose: { rot: 0.16, lift: 1, reach: 3 } },
+  recover: { ms: 260, ease: 'Sine.Out', pose: { rot: 0.38, lift: 0, reach: 0 } },
+  arrow: { pixelsPerSecond: 940, minMs: 120, maxMs: 460, arcPx: 16 },
+} as const;
+
 export const FX_TWEEN = {
   projectile: {
     pixelsPerSecond: 760,

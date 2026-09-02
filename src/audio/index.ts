@@ -19,6 +19,8 @@ const THROTTLE_MS: Partial<Record<SoundName, number>> = {
   'ui.hover': 60,
   'ui.click': 20,
   'hit.physical': 55,
+  'hit.slash': 55,
+  'hit.pierce': 55,
   'spell.impact': 55,
   'spell.lightning': 90,
   'spell.shatter': 70,
@@ -39,6 +41,11 @@ const SOUND_GAIN: Partial<Record<SoundName, number>> = {
   'spell.shatter': 0.35,
   'spell.impact': 0.35,
   'hit.physical': 0.7,
+  'hit.slash': 0.72,
+  'hit.pierce': 0.72,
+  'melee.swing': 0.8,
+  'melee.contact': 0.85,
+  'bow.draw': 0.9,
 };
 
 export interface PlayOpts {
