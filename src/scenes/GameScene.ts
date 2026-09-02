@@ -68,6 +68,7 @@ import { TextEntry } from '../ui/cabinet/TextEntry';
 import { addCabinetWindow } from '../ui/cabinet/CabinetWindow';
 import { isReducedMotion, toggleMotionPreference } from '../ui/cabinet/motion';
 import { SpellVfx } from '../visuals/SpellVfx';
+import { DevResourceEditor } from '../ui/workshop/DevResourceEditor';
 import { playSound, playMusic, type SoundName } from '../audio';
 import {
   ACTIONS_PER_TURN,
@@ -532,7 +533,7 @@ interface ScarabRec {
   walking: boolean;
 }
 
-type InputMode =
+export type InputMode =
   | 'idle'
   | 'aiming-spell'
   | 'aiming-point'
@@ -1076,13 +1077,8 @@ export class GameScene extends Phaser.Scene {
   private devToggles: { key: DevToggle; label: string; hot: string; control: CabinetChip }[] = [];
   private devClickGuard = false;
   // Dev resource editor (HP / mana / sanity / actions / stacks of any entity).
-  private devResPanel?: Phaser.GameObjects.Container;
-  private devResWidgets: Phaser.GameObjects.GameObject[] = [];
+  private devResourceEditor?: DevResourceEditor;
   private readonly workshopFocus = new MenuFocusGroup();
-  /** Index into `gs.mages` of the entity the resource editor is editing. */
-  private devResIndex = 0;
-  /** The mode to restore when the resource editor closes. */
-  private devResReturn: InputMode = 'idle';
   /** Swallows the field click that opened an aiming mode from the action menu. */
   private menuClickGuard = false;
 
@@ -1313,8 +1309,8 @@ export class GameScene extends Phaser.Scene {
     this.trainPanel = undefined;
     this.trainTitle = undefined;
     this.trainWidgets = [];
-    this.devResPanel = undefined;
-    this.devResWidgets = [];
+    this.devResourceEditor?.dispose();
+    this.workshopFocus.clear();
     this.workshopFocus.clear();
     this.scenarioPanel = undefined;
     this.scenarioNamePanel = undefined;
@@ -6997,7 +6993,7 @@ export class GameScene extends Phaser.Scene {
             return;
           }
           if (this.mode === 'dev-resources') {
-            this.closeDevResources();
+            this.devResources.close();
             return;
           }
           if (this.mode === 'scenario-lab') {
@@ -7021,14 +7017,14 @@ export class GameScene extends Phaser.Scene {
       { key: 'F3', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDev('infiniteActions'); }) },
       { key: 'F4', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDev('aiPassive'); }) },
       { key: 'F5', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDev('skipDice'); }) },
-      { key: 'F6', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDevResources(); }) },
+      { key: 'F6', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.devResources.toggle(); }) },
     ]);
     controls.bindAnyKey((event) => {
       if (event.key !== '#') return;
       if (this.mode === 'action-menu') return;
       if (this.mode === 'assign' || this.mode === 'shop' || this.mode === 'over') return;
       this.devPanel.setVisible(!this.devPanel.visible);
-      if (!this.devPanel.visible) this.closeDevResources();
+      if (!this.devPanel.visible) this.devResources.close();
     });
 
     // Right-click opens the action menu, so suppress the browser context menu.
@@ -10909,7 +10905,7 @@ export class GameScene extends Phaser.Scene {
       accent: MENU_COLOR.amethyst,
       onActivate: () => {
         this.devClickGuard = true;
-        this.toggleDevResources();
+        this.devResources.toggle();
       },
     });
     this.devPanel.add([bg, inner, title, ...this.devToggles.map((d) => d.control), resources]);
@@ -10925,326 +10921,24 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  // ─── Dev resource editor ─────────────────────────────────────────────────
-
-  /** Open / close the cheat overlay that edits any entity's live resources. */
-  private toggleDevResources(): void {
-    if (this.mode === 'dev-resources') {
-      this.closeDevResources();
-      return;
-    }
-    const blocked: InputMode[] = [
-      'assign',
-      'shop',
-      'over',
-      'action-menu',
-      'inventory',
-      'training',
-      'eldritch-menu',
-      'thunder-menu',
-    ];
-    if (blocked.includes(this.mode)) return;
-    if (!this.devResPanel) {
-      const panel = this.add.container(0, 0).setDepth(97).setVisible(false);
-      addCabinetWindow(this, panel, {
-        width: 1000,
-        height: 660,
-        title: 'RESOURCE EDITOR',
-        subtitle: 'Cheat: set any entity\u2019s vitals, charges, actions and stacks',
-        accent: MENU_COLOR.amethyst,
+  /**
+   * The resource cheat panel, built on first use so its host adapter can close
+   * over a correctly bound `this`.
+   */
+  private get devResources(): DevResourceEditor {
+    if (!this.devResourceEditor) {
+      const self = this;
+      this.devResourceEditor = new DevResourceEditor({
+        scene: this,
+        get gs() { return self.gs; },
+        get mode() { return self.mode; },
+        set mode(value: InputMode) { self.mode = value; },
+        get workshopFocus() { return self.workshopFocus; },
+        redraw: () => self.redraw(),
+        addWorkshopChip: (...args) => self.addWorkshopChip(...args),
       });
-      this.devResPanel = panel;
     }
-    // Never restore a transient mode (aiming / busy): the game loop owns those.
-    this.devResReturn = this.mode === 'reaction' ? 'reaction' : 'idle';
-    this.mode = 'dev-resources';
-    this.devResPanel.setVisible(true);
-    this.refreshDevResources();
-    this.redraw();
-  }
-
-  private closeDevResources(): void {
-    this.devResPanel?.setVisible(false);
-    if (this.mode === 'dev-resources') this.mode = this.devResReturn;
-    this.redraw();
-  }
-
-  private devResButton(
-    x: number,
-    y: number,
-    label: string,
-    onClick: () => void,
-    color: string = MENU_HEX.bone,
-    bg: string = '#1a1d18',
-  ): CabinetChip {
-    return this.addWorkshopChip(this.devResPanel!, this.devResWidgets, x, y, label, onClick, color, bg);
-  }
-
-  private devResLabel(x: number, y: number, text: string, color?: string): Phaser.GameObjects.Text {
-    const t = this.add.text(x, y, text, {
-      fontFamily: MENU_FONT.body,
-      fontSize: '14px',
-      color: color ?? MENU_HEX.bone,
-    });
-    this.devResPanel!.add(t);
-    this.devResWidgets.push(t);
-    return t;
-  }
-
-  private refreshDevResources(): void {
-    if (!this.devResPanel) return;
-    this.workshopFocus.clear();
-    for (const w of this.devResWidgets) w.destroy();
-    this.devResWidgets = [];
-    const entities = this.gs.mages;
-    if (entities.length === 0) return;
-    this.devResIndex = Phaser.Math.Clamp(this.devResIndex, 0, entities.length - 1);
-    const t = entities[this.devResIndex];
-
-    const left = GAME_WIDTH / 2 - 475;
-    const right = GAME_WIDTH / 2 + 15;
-    const top = GAME_HEIGHT / 2 - 262;
-
-    // Entity picker: every mage, summon and creature currently on the field.
-    this.devResLabel(left, top, 'Entity:');
-    let px = left + 62;
-    let py = top - 4;
-    entities.forEach((m, i) => {
-      const on = i === this.devResIndex;
-      const label = `${m.name}${m.isSummon ? ' *' : ''}${m.alive ? '' : ' †'}`;
-      if (px > GAME_WIDTH / 2 + 360) {
-        px = left + 62;
-        py += 28;
-      }
-      const b = this.devResButton(
-        px,
-        py,
-        label,
-        () => {
-          this.devResIndex = i;
-          this.refreshDevResources();
-        },
-        on ? MENU_HEX.verdigris : MENU_HEX.bone,
-        on ? '#3a281b' : '#1a1d18',
-      );
-      px += b.width + 8;
-    });
-
-    const rows = { left: py + 48, right: py + 48 };
-    const row = (
-      col: 'left' | 'right',
-      label: string,
-      value: string,
-      steps: [number, string][],
-      apply: (delta: number) => void,
-    ): void => {
-      const x = col === 'left' ? left : right;
-      const y = rows[col];
-      this.devResLabel(x, y, `${label}: ${value}`);
-      let bx = x + 250;
-      for (const [delta, text] of steps) {
-        const b = this.devResButton(bx, y - 4, text, () => {
-          apply(delta);
-          this.refreshDevResources();
-          this.redraw();
-        });
-        bx += b.width + 6;
-      }
-      rows[col] += 32;
-    };
-
-    const BIG = 999999;
-    const pool = (
-      label: string,
-      cur: number,
-      max: number,
-      set: (value: number) => void,
-      floor = 0,
-    ): void => {
-      row(
-        'left',
-        label,
-        `${cur} / ${max}`,
-        [
-          [-5, '-5'],
-          [-1, '-1'],
-          [1, '+1'],
-          [5, '+5'],
-          [BIG, 'Max'],
-        ],
-        (d) => set(Phaser.Math.Clamp(cur + d, floor, max)),
-      );
-    };
-
-    pool('HP', t.hp, t.maxHp, (v) => (t.hp = v), t.unkillable ? 1 : 0);
-    pool('Mana', t.mana, t.maxMana, (v) => (t.mana = v));
-    pool('Sanity', t.sanity, t.maxSanity, (v) => (t.sanity = v));
-    pool('Luck', t.luck, t.maxLuck, (v) => (t.luck = v));
-    pool('Color charges', t.colorCharges, t.maxColorCharges, (v) => (t.colorCharges = v));
-    const wordTotal = t.loadout.reduce((sum, w) => sum + (t.charges[w] ?? 0), 0);
-    const wordMax = t.loadout.reduce((sum, w) => sum + t.maxWordCharges(w), 0);
-    row(
-      'left',
-      'Word charges (all)',
-      `${wordTotal} / ${wordMax}`,
-      [
-        [-1, '-1'],
-        [1, '+1'],
-        [BIG, 'Max'],
-      ],
-      (d) => {
-        for (const w of t.loadout) {
-          const max = t.maxWordCharges(w);
-          t.charges[w] = Phaser.Math.Clamp((t.charges[w] ?? 0) + d, 0, max);
-        }
-      },
-    );
-
-    const action = (label: string, key: 'move' | 'main' | 'bonus'): void => {
-      row(
-        'right',
-        label,
-        `${t.actions[key]}`,
-        [
-          [-1, '-1'],
-          [1, '+1'],
-          [ACTIONS_PER_TURN[key] - t.actions[key], 'Reset'],
-        ],
-        (d) => (t.actions[key] = Math.max(0, t.actions[key] + d)),
-      );
-    };
-    action('Move actions', 'move');
-    action('Main actions', 'main');
-    action('Bonus actions', 'bonus');
-
-    const stack = (label: string, get: () => number, set: (value: number) => void): void => {
-      row(
-        'right',
-        label,
-        `${get()}`,
-        [
-          [-5, '-5'],
-          [-1, '-1'],
-          [1, '+1'],
-          [5, '+5'],
-          [-BIG, 'Clear'],
-        ],
-        (d) => set(Math.max(0, get() + d)),
-      );
-    };
-    const toggle = (col: 'left' | 'right', label: string, get: () => boolean, set: (value: boolean) => void): void => {
-      const x = col === 'left' ? left : right;
-      const y = rows[col];
-      const on = get();
-      this.devResLabel(x, y, `${label}: ${on ? 'yes' : 'no'}`);
-      this.devResButton(
-        x + 250,
-        y - 4,
-        on ? 'Turn off' : 'Turn on',
-        () => {
-          set(!on);
-          this.refreshDevResources();
-          this.redraw();
-        },
-        on ? MENU_HEX.verdigris : MENU_HEX.bone,
-        on ? '#20342b' : '#1a1d18',
-      );
-      rows[col] += 32;
-    };
-
-    stack('Thunder stacks', () => t.thunderStacks, (v) => (t.thunderStacks = v));
-    stack('Greed stacks', () => t.greedStacks, (v) => (t.greedStacks = v));
-    stack('Momentum stacks', () => t.momentumStacks, (v) => (t.momentumStacks = v));
-    stack('Anchor stacks', () => t.anchorStacks, (v) => (t.anchorStacks = v));
-
-    // Reactions: the shared once-per-cycle reaction plus each capped budget.
-    row(
-      'left',
-      'Dodges left',
-      `${t.dodgesRemaining} / ${t.maxDodges()}`,
-      [
-        [-1, '-1'],
-        [1, '+1'],
-        [BIG, 'Max'],
-      ],
-      (d) => (t.dodgesRemaining = Phaser.Math.Clamp(t.dodgesRemaining + d, 0, t.maxDodges())),
-    );
-    row(
-      'left',
-      'Word-spell reactions used',
-      `${t.wordSpellReactionsUsed} / ${MAX_WORD_SPELL_REACTIONS}`,
-      [
-        [-1, '-1'],
-        [1, '+1'],
-        [-BIG, 'Clear'],
-      ],
-      (d) =>
-        (t.wordSpellReactionsUsed = Phaser.Math.Clamp(
-          t.wordSpellReactionsUsed + d,
-          0,
-          MAX_WORD_SPELL_REACTIONS,
-        )),
-    );
-    row(
-      'left',
-      'Weapon reactions used',
-      `${t.weaponReactionsUsed} / ${MAX_WEAPON_REACTIONS}`,
-      [
-        [-1, '-1'],
-        [1, '+1'],
-        [-BIG, 'Clear'],
-      ],
-      (d) =>
-        (t.weaponReactionsUsed = Phaser.Math.Clamp(t.weaponReactionsUsed + d, 0, MAX_WEAPON_REACTIONS)),
-    );
-    toggle('right', 'Reaction available', () => t.reactionAvailable, (v) => (t.reactionAvailable = v));
-    toggle('right', 'Reacted this cycle', () => t.reactedThisCycle, (v) => (t.reactedThisCycle = v));
-
-    const bottom = Math.max(rows.left, rows.right) + 10;
-    this.devResButton(
-      left,
-      bottom,
-      'Refill everything',
-      () => {
-        t.hp = t.maxHp;
-        t.mana = t.maxMana;
-        t.sanity = t.maxSanity;
-        t.luck = t.maxLuck;
-        t.colorCharges = t.maxColorCharges;
-        t.actions = { ...ACTIONS_PER_TURN };
-        for (const w of t.loadout) t.charges[w] = t.maxWordCharges(w);
-        t.resetDodges();
-        t.wordSpellReactionsUsed = 0;
-        t.weaponReactionsUsed = 0;
-        t.reactedThisCycle = false;
-        t.reactionAvailable = t.canEverReact;
-        this.refreshDevResources();
-        this.redraw();
-      },
-      MENU_HEX.verdigris,
-      '#20342b',
-    );
-    this.devResButton(
-      left + 160,
-      bottom,
-      'Clear statuses',
-      () => {
-        t.statuses = [];
-        this.refreshDevResources();
-        this.redraw();
-      },
-      '#ffd27a',
-      '#4a3a1a',
-    );
-    this.devResButton(
-      left + 300,
-      bottom,
-      'Close [F6]',
-      () => this.closeDevResources(),
-      '#ff9a9a',
-      '#4a1a1a',
-    );
-    this.devResLabel(left, bottom + 40, '* summon   † dead', TEXT.dim);
+    return this.devResourceEditor;
   }
 
   // ─── Scenario Lab (build & save a fight) ─────────────────────────────────
