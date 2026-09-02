@@ -311,6 +311,8 @@ export class Mage {
   summonKind?: string;
   /** Summon's standing order, set by Command; drives its autonomous behaviour. */
   summonOrder?: { kind: 'move' | 'attack' | 'follow' | 'sentinel' | 'flee'; point?: Vec2; targetIndex?: number; persistent?: boolean };
+  /** `GameState.turnSeq` of the last turn this summon carried out its order. */
+  summonActedSeq?: number;
   /** A summon's own move budget (range-units per command step). */
   summonMoveUnits?: number;
   /** Lich: a one-time revive at 50% max HP is still available. */

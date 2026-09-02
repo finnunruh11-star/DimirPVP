@@ -54,6 +54,7 @@ export class CombatFeedbackLayer {
     const reduced = this.reducedMotion();
     const color = this.colorFor(feedback);
     const main = this.mainLabel(feedback);
+    this.lastVictim = mage;
     const detail = this.detailLabel(feedback);
     const direction = sequence % 2 === 0 ? -1 : 1;
     const originX = mage.x + direction * (lane % 2) * 13;
@@ -183,7 +184,15 @@ export class CombatFeedbackLayer {
     if (feedback.kind === 'sanityDamage') return 'SANITY';
     if (feedback.kind === 'sanityHeal') return 'SANITY RESTORED';
     if (feedback.kind === 'heal') return 'HEALTH RESTORED';
-    if (feedback.damageType) return feedback.damageType.toUpperCase();
+    // With several ticks landing at once, the type alone does not say who did it.
+    if (feedback.damageType) {
+      const from = feedback.source && feedback.source !== this.lastVictim ? feedback.source.name : null;
+      return from
+        ? `${feedback.damageType.toUpperCase()} · ${from.toUpperCase()}`
+        : feedback.damageType.toUpperCase();
+    }
     return feedback.kind.toUpperCase();
   }
+
+  private lastVictim?: Mage;
 }

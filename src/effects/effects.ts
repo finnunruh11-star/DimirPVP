@@ -313,6 +313,8 @@ export interface DealDamageOptions {
   trueDamage?: boolean;
   /** Suppress the automatic spell hit-effect overlay (basic attacks, DoT ticks). */
   noImpactFx?: boolean;
+  /** Caption for the floating number, e.g. the name of the DoT that ticked. */
+  cause?: string;
 }
 
 export function dealDamage(
@@ -502,7 +504,7 @@ export function dealDamage(
       kind: damage.damageClass === 'sanity' ? 'sanityDamage' : 'damage',
       amount,
       damageType: damage.type,
-      label: feedbackLabel,
+      label: feedbackLabel ?? opts.cause,
       critical: !!ctx.crit,
       source: ctx.caster,
     });
@@ -1297,7 +1299,7 @@ export function placeTotem(
   ctx: EffectContext,
   at: Vec2,
   opts: { radius: number; damageSpec: string; slow: number; ttl?: number; lifesteal?: boolean }
-): ReturnType<EffectContext['game']['addTotem']> {
+): void {
   // A critical cast widens the totem and (if it expires) makes it linger twice
   // as long.
   const scaled = {
@@ -1305,13 +1307,12 @@ export function placeTotem(
     radius: critScale(ctx, opts.radius),
     ttl: opts.ttl != null ? critScale(ctx, opts.ttl) : opts.ttl,
   };
-  const totem = ctx.game.addTotem(at, ctx.caster.team, { ...scaled, ownerIndex: ctx.game.mages.indexOf(ctx.caster) });
+  ctx.game.addTotem(at, ctx.caster.team, { ...scaled, ownerIndex: ctx.game.mages.indexOf(ctx.caster) });
   ctx.log(
     opts.lifesteal
       ? `${ctx.caster.name} raises a leeching totem.`
       : `${ctx.caster.name} raises a corroding totem.`
   );
-  return totem;
 }
 
 /**
