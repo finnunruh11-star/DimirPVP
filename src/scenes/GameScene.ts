@@ -224,6 +224,9 @@ const DAMAGE_SOUND: Record<string, SoundName> = {
 /** Words that bring their own sound, so the generic spell voice stays off. */
 const SELF_VOICED_WORDS = new Set(['lightning', 'fire', 'corrode', 'drain']);
 
+/** Gap between each newly-hit body's recoil in a multi-target burst. */
+const AOE_STAGGER_MS = 90;
+
 /** One impact reaction, resolved when the blow lands and replayed at flush. */
 interface QueuedImpact {
   mage: Mage;
@@ -1452,6 +1455,8 @@ export class GameScene extends Phaser.Scene {
       this.queueCreatureDeath(target);
       this.playDeathBurst(target);
       this.showDefeatSeal(target);
+      this.impactFx?.killBlow();
+      playSound('unit.death');
       if (this.raid && target === this.raidTarget) {
         this.raidVictory = true;
         for (const enemy of this.gs.mages) {
@@ -1857,7 +1862,7 @@ export class GameScene extends Phaser.Scene {
       this.gs.log(`${target.name} triggers a tunnel trap: ${spec} rolls ${amount} damage.`);
       this.gs.vfxSink?.hit?.(target);
     }
-    this.flushHits();
+    void this.flushHits();
     this.redraw();
     if (this.gs.isOver) {
       this.endGame();
@@ -4810,7 +4815,7 @@ export class GameScene extends Phaser.Scene {
     this.redraw();
     // Turn-start damage (DoT, auras, totems) applies no dice, so play any
     // recoils it queued right away as the HP changes become visible.
-    this.flushHits();
+    void this.flushHits();
 
     // Swamprun: a creature's own turn-start DoT tick can empty the board — run
     // the interlude rather than declaring the run over, and skip a creature that
@@ -5053,6 +5058,35 @@ export class GameScene extends Phaser.Scene {
     this.aiTelegraph = undefined;
   }
 
+  private reactionTelegraph?: Phaser.GameObjects.Container;
+
+  /** Ring the source of the action a reaction window is answering, so the
+   *  reactor doesn't have to scan the log to see what's about to land. */
+  private showReactionTelegraph(top: StackItem): void {
+    this.clearReactionTelegraph();
+    if (this.reducedMotion || !top.source.alive) return;
+    const root = this.add.container(top.source.x, top.source.y).setDepth(57);
+    const ring = this.add.graphics();
+    ring.lineStyle(2, MENU_COLOR.brassLight, 0.95).strokeCircle(0, 0, MAGE_RADIUS + 16);
+    ring.lineStyle(1, MENU_COLOR.brassLight, 0.55).strokeCircle(0, 0, MAGE_RADIUS + 24);
+    root.add(ring);
+    this.reactionTelegraph = root;
+    this.tweens.add({
+      targets: root,
+      alpha: { from: 0.35, to: 1 },
+      duration: 200,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.InOut',
+    });
+  }
+
+  private clearReactionTelegraph(): void {
+    if (this.reactionTelegraph) this.tweens.killTweensOf(this.reactionTelegraph);
+    this.reactionTelegraph?.destroy();
+    this.reactionTelegraph = undefined;
+  }
+
   /** If the current mage is a Lich that stayed put, roll its d6 end-step. */
   private async maybeLichEndStep(): Promise<void> {
     const lich = this.gs.current;
@@ -5077,7 +5111,7 @@ export class GameScene extends Phaser.Scene {
     if (this.gs.isOver || !knight.alive || !knight.deathknightKind) return;
     const shouldSummon = !knight.deathknightAttackAttemptedThisTurn;
     this.gs.deathknightConjure(knight);
-    this.flushHits();
+    void this.flushHits();
     if (shouldSummon && knight.alive && !this.gs.isOver) {
       const roll = this.gs.rng.die(6);
       const kinds: EnemyKind[] =
@@ -5121,7 +5155,7 @@ export class GameScene extends Phaser.Scene {
     if (this.gs.isOver || !m.alive) return;
     if (m.ghastKind && m.ghastPendingZone) {
       this.gs.resolveGhastZone(m);
-      this.flushHits();
+      void this.flushHits();
       this.redraw();
       await this.delay(300);
     }
@@ -5190,7 +5224,7 @@ export class GameScene extends Phaser.Scene {
       case 'ghast-shove': {
         me.spend('main');
         this.gs.ghastShove(me, d.target);
-        this.flushHits();
+        void this.flushHits();
         break;
       }
       case 'reaper-mark': {
@@ -6324,7 +6358,7 @@ export class GameScene extends Phaser.Scene {
             this.pendingDice = [];
             await strike.resolve(this.gs);
             await this.playPendingDice();
-            this.flushHits();
+            void this.flushHits();
           }
           this.redraw();
           await this.delay(200);
@@ -6491,8 +6525,9 @@ export class GameScene extends Phaser.Scene {
     //    HP/sanity changes become visible on the next redraw.
     await this.playPendingDice();
     // 4) Now that the damage dice have settled, play the recoil on anyone hit,
-    //    so the hit animation lines up with the actual damage.
-    this.flushHits();
+    //    so the hit animation lines up with the actual damage. Await it so a
+    //    multi-target burst finishes its cascade before the next item resolves.
+    await this.flushHits();
     await this.delay(100);
     return item;
   }
@@ -6787,7 +6822,10 @@ export class GameScene extends Phaser.Scene {
     }
     // Online: the opponent's reaction arrives over the wire; ours is relayed.
     if (this.online && !this.isLocalDecider(reactor)) {
+      this.showReactionTelegraph(top);
+      this.flashHint(`Waiting for ${reactor.name} to react\u2026`, true, 'info');
       const msg = await this.net!.recv();
+      this.clearReactionTelegraph();
       if (msg.k === 'bye') return null;
       return this.decodeReaction(msg);
     }
@@ -9147,8 +9185,11 @@ export class GameScene extends Phaser.Scene {
           : '';
       const dodge = physical && this.canDodge(reactor) ? `  [D] dodge (${reactor.dodgesRemaining})` : '';
       this.flashHint(
-        `${reactor.name}: REACTION — [1-5]+Enter to cast${abil}${block}${bash}${weapon}${needle}${dodge}, or Space/E to pass.`
+        `${reactor.name}: REACTION — [1-5]+Enter to cast${abil}${block}${bash}${weapon}${needle}${dodge}, or Space/E to pass.`,
+        false,
+        'info'
       );
+      this.showReactionTelegraph(top);
       this.redraw();
     });
   }
@@ -10073,6 +10114,7 @@ export class GameScene extends Phaser.Scene {
 
   private resolveReaction(choice: ReactionChoice | null): void {
     this.reactor = null;
+    this.clearReactionTelegraph();
     this.resetSelection();
     const r = this.reactionResolve;
     this.reactionResolve = null;
@@ -13371,26 +13413,55 @@ export class GameScene extends Phaser.Scene {
     return SPELL_IMPACT_WEIGHT[comboKey(spell.words)];
   }
 
-  /** Play every queued impact reaction and clear the queue. */
-  private flushImpacts(): void {
+  /**
+   * Play every queued impact reaction and clear the queue. A burst that
+   * reaches several bodies staggers their recoils into a readable cascade
+   * instead of popping all at once, and logs one line covering the volley.
+   */
+  private flushImpacts(): Promise<void> {
     const queued = this.pendingImpacts;
     this.pendingImpacts = [];
+    if (queued.length === 0) return Promise.resolve();
+    this.logAoeSummary(queued);
     let shaken = false;
-    for (const impact of queued) {
-      this.combatFeedback?.show(impact.mage, impact.feedback);
-      if (!this.impactFx) continue;
-      // One blast that hits six bodies is still one blast: shake once.
-      const weight = shaken ? undefined : impact.weight;
-      if (weight) shaken = true;
-      this.impactFx.play({
-        at: { x: impact.mage.x, y: impact.mage.y },
-        feedback: impact.feedback,
-        severity: impact.severity,
-        angle: impact.angle,
-        weight,
-        sprite: this.mageAnims.get(impact.mage)?.sprite,
-      });
-    }
+    const seen = new Set<Mage>();
+    let remaining = queued.length;
+    return new Promise<void>((resolve) => {
+      for (const impact of queued) {
+        seen.add(impact.mage);
+        const delay = this.reducedMotion ? 0 : (seen.size - 1) * AOE_STAGGER_MS;
+        this.time.delayedCall(delay, () => {
+          this.combatFeedback?.show(impact.mage, impact.feedback);
+          if (this.impactFx) {
+            // One blast that hits six bodies is still one blast: shake once.
+            const weight = shaken ? undefined : impact.weight;
+            if (weight) shaken = true;
+            this.impactFx.play({
+              at: { x: impact.mage.x, y: impact.mage.y },
+              feedback: impact.feedback,
+              severity: impact.severity,
+              angle: impact.angle,
+              weight,
+              sprite: this.mageAnims.get(impact.mage)?.sprite,
+            });
+          }
+          if (--remaining === 0) resolve();
+        });
+      }
+    });
+  }
+
+  /** When a single action reaches more than one body, log the volley as one line. */
+  private logAoeSummary(queued: QueuedImpact[]): void {
+    const hits = queued.filter(
+      (impact) =>
+        (impact.feedback.kind === 'damage' || impact.feedback.kind === 'sanityDamage') &&
+        (impact.feedback.amount ?? 0) > 0
+    );
+    const targets = new Set(hits.map((impact) => impact.mage));
+    if (targets.size < 2) return;
+    const total = hits.reduce((sum, impact) => sum + (impact.feedback.amount ?? 0), 0);
+    this.gs.log(`${targets.size} targets hit for ${total} total damage.`);
   }
 
   /**
@@ -13437,8 +13508,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Play every queued hit recoil and clear the queue. */
-  private flushHits(): void {
-    void this.flushHitsAndEffects();
+  private flushHits(): Promise<void> {
+    return this.flushHitsAndEffects();
   }
 
   /** Start queued recoils and await every associated overlay and drain stream. */
@@ -13446,9 +13517,9 @@ export class GameScene extends Phaser.Scene {
     const queued = this.pendingHits;
     this.pendingHits = [];
     this.flushSounds();
-    this.flushImpacts();
+    const impacts = this.flushImpacts();
     for (const m of queued) this.triggerHit(m);
-    await this.flushEffects();
+    await Promise.all([impacts, this.flushEffects()]);
   }
 
   /**

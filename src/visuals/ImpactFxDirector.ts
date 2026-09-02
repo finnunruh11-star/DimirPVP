@@ -269,17 +269,29 @@ export class ImpactFxDirector {
    * Bite a hole in the animation clock. `time.timeScale` is deliberately left
    * alone so the restore timer runs at full speed and can always undo this.
    */
-  hitstop(kind: 'normal' | 'crit'): void {
+  hitstop(kind: 'normal' | 'crit' | 'kill'): void {
     if (this.destroyed || this.reducedMotion()) return;
     const base = this.baseTimeScale();
     this.scene.tweens.timeScale = base * IMPACT_FX.hitstop.scale;
     this.scene.anims.globalTimeScale = base * IMPACT_FX.hitstop.scale;
     this.hitstopTimer?.remove();
-    const duration = kind === 'crit' ? IMPACT_FX.hitstop.critDuration : IMPACT_FX.hitstop.duration;
+    const duration =
+      kind === 'kill'
+        ? IMPACT_FX.hitstop.killDuration
+        : kind === 'crit'
+          ? IMPACT_FX.hitstop.critDuration
+          : IMPACT_FX.hitstop.duration;
     this.hitstopTimer = this.scene.time.delayedCall(duration, () => {
       this.hitstopTimer = undefined;
       this.restoreTimeScale();
     });
+  }
+
+  /** The one moment that should always land harder than a regular hit: a kill. */
+  killBlow(): void {
+    if (this.destroyed || this.reducedMotion()) return;
+    this.hitstop('kill');
+    this.punch(IMPACT_FX.hitstop.killDuration);
   }
 
   shake(weight: ImpactWeight): void {

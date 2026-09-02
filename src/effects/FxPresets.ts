@@ -67,7 +67,7 @@ export const IMPACT_FX = {
    * Brief global slowdown on the biggest hits. `time.timeScale` is left alone
    * so the restore timer cannot slow itself down.
    */
-  hitstop: { scale: 0.16, duration: 70, critDuration: 115 },
+  hitstop: { scale: 0.16, duration: 70, critDuration: 115, killDuration: 210 },
   shake: {
     heavy: { duration: 150, intensity: 0.0022 },
     seismic: { duration: 250, intensity: 0.0044 },
