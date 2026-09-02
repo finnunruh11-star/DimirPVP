@@ -72,4 +72,6 @@ export const IMPACT_FX = {
     heavy: { duration: 150, intensity: 0.0022 },
     seismic: { duration: 250, intensity: 0.0044 },
   },
+  /** Lens push on the heaviest blows. Kept small: it rides on top of the shake. */
+  punch: { zoom: 1.01, duration: 90 },
 } as const;

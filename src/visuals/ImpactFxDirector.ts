@@ -25,6 +25,8 @@ type Scatter = Omit<BurstOptions, 'color'> & { color?: number };
 interface Recipe {
   /** Authored animation played at the point of contact. */
   hero: ImpactSheetKey;
+  /** Stand-in for a directional `hero` when the blow has no known heading. */
+  heroOmni?: ImpactSheetKey;
   heroSize: number;
   heroGlow?: boolean;
   /** Bright primary scatter. */
@@ -41,6 +43,7 @@ interface Recipe {
 const DAMAGE_RECIPES: Record<DamageType, Recipe> = {
   pierce: {
     hero: 'impact-spray',
+    heroOmni: 'impact-star',
     heroSize: 96,
     heroGlow: true,
     scatter: {
@@ -50,6 +53,7 @@ const DAMAGE_RECIPES: Record<DamageType, Recipe> = {
   },
   slashing: {
     hero: 'impact-gash',
+    heroOmni: 'impact-splatter',
     heroSize: 104,
     scatter: {
       count: 13, speed: 380, lifespan: 320, shape: 'spark', size: 26,
@@ -62,6 +66,7 @@ const DAMAGE_RECIPES: Record<DamageType, Recipe> = {
   },
   shatter: {
     hero: 'impact-crash',
+    heroOmni: 'impact-shards',
     heroSize: 132,
     scatter: {
       count: 16, speed: 280, lifespan: 560, shape: 'shard', size: 13,
@@ -291,28 +296,30 @@ export class ImpactFxDirector {
   killBlow(): void {
     if (this.destroyed || this.reducedMotion()) return;
     this.hitstop('kill');
-    this.punch(IMPACT_FX.hitstop.killDuration);
+    this.punch();
   }
 
   shake(weight: ImpactWeight): void {
     if (this.destroyed || this.reducedMotion()) return;
     const { duration, intensity } = IMPACT_FX.shake[weight];
     this.scene.cameras.main.shake(duration, intensity);
-    if (weight === 'seismic') this.punch(duration);
+    if (weight === 'seismic') this.punch();
   }
 
   /**
-   * A short lens push on the heaviest blows. It rides the camera's own zoom
-   * rather than a tween target so a second punch mid-recovery cannot strand it.
+   * A short lens push on the heaviest blows. It goes in and back out on one
+   * yoyo so it reads as a jolt rather than a slow zoom-out, and rides the
+   * camera's own zoom so a second punch mid-recovery cannot strand it.
    */
-  private punch(duration: number): void {
+  private punch(): void {
     const cam = this.scene.cameras.main;
     this.punchTween?.remove();
-    cam.setZoom(1.035);
+    cam.setZoom(1);
     this.punchTween = this.scene.tweens.add({
       targets: cam,
-      zoom: 1,
-      duration: Math.max(180, duration),
+      zoom: IMPACT_FX.punch.zoom,
+      duration: IMPACT_FX.punch.duration,
+      yoyo: true,
       ease: 'Quad.Out',
       onComplete: () => {
         this.punchTween = undefined;
@@ -394,8 +401,10 @@ export class ImpactFxDirector {
     // A heavier hit throws more, faster — a graze should not look like a crit.
     const force = 0.7 + severity * 1.5 + (feedback.critical ? 0.45 : 0);
     const directed = request.angle != null && DIRECTIONAL_TYPES.has(type);
+    // Directional art only reads right when it has a heading to point along.
+    const hero = request.angle == null ? recipe.heroOmni ?? recipe.hero : recipe.hero;
 
-    this.sheets.play(recipe.hero, at, {
+    this.sheets.play(hero, at, {
       color,
       size: recipe.heroSize * (0.82 + Math.min(force, 2) * 0.16),
       angle: request.angle,

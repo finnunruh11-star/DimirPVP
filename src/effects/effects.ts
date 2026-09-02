@@ -84,7 +84,7 @@ export interface VfxSink {
   /** Show one outcome-aware floating combat readout over `mage`. */
   combatFeedback?(mage: Mage, feedback: CombatFeedback): void;
   /** Play a compact shatter-sheet burst at an exact impact point. */
-  shatterBurst?(at: Vec2, size: number): void;
+  shatterBurst?(at: Vec2, size: number, from?: Vec2): void;
   /**
    * Paint the shatter cone stretched to fill a reality wedge: apex at `apex`,
    * opening toward `angle`, half-arc `halfAngle`, length `range` (px).

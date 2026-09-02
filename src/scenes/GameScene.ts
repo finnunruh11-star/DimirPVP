@@ -1530,8 +1530,9 @@ export class GameScene extends Phaser.Scene {
         this.playFeedbackSound(feedback);
         this.queueImpact(mage, feedback);
       },
-      shatterBurst: (at, size) => {
-        void this.spellVfx.spriteAt('fx-shatter', at, { lengthPx: size });
+      shatterBurst: (at, size, from) => {
+        // The sheet is a cone: without a heading it always sprays the same way.
+        void this.spellVfx.spriteAt('fx-shatter', at, { lengthPx: size, from, aim: from != null });
       },
       wedge: (apex, angle, halfAngle, range) => {
         this.spellVfx.wedge(apex, angle, halfAngle, range);
@@ -13383,7 +13384,9 @@ export class GameScene extends Phaser.Scene {
    */
   private queueImpact(mage: Mage, feedback: CombatFeedback): void {
     const source = feedback.source;
-    const angle = source && source !== mage
+    // Two bodies on the same spot give no heading, and a fabricated one would
+    // point directional art off in an arbitrary direction.
+    const angle = source && source !== mage && dist(source.pos, mage.pos) > 1
       ? Math.atan2(mage.y - source.y, mage.x - source.x)
       : undefined;
     this.pendingImpacts.push({

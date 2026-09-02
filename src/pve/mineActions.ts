@@ -120,7 +120,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
         return;
       }
       rolledDamage(game, source, target, '1d4', 0, 'shatter', 'physical', 'Rockling impact');
-      game.vfxSink?.shatterBurst?.(source.pos, 78);
+      game.vfxSink?.shatterBurst?.(target.pos, 78, source.pos);
       game.defeatMage(source, source, `${source.name} breaks apart on impact.`);
     },
   },
