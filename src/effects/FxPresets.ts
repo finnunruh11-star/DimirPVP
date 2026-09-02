@@ -42,12 +42,18 @@ export const MELEE_SWING = {
   trail: { count: 3, alpha: 0.42, fadeMs: 170 },
 } as const;
 
-/** A bow shot: draw the stave, loose, and let the shaft carry the distance. */
+/** A bow shot: level the stave, haul the string, loose, and carry the shaft. */
 export const BOW_SHOT = {
-  draw: { ms: 190, ease: 'Sine.Out', pose: { rot: -0.34, lift: -2, reach: -7 } },
-  loose: { ms: 70, ease: 'Quad.Out', pose: { rot: 0.16, lift: 1, reach: 3 } },
-  recover: { ms: 260, ease: 'Sine.Out', pose: { rot: 0.38, lift: 0, reach: 0 } },
-  arrow: { pixelsPerSecond: 940, minMs: 120, maxMs: 460, arcPx: 16 },
+  raise: { ms: 120, ease: 'Sine.Out', pose: { rot: 0.05, lift: -4, reach: 5 } },
+  /** Hauling the string: the nocked shaft slides this far back off the stave. */
+  draw: { ms: 175, ease: 'Quad.Out', pose: { rot: 0.02, lift: -5, reach: 7 }, pullPx: 14 },
+  /** Held at full draw, so the loose has something to be released from. */
+  holdMs: 85,
+  loose: { ms: 55, ease: 'Quad.Out', pose: { rot: -0.13, lift: -3, reach: 2 } },
+  recover: { ms: 240, ease: 'Sine.Out', pose: { rot: 0.38, lift: 0, reach: 0 } },
+  arrow: { pixelsPerSecond: 1500, minMs: 70, maxMs: 240, arcPx: 8, ghosts: 3 },
+  /** How long a landed shaft stays buried before it fades. */
+  stickMs: 200,
 } as const;
 
 export const FX_TWEEN = {

@@ -36,7 +36,8 @@ export const IMPACT_SHEETS = {
     frameHeight: 64,
     frames: 7,
     frameRate: 30,
-    facing: 0,
+    // The fan throws back out of the wound, against the blow that opened it.
+    facing: Math.PI,
   },
   'impact-crash': {
     url: directionalImpact002Url,

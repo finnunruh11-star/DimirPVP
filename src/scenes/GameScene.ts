@@ -237,6 +237,8 @@ interface QueuedImpact {
   severity: number;
   angle?: number;
   weight?: ImpactWeight;
+  /** False when the blow's art already played, as a bow's does on arrival. */
+  art: boolean;
   seq: number;
 }
 
@@ -13145,6 +13147,9 @@ export class GameScene extends Phaser.Scene {
    */
   private pendingImpacts: QueuedImpact[] = [];
 
+  /** A body an arrow has just buried itself in, whose impact art already ran. */
+  private arrowStruck: Mage | null = null;
+
   /** Orders rolls against impacts so a roll can find the bodies it landed on. */
   private vfxSeq = 0;
 
@@ -13416,12 +13421,15 @@ export class GameScene extends Phaser.Scene {
     const angle = source && source !== mage && dist(source.pos, mage.pos) > 1
       ? Math.atan2(mage.y - source.y, mage.x - source.x)
       : undefined;
+    const art = this.arrowStruck !== mage;
+    if (!art) this.arrowStruck = null;
     this.pendingImpacts.push({
       mage,
       feedback,
       severity: this.impactSeverity(mage, feedback),
       angle,
       weight: this.impactWeight(),
+      art,
       seq: this.vfxSeq++,
     });
   }
@@ -13460,6 +13468,8 @@ export class GameScene extends Phaser.Scene {
   private flushImpacts(): Promise<void> {
     const queued = this.pendingImpacts;
     this.pendingImpacts = [];
+    // A shot that missed never queued anything to claim the flag back.
+    this.arrowStruck = null;
     if (queued.length === 0) return Promise.resolve();
     this.logAoeSummary(queued);
     let shaken = false;
@@ -13481,6 +13491,7 @@ export class GameScene extends Phaser.Scene {
               severity: impact.severity,
               angle: impact.angle,
               weight,
+              art: impact.art,
               sprite: this.mageAnims.get(impact.mage)?.sprite,
             });
           }
@@ -13756,6 +13767,7 @@ export class GameScene extends Phaser.Scene {
     duration: number,
     ease: string,
     ghosts = 0,
+    onStep?: (t: number) => void,
   ): Promise<void> {
     return new Promise((resolve) => {
       const p = { t: 0 };
@@ -13788,6 +13800,7 @@ export class GameScene extends Phaser.Scene {
             dropped += 1;
             this.dropWeaponGhost(rec);
           }
+          onStep?.(p.t);
         },
         onComplete: finish,
         onStop: finish,
@@ -13818,20 +13831,20 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** The moment the weapon bites: the arc, the sparks and the cut itself. */
-  private strikeContact(at: Vec2, angle: number, sweep: boolean): void {
+  private strikeContact(at: Vec2, angle: number): void {
     playSound('melee.contact');
-    if (sweep && this.anims.exists('fx-slash-arc')) {
+    if (this.anims.exists('fx-slash-arc')) {
       void this.spellVfx.slash('fx-slash-arc', at, angle, MAGE_RADIUS * 3.6);
     }
     if (this.reducedMotion) return;
     const centre = Phaser.Math.RadToDeg(angle);
     this.particleFx?.burst(at, {
       color: 0xf6ecd2,
-      count: sweep ? 9 : 6,
-      speed: sweep ? 320 : 250,
+      count: 9,
+      speed: 320,
       lifespan: 250,
       shape: 'spark',
-      size: sweep ? 19 : 15,
+      size: 19,
       glow: true,
       drag: 0.9,
       alignToTravel: true,
@@ -13853,7 +13866,7 @@ export class GameScene extends Phaser.Scene {
 
     if (!rec || this.reducedMotion) {
       playSound('melee.swing');
-      this.strikeContact(contact, angle, true);
+      this.strikeContact(contact, angle);
       await this.delay(MELEE_SWING.contactMs);
       return;
     }
@@ -13882,7 +13895,7 @@ export class GameScene extends Phaser.Scene {
       MELEE_SWING.trail.count
     );
 
-    this.strikeContact(contact, angle, true);
+    this.strikeContact(contact, angle);
     void this.strikePhase(
       rec, along(step), home,
       MELEE_SWING.strike.pose, MELEE_SWING.recover.pose,
@@ -13894,21 +13907,42 @@ export class GameScene extends Phaser.Scene {
     await this.delay(MELEE_SWING.contactMs);
   }
 
+  /** Where a nocked shaft sits: on the stave if it is drawn, else at the chest. */
+  private bowNock(rec: MageAnim | undefined, source: Mage): Vec2 {
+    const held = rec?.held;
+    if (held?.visible) return { x: held.x, y: held.y };
+    return { x: source.x, y: source.y - MAGE_RADIUS * 0.95 };
+  }
+
   /**
-   * A bow shot: the stave loads, the string goes, and the shaft carries the
-   * distance itself. Resolves when the arrow arrives, so the wound lands with it.
+   * A bow shot: level the stave, haul the string back with a shaft on it, loose,
+   * and let the arrow carry the distance. The wound lands with the arrow rather
+   * than after the roll, so the shot reads as one event.
    */
-  private async playBowShot(source: Mage, at: Vec2): Promise<void> {
+  private async playBowShot(source: Mage, target: Mage | null, at: Vec2): Promise<void> {
     const rec = this.mageAnims.get(source);
     const from = { x: source.x, y: source.y };
-    const nock = { x: source.x, y: source.y - MAGE_RADIUS * 0.95 };
     const { angle, contact } = this.contactPoint(from, at);
     this.startBodyAttack(source);
 
+    const land = async (nock: Vec2): Promise<void> => {
+      await this.flyArrow(nock, contact, angle);
+      playSound('melee.contact');
+      // Claim this body's queued impact art: it has just played, on arrival.
+      this.arrowStruck = target;
+      this.impactFx?.play({
+        at: contact,
+        feedback: { kind: 'damage', damageType: 'pierce' },
+        // Kept under the heavy threshold so an arrow never buys a hitstop.
+        severity: 0.14,
+        angle,
+        sprite: target ? this.mageAnims.get(target)?.sprite : undefined,
+      });
+    };
+
     if (!rec || this.reducedMotion) {
       playSound('bow.release');
-      await this.flyArrow(nock, contact);
-      this.strikeContact(contact, angle, false);
+      await land(this.bowNock(rec, source));
       return;
     }
 
@@ -13918,13 +13952,33 @@ export class GameScene extends Phaser.Scene {
     rec.posLocked = true;
     rec.heldLocked = !!rec.held;
 
-    playSound('bow.draw');
     await this.strikePhase(
       rec, home, home,
-      BOW_SHOT.recover.pose, BOW_SHOT.draw.pose,
-      BOW_SHOT.draw.ms, BOW_SHOT.draw.ease
+      BOW_SHOT.recover.pose, BOW_SHOT.raise.pose,
+      BOW_SHOT.raise.ms, BOW_SHOT.raise.ease
     );
+
+    playSound('bow.draw');
+    const shaft = this.textures.exists('fx-arrow')
+      ? this.add.image(0, 0, 'fx-arrow').setDepth(5.25).setRotation(angle)
+      : null;
+    const drawShaft = (pull: number): void => {
+      const n = this.bowNock(rec, source);
+      shaft?.setPosition(n.x - Math.cos(angle) * pull, n.y - Math.sin(angle) * pull);
+    };
+    drawShaft(0);
+    await this.strikePhase(
+      rec, home, home,
+      BOW_SHOT.raise.pose, BOW_SHOT.draw.pose,
+      BOW_SHOT.draw.ms, BOW_SHOT.draw.ease,
+      0,
+      (t) => drawShaft(BOW_SHOT.draw.pullPx * t)
+    );
+    await this.delay(BOW_SHOT.holdMs);
+
     playSound('bow.release');
+    const nock = this.bowNock(rec, source);
+    shaft?.destroy();
     void this.strikePhase(
       rec, home, home,
       BOW_SHOT.draw.pose, BOW_SHOT.loose.pose,
@@ -13939,13 +13993,12 @@ export class GameScene extends Phaser.Scene {
       rec.posLocked = false;
       rec.heldLocked = false;
     });
-    await this.flyArrow(nock, contact);
-    this.strikeContact(contact, angle, false);
+    await land(nock);
   }
 
   /** Carry one arrow from the bow to the body it was loosed at. */
-  private flyArrow(from: Vec2, to: Vec2): Promise<void> {
-    if (!this.textures.exists('fx-arrow')) return this.delay(90);
+  private flyArrow(from: Vec2, to: Vec2, angle: number): Promise<void> {
+    if (!this.textures.exists('fx-arrow')) return this.delay(70);
     return new Promise((resolve) => {
       const travel = dist(from, to);
       const duration = Phaser.Math.Clamp(
@@ -13956,15 +14009,17 @@ export class GameScene extends Phaser.Scene {
       // A shaft that far outruns gravity still dips a little; the dip is what
       // stops the flight reading as a straight line slid across the board.
       const arc = this.reducedMotion ? 0 : Math.min(BOW_SHOT.arrow.arcPx, travel * 0.12);
+      const ghosts = this.reducedMotion ? 0 : BOW_SHOT.arrow.ghosts;
       const shaft = this.add.image(from.x, from.y, 'fx-arrow').setDepth(9.5).setOrigin(0.5, 0.5);
       const p = { t: 0 };
       let last = { ...from };
+      let dropped = 0;
       let settled = false;
       const finish = (): void => {
         if (settled) return;
         settled = true;
         this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
-        if (shaft.active) shaft.destroy();
+        if (shaft.active) this.stickArrow(shaft);
         resolve();
       };
       this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
@@ -13976,12 +14031,39 @@ export class GameScene extends Phaser.Scene {
         onUpdate: () => {
           const x = Phaser.Math.Linear(from.x, to.x, p.t);
           const y = Phaser.Math.Linear(from.y, to.y, p.t) - arc * 4 * p.t * (1 - p.t);
-          shaft.setPosition(x, y).setRotation(Math.atan2(y - last.y, x - last.x));
+          shaft.setPosition(x, y).setRotation(Math.atan2(y - last.y, x - last.x) || angle);
           last = { x, y };
+          // At this speed the shaft would otherwise strobe; the ghosts read as
+          // the streak between two frames.
+          while (dropped < ghosts && p.t >= (dropped + 1) / (ghosts + 1)) {
+            dropped += 1;
+            const ghost = this.add.image(x, y, 'fx-arrow')
+              .setDepth(9.4)
+              .setRotation(shaft.rotation)
+              .setAlpha(0.32)
+              .setTint(0xd9e6ef);
+            this.tweens.add({
+              targets: ghost,
+              alpha: 0,
+              duration: 110,
+              onComplete: () => ghost.destroy(),
+            });
+          }
         },
         onComplete: finish,
         onStop: finish,
       });
+    });
+  }
+
+  /** Leave a landed shaft buried in what it struck for a beat. */
+  private stickArrow(shaft: Phaser.GameObjects.Image): void {
+    this.tweens.add({
+      targets: shaft,
+      alpha: 0,
+      duration: BOW_SHOT.stickMs,
+      ease: 'Quad.In',
+      onComplete: () => shaft.destroy(),
     });
   }
 
@@ -15183,7 +15265,7 @@ export class GameScene extends Phaser.Scene {
         return this.playWispAttackFx(at, item.source);
       }
       return isRangedWeapon(item.source.activeWeapon())
-        ? this.playBowShot(item.source, at)
+        ? this.playBowShot(item.source, item.target ?? null, at)
         : this.playMeleeStrike(item.source, at);
     }
 

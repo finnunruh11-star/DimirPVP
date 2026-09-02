@@ -16,6 +16,8 @@ export interface ImpactRequest {
   angle?: number;
   /** Earned from the spell's word combination; the only source of shake. */
   weight?: ImpactWeight;
+  /** False when the blow's art has already played elsewhere, as a bow's does. */
+  art?: boolean;
   /** Sprite to white out, when the target has one on screen. */
   sprite?: Phaser.GameObjects.Sprite;
 }
@@ -219,7 +221,7 @@ export class ImpactFxDirector {
     const severity = Phaser.Math.Clamp(request.severity, 0, 1);
     const big = severity >= IMPACT_FX.heavySeverity || !!feedback.critical;
 
-    this.spawnImpact(request, severity);
+    if (request.art !== false) this.spawnImpact(request, severity);
 
     switch (feedback.kind) {
       case 'damage':
