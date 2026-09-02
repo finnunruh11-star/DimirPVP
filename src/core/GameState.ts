@@ -65,8 +65,6 @@ import {
   type ReactionNeedleStatus,
   type FoeBlindStatus,
   type ForgetStatus,
-  type OrderJudgmentStatus,
-  type OrderMandateStatus,
   type ShadowTrailStatus,
   type TwistRuneStatus,
   type Status,
@@ -1029,7 +1027,6 @@ export class GameState {
     this.applyMineTurnResources(m);
     this.applyEdgelordLanternUpkeep(m);
     this.tickScarabs(m);
-    this.tickOrderJudgments(m);
     this.tickSwornRepetition(m);
     this.tickMindFuse(m);
     const ticks = m.tickStatuses();
@@ -4294,56 +4291,6 @@ export class GameState {
     this.log(`${s.name} abandons ${host.name} and takes root in ${next.name}.`);
   }
 
-  /**
-   * Order Curse Slash: judge each bearer's obedience at the start of its turn.
-   * The first tick only snapshots position; every later tick scores the turn
-   * just taken (+1 for not moving toward the entity, +1 for not attacking it)
-   * and, once the observation window closes, detonates the accrued stacks.
-   */
-  private tickOrderJudgments(m: Mage): void {
-    if (!m.alive) return;
-    const judgments = m.statuses.filter(
-      (s) => s.kind === 'orderJudgment'
-    ) as OrderJudgmentStatus[];
-    for (const s of judgments) {
-      const entity = this.mages[s.targetIndex];
-      if (!entity || !entity.alive) {
-        s.duration = 0;
-        this.log(`Order's judgement on ${m.name} ends. Its target is gone.`);
-        continue;
-      }
-      const curDist = dist(m.pos, entity.pos);
-      if (!s.observing) {
-        // First turn under the order: capture the baseline, judge nothing yet.
-        s.observing = true;
-        s.lastDist = curDist;
-        s.attackedTarget = false;
-        continue;
-      }
-      const movedToward = curDist < s.lastDist - 0.5;
-      const gained = (movedToward ? 0 : 1) + (s.attackedTarget ? 0 : 1);
-      s.stacks += gained;
-      if (gained > 0) this.log(`${m.name} defies the order (+${gained} → ${s.stacks} stacks).`);
-      else this.log(`${m.name} obeys the order (${s.stacks} stacks).`);
-      s.evalsLeft -= 1;
-      s.lastDist = curDist;
-      s.attackedTarget = false;
-      if (s.evalsLeft <= 0) {
-        let total = 0;
-        for (let i = 0; i < s.stacks; i++) total += this.rng.roll(s.perStackSpec).total;
-        if (total > 0) {
-          const owner = this.mages[s.ownerIndex] ?? m;
-          const ctx = this.effectContext(owner, m, null);
-          this.log(`Order's judgement falls on ${m.name} (${s.stacks} stacks).`);
-          dealDamage(ctx, m, dmg(total, 'slashing', 'physical'), { canMiss: false });
-        } else {
-          this.log(`${m.name} obeyed the order. No damage.`);
-        }
-        s.duration = 0;
-      }
-    }
-  }
-
   /** Roll a stacking DoT's damage: `perStackSpec` once per stack, summed. */
   private rollStackedDot(s: DotStatus): number {
     if (!s.perStackSpec || !s.stacks) return 0;
@@ -4869,32 +4816,8 @@ export class GameState {
     this.stack.push(item);
   }
 
-  canCastSpellNow(spell: Spell, source?: Mage): boolean {
-    if (this.stack.length < (spell.minStackDepth ?? 0)) return false;
-    // Pacified bodies may still help their own side, but nothing that reaches
-    // outward is even offered — including area spells that name no target.
-    if (source && this.isPacified(source) && spell.targeting !== 'self' && spell.targeting !== 'ally') {
-      return false;
-    }
-    return true;
-  }
-
-  /** Mono Order: this body may declare no hostile action at all. */
-  isPacified(m: Mage): boolean {
-    return m.statuses.some((status) => status.kind === 'pacified');
-  }
-
-  /** The mandate binding a body to one named entity, if it carries one. */
-  orderMandate(m: Mage): OrderMandateStatus | undefined {
-    return m.statuses.find((status) => status.kind === 'orderMandate') as
-      | OrderMandateStatus
-      | undefined;
-  }
-
-  /** False when a mandate forbids this body from touching that one. */
-  private mandateAllows(source: Mage, target: Mage): boolean {
-    const mandate = this.orderMandate(source);
-    return !mandate || this.mages[mandate.targetIndex] === target;
+  canCastSpellNow(spell: Spell): boolean {
+    return this.stack.length >= (spell.minStackDepth ?? 0);
   }
 
   /** (Re)open the evasion window: record where the declared target stands now. */
@@ -5009,9 +4932,6 @@ export class GameState {
   /** Is `target` a legal target for `spell` cast by `source` right now? */
   isValidSpellTarget(spell: Spell, source: Mage, target: Mage): boolean {
     if (!target.alive) return false;
-    if (!this.mandateAllows(source, target)) return false;
-    // Pacified: only its own side is reachable, whatever the spell allows.
-    if (this.isPacified(source) && target !== source && target.team !== source.team) return false;
     if (spell.requiresInvisibleTarget && this.stealthDuration(target) <= 0) return false;
     if (
       spell.requiresTargetNearOwnShadow != null &&
@@ -5080,8 +5000,6 @@ export class GameState {
       this.sandChargesAt(source.pos) <= 0
     )
       return false;
-    if (this.isPacified(source)) return false;
-    if (!this.mandateAllows(source, target)) return false;
     if (source.hasForgotten('melee')) return false;
     if (target === source || !target.alive || this.isUntargetable(target, source)) return false;
     const weapon = source.activeWeapon();
@@ -5443,8 +5361,7 @@ export class GameState {
       status.kind === 'auraDot' ||
       status.kind === 'control' ||
       status.kind === 'shadowTrail' ||
-      status.kind === 'forget' ||
-      status.kind === 'orderJudgment'
+      status.kind === 'forget'
     );
   }
 

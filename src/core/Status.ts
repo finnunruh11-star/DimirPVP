@@ -15,9 +15,6 @@ export type StatusKind =
   | 'shadowVeil'
   | 'shadowTrail'
   | 'forget'
-  | 'orderJudgment'
-  | 'pacified'
-  | 'orderMandate'
   | 'bindCurseAura'
   | 'veilCorrodePierce'
   | 'twistRune'
@@ -417,26 +414,6 @@ export interface FoeBlindStatus extends BaseStatus {
  * "did not attack" the entity. After `evalsLeft` reaches zero the judgement
  * detonates, dealing `perStackSpec` slashing per accrued stack.
  */
-export interface OrderJudgmentStatus extends BaseStatus {
-  kind: 'orderJudgment';
-  /** Index (in GameState.mages) of the entity the bearer must engage. */
-  targetIndex: number;
-  /** Index (in GameState.mages) of the mage that authored the order. */
-  ownerIndex: number;
-  /** Bearer-turns of judgement remaining before detonation. */
-  evalsLeft: number;
-  /** Disobedience stacks accrued so far. */
-  stacks: number;
-  /** Distance to the entity captured at the previous evaluation. */
-  lastDist: number;
-  /** True once the bearer has damaged the entity since the last evaluation. */
-  attackedTarget: boolean;
-  /** False until the first turn-start snapshot has been taken. */
-  observing: boolean;
-  /** Dice rolled once per stack when the judgement detonates. */
-  perStackSpec: string;
-}
-
 /** Hexcraft Bind Curse: binds nearby enemies when the bearer's turn starts. */
 export interface BindCurseAuraStatus extends BaseStatus {
   kind: 'bindCurseAura';
@@ -449,28 +426,6 @@ export interface BindCurseAuraStatus extends BaseStatus {
 /** Hexcraft Veil Corrode Pierce: converts a broken attacker's veil into damage. */
 export interface VeilCorrodePierceStatus extends BaseStatus {
   kind: 'veilCorrodePierce';
-}
-
-/**
- * Mono Order on an enemy: no hostile action may be DECLARED. Blocked options
- * are unusable rather than wasted, so nothing is spent trying.
- */
-export interface PacifiedStatus extends BaseStatus {
-  kind: 'pacified';
-}
-
-/**
- * Mono Order on an ally: strictly better, strictly obedient. Everything it does
- * hits harder, but only the entity the caster named may be touched.
- */
-export interface OrderMandateStatus extends BaseStatus {
-  kind: 'orderMandate';
-  /** Index in GameState.mages of the only entity the bearer may target. */
-  targetIndex: number;
-  /** Index of the mage that issued the mandate. */
-  ownerIndex: number;
-  /** Multiplier on damage dealt and healing done. */
-  potency: number;
 }
 
 /** Hexcraft Shatter Twist: orbit nearby entities when the bearer starts a turn. */
@@ -499,9 +454,6 @@ export type Status =
   | ShadowVeilStatus
   | ShadowTrailStatus
   | ForgetStatus
-  | OrderJudgmentStatus
-  | PacifiedStatus
-  | OrderMandateStatus
   | BindCurseAuraStatus
   | VeilCorrodePierceStatus
   | TwistRuneStatus
