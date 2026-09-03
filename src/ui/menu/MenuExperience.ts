@@ -39,7 +39,7 @@ import {
 
 const CATEGORY_MODES: Record<MenuCategory, readonly MatchMode[]> = {
   versus: ['ai', 'hotseat', 'online'],
-  adventures: ['swamprun', 'expedition', 'minerun', 'raid'],
+  adventures: ['exploration', 'swamprun', 'expedition', 'minerun', 'raid'],
   workshop: ['training', 'scenario', 'memory'],
 };
 
@@ -56,6 +56,7 @@ const NATIVE_MODES = new Set<MatchMode>([
   'training',
   'swamprun',
   'expedition',
+  'exploration',
   'minerun',
   'raid',
   'scenario',
@@ -1511,6 +1512,7 @@ export class MenuExperience {
     const humans = this.model.humanCount();
     if (this.model.mode === 'training') return 'Solo sandbox with one configurable training opponent.';
     if (this.model.mode === 'expedition') return 'One local explorer in a solo campaign.';
+    if (this.model.mode === 'exploration') return 'One local traveller, setting out from the Capitol.';
     if (isPveRunMode(this.model.mode)) {
       return `${this.model.seatCount} explorer${this.model.seatCount === 1 ? '' : 's'}: ${humans} human, ${this.model.aiCount} AI.`;
     }
@@ -1552,6 +1554,7 @@ export class MenuExperience {
   private launchLabel(): string {
     if (this.model.mode === 'training') return 'Start Training';
     if (this.model.mode === 'expedition') return 'Begin Expedition';
+    if (this.model.mode === 'exploration') return 'Set Out';
     if (this.model.mode === 'ai') return 'Start AI Duel';
     if (this.model.mode === 'hotseat') return 'Start Hotseat Match';
     if (this.model.mode === 'scenario') return 'Open Scenario Lab';

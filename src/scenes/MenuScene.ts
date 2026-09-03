@@ -51,6 +51,12 @@ export class MenuScene extends Phaser.Scene {
 
   private launch(config: MatchConfig): void {
     this.destroyExperience();
+    // Exploration owns its own scene: a fight is something the overworld starts,
+    // not the other way round.
+    if (config.mode === 'exploration') {
+      this.scene.start('Exploration', { config });
+      return;
+    }
     this.scene.start('Game', config);
   }
 

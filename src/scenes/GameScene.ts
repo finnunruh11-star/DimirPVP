@@ -180,6 +180,8 @@ import {
 import type { StackItem } from '../core/Stack';
 import { barrierContains } from '../core/Barrier';
 import { FLEE_EDGE_LABEL, fleeEdgeAt, type FleeEdge } from '../core/Flee';
+import { capturePartySnapshot } from '../pve/exploration/party';
+import type { ExplorationEntry } from './ExplorationScene';
 import type { Spell, SpellVisual } from '../spells/Spell';
 import { allSpells, getSpell, isClassSpellCombo, spellById, setActiveSpellSets } from '../spells/registry';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
@@ -248,7 +250,7 @@ interface PendingRoll extends DiceRollView {
   seq: number;
 }
 
-import type { MatchConfig, SeatConfig, SwampPrepMode } from '../config/MatchConfig';
+import type { ExplorationCombat, MatchConfig, SeatConfig, SwampPrepMode } from '../config/MatchConfig';
 import {
   MINE_ROOM_VISUAL_LABEL,
   buildMineRoomTextures,
@@ -277,6 +279,7 @@ import {
   rollMineEnemyWeapon,
   rollMineLoot,
   MINE_ENEMY_DEFS,
+  OVERWORLD_SPAWN_KINDS,
   type MineEnemyKind,
   type MineSpawnSpec,
 } from '../pve/minerun';
@@ -1129,6 +1132,8 @@ export class GameScene extends Phaser.Scene {
   /** Whether this fight can be walked away from, and by which border it was. */
   private fleeAllowed = false;
   private fledEdge: FleeEdge | null = null;
+  /** Set when the overworld started this fight; drives the hand-back. */
+  private explorationCombat: ExplorationCombat | null = null;
   private autoPassButton?: CabinetChip;
   // When on (offline only), every seat is played by the AI so the match runs
   // itself and the player can just watch. Toggled via key [Y] or the button.
@@ -1403,11 +1408,14 @@ export class GameScene extends Phaser.Scene {
     this.expedition = config.mode === 'expedition';
     this.mineRun = config.mode === 'minerun';
     this.raid = config.mode === 'raid';
+    this.explorationCombat = config.exploration ?? null;
+    this.fleeAllowed = !!this.explorationCombat;
     this.raidBoss = config.raidBoss ?? 'deathknightSpear';
     this.raidTarget = undefined;
     this.raidVictory = false;
     this.raidPrepActive = this.raid;
-    this.swamprun = config.mode === 'swamprun' || this.expedition || this.mineRun || this.raid;
+    this.swamprun =
+      config.mode === 'swamprun' || this.expedition || this.mineRun || this.raid || !!this.explorationCombat;
     this.swampPrepMode = config.swampPrepMode ?? 'custom';
 
     const onlineName = (team: number): string =>
@@ -1449,7 +1457,8 @@ export class GameScene extends Phaser.Scene {
 
     // A loaded memory fully describes its roster, so it replaces the drafted
     // seats: every combatant keeps the kit and the spot it was saved on.
-    const scenario = config.scenario ?? null;
+    // An exploration party arrives the same way, carried in by the run.
+    const scenario = config.scenario ?? this.explorationCombat?.run.party ?? null;
     if (scenario) this.spawns = scenario.entities.map((e) => ({ x: e.x, y: e.y }));
 
     const mages = scenario
@@ -1711,6 +1720,11 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (this.swamprun) {
+      if (this.explorationCombat) {
+        this.setupExplorationCombat(this.explorationCombat);
+        this.startTurn();
+        return;
+      }
       if (this.expedition) {
         await this.setupExpedition();
         this.startTurn();
@@ -1782,6 +1796,55 @@ export class GameScene extends Phaser.Scene {
   // ===========================================================================
   //  SWAMPRUN  (endless PvE survival)
   // ===========================================================================
+
+  /**
+   * One fight off the overworld. Enemy strength comes from how deep into the
+   * region the road is, never from how strong the traveller has become.
+   */
+  private setupExplorationCombat(combat: ExplorationCombat): void {
+    this.swamprunWave = Math.max(1, combat.depth);
+    this.swamprunEncounterPower = 0;
+    this.swamprunCurse = undefined;
+    this.swamprunGold = 0;
+    this.swamprunWaveEnemies = [];
+    this.swamprunWispCopies.clear();
+    // The party arrives carrying the positions it held when the last fight
+    // ended, so line it up afresh before anything is spawned opposite it.
+    const party = this.gs.mages.filter((m) => m.team === 1);
+    const formation = this.computeSpawns(party.map(() => 1));
+    party.forEach((mage, index) => {
+      const at = formation[index];
+      if (!at) return;
+      mage.x = at.x;
+      mage.y = at.y;
+    });
+    const spawns = mineWaveComposition(
+      this.swamprunWave,
+      this.gs.rng,
+      1,
+      OVERWORLD_SPAWN_KINDS,
+    );
+    this.gs.log(
+      combat.encounter === 'robbery'
+        ? `— Ambush! ${spawns.length} of them, and they moved first. —`
+        : `— ${spawns.length} foe${spawns.length === 1 ? '' : 's'} bar the road. —`
+    );
+    for (const spawn of spawns) this.spawnMineEnemy(spawn);
+    this.gs.startNewCombat({ preserveScarabs: true });
+    // An ambush means exactly that: the road takes its turn before you take yours.
+    if (combat.encounter === 'robbery') this.giveAmbushersFirstTurn();
+    this.updateWaveHud();
+    this.redraw();
+  }
+
+  /** Reorder initiative so the ambushers act before anyone they jumped. */
+  private giveAmbushersFirstTurn(): void {
+    const order = this.gs.mages
+      .map((mage, index) => ({ mage, index }))
+      .sort((a, b) => Number(a.mage.team === 1) - Number(b.mage.team === 1))
+      .map((entry) => entry.index);
+    this.gs.restoreTurnOrder(order, order.map(() => 0), 0);
+  }
 
   /** Arm the party of survivors and unleash the first wave. */
   private setupSwamprun(): void {
@@ -15595,6 +15658,22 @@ export class GameScene extends Phaser.Scene {
   private returnToMenu(): void {
     if (this.leaving) return;
     this.leaving = true;
+    // An overworld fight goes back to the road it interrupted, not the menu.
+    const combat = this.explorationCombat;
+    if (combat) {
+      const survivors = this.gs.mages.filter((m) => m.team === 1 && m.alive && !m.isSummon);
+      if (survivors.length) combat.run.party = capturePartySnapshot(survivors);
+      combat.run.gold += Math.round(this.swamprunGold);
+      this.scene.start('Exploration', {
+        result: {
+          run: combat.run,
+          outcome: this.fledEdge ? 'fled' : survivors.length ? 'won' : 'lost',
+          edge: this.fledEdge ?? undefined,
+          cameFrom: combat.cameFrom,
+        },
+      } satisfies ExplorationEntry);
+      return;
+    }
     this.scene.start('Menu');
   }
 

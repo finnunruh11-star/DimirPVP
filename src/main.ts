@@ -3,6 +3,7 @@ import { unlockAudio } from './audio';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config/constants';
 import { MenuScene } from './scenes/MenuScene';
 import { GameScene } from './scenes/GameScene';
+import { ExplorationScene } from './scenes/ExplorationScene';
 import { GalleryScene } from './scenes/GalleryScene';
 import { installMobileShell } from './ui/mobileShell';
 
@@ -42,7 +43,7 @@ const gameConfig: Phaser.Types.Core.GameConfig = {
     autoCenter: Phaser.Scale.CENTER_BOTH,
     autoRound: true,
   },
-  scene: galleryMode ? [GalleryScene] : [MenuScene, GameScene],
+  scene: galleryMode ? [GalleryScene] : [MenuScene, GameScene, ExplorationScene],
   callbacks: {
     postBoot: (game) => {
       const canvas = game.canvas;

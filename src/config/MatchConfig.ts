@@ -3,6 +3,8 @@ import type { Scenario } from '../core/Scenario';
 import type { WordId } from '../core/Words';
 import type { Net } from '../net/Net';
 import type { RaidBossKind } from '../pve/swamprun';
+import type { ExplorationRun } from '../pve/exploration/run';
+import type { PathEncounter } from '../pve/exploration/world';
 import { LOADOUT_SIZE } from './constants';
 
 export type MatchMode =
@@ -12,6 +14,7 @@ export type MatchMode =
   | 'training'
   | 'swamprun'
   | 'expedition'
+  | 'exploration'
   | 'minerun'
   | 'raid'
   | 'scenario'
@@ -66,6 +69,11 @@ export const MODE_CAPABILITIES = {
     formats: [], prepModes: [], loadoutSize: 3,
     usesBuild: true, usesContentPacks: true, requiresRaidBoss: false,
   },
+  exploration: {
+    category: 'adventures', roles: ['local'], seats: [1, 1], allowAi: false,
+    formats: [], prepModes: [], loadoutSize: 3,
+    usesBuild: true, usesContentPacks: true, requiresRaidBoss: false,
+  },
   minerun: {
     category: 'adventures', roles: ['local', 'host', 'guest'], seats: [1, 4], allowAi: true,
     formats: [], prepModes: ['quick', 'custom', 'creative'], loadoutSize: LOADOUT_SIZE,
@@ -89,7 +97,13 @@ export const MODE_CAPABILITIES = {
 } as const satisfies Record<MatchMode, ModeCapability>;
 
 export function isPveRunMode(mode: MatchMode): boolean {
-  return mode === 'swamprun' || mode === 'expedition' || mode === 'minerun' || mode === 'raid';
+  return (
+    mode === 'swamprun' ||
+    mode === 'expedition' ||
+    mode === 'exploration' ||
+    mode === 'minerun' ||
+    mode === 'raid'
+  );
 }
 
 export function isScenarioMode(mode: MatchMode): boolean {
@@ -118,9 +132,21 @@ export interface SeatConfig {
   mageClass?: MageClass;
 }
 
+/** A fight the overworld started, and everything needed to hand the run back. */
+export interface ExplorationCombat {
+  run: ExplorationRun;
+  encounter: PathEncounter;
+  /** How far into the region this fight sits; sets enemy strength. */
+  depth: number;
+  /** Where the party stood before walking in, so fleeing can send them back. */
+  cameFrom: string | null;
+}
+
 export interface MatchConfig {
   mode: MatchMode;
   loadouts: [WordId[], WordId[]];
+  /** Exploration: the run this fight belongs to. */
+  exploration?: ExplorationCombat;
   /** Swamprun pre-combat character preparation. */
   swampPrepMode?: SwampPrepMode;
   /** Single boss selected for a one-fight Raid. */

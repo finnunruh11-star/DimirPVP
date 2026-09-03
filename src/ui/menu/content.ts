@@ -80,6 +80,12 @@ export const MODE_COPY: Record<MatchMode, MenuEntryCopy> = {
     title: 'THE MINE',
     description: 'Chart branching tunnels, manage tools and traps, and decide which hostile rooms are worth entering.',
   },
+  exploration: {
+    label: 'Exploration',
+    detail: 'An open world of cities, roads and wilds',
+    title: 'THE WIDE WORLD',
+    description: 'Set out from the Capitol. Walk the roads between cities, take what the country offers, and break off a fight by whichever edge you can reach. Progress is saved as you go.',
+  },
   raid: {
     label: 'Raid',
     detail: 'Prepare a party for one selected boss',

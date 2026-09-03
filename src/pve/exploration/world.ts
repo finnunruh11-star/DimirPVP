@@ -32,6 +32,8 @@ export interface WorldNode {
   depth: number;
   /** Neighbours, in no particular order. Travel is always bidirectional. */
   links: string[];
+  /** Where the node sits on the drawn map. */
+  at: { x: number; y: number };
   /** Which dungeon a `dungeon` node opens. */
   dungeon?: DungeonId;
   /** Shown when a `wip` node is entered. */
@@ -54,6 +56,8 @@ interface RoadSpec {
   length: number;
   /** Depth of the first path node; each subsequent node is one deeper. */
   depth: number;
+  /** Perpendicular offset of the road's midpoint, so roads curve apart. */
+  bow?: number;
 }
 
 /**
@@ -64,21 +68,21 @@ interface RoadSpec {
  *   Hearthfire -7- Capitol, closing the loop.
  */
 const ROADS: RoadSpec[] = [
-  { id: 'road-capitol-kerusai', name: 'Kingsroad', region: 'capitol', from: 'capitol', to: 'kerusai', length: 10, depth: 1 },
+  { id: 'road-capitol-kerusai', name: 'Kingsroad', region: 'capitol', from: 'capitol', to: 'kerusai', length: 10, depth: 1, bow: -60 },
   { id: 'road-swamp-spur', name: 'Mire Track', region: 'black', from: 'kerusai', to: 'swamps', length: 1, depth: 4 },
   { id: 'road-kerusai-fork', name: 'Blackwood Road', region: 'black', from: 'kerusai', to: 'fork-forest', length: 2, depth: 2 },
-  { id: 'road-fork-redfork', name: 'Ashen Way', region: 'red', from: 'fork-forest', to: 'fork-wilds', length: 6, depth: 1 },
+  { id: 'road-fork-redfork', name: 'Ashen Way', region: 'red', from: 'fork-forest', to: 'fork-wilds', length: 6, depth: 1, bow: 70 },
   { id: 'road-redfork-hearthfire', name: 'Cinder Path', region: 'red', from: 'fork-wilds', to: 'hearthfire', length: 2, depth: 6 },
-  { id: 'road-hearthfire-capitol', name: 'Emberway', region: 'red', from: 'hearthfire', to: 'capitol', length: 7, depth: 3 },
+  { id: 'road-hearthfire-capitol', name: 'Emberway', region: 'red', from: 'hearthfire', to: 'capitol', length: 7, depth: 3, bow: -150 },
 ];
 
 const PLACES: Omit<WorldNode, 'links'>[] = [
-  { id: 'capitol', kind: 'city', name: 'The Capitol', region: 'capitol', depth: 0 },
-  { id: 'kerusai', kind: 'city', name: 'Kerusai', region: 'black', depth: 0 },
-  { id: 'hearthfire', kind: 'city', name: 'Hearthfire', region: 'red', depth: 0 },
-  { id: 'mines', kind: 'dungeon', name: 'The Mines', region: 'red', depth: 1, dungeon: 'mines' },
-  { id: 'swamps', kind: 'dungeon', name: 'The Swamps', region: 'black', depth: 1, dungeon: 'swamps' },
-  { id: 'red-wilds', kind: 'wilderness', name: 'The Volcanic Wilds', region: 'red', depth: 4 },
+  { id: 'capitol', kind: 'city', name: 'The Capitol', region: 'capitol', depth: 0, at: { x: 620, y: 120 } },
+  { id: 'kerusai', kind: 'city', name: 'Kerusai', region: 'black', depth: 0, at: { x: 210, y: 330 } },
+  { id: 'hearthfire', kind: 'city', name: 'Hearthfire', region: 'red', depth: 0, at: { x: 1010, y: 430 } },
+  { id: 'mines', kind: 'dungeon', name: 'The Mines', region: 'red', depth: 1, dungeon: 'mines', at: { x: 1160, y: 560 } },
+  { id: 'swamps', kind: 'dungeon', name: 'The Swamps', region: 'black', depth: 1, dungeon: 'swamps', at: { x: 90, y: 470 } },
+  { id: 'red-wilds', kind: 'wilderness', name: 'The Volcanic Wilds', region: 'red', depth: 4, at: { x: 600, y: 660 } },
   {
     id: 'fork-forest',
     kind: 'wip',
@@ -86,8 +90,9 @@ const PLACES: Omit<WorldNode, 'links'>[] = [
     region: 'black',
     depth: 3,
     note: 'The trees thin into unfinished country. Nothing lives here yet.',
+    at: { x: 250, y: 520 },
   },
-  { id: 'fork-wilds', kind: 'path', name: 'Ashfall Crossing', region: 'red', depth: 4 },
+  { id: 'fork-wilds', kind: 'path', name: 'Ashfall Crossing', region: 'red', depth: 4, at: { x: 760, y: 570 } },
 ];
 
 /** Build the authored world. Deterministic: the same map every time. */
@@ -104,9 +109,22 @@ export function createWorld(): WorldMap {
   };
 
   for (const road of ROADS) {
+    const start = nodes.get(road.from)!.at;
+    const end = nodes.get(road.to)!.at;
+    // Bow the midpoint out along the road's normal so roads do not overlap.
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const span = Math.hypot(dx, dy) || 1;
+    const bow = road.bow ?? 0;
+    const mid = {
+      x: (start.x + end.x) / 2 + (-dy / span) * bow,
+      y: (start.y + end.y) / 2 + (dx / span) * bow,
+    };
     let previous = road.from;
     for (let step = 1; step <= road.length; step++) {
       const id = `${road.id}-${step}`;
+      const t = step / (road.length + 1);
+      const inv = 1 - t;
       nodes.set(id, {
         id,
         kind: 'path',
@@ -114,6 +132,10 @@ export function createWorld(): WorldMap {
         region: road.region,
         depth: road.depth + step - 1,
         links: [],
+        at: {
+          x: inv * inv * start.x + 2 * inv * t * mid.x + t * t * end.x,
+          y: inv * inv * start.y + 2 * inv * t * mid.y + t * t * end.y,
+        },
       });
       link(previous, id);
       previous = id;

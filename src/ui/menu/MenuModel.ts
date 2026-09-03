@@ -365,7 +365,8 @@ export class MenuModel {
   }
 
   private isNadSelection(words: readonly WordId[]): boolean {
-    if (this.mode === 'expedition' || (words.length !== 4 && words.length !== 5)) return false;
+    // Three-word campaign builds can never hold the four-word NAD preset.
+    if (this.loadoutLimit() < 4 || (words.length !== 4 && words.length !== 5)) return false;
     return PRESET_LOADOUTS.NAD.every((word) => words.includes(word));
   }
 

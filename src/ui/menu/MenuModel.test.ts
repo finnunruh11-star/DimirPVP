@@ -63,6 +63,18 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(model.setRole('host'), false, 'Expedition host rejection');
   }],
 
+  ['keeps Exploration honest as a solo three-word campaign', () => {
+    const model = new MenuModel();
+    model.setMode('exploration');
+
+    equal(MODE_CAPABILITIES.exploration.roles, ['local'], 'Exploration roles');
+    equal(MODE_CAPABILITIES.exploration.category, 'adventures', 'Exploration category');
+    equal(model.seatCount, 1, 'Exploration seat count');
+    equal(model.aiCount, 0, 'Exploration AI count');
+    equal(model.loadoutLimit(), 3, 'Exploration loadout size');
+    equal(model.setRole('guest'), false, 'Exploration guest rejection');
+  }],
+
   ['uses one human and fills the rest with AI in AI Duel', () => {
     const model = new MenuModel();
     model.setMode('ai');
@@ -105,6 +117,17 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(config.seats?.length, 1, 'Expedition seats');
     equal(config.seats?.[0].loadout, ['bind', 'shadow', 'mind', 'subtle'], 'Expedition loadout');
     equal(config.swampPrepMode, undefined, 'Expedition preparation');
+  }],
+
+  ['assembles native Exploration as a lone traveller', () => {
+    const model = new MenuModel();
+    model.setMode('exploration');
+    fillBuild(model, 0, ['pierce', 'veil', 'shadow']);
+    const config = model.toLocalMatchConfig(() => 0.25);
+    equal(config.mode, 'exploration', 'Exploration mode');
+    equal(config.seats?.length, 1, 'Exploration seats');
+    equal(config.seats?.[0].loadout, ['pierce', 'veil', 'shadow', 'subtle'], 'Exploration loadout');
+    equal(config.seats?.[0].isAI, false, 'Exploration seat is human');
   }],
 
   ['preserves explicit mixed teams for human and AI seats', () => {
