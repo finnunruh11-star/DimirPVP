@@ -134,6 +134,19 @@ export const RECIPES = {
     k.tone({ type: 'triangle', freq: 1150, dur: 0.16, gain: 0.12, reverb: 0.3 });
     k.tone({ type: 'triangle', freq: 1668, dur: 0.12, gain: 0.08, reverb: 0.3 });
   },
+  'shield.raise': (k: SynthKit) => {
+    // Bracing: leather and banded wood hauled up and set, then held ringing.
+    k.noise({ dur: 0.09, gain: 0.2, filter: 'bandpass', freq: 640, freqTo: 1500, q: 2.2, attack: 0.02 });
+    k.tone({ type: 'triangle', freq: k.rand(300, 340), freqTo: 520, dur: 0.14, gain: 0.13, reverb: 0.28 });
+    k.tone({ type: 'sine', freq: 880, start: 0.07, dur: 0.22, gain: 0.05, reverb: 0.4 });
+  },
+  'shield.bash': (k: SynthKit) => {
+    // A boss driven into a body: broad, blunt and wooden, with no edge to it.
+    k.noise({ dur: 0.04, gain: 0.42, filter: 'lowpass', freq: 1800, attack: 0.001 });
+    k.tone({ type: 'sine', freq: k.rand(130, 160), freqTo: 46, dur: 0.24, gain: 0.5 });
+    k.noise({ kind: 'brown', dur: 0.26, gain: 0.22, filter: 'lowpass', freq: 540, reverb: 0.3 });
+    k.tone({ type: 'triangle', freq: 720, freqTo: 430, dur: 0.13, gain: 0.07, reverb: 0.3 });
+  },
 
   // ---- Magic ----
   'spell.cast': (k: SynthKit) => {

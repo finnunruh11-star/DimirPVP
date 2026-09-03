@@ -45,6 +45,7 @@ const SOUND_GAIN: Partial<Record<SoundName, number>> = {
   'hit.pierce': 0.72,
   'melee.swing': 0.8,
   'melee.contact': 0.85,
+  'shield.bash': 0.75,
   'bow.draw': 0.9,
 };
 

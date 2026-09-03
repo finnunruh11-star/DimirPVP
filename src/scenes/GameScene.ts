@@ -520,6 +520,8 @@ interface MageAnim {
   root?: Phaser.GameObjects.Sprite;
   /** A ring of stars spinning over the head while a full stun lasts. */
   stun?: Phaser.GameObjects.Sprite;
+  /** A braced ward held while a shield block is armed. */
+  guard?: Phaser.GameObjects.Image;
   /** A special animation currently owning the sprite (else idle/charge rests). */
   lock: 'move' | 'dash' | 'pull' | 'attack' | 'hit' | 'death' | null;
   /** A sprite-position tween owns the position; don't snap to logical. */
@@ -1280,6 +1282,9 @@ export class GameScene extends Phaser.Scene {
     this.particleFx = undefined;
     this.diceField?.destroy();
     this.diceField = undefined;
+    this.moveGhost?.destroy();
+    this.moveGhost = undefined;
+    this.arrowStruck = null;
     this.mode = 'idle';
     this.busy = false;
     this.gameEnded = false;
@@ -6354,12 +6359,15 @@ export class GameScene extends Phaser.Scene {
           reactor.reactedThisCycle = true;
           reactor.blockPending = true;
           this.gs.log(`${reactor.name} raises a shield against ${top.label}.`);
+          this.playShieldRaise(reactor, top.source);
           this.redraw();
           passed.add(key);
         } else if (choice && choice.shield === 'bash') {
           // A bash answers the blow, smashing the attacker; the action still lands.
           reactor.reactedThisCycle = true;
-          this.gs.shieldBash(reactor, top.source);
+          if (this.gs.shieldBash(reactor, top.source)) {
+            await this.playShieldBash(reactor, top.source);
+          }
           this.redraw();
           passed.add(key);
         } else if (choice && choice.weapon) {
@@ -9733,6 +9741,10 @@ export class GameScene extends Phaser.Scene {
     this.gs.dropTrailShadows(reactor);
     this.gs.log(`${reactor.name} repositions.`);
     this.redraw();
+    // Slip the body across rather than teleporting it: the roll strip exists
+    // for exactly this and was never wired to the dodge that earns it.
+    playSound('move.dash');
+    this.animateDash(reactor, origin);
   }
 
   /** Mage targets that remain legal for a bonus spell at this exact moment. */
@@ -12123,6 +12135,7 @@ export class GameScene extends Phaser.Scene {
 
     // Aiming ranges.
     this.drawAimingRange(g);
+    this.syncMoveGhost();
 
     // Bind Curse ranges follow their afflicted bearers.
     this.drawBindCurseAuras(g);
@@ -12744,6 +12757,34 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private moveGhost?: Phaser.GameObjects.Sprite;
+
+  /**
+   * A translucent body standing where a move would actually put you — clamped
+   * the same way the committed move is, so the preview cannot lie about reach.
+   */
+  private syncMoveGhost(): void {
+    const me = this.aimingSource ?? this.gs.current;
+    const rec = this.mageAnims.get(me);
+    if (this.mode !== 'aiming-move' || !rec || !me.alive || this.controllerIsAI(me)) {
+      this.moveGhost?.setVisible(false);
+      return;
+    }
+    const dest = stepTowards(me.pos, this.pointer, me.moveRange());
+    if (!this.moveGhost) {
+      this.moveGhost = this.add.sprite(dest.x, dest.y, rec.sprite.texture.key).setDepth(4.6);
+    }
+    this.moveGhost
+      .setTexture(rec.sprite.texture.key, rec.sprite.frame.name)
+      .setOrigin(rec.sprite.originX, rec.sprite.originY)
+      .setScale(rec.sprite.scaleX, rec.sprite.scaleY)
+      .setFlipX(this.pointer.x < me.x)
+      .setPosition(dest.x, dest.y + MAGE_RADIUS * 1.4)
+      .setAlpha(0.32)
+      .setTint(MENU_COLOR.brassLight)
+      .setVisible(true);
+  }
+
   private drawAimGuide(g: Phaser.GameObjects.Graphics, from: Vec2, to: Vec2): void {
     g.lineStyle(3, MENU_COLOR.pitch, 0.72).lineBetween(from.x, from.y, to.x, to.y);
     g.lineStyle(1, MENU_COLOR.brassLight, 0.9).lineBetween(from.x, from.y, to.x, to.y);
@@ -12795,8 +12836,10 @@ export class GameScene extends Phaser.Scene {
     }
 
     let range = 0;
-    if (this.mode === 'aiming-move') range = me.moveRange();
-    else if (this.mode === 'aiming-leap') {
+    if (this.mode === 'aiming-move') {
+      range = me.moveRange();
+      this.drawAimGuide(g, me.pos, stepTowards(me.pos, this.pointer, range));
+    } else if (this.mode === 'aiming-leap') {
       // The farthest a leap can carry: a max d6 roll of 6.
       range = (1 + 0.25 * me.effectiveDex()) * RANGE_UNIT;
     } else if (this.mode === 'aiming-cleave') {
@@ -13218,6 +13261,7 @@ export class GameScene extends Phaser.Scene {
       rec.held?.destroy();
       rec.root?.destroy();
       rec.stun?.destroy();
+      rec.guard?.destroy();
       this.mageAnims.delete(mage);
       this.mageLabels.get(mage)?.destroy();
       this.mageLabels.delete(mage);
@@ -13283,6 +13327,8 @@ export class GameScene extends Phaser.Scene {
         rec.root = undefined;
         rec.stun?.destroy();
         rec.stun = undefined;
+        rec.guard?.destroy();
+        rec.guard = undefined;
         continue;
       }
       if (m.oniHidden) {
@@ -13290,6 +13336,7 @@ export class GameScene extends Phaser.Scene {
         rec.held?.setVisible(false);
         rec.root?.setVisible(false);
         rec.stun?.setVisible(false);
+        rec.guard?.setVisible(false);
         continue;
       }
       s.setVisible(true);
@@ -13298,6 +13345,7 @@ export class GameScene extends Phaser.Scene {
       this.syncHeldWeapon(m, rec, alpha);
       this.syncRootOverlay(m, rec, footY, alpha);
       this.syncStunOverlay(m, rec, alpha);
+      this.syncGuardOverlay(m, rec, alpha);
       // Resting animation: charge while a spell is pending, otherwise idle.
       if (rec.lock === null) {
         const want = bodyAnimationKey(m, rec.charging ? 'charge' : 'idle');
@@ -13371,6 +13419,173 @@ export class GameScene extends Phaser.Scene {
       .setPosition(rec.sprite.x, headTop - size * 0.08)
       .setAlpha(alpha)
       .setVisible(true);
+  }
+
+  /** A braced ward held over a mage for as long as its shield block is armed. */
+  private syncGuardOverlay(m: Mage, rec: MageAnim, alpha: number): void {
+    if (!m.alive || m.oniHidden || !m.blockPending) {
+      if (rec.guard) this.breakGuard(rec.guard);
+      rec.guard = undefined;
+      return;
+    }
+    this.buildGuardTexture();
+    if (!rec.guard) {
+      const size = MAGE_RADIUS * 3.4;
+      rec.guard = this.add
+        .image(rec.sprite.x, rec.sprite.y, 'fx-guard')
+        .setDepth(5.15)
+        .setDisplaySize(size, size)
+        .setBlendMode(Phaser.BlendModes.ADD);
+      if (!this.reducedMotion) {
+        this.tweens.add({
+          targets: rec.guard,
+          alpha: { from: 0.85, to: 0.42 },
+          duration: 620,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.InOut',
+        });
+      }
+    }
+    const bodyHeight = creatureSpriteKind(m) ? CREATURE_SPRITE_HEIGHT : MAGE_RADIUS * 2.8;
+    rec.guard
+      .setPosition(rec.sprite.x, rec.sprite.y - bodyHeight * 0.45)
+      .setVisible(true);
+    if (this.reducedMotion) rec.guard.setAlpha(alpha * 0.7);
+  }
+
+  /** Let a spent ward flare and fly apart instead of blinking out of existence. */
+  private breakGuard(guard: Phaser.GameObjects.Image): void {
+    this.tweens.killTweensOf(guard);
+    if (this.reducedMotion) {
+      guard.destroy();
+      return;
+    }
+    this.particleFx?.burst({ x: guard.x, y: guard.y }, {
+      color: MENU_COLOR.brassLight,
+      count: 10,
+      speed: 190,
+      lifespan: 380,
+      shape: 'shard',
+      size: 10,
+      glow: true,
+      drag: 0.7,
+      depth: 9.5,
+    });
+    this.tweens.add({
+      targets: guard,
+      alpha: 0,
+      scale: guard.scale * 1.35,
+      duration: 200,
+      ease: 'Quad.Out',
+      onComplete: () => guard.destroy(),
+    });
+  }
+
+  /** A faceted brass ward, drawn once and reused by every raised shield. */
+  private buildGuardTexture(): void {
+    if (this.textures.exists('fx-guard')) return;
+    const g = this.make.graphics({ x: 0, y: 0 }, false);
+    const centre = 32;
+    const facets = 6;
+    const point = (radius: number, index: number): { x: number; y: number } => {
+      const a = (Math.PI * 2 * index) / facets - Math.PI / 2;
+      return { x: centre + Math.cos(a) * radius, y: centre + Math.sin(a) * radius };
+    };
+    for (const [radius, width, alphaLevel] of [[29, 3, 0.9], [22, 1, 0.45]] as const) {
+      g.lineStyle(width, MENU_COLOR.brassLight, alphaLevel);
+      for (let i = 0; i < facets; i++) {
+        const from = point(radius, i);
+        const to = point(radius, i + 1);
+        g.lineBetween(from.x, from.y, to.x, to.y);
+      }
+    }
+    g.fillStyle(MENU_COLOR.brassLight, 0.9);
+    for (let i = 0; i < facets; i++) {
+      const at = point(29, i);
+      g.fillCircle(at.x, at.y, 2);
+    }
+    g.generateTexture('fx-guard', 64, 64);
+    g.destroy();
+  }
+
+  /** A ward snapping up as a shield is braced against an incoming blow. */
+  private playShieldRaise(reactor: Mage, from: Mage): void {
+    playSound('shield.raise');
+    if (this.reducedMotion) return;
+    const { angle } = this.contactPoint(from.pos, reactor.pos);
+    const at = {
+      x: reactor.x - Math.cos(angle) * MAGE_RADIUS * 0.6,
+      y: reactor.y - Math.sin(angle) * MAGE_RADIUS * 0.6 - MAGE_RADIUS * 0.5,
+    };
+    const ring = this.add.graphics({ x: at.x, y: at.y }).setDepth(9.5);
+    ring.lineStyle(3, MENU_COLOR.brassLight, 0.95).strokeCircle(0, 0, MAGE_RADIUS * 1.5);
+    this.tweens.add({
+      targets: ring,
+      scale: { from: 1.5, to: 1 },
+      alpha: { from: 0, to: 1 },
+      duration: 170,
+      ease: 'Quad.Out',
+      onComplete: () => {
+        this.tweens.add({
+          targets: ring,
+          alpha: 0,
+          duration: 160,
+          onComplete: () => ring.destroy(),
+        });
+      },
+    });
+  }
+
+  /**
+   * A shield bash: the brace drives into the attacker and the two bodies clash.
+   * The bash's own damage is flushed here so it lands with the shove instead of
+   * queueing up behind the blow it answered.
+   */
+  private async playShieldBash(basher: Mage, attacker: Mage): Promise<void> {
+    const rec = this.mageAnims.get(basher);
+    const { angle, contact } = this.contactPoint(basher.pos, attacker.pos);
+    playSound('shield.bash');
+
+    if (rec && !this.reducedMotion) {
+      const footY = MAGE_RADIUS * 1.4;
+      const home = { x: basher.x, y: basher.y + footY };
+      const shove = {
+        x: home.x + Math.cos(angle) * MELEE_SWING.lungePx * 0.8,
+        y: home.y + Math.sin(angle) * MELEE_SWING.lungePx * 0.8,
+      };
+      this.faceStrike(rec, basher, attacker.pos);
+      rec.posLocked = true;
+      rec.heldLocked = !!rec.held;
+      await this.strikePhase(
+        rec, home, shove,
+        MELEE_SWING.recover.pose, MELEE_SWING.recover.pose,
+        90, 'Quad.In'
+      );
+      void this.strikePhase(
+        rec, shove, home,
+        MELEE_SWING.recover.pose, MELEE_SWING.recover.pose,
+        MELEE_SWING.recover.ms, MELEE_SWING.recover.ease
+      ).then(() => this.endWeaponAttack(rec));
+    }
+
+    if (!this.reducedMotion) {
+      const centre = Phaser.Math.RadToDeg(angle);
+      this.particleFx?.burst(contact, {
+        color: MENU_COLOR.brassLight,
+        count: 11,
+        speed: 300,
+        lifespan: 280,
+        shape: 'spark',
+        size: 17,
+        glow: true,
+        drag: 0.88,
+        alignToTravel: true,
+        angle: { min: centre - 52, max: centre + 52 },
+        depth: 9.6,
+      });
+    }
+    await this.flushHits();
   }
 
   private setCharging(m: Mage, on: boolean): void {
@@ -13546,6 +13761,10 @@ export class GameScene extends Phaser.Scene {
         this.pendingSounds.push('spell.psychic');
         return;
       case 'damage': {
+        // A blow that got through armour or a raised shield still rang off it.
+        if (feedback.label === 'BLOCKED' || feedback.label === 'ARMOUR') {
+          this.pendingSounds.push('hit.block');
+        }
         // An enemy's blow always reads as a plain hit, whatever it is made of.
         const voice = feedback.source?.isAI
           ? 'hit.physical'
