@@ -5467,6 +5467,7 @@ export class GameState {
         break;
       case 'utility':
         if (def.ammo) mage.arrows += 1;
+        else if (def.material) mage.bag.push(id);
         else mage.utility.push(id);
         break;
     }

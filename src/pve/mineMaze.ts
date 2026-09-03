@@ -1,4 +1,5 @@
 import type { Dice } from '../core/Dice';
+import type { ItemId } from '../core/Items';
 
 export const MINE_DIRECTIONS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'] as const;
 export type MineDirection = (typeof MINE_DIRECTIONS)[number];
@@ -44,14 +45,14 @@ export interface MineOreDef {
   name: string;
   miningValue: number;
   failCount: number;
-  goldValue: number;
+  item: ItemId;
 }
 
 export const MINE_ORE_DEFS: Record<MineOreKind, MineOreDef> = {
-  coal: { kind: 'coal', name: 'Coal', miningValue: 12, failCount: 6, goldValue: 0.5 },
-  copper: { kind: 'copper', name: 'Copper', miningValue: 18, failCount: 5, goldValue: 1 },
-  iron: { kind: 'iron', name: 'Iron', miningValue: 24, failCount: 5, goldValue: 1.5 },
-  gold: { kind: 'gold', name: 'Gold', miningValue: 30, failCount: 4, goldValue: 3 },
+  coal: { kind: 'coal', name: 'Coal', miningValue: 12, failCount: 6, item: 'oreCoal' },
+  copper: { kind: 'copper', name: 'Copper', miningValue: 18, failCount: 5, item: 'oreCopper' },
+  iron: { kind: 'iron', name: 'Iron', miningValue: 24, failCount: 5, item: 'oreIron' },
+  gold: { kind: 'gold', name: 'Gold', miningValue: 30, failCount: 4, item: 'oreGold' },
 };
 
 export const MINE_TRAP_DAMAGE = ['1d3', '2d4', '3d3', '2d6', '1d20'] as const;
@@ -131,7 +132,8 @@ export interface MineRollRecord {
 export interface MineOreResult {
   extracted: number;
   collapsed: number;
-  gold: number;
+  /** One entry per extracted vein; hauled home rather than sold at the rock face. */
+  materials: ItemId[];
   pickaxes: number[];
   rolls: MineRollRecord[];
 }
@@ -310,6 +312,10 @@ export function revealMineOre(room: MineRoomState, rng: Dice): number {
   return room.oreAmount;
 }
 
+/** One ore item per extracted vein. */
+const haul = (ore: MineOreDef, extracted: number): ItemId[] =>
+  Array.from({ length: extracted }, () => ore.item);
+
 /** Resolve every vein, including d20 progress, collapse limits, and tool wear. */
 export function resolveMineOre(
   oreKind: MineOreKind,
@@ -328,7 +334,7 @@ export function resolveMineOre(
     for (let strike = 1; strike <= ore.failCount; strike++) {
       if (pickaxes.length === 0) {
         rolls.push({ vein, strike, roll: 0, progress, durabilityLost: false, outcome: 'no-pickaxe' });
-        return { extracted, collapsed, gold: extracted * ore.goldValue, pickaxes, rolls };
+        return { extracted, collapsed, materials: haul(ore, extracted), pickaxes, rolls };
       }
 
       const roll = rng.die(20);
@@ -354,5 +360,5 @@ export function resolveMineOre(
     }
   }
 
-  return { extracted, collapsed, gold: extracted * ore.goldValue, pickaxes, rolls };
+  return { extracted, collapsed, materials: haul(ore, extracted), pickaxes, rolls };
 }

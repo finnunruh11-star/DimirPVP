@@ -19,6 +19,7 @@ import { Dev } from '../config/dev';
 import type { WordId } from './Words';
 import { WORDS, isModifierWord } from './Words';
 import type { Dice } from './Dice';
+import type { FleeEdge } from './Flee';
 import type { ColorName, ColorProfile } from './Colors';
 import { computeColorProfile } from './Colors';
 import type { MageClass } from './Classes';
@@ -75,6 +76,8 @@ export class Mage {
   delayedCast?: PendingCast;
   /** Stack items Delay pushed onto this mage's next turn start. */
   delayedItems: StackItem[] = [];
+  /** Border this mage is slipping away by; completes at its next turn start. */
+  fleeChannel?: FleeEdge;
 
   /** Color identity derived from the loadout (primary / secondary tiers). */
   profile: ColorProfile;
@@ -660,6 +663,7 @@ export class Mage {
     this.channeledCast = undefined;
     this.delayedCast = undefined;
     this.delayedItems = [];
+    this.fleeChannel = undefined;
     if (!options.preserveLanternState) this.edgelordCapturedBy = undefined;
     this.damageBySourceThisCycle.clear();
     this.bannedItemIds.clear();

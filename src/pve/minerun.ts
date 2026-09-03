@@ -3,7 +3,7 @@
 
 import type { DamageClass, DamageType } from '../core/Damage';
 import type { Dice } from '../core/Dice';
-import type { ItemId } from '../core/Items';
+import { getItem, type ItemId } from '../core/Items';
 import type { Mage } from '../core/Mage';
 import { swamprunPartyScale } from './swamprun';
 
@@ -273,7 +273,29 @@ const SENTINEL_PROFILES: Record<SentinelRole, Partial<MineEnemyDef>> = {
   },
 };
 
-const ALL_KINDS = Object.keys(MINE_ENEMY_DEFS) as MineEnemyKind[];
+/**
+ * Which roster a spawn table draws from. Sentinels and Dragonborn hold the
+ * volcanic surface, not the tunnels; Kobolds work both.
+ */
+export const MINE_SPAWN_KINDS: readonly MineEnemyKind[] = [
+  'rockling',
+  'kobold',
+  'elite-kobold',
+  'golem',
+  'earth-elemental',
+  'pftlhb',
+  'cavern-bat',
+];
+
+export const OVERWORLD_SPAWN_KINDS: readonly MineEnemyKind[] = [
+  'kobold',
+  'elite-kobold',
+  'sentinel',
+  'magma-sentinel',
+  'red-dragonborn',
+  'black-dragonborn',
+];
+
 const MAX_PER_WAVE = 12;
 
 export function mineEnemyLevel(wave: number): number {
@@ -300,7 +322,12 @@ function shuffledRoles(rng: Dice): SentinelRole[] {
 }
 
 /** Fill a Mine wave from the Swamprun budget while keeping Sentinel roles balanced. */
-export function mineWaveComposition(wave: number, rng: Dice, partySize = 1): MineSpawnSpec[] {
+export function mineWaveComposition(
+  wave: number,
+  rng: Dice,
+  partySize = 1,
+  pool: readonly MineEnemyKind[] = MINE_SPAWN_KINDS,
+): MineSpawnSpec[] {
   const level = mineEnemyLevel(wave);
   const extraMembers = Math.max(0, Math.floor(partySize) - 1);
   const spawnCap = MAX_PER_WAVE + extraMembers * 4;
@@ -318,7 +345,7 @@ export function mineWaveComposition(wave: number, rng: Dice, partySize = 1): Min
 
   while (out.length < spawnCap) {
     const room = spawnCap - out.length;
-    const affordable = ALL_KINDS.filter((kind) => {
+    const affordable = pool.filter((kind) => {
       const def = MINE_ENEMY_DEFS[kind];
       return wave >= def.unlock && def.cost <= budget && (def.packSize ?? 1) <= room;
     });
@@ -441,6 +468,8 @@ export function mineEnemyVisual(mage: Mage): { tint: number; scale: number } {
 
 export interface MineLootResult {
   gold: number;
+  /** Salvage that must be carried home; no longer folded into `gold`. */
+  materials: ItemId[];
   drops: string[];
 }
 
@@ -458,28 +487,28 @@ const BASE_GOLD: Record<MineEnemyKind, number> = {
   'black-dragonborn': 4,
 };
 
-const BONUS_SALVAGE: Record<MineEnemyKind, { value: number; label: string }> = {
-  rockling: { value: 0, label: 'stone chips' },
-  kobold: { value: 0.5, label: 'crude trinket' },
-  'elite-kobold': { value: 1, label: 'charged scale' },
-  golem: { value: 2, label: 'golem core' },
-  sentinel: { value: 1.5, label: 'sentinel lens' },
-  'magma-sentinel': { value: 4, label: 'magma core' },
-  'earth-elemental': { value: 2, label: 'elemental geode' },
-  pftlhb: { value: 2, label: 'dark eye' },
-  'cavern-bat': { value: 0.5, label: 'echo membrane' },
-  'red-dragonborn': { value: 4, label: 'red drake scale' },
-  'black-dragonborn': { value: 4, label: 'black drake scale' },
+const BONUS_SALVAGE: Record<MineEnemyKind, ItemId | null> = {
+  rockling: null,
+  kobold: 'crudeTrinket',
+  'elite-kobold': 'chargedScale',
+  golem: 'golemCore',
+  sentinel: 'sentinelLens',
+  'magma-sentinel': 'magmaCore',
+  'earth-elemental': 'elementalGeode',
+  pftlhb: 'darkEye',
+  'cavern-bat': 'echoMembrane',
+  'red-dragonborn': 'redDrakeScale',
+  'black-dragonborn': 'blackDrakeScale',
 };
 
 export function rollMineLoot(kind: MineEnemyKind, rng: Dice): MineLootResult {
-  const result: MineLootResult = { gold: BASE_GOLD[kind], drops: [] };
+  const result: MineLootResult = { gold: BASE_GOLD[kind], materials: [], drops: [] };
   if (kind === 'rockling') return result;
   const chance = MINE_ENEMY_DEFS[kind].cost >= 10 ? 0.25 : 0.2;
-  if (rng.chance(chance)) {
-    const bonus = BONUS_SALVAGE[kind];
-    result.gold += bonus.value;
-    result.drops.push(bonus.label);
+  const salvage = BONUS_SALVAGE[kind];
+  if (salvage && rng.chance(chance)) {
+    result.materials.push(salvage);
+    result.drops.push(getItem(salvage).name);
   }
   return result;
 }

@@ -84,6 +84,7 @@ import {
   MELEE_RANGE,
   RANGE_UNIT,
   SCARAB,
+  SILVER_PER_GOLD,
   START_HP,
   START_SANITY,
   TEXT,
@@ -178,6 +179,7 @@ import {
 } from '../core/Items';
 import type { StackItem } from '../core/Stack';
 import { barrierContains } from '../core/Barrier';
+import { FLEE_EDGE_LABEL, fleeEdgeAt, type FleeEdge } from '../core/Flee';
 import type { Spell, SpellVisual } from '../spells/Spell';
 import { allSpells, getSpell, isClassSpellCombo, spellById, setActiveSpellSets } from '../spells/registry';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
@@ -676,6 +678,7 @@ type TurnCommand =
   | { t: 'uncommand' }
   | { t: 'mantle-bind' }
   | { t: 'cleanse' }
+  | { t: 'flee' }
   | { t: 'raid-begin' }
   | { t: 'raid-restore'; kind: RaidRestoreKind }
   | { t: 'end' };
@@ -739,7 +742,7 @@ const bodyAnimationKey = (mage: Mage, state: BodyAnimState): string => {
 /** How the action palette is grouped, so it reads as short lists. */
 const ACTION_GROUPS: { title: string; ids: string[] }[] = [
   { title: 'CORE', ids: ['cast', 'move', 'attack', 'end'] },
-  { title: 'MANOEUVRE', ids: ['leap', 'cleave', 'focus', 'command'] },
+  { title: 'MANOEUVRE', ids: ['leap', 'cleave', 'focus', 'command', 'flee'] },
   {
     title: 'POWERS',
     ids: [
@@ -1122,6 +1125,10 @@ export class GameScene extends Phaser.Scene {
   // When on, the local player's reaction windows auto-pass (never prompt).
   // Can be toggled at any time (key [O] or the on-screen button).
   private autoPassReactions = false;
+
+  /** Whether this fight can be walked away from, and by which border it was. */
+  private fleeAllowed = false;
+  private fledEdge: FleeEdge | null = null;
   private autoPassButton?: CabinetChip;
   // When on (offline only), every seat is played by the AI so the match runs
   // itself and the player can just watch. Toggled via key [Y] or the button.
@@ -1285,6 +1292,8 @@ export class GameScene extends Phaser.Scene {
     this.moveGhost?.destroy();
     this.moveGhost = undefined;
     this.arrowStruck = null;
+    this.fleeAllowed = false;
+    this.fledEdge = null;
     this.mode = 'idle';
     this.busy = false;
     this.gameEnded = false;
@@ -2023,19 +2032,21 @@ export class GameScene extends Phaser.Scene {
 
     const result = resolveMineOre(oreKind, amount, this.minePickaxes, this.gs.rng);
     this.minePickaxes = result.pickaxes;
-    this.swamprunGold += result.gold;
+    const hauled = this.awardMaterials(result.materials);
+    const haulText = hauled.taken.length ? this.materialTally(hauled.taken) : 'nothing';
+    const leftText = hauled.left.length ? `  •  too heavy: ${this.materialTally(hauled.left)}` : '';
     const remaining = Math.max(0, amount - result.extracted - result.collapsed);
     room.oreAmount = remaining;
     room.resolved = remaining === 0;
     const summary = this.mineOreRollSummary(result);
     this.gs.log(
-      `${ore.name} mining: ${result.extracted} extracted, ${result.collapsed} collapsed, ${remaining} left; +${result.gold}g. Pickaxes: ${this.minePickaxes.join(', ') || 'none'}.`
+      `${ore.name} mining: ${result.extracted} extracted, ${result.collapsed} collapsed, ${remaining} left; hauled ${haulText}. Pickaxes: ${this.minePickaxes.join(', ') || 'none'}.`
     );
     this.updateWaveHud();
     await this.promptMineChoice(
       `${ore.name.toUpperCase()} MINING RESULT`,
-      `${result.extracted} extracted  •  ${result.collapsed} collapsed  •  ${remaining} left  •  +${result.gold}g`,
-      `${summary}\n\nPickaxe durability: ${this.minePickaxes.join(', ') || 'none'}.`,
+      `${result.extracted} extracted  •  ${result.collapsed} collapsed  •  ${remaining} left${leftText}`,
+      `Hauled: ${haulText}.\n\n${summary}\n\nPickaxe durability: ${this.minePickaxes.join(', ') || 'none'}.`,
       [{ id: 'continue', label: remaining > 0 ? 'Leave remaining ore' : 'Leave the deposit', color: '#9fe6a0' }],
       room
     );
@@ -2976,10 +2987,41 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Hand carried materials to whoever still has the strength to haul them.
+   * Anything nobody can lift is left behind — that is the point of the weight.
+   */
+  private awardMaterials(items: readonly ItemId[]): { taken: ItemId[]; left: ItemId[] } {
+    const carriers = this.gs.mages.filter((m) => m.alive && m.team === 1 && !m.isSummon);
+    const taken: ItemId[] = [];
+    const left: ItemId[] = [];
+    for (const id of items) {
+      const kg = getItem(id).weight;
+      const carrier = carriers.find((m) => m.canCarry(kg));
+      if (carrier) {
+        this.gs.grantItem(carrier, id);
+        taken.push(id);
+      } else {
+        left.push(id);
+      }
+    }
+    return { taken, left };
+  }
+
+  /** "2x Iron Ore, Coal" — materials read as a tally, never a repeated list. */
+  private materialTally(items: readonly ItemId[]): string {
+    const counts = new Map<ItemId, number>();
+    for (const id of items) counts.set(id, (counts.get(id) ?? 0) + 1);
+    return [...counts]
+      .map(([id, n]) => (n > 1 ? `${n}x ${getItem(id).name}` : getItem(id).name))
+      .join(', ');
+  }
+
   /** Roll every fallen creature's drop table and pay each human expedition member. */
   private awardWaveLoot(): void {
     let gold = 0;
     const tally: string[] = [];
+    const salvage: ItemId[] = [];
     for (const m of this.swamprunWaveEnemies) {
       if (!m.enemyKind) continue;
       const loot = this.mineRun && isMineEnemyKind(m.enemyKind)
@@ -2987,6 +3029,11 @@ export class GameScene extends Phaser.Scene {
         : rollLoot(m.enemyKind as EnemyKind, this.gs.rng, this.swamprunWispCopies.has(m));
       gold += loot.gold;
       tally.push(...loot.drops);
+      salvage.push(...loot.materials);
+    }
+    const hauled = this.awardMaterials(salvage);
+    if (hauled.left.length) {
+      this.gs.log(`Too heavy to carry, left behind: ${this.materialTally(hauled.left)}.`);
     }
     gold = Math.round(gold * 2) / 2; // keep clean halves
     if (this.expedition) {
@@ -4247,6 +4294,9 @@ export class GameScene extends Phaser.Scene {
   /** Sell value (gold) of a non-consumable item: 25% of its shop price, else 0. */
   private swampSellValue(id: ItemId): number {
     const def = getItem(id);
+    // Materials are cargo, not worn gear: they fetch full value, which is what
+    // makes hauling a heavy load home worth the carry.
+    if (def.material) return def.cost / SILVER_PER_GOLD;
     if (def.rarity === 'consumeable') return 0;
     return Math.max(1, Math.floor(SWAMP_PRICE[def.rarity] * 0.25));
   }
@@ -4822,6 +4872,8 @@ export class GameScene extends Phaser.Scene {
       if (this.gs.isOver) return this.endGame();
       if (this.gs.current !== turnOwner) return;
     }
+    // A withdrawal begun last turn completes now, before anything else can stop it.
+    if (turnOwner.fleeChannel && this.releaseFlee(turnOwner)) return;
     // A creature spawned mid-combat (a wisp split) sits out its first turn, so a
     // fresh copy cannot immediately split again the moment it appears.
     if (this.gs.current.justSpawned) {
@@ -5844,6 +5896,15 @@ export class GameScene extends Phaser.Scene {
         );
         break;
       }
+      case 'flee': {
+        const edge = fleeEdgeAt(me.pos);
+        if (!this.fleeAllowed || !edge) break;
+        spend('main');
+        me.fleeChannel = edge;
+        this.gs.log(`${me.name} starts backing toward the ${FLEE_EDGE_LABEL[edge]} edge.`);
+        this.redraw();
+        break;
+      }
       case 'end':
         // Handled by the caller (local onEndTurn / remote driver) so the turn
         // rotation happens exactly once per peer.
@@ -6147,6 +6208,28 @@ export class GameScene extends Phaser.Scene {
     if (modifiers.includes('subtle')) potency *= 0.8;
     if (modifiers.includes('channel')) potency *= 1.5;
     return potency;
+  }
+
+  /**
+   * Finish a withdrawal started last turn. The escapee must still be alive and
+   * still be against a border — dragged back into the open, the attempt lapses.
+   * Returns true when the fight is over and the caller must stop.
+   */
+  private releaseFlee(me: Mage): boolean {
+    const declared = me.fleeChannel;
+    me.fleeChannel = undefined;
+    if (!declared || !me.alive) return false;
+    const edge = fleeEdgeAt(me.pos);
+    if (!edge) {
+      this.gs.log(`${me.name} is dragged back from the edge; the escape fails.`);
+      this.redraw();
+      return false;
+    }
+    this.fledEdge = edge;
+    this.gs.log(`${me.name} slips away over the ${FLEE_EDGE_LABEL[edge]} edge.`);
+    playSound('move.dash');
+    this.endGame();
+    return true;
   }
 
   /** Release whatever Channel or Delay parked on this mage's turn start. */
@@ -8012,6 +8095,26 @@ export class GameScene extends Phaser.Scene {
         enabled: (me.actions.bonus > 0 || inf) && me.mana >= cleanseCost,
         reason: me.mana < cleanseCost ? `Needs ${cleanseCost} mana.` : 'Needs a bonus action.',
         run: () => this.submitTurn({ t: 'cleanse' }),
+      });
+    }
+
+    // Withdraw from the field entirely, by whichever border you are standing on.
+    if (this.fleeAllowed) {
+      const edge = fleeEdgeAt(me.pos);
+      entries.push({
+        id: 'flee',
+        label: edge ? `Flee ${FLEE_EDGE_LABEL[edge]}` : 'Flee',
+        hotkey: 'F',
+        desc: edge
+          ? `Back away over the ${FLEE_EDGE_LABEL[edge]} edge. Takes your main action; you are gone at the start of your next turn.`
+          : 'Reach the edge of the field first.',
+        enabled: !!edge && !me.fleeChannel && (me.actions.main > 0 || inf),
+        reason: !edge
+          ? 'You are not at the edge of the field.'
+          : me.fleeChannel
+            ? 'Already withdrawing.'
+            : 'Needs a main action.',
+        run: () => this.submitTurn({ t: 'flee' }),
       });
     }
 
@@ -10073,6 +10176,7 @@ export class GameScene extends Phaser.Scene {
       case 'edgelord-shake': return { t: 'edgelord-shake' };
       case 'mantle-bind': return { t: 'mantle-bind' };
       case 'cleanse': return { t: 'cleanse' };
+      case 'flee': return { t: 'flee' };
       default: return null;
     }
   }
@@ -14893,8 +14997,9 @@ export class GameScene extends Phaser.Scene {
     const wings = m.hasDeathsAngelWings()
       ? `WINGS E${m.deathsAngelEnergy}${m.deathsAngelFlightTurns > 0 ? ` · FLY ${m.deathsAngelFlightTurns}` : ''}`
       : '';
+    const fleeing = m.fleeChannel ? `WITHDRAWING ${FLEE_EDGE_LABEL[m.fleeChannel].toUpperCase()}` : '';
     t.setText(
-      `${m.name}${mineDetails ? ` · ${mineDetails}` : ''}${lantern ? `\n${lantern}` : ''}${wings ? `\n${wings}` : ''}${statuses ? `\n${statuses}` : ''}`
+      `${m.name}${mineDetails ? ` · ${mineDetails}` : ''}${lantern ? `\n${lantern}` : ''}${wings ? `\n${wings}` : ''}${fleeing ? `\n${fleeing}` : ''}${statuses ? `\n${statuses}` : ''}`
     );
     t.setColor(m.hp / Math.max(1, m.maxHp) <= 0.25 ? '#d99286' : MENU_HEX.bone);
     t.setPosition(m.x, m.y + MAGE_RADIUS + 15).setVisible(true);
@@ -15378,6 +15483,21 @@ export class GameScene extends Phaser.Scene {
     // call may raise the banner and arm the click that leaves the duel.
     if (this.gameEnded) return;
     this.gameEnded = true;
+    // A withdrawal is not a defeat: nobody won, the party simply left.
+    if (this.fledEdge) {
+      this.mode = 'over';
+      this.busy = false;
+      this.showEndCard({
+        eyebrow: 'WITHDRAWN',
+        title: 'ESCAPED',
+        detail: `The party broke off ${FLEE_EDGE_LABEL[this.fledEdge]}.`,
+        actionLabel: 'CONTINUE',
+        tone: 'victory',
+        onActivate: () => this.returnToMenu(),
+      });
+      this.redraw();
+      return;
+    }
     if (this.raid) {
       this.mode = 'over';
       this.busy = false;

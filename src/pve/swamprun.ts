@@ -3,6 +3,7 @@
 // wave-composition logic; the runtime wave manager lives in GameScene.
 
 import type { Dice } from '../core/Dice';
+import type { ItemId } from '../core/Items';
 import type { Mage } from '../core/Mage';
 import type { DamageType, DamageClass } from '../core/Damage';
 import { RANGE_UNIT } from '../config/constants';
@@ -506,6 +507,8 @@ export const DROP_VALUE = {
 export interface LootResult {
   /** Gold earned from this single creature. */
   gold: number;
+  /** Carried salvage. Swamp creatures drop none yet; the field keeps callers uniform. */
+  materials: ItemId[];
   /** Flavour names of what dropped, for the loot log. */
   drops: string[];
 }
@@ -515,7 +518,7 @@ export interface LootResult {
  * living wisp) drop nothing — pass `isCopy` for those.
  */
 export function rollLoot(kind: EnemyKind, rng: Dice, isCopy = false): LootResult {
-  const res: LootResult = { gold: 0, drops: [] };
+  const res: LootResult = { gold: 0, materials: [], drops: [] };
   if (isCopy) return res;
   const d20 = (): number => rng.die(20);
   switch (kind) {

@@ -76,6 +76,21 @@ export type ItemId =
   | 'torch'
   | 'lantern'
   | 'edgelordLantern'
+  // ---- Materials (mined or salvaged; carried cargo, sold in towns) ----
+  | 'oreCoal'
+  | 'oreCopper'
+  | 'oreIron'
+  | 'oreGold'
+  | 'crudeTrinket'
+  | 'chargedScale'
+  | 'golemCore'
+  | 'sentinelLens'
+  | 'magmaCore'
+  | 'elementalGeode'
+  | 'darkEye'
+  | 'echoMembrane'
+  | 'redDrakeScale'
+  | 'blackDrakeScale'
   // ---- Finn's Additions ----
   | 'bloodCharm'
   | 'bloodRing'
@@ -313,6 +328,11 @@ export interface ItemDef {
   potion?: 'mana' | 'health' | 'word';
   /** Arrows: stack as a numeric count and fuel bows. */
   ammo?: boolean;
+  /**
+   * Mined ore or salvaged remains. Carried cargo: never drafted or offered in a
+   * shop's buy list, sold by weight-vs-value judgement, reserved for crafting.
+   */
+  material?: boolean;
   /** Gain this much mana whenever you take damage (Channeling Ring). */
   manaOnHit?: number;
   /** Sand Pocket: stores up to 3kg of loose sand. */
@@ -973,6 +993,149 @@ export const ITEM_DEFS: ItemDef[] = [
     blurb: 'Bonus action: +10 mana. Consumed.',
     potion: 'mana',
   },
+  // ---- Materials -----------------------------------------------------------
+  // Cargo, not equipment: heavy for their price, so hauling a full load home is
+  // a real decision. Sold in towns; kept in the bag for future crafting.
+  {
+    id: 'oreCoal',
+    name: 'Coal',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(0.5),
+    weight: 1,
+    blurb: 'Material. Mined ore.',
+    material: true,
+  },
+  {
+    id: 'oreCopper',
+    name: 'Copper Ore',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(1),
+    weight: 1.5,
+    blurb: 'Material. Mined ore.',
+    material: true,
+  },
+  {
+    id: 'oreIron',
+    name: 'Iron Ore',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(1.5),
+    weight: 2,
+    blurb: 'Material. Mined ore.',
+    material: true,
+  },
+  {
+    id: 'oreGold',
+    name: 'Gold Ore',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(3),
+    weight: 2.5,
+    blurb: 'Material. Mined ore.',
+    material: true,
+  },
+  {
+    id: 'crudeTrinket',
+    name: 'Crude Trinket',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(0.5),
+    weight: 0.5,
+    blurb: 'Material. Salvaged from a kobold.',
+    material: true,
+  },
+  {
+    id: 'chargedScale',
+    name: 'Charged Scale',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(1),
+    weight: 0.5,
+    blurb: 'Material. Salvaged from an elite kobold.',
+    material: true,
+  },
+  {
+    id: 'golemCore',
+    name: 'Golem Core',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(2),
+    weight: 2,
+    blurb: 'Material. Salvaged from a golem.',
+    material: true,
+  },
+  {
+    id: 'sentinelLens',
+    name: 'Sentinel Lens',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(1.5),
+    weight: 1,
+    blurb: 'Material. Salvaged from a sentinel.',
+    material: true,
+  },
+  {
+    id: 'magmaCore',
+    name: 'Magma Core',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(4),
+    weight: 2,
+    blurb: 'Material. Salvaged from a magma sentinel.',
+    material: true,
+  },
+  {
+    id: 'elementalGeode',
+    name: 'Elemental Geode',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(2),
+    weight: 1.5,
+    blurb: 'Material. Salvaged from an earth elemental.',
+    material: true,
+  },
+  {
+    id: 'darkEye',
+    name: 'Dark Eye',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(2),
+    weight: 0.5,
+    blurb: 'Material. Salvaged from a pftlhb.',
+    material: true,
+  },
+  {
+    id: 'echoMembrane',
+    name: 'Echo Membrane',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(0.5),
+    weight: 0.5,
+    blurb: 'Material. Salvaged from a cavern bat.',
+    material: true,
+  },
+  {
+    id: 'redDrakeScale',
+    name: 'Red Drake Scale',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(4),
+    weight: 1,
+    blurb: 'Material. Salvaged from a red dragonborn.',
+    material: true,
+  },
+  {
+    id: 'blackDrakeScale',
+    name: 'Black Drake Scale',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(4),
+    weight: 1,
+    blurb: 'Material. Salvaged from a black dragonborn.',
+    material: true,
+  },
   {
     id: 'healthPotion',
     name: 'Health Potion',
@@ -1377,6 +1540,7 @@ export function itemsOfRarity(rarity: Rarity, includeSwamprunOnly = false): Item
       d.rarity === rarity &&
       ACTIVE_ITEM_SETS.has(d.set ?? 'original') &&
       !d.enemyOnly &&
+      !d.material &&
       (includeSwamprunOnly || !d.swamprunOnly)
   );
 }
