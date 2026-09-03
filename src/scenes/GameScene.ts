@@ -237,8 +237,6 @@ interface QueuedImpact {
   severity: number;
   angle?: number;
   weight?: ImpactWeight;
-  /** False when the blow's art already played, as a bow's does on arrival. */
-  art: boolean;
   seq: number;
 }
 
@@ -491,6 +489,19 @@ const FX_FRAME_SETS: AnimSet[] = [
       })
     ),
     frameRate: 22,
+    repeat: 0,
+  },
+  {
+    // A directional splash thrown back out of a puncture — plays on an arrow
+    // arriving. The B&W set is near-white so a tint can carry the damage type.
+    key: 'fx-arrow-impact',
+    frames: globFrames(
+      import.meta.glob('../../Pixel Art VFX Impacts - FREE Version/VFX5/B&W/Frames/*.png', {
+        eager: true,
+        import: 'default',
+      })
+    ),
+    frameRate: 26,
     repeat: 0,
   },
 ];
@@ -13012,11 +13023,11 @@ export class GameScene extends Phaser.Scene {
         rect(woodDark, 5, 13, 4, 7);
         rect(wood, 7, 20, 4, 6);
         rect(woodLight, 10, 25, 3, 4);
+        // Stave and string only: the nocked shaft is drawn separately so it can
+        // be hauled back on its own during a draw.
         g.lineStyle(1, binding, 1);
         g.lineBetween(11, 4, 18, 16);
         g.lineBetween(18, 16, 12, 29);
-        rect(edge, 17, 4, 2, 25);
-        g.fillStyle(edgeLight, 1).fillTriangle(14, 6, 18, 1, 22, 6);
       } else if (kind === 'staff') {
         shaft(14, 5, 27);
         rect(binding, 12, 9, 9, 3);
@@ -13421,15 +13432,12 @@ export class GameScene extends Phaser.Scene {
     const angle = source && source !== mage && dist(source.pos, mage.pos) > 1
       ? Math.atan2(mage.y - source.y, mage.x - source.x)
       : undefined;
-    const art = this.arrowStruck !== mage;
-    if (!art) this.arrowStruck = null;
     this.pendingImpacts.push({
       mage,
       feedback,
       severity: this.impactSeverity(mage, feedback),
       angle,
       weight: this.impactWeight(),
-      art,
       seq: this.vfxSeq++,
     });
   }
@@ -13468,7 +13476,9 @@ export class GameScene extends Phaser.Scene {
   private flushImpacts(): Promise<void> {
     const queued = this.pendingImpacts;
     this.pendingImpacts = [];
-    // A shot that missed never queued anything to claim the flag back.
+    // An arrow already painted its puncture on arrival. Every wound it opened
+    // is claimed, not just the first, and a miss clears the claim unused.
+    const claimed = this.arrowStruck;
     this.arrowStruck = null;
     if (queued.length === 0) return Promise.resolve();
     this.logAoeSummary(queued);
@@ -13491,7 +13501,7 @@ export class GameScene extends Phaser.Scene {
               severity: impact.severity,
               angle: impact.angle,
               weight,
-              art: impact.art,
+              art: impact.mage !== claimed,
               sprite: this.mageAnims.get(impact.mage)?.sprite,
             });
           }
@@ -13718,6 +13728,31 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  /**
+   * Hold a body for a basic weapon strike. The mage attack strip swings a wand,
+   * which has nothing to do with the sword or bow actually in hand, so only
+   * creatures — whose strips are their own bodies — play theirs. The lock is
+   * released by whichever strike opened it.
+   */
+  private startWeaponAttack(m: Mage): void {
+    if (creatureSpriteKind(m)) {
+      this.startBodyAttack(m);
+      return;
+    }
+    const rec = this.mageAnims.get(m);
+    if (!rec || !m.alive) return;
+    rec.charging = false;
+    rec.lock = 'attack';
+    rec.sprite.play(bodyAnimationKey(m, 'idle'), true);
+  }
+
+  /** Hand a body back after a strike: the lunge, the weapon and the lock. */
+  private endWeaponAttack(rec: MageAnim): void {
+    rec.posLocked = false;
+    rec.heldLocked = false;
+    if (rec.lock === 'attack') rec.lock = null;
+  }
+
   /** Hold the weapon in a pose: rotation is mirrored by facing. */
   private poseHeldWeapon(rec: MageAnim, rot: number, lift: number, reach: number): void {
     const held = rec.held;
@@ -13862,12 +13897,13 @@ export class GameScene extends Phaser.Scene {
     const rec = this.mageAnims.get(source);
     const from = { x: source.x, y: source.y };
     const { angle, contact } = this.contactPoint(from, at);
-    this.startBodyAttack(source);
+    this.startWeaponAttack(source);
 
     if (!rec || this.reducedMotion) {
       playSound('melee.swing');
       this.strikeContact(contact, angle);
       await this.delay(MELEE_SWING.contactMs);
+      if (rec) this.endWeaponAttack(rec);
       return;
     }
 
@@ -13900,17 +13936,15 @@ export class GameScene extends Phaser.Scene {
       rec, along(step), home,
       MELEE_SWING.strike.pose, MELEE_SWING.recover.pose,
       MELEE_SWING.recover.ms, MELEE_SWING.recover.ease
-    ).then(() => {
-      rec.posLocked = false;
-      rec.heldLocked = false;
-    });
+    ).then(() => this.endWeaponAttack(rec));
     await this.delay(MELEE_SWING.contactMs);
   }
 
   /** Where a nocked shaft sits: on the stave if it is drawn, else at the chest. */
   private bowNock(rec: MageAnim | undefined, source: Mage): Vec2 {
     const held = rec?.held;
-    if (held?.visible) return { x: held.x, y: held.y };
+    // The grip anchor sits near the foot of the sprite; an arrow rests mid-stave.
+    if (held?.visible) return { x: held.x, y: held.y - held.displayHeight * 0.28 };
     return { x: source.x, y: source.y - MAGE_RADIUS * 0.95 };
   }
 
@@ -13923,26 +13957,22 @@ export class GameScene extends Phaser.Scene {
     const rec = this.mageAnims.get(source);
     const from = { x: source.x, y: source.y };
     const { angle, contact } = this.contactPoint(from, at);
-    this.startBodyAttack(source);
+    this.startWeaponAttack(source);
 
     const land = async (nock: Vec2): Promise<void> => {
       await this.flyArrow(nock, contact, angle);
       playSound('melee.contact');
-      // Claim this body's queued impact art: it has just played, on arrival.
+      // Claim this body's queued impact art: the puncture plays here, on arrival.
       this.arrowStruck = target;
-      this.impactFx?.play({
-        at: contact,
-        feedback: { kind: 'damage', damageType: 'pierce' },
-        // Kept under the heavy threshold so an arrow never buys a hitstop.
-        severity: 0.14,
-        angle,
-        sprite: target ? this.mageAnims.get(target)?.sprite : undefined,
-      });
+      if (this.anims.exists('fx-arrow-impact')) {
+        void this.spellVfx.slash('fx-arrow-impact', contact, angle, MAGE_RADIUS * 2.8);
+      }
     };
 
     if (!rec || this.reducedMotion) {
       playSound('bow.release');
       await land(this.bowNock(rec, source));
+      if (rec) this.endWeaponAttack(rec);
       return;
     }
 
@@ -13967,9 +13997,10 @@ export class GameScene extends Phaser.Scene {
       shaft?.setPosition(n.x - Math.cos(angle) * pull, n.y - Math.sin(angle) * pull);
     };
     drawShaft(0);
+    // Same pose either side: the stave is held dead still while the string goes back.
     await this.strikePhase(
       rec, home, home,
-      BOW_SHOT.raise.pose, BOW_SHOT.draw.pose,
+      BOW_SHOT.raise.pose, BOW_SHOT.raise.pose,
       BOW_SHOT.draw.ms, BOW_SHOT.draw.ease,
       0,
       (t) => drawShaft(BOW_SHOT.draw.pullPx * t)
@@ -13981,7 +14012,7 @@ export class GameScene extends Phaser.Scene {
     shaft?.destroy();
     void this.strikePhase(
       rec, home, home,
-      BOW_SHOT.draw.pose, BOW_SHOT.loose.pose,
+      BOW_SHOT.raise.pose, BOW_SHOT.loose.pose,
       BOW_SHOT.loose.ms, BOW_SHOT.loose.ease
     ).then(() =>
       this.strikePhase(
@@ -13989,10 +14020,7 @@ export class GameScene extends Phaser.Scene {
         BOW_SHOT.loose.pose, BOW_SHOT.recover.pose,
         BOW_SHOT.recover.ms, BOW_SHOT.recover.ease
       )
-    ).then(() => {
-      rec.posLocked = false;
-      rec.heldLocked = false;
-    });
+    ).then(() => this.endWeaponAttack(rec));
     await land(nock);
   }
 
