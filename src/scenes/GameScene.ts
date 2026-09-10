@@ -13,12 +13,15 @@ import {
   TOP_MENU,
   TOP_TOGGLES,
   TOP_TURN,
+  WORD_COLS,
+  WORD_ROWS,
   bottom,
   centerY,
   panelBody,
   right,
   spellReadout,
   wordSlot,
+  type Rect,
 } from '../ui/layout';
 import {
   PRESET_SLOTS,
@@ -50,6 +53,7 @@ import { SwampShopView, type SwampOfferView } from '../ui/pve/SwampShopView';
 import { MinePromptView } from '../ui/pve/MinePromptView';
 import {
   ExpeditionTownView,
+  type TownCargoView,
   type TownItemView,
   type TownTab,
 } from '../ui/pve/ExpeditionTownView';
@@ -95,7 +99,14 @@ import { Dice } from '../core/Dice';
 import { analyzeDodge, dodgeGrantsBonusAction, type DodgeTier } from '../core/Dodge';
 import { scenarioToMages, scenarioToScarabs, type Scenario } from '../core/Scenario';
 import { downloadScenario, pickScenarioFile } from '../ui/scenarioFile';
-import type { Status } from '../core/Status';
+import { addOrExtendStatus, type Status } from '../core/Status';
+import { makeGhostSummon } from '../core/summons';
+import { TutorialView, type TutorialDisplay, type TutorialEvent } from '../ui/combat/TutorialView';
+import {
+  TUTORIAL_STEPS,
+  type TutorialFocus,
+  type TutorialStage,
+} from '../pve/tutorial';
 import scarabGifUrl from '../Sprites/Scarab.gif';
 import moveIconUrl from '../Sprites/Move.png';
 import attackIconUrl from '../Sprites/Attack.png';
@@ -801,7 +812,7 @@ interface CreativePrepResult {
 }
 
 type ExpeditionCompanionKind = 'dwarf' | 'elf' | 'human';
-type ExpeditionTownTab = 'potions' | 'armor' | 'weapons' | 'guild' | 'donate';
+type ExpeditionTownTab = 'potions' | 'armor' | 'weapons' | 'cargo' | 'guild' | 'donate';
 
 /** Base gold price per rarity in the swamprun shop (before discounts). */
 const SWAMP_PRICE: Record<Rarity, number> = {
@@ -843,6 +854,9 @@ export class GameScene extends Phaser.Scene {
 
   // Training sandbox (offline only). Enabled when the match mode is 'training'.
   private training = false;
+  // Guided tutorial: the same sandbox driven by a script that teaches the game.
+  private tutorial = false;
+  private tutorialView?: TutorialView;
   // Scenario Lab: build a fight by hand, then save it as a memory file.
   private scenarioLab = false;
   private scenarioPanel?: Phaser.GameObjects.Container;
@@ -1349,6 +1363,8 @@ export class GameScene extends Phaser.Scene {
     this.trainPanel = undefined;
     this.trainTitle = undefined;
     this.trainWidgets = [];
+    this.tutorialView?.destroy();
+    this.tutorialView = undefined;
     this.devResourceEditor?.dispose();
     this.workshopFocus.clear();
     this.workshopFocus.clear();
@@ -1402,6 +1418,7 @@ export class GameScene extends Phaser.Scene {
     this.localSeat = config.localSeat ?? this.localTeam - 1;
     this.opponentLeft = false;
     this.training = config.mode === 'training';
+    this.tutorial = config.mode === 'tutorial';
     this.scenarioLab = config.mode === 'scenario';
     this.memoryMode = config.mode === 'memory';
     this.memoryName = config.scenario?.name ?? '';
@@ -1438,12 +1455,14 @@ export class GameScene extends Phaser.Scene {
           {
             name: this.online
               ? onlineName(2)
-              : this.training
-                ? 'Enemy'
-                : config.mode === 'ai'
-                  ? 'AI'
-                  : 'Player 2',
-            isAI: config.mode === 'ai' || this.training,
+              : this.tutorial
+                ? 'Training Dummy'
+                : this.training
+                  ? 'Enemy'
+                  : config.mode === 'ai'
+                    ? 'AI'
+                    : 'Player 2',
+            isAI: config.mode === 'ai' || this.training || this.tutorial,
             team: 2,
             loadout: config.loadouts[1],
             mageClass: config.classes?.[1],
@@ -1719,6 +1738,12 @@ export class GameScene extends Phaser.Scene {
       this.startTurn();
       return;
     }
+    if (this.tutorial) {
+      this.setupTutorial();
+      this.gs.startRound();
+      this.startTurn();
+      return;
+    }
     if (this.swamprun) {
       if (this.explorationCombat) {
         this.setupExplorationCombat(this.explorationCombat);
@@ -1767,6 +1792,206 @@ export class GameScene extends Phaser.Scene {
     for (const m of this.gs.mages) m.resetCombatReactions();
     this.applyTrainingEnemyKind(this.mageByTeam(2), this.trainEnemyKind);
     this.gs.log('Training sandbox — press [P] to open the training tools.');
+  }
+
+  // ===========================================================================
+  //  GUIDED TUTORIAL
+  // ===========================================================================
+
+  /**
+   * The scripted teaching fight: one player against an inert, unkillable dummy,
+   * with a fixed build so every prompt can name real words. The overlay in
+   * `TutorialView` drives the script; everything here is the world it acts on.
+   */
+  private setupTutorial(): void {
+    const me = this.mageByTeam(1);
+    const dummy = this.mageByTeam(2);
+    for (const m of this.gs.mages) {
+      m.assignFlatStats(5);
+      m.resetDodges();
+      m.resetCombatReactions();
+    }
+    // A teaching fight must not be winnable or losable by accident.
+    this.gs.victorySuspended = true;
+    me.unkillable = true;
+    dummy.unkillable = true;
+    dummy.trainingPassive = true;
+    dummy.maxHp = 400;
+    dummy.hp = 400;
+    // Start them one move apart, high in the field: the duel spawns are three or
+    // four moves wide, and the lower band belongs to the tutorial textbox.
+    const midY = FIELD.y + 96;
+    this.playerSpawn = { x: FIELD.x + FIELD.w / 2 - 150, y: midY };
+    this.enemySpawn = { x: FIELD.x + FIELD.w / 2 + 150, y: midY };
+    this.spawns = [{ ...this.playerSpawn }, { ...this.enemySpawn }];
+    me.x = this.playerSpawn.x;
+    me.y = this.playerSpawn.y;
+    dummy.x = this.enemySpawn.x;
+    dummy.y = this.enemySpawn.y;
+    if (me.hands.length === 0) me.hands.push('silverShortsword');
+    // Reactions are a chapter of their own; until then every window auto-passes
+    // so the player is not prompted on turn boundaries they cannot use yet.
+    this.autoPassReactions = true;
+    this.gs.log('Guided tutorial — follow the prompts. Nothing here can kill you.');
+    this.tutorialView = new TutorialView(
+      this,
+      TUTORIAL_STEPS,
+      {
+        resolveFocus: (focus) => this.resolveTutorialFocus(focus),
+        currentCombo: () => this.selectedWords(),
+        stage: (stage) => this.applyTutorialStage(stage),
+        finish: () => this.finishTutorial(),
+      },
+      this.reducedMotion
+    );
+  }
+
+  /** Feed a player action to the tutorial script, if one is running. */
+  private tutorialNotify(event: TutorialEvent): void {
+    this.tutorialView?.notify(event);
+  }
+
+  /**
+   * How much of the tutorial may show. A full-screen chooser owns the screen and
+   * its own arrows, so the script hides rather than covering the very options it
+   * just described; the inventory keeps a slim reminder instead.
+   */
+  private tutorialDisplay(): TutorialDisplay {
+    switch (this.mode) {
+      case 'inventory':
+        return 'compact';
+      case 'action-menu':
+      case 'pause':
+      case 'assign':
+      case 'shop':
+      case 'eldritch-menu':
+      case 'thunder-menu':
+      case 'dodge-bonus':
+      case 'dev-resources':
+      case 'training':
+      case 'scenario-lab':
+      case 'scenario-place':
+      case 'scenario-move':
+      case 'over':
+        return 'hidden';
+      default:
+        return 'full';
+    }
+  }
+
+  /** Where a scripted step's arrow should point right now. */
+  private resolveTutorialFocus(focus: TutorialFocus): Rect | null {
+    const body = (m: Mage | undefined): Rect | null =>
+      m && m.alive ? { x: m.pos.x - 30, y: m.pos.y - 34, w: 60, h: 68 } : null;
+    switch (focus) {
+      case 'actions': return TOP_ACTIONS;
+      case 'toggles': return TOP_TOGGLES;
+      case 'menu': return TOP_MENU;
+      case 'vitals': return DOCK_VITALS;
+      case 'log': return DOCK_LOG;
+      case 'hint': return HINT_BAR;
+      case 'words': {
+        const first = wordSlot(0);
+        const last = wordSlot(WORD_COLS * WORD_ROWS - 1);
+        return { x: first.x, y: first.y, w: right(last) - first.x, h: bottom(last) - first.y };
+      }
+      case 'readout': return spellReadout();
+      case 'stack': {
+        if (this.stackTokens.length === 0) return null;
+        const xs = this.stackTokens.map((t) => t.x);
+        const r = this.stackTokens[0].r;
+        return {
+          x: Math.min(...xs) - r,
+          y: this.stackTokens[0].y - r,
+          w: Math.max(...xs) - Math.min(...xs) + r * 2,
+          h: r * 2,
+        };
+      }
+      case 'player': return body(this.gs.mages.find((m) => m.team === 1 && !m.isSummon));
+      case 'enemy': return body(this.gs.mages.find((m) => m.team === 2 && !m.isSummon));
+      case 'summon': return body(this.gs.mages.find((m) => m.isSummon));
+      default: return null;
+    }
+  }
+
+  /** Change the world the way the step that just opened asked for. */
+  private applyTutorialStage(stage: TutorialStage): void {
+    const me = this.mageByTeam(1);
+    const dummy = this.mageByTeam(2);
+    switch (stage) {
+      case 'refresh-actions':
+        // Each lesson costs an action, and the script teaches End Turn only after
+        // the first move, so a step that needs one simply hands it back.
+        me.actions = { move: 1, main: 1, bonus: 1 };
+        me.hasCastThisTurn = false;
+        this.redraw();
+        break;
+      case 'arm-enemy':
+        // Still unkillable, but it now takes its turn so a reaction window opens.
+        dummy.trainingPassive = false;
+        this.autoPassReactions = false;
+        this.refreshAutoPassButton();
+        this.gs.log('The dummy stirs. It will attack on its turn.');
+        break;
+      case 'calm-enemy':
+        // Auto-pass again: the AI turn may still have actions left, and every one
+        // of them would otherwise prompt the player mid-lesson.
+        dummy.trainingPassive = true;
+        this.autoPassReactions = true;
+        this.refreshAutoPassButton();
+        break;
+      case 'afflict-player': {
+        addOrExtendStatus(
+          me.statuses,
+          {
+            kind: 'dot',
+            key: 'tutorial-bleed',
+            name: 'Practice Wound',
+            duration: 6,
+            damage: { amount: 0, type: 'slashing', damageClass: 'physical' },
+            damageSpec: '1d3',
+          },
+          false
+        );
+        if (!me.utility.includes('healthPotion')) me.utility.push('healthPotion');
+        this.redraw();
+        break;
+      }
+      case 'give-summon': {
+        if (this.gs.summonsOf(me).length === 0) {
+          const ghost = makeGhostSummon({
+            ownerInt: me.effectiveInt(),
+            dcRoll: 12,
+            ownerName: me.name,
+            pos: { x: me.pos.x - 70, y: me.pos.y + 40 },
+            team: me.team,
+          });
+          this.gs.spawnSummon(ghost, me, 'ghost');
+          this.syncMageSprites();
+          this.redraw();
+        }
+        break;
+      }
+      case 'finish':
+        break;
+    }
+  }
+
+  /** The script ran out (or was skipped): raise the card that leaves the fight. */
+  private finishTutorial(): void {
+    if (this.gameEnded) return;
+    this.gameEnded = true;
+    this.mode = 'over';
+    this.busy = false;
+    this.showEndCard({
+      eyebrow: 'TUTORIAL COMPLETE',
+      title: 'YOU KNOW ENOUGH',
+      detail: 'Controls, spellcraft, the inventory, the stack, and summons. The Training Lab has the same field with no script.',
+      actionLabel: 'RETURN TO MAIN MENU',
+      tone: 'victory',
+      onActivate: () => this.returnToMenu(),
+    });
+    this.redraw();
   }
 
   /** Scenario Lab: playable mages with flat stats, ready to be reshaped by hand. */
@@ -2095,8 +2320,8 @@ export class GameScene extends Phaser.Scene {
 
     const result = resolveMineOre(oreKind, amount, this.minePickaxes, this.gs.rng);
     this.minePickaxes = result.pickaxes;
-    const hauled = this.awardMaterials(result.materials);
-    const haulText = hauled.taken.length ? this.materialTally(hauled.taken) : 'nothing';
+    const hauled = this.collectMaterials(result.materials);
+    const haulText = hauled.text;
     const leftText = hauled.left.length ? `  •  too heavy: ${this.materialTally(hauled.left)}` : '';
     const remaining = Math.max(0, amount - result.extracted - result.collapsed);
     room.oreAmount = remaining;
@@ -3071,6 +3296,25 @@ export class GameScene extends Phaser.Scene {
     return { taken, left };
   }
 
+  /**
+   * Where a haul ends up. An expedition walks back to town, so it carries the
+   * cargo and sells it there; every other run has no way home and cashes it in
+   * where it stands.
+   */
+  private collectMaterials(items: readonly ItemId[]): { text: string; left: ItemId[] } {
+    if (items.length === 0) return { text: 'nothing', left: [] };
+    if (!this.expedition) {
+      const gold = Math.round(items.reduce((sum, id) => sum + this.swampSellValue(id), 0) * 2) / 2;
+      this.swamprunGold += gold;
+      return { text: `${this.materialTally(items)} sold for ${gold}g`, left: [] };
+    }
+    const hauled = this.awardMaterials(items);
+    return {
+      text: hauled.taken.length ? this.materialTally(hauled.taken) : 'nothing',
+      left: hauled.left,
+    };
+  }
+
   /** "2x Iron Ore, Coal" — materials read as a tally, never a repeated list. */
   private materialTally(items: readonly ItemId[]): string {
     const counts = new Map<ItemId, number>();
@@ -3094,7 +3338,7 @@ export class GameScene extends Phaser.Scene {
       tally.push(...loot.drops);
       salvage.push(...loot.materials);
     }
-    const hauled = this.awardMaterials(salvage);
+    const hauled = this.collectMaterials(salvage);
     if (hauled.left.length) {
       this.gs.log(`Too heavy to carry, left behind: ${this.materialTally(hauled.left)}.`);
     }
@@ -3479,6 +3723,8 @@ export class GameScene extends Phaser.Scene {
       if (msg.k !== 'exp-town') continue;
       if (msg.action === 'buy' && Number(msg.buyer) === this.seatOf(player) && typeof msg.item === 'string') {
         this.applyExpeditionItem(msg.item as ItemId, player);
+      } else if (msg.action === 'sell' && Number(msg.seller) === this.seatOf(player) && typeof msg.item === 'string') {
+        this.applyExpeditionCargoSale(msg.item as ItemId, player);
       } else if (msg.action === 'rest' && Number(msg.seat) === this.seatOf(player)) {
         this.applyExpeditionRest(player);
       } else if (msg.action === 'donate' && Number(msg.from) === this.seatOf(player)) {
@@ -3530,12 +3776,19 @@ export class GameScene extends Phaser.Scene {
         { id: 'potions', label: 'Potions' },
         { id: 'armor', label: 'Armor' },
         { id: 'weapons', label: 'Weapons' },
+        { id: 'cargo', label: 'Sell Cargo' },
         { id: 'guild', label: 'Rest' },
         { id: 'donate', label: 'Donate' },
       ];
     let items: TownItemView[] = [];
+    let cargo: TownCargoView[] = [];
     let pages = 1;
-    if (this.expeditionTownTab !== 'guild' && this.expeditionTownTab !== 'donate') {
+    if (this.expeditionTownTab === 'cargo') {
+      const stacks = this.expeditionCargoStacks(buyer);
+      pages = Math.max(1, Math.ceil(stacks.length / 6));
+      this.expeditionTownPage = Math.min(this.expeditionTownPage, pages - 1);
+      cargo = stacks.slice(this.expeditionTownPage * 6, (this.expeditionTownPage + 1) * 6);
+    } else if (this.expeditionTownTab !== 'guild' && this.expeditionTownTab !== 'donate') {
       const catalog = this.expeditionCatalog(this.expeditionTownTab, buyer);
       pages = Math.max(1, Math.ceil(catalog.length / 6));
       this.expeditionTownPage = Math.min(this.expeditionTownPage, pages - 1);
@@ -3569,6 +3822,7 @@ export class GameScene extends Phaser.Scene {
       tabs,
       message: this.expeditionTownMessage,
       items,
+      cargo,
       page: this.expeditionTownPage,
       pages,
       restEnabled: gold >= 1,
@@ -3596,6 +3850,7 @@ export class GameScene extends Phaser.Scene {
         this.redrawExpeditionTown();
       },
       buy: (id) => this.buyExpeditionItem(id, buyer),
+      sell: (id) => this.sellExpeditionCargo(id, buyer),
       previousPage: () => {
         this.expeditionTownPage -= 1;
         this.redrawExpeditionTown();
@@ -3641,7 +3896,45 @@ export class GameScene extends Phaser.Scene {
     return this.gs.mages.find((m) => m.team === 1 && !m.isAI && !m.expeditionCompanion) ?? this.gs.mages[0];
   }
 
-  private expeditionCatalog(tab: Exclude<ExpeditionTownTab, 'guild' | 'donate'>, buyer: Mage): typeof ITEM_DEFS {
+  /** Carried materials, grouped into one sellable lot per kind. */
+  private expeditionCargoStacks(seller: Mage): TownCargoView[] {
+    const counts = new Map<ItemId, number>();
+    for (const id of [...seller.bag, ...seller.utility]) {
+      if (getItem(id).material) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return [...counts].map(([id, count]) => {
+      const definition = getItem(id);
+      const each = this.swampSellValue(id);
+      return {
+        id,
+        name: definition.name,
+        count,
+        total: Math.round(each * count * 2) / 2,
+        detail: `${each}g each · ${definition.weight}kg each · ${Math.round(definition.weight * count * 10) / 10}kg carried`,
+      };
+    }).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name));
+  }
+
+  private sellExpeditionCargo(id: ItemId, seller: Mage): void {
+    if (this.online) this.net?.send({ k: 'exp-town', action: 'sell', item: id, seller: this.seatOf(seller) });
+    this.applyExpeditionCargoSale(id, seller);
+    this.redrawExpeditionTown();
+  }
+
+  /** Sell the whole lot: materials have no other use yet, so one click clears it. */
+  private applyExpeditionCargoSale(id: ItemId, seller: Mage): void {
+    const each = this.swampSellValue(id);
+    let sold = 0;
+    while (this.gs.removeItem(seller, id)) sold += 1;
+    if (sold === 0) return;
+    const paid = Math.round(each * sold * 2) / 2;
+    this.addExpeditionGold(seller, paid);
+    const name = getItem(id).name;
+    this.gs.log(`${seller.name} sells ${sold}x ${name} for ${paid}g.`);
+    this.expeditionTownMessage = `Sold ${sold}x ${name} for ${paid}g.`;
+  }
+
+  private expeditionCatalog(tab: Exclude<ExpeditionTownTab, 'cargo' | 'guild' | 'donate'>, buyer: Mage): typeof ITEM_DEFS {
     return ITEM_DEFS.filter((def) => {
       if (def.enemyOnly || def.set === 'conjured') return false;
       if (tab === 'potions') return !!def.potion || !!def.ammo || def.id === 'torch';
@@ -4847,6 +5140,8 @@ export class GameScene extends Phaser.Scene {
     this.syncScarabSprites();
     this.drawScarabHp();
     this.drawTargetHighlights(time);
+    this.tutorialView?.setDisplay(this.tutorialDisplay());
+    this.tutorialView?.tick(time);
     // Health bars ease toward their true value, so keep drawing until they land.
     // Aiming rings breathe, so they need the same continuous redraw.
     if (this.barsSettling || (!this.reducedMotion && this.mode.startsWith('aiming'))) {
@@ -5462,6 +5757,7 @@ export class GameScene extends Phaser.Scene {
    */
   private submitTurn(cmd: TurnCommand): void {
     if (this.online) this.net?.send({ k: 'turn', cmd });
+    this.tutorialNotify({ k: 'command', cmd: cmd.t });
     void this.applyTurnCommand(cmd);
   }
 
@@ -6391,6 +6687,9 @@ export class GameScene extends Phaser.Scene {
     opts: { at?: Vec2; description?: string } = {}
   ): Promise<void> {
     if (this.gs.isOver || !source.alive) return;
+    // These windows answer a synthetic no-op trigger. In the tutorial they are
+    // pure noise — a prompt on every turn boundary, with nothing to react to.
+    if (this.tutorial) return;
     const trigger = this.gs.makeActionItem({
       source,
       label,
@@ -7374,6 +7673,7 @@ export class GameScene extends Phaser.Scene {
     this.pendingSpell = null;
     // Stay in the reaction mini-turn; otherwise drop back to idle.
     if (this.mode !== 'reaction') this.mode = 'idle';
+    this.tutorialNotify({ k: 'combo', words: this.selectedWords() });
     this.redraw();
   }
 
@@ -8412,6 +8712,7 @@ export class GameScene extends Phaser.Scene {
     // Only openable on your own turn, or during your reaction window.
     if (!isReaction && !(this.mode === 'idle' && this.humanActive)) return;
     this.actionMenuReturn = isReaction ? 'reaction' : 'idle';
+    this.tutorialNotify({ k: 'panel', panel: 'action-menu' });
     this.buildActionMenu();
   }
 
@@ -8553,6 +8854,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     this.resetSelection();
+    this.tutorialNotify({ k: 'command', cmd: 'end' });
     if (this.online) this.net?.send({ k: 'turn', cmd: { t: 'end' } satisfies TurnCommand });
     void this.nextTurn();
   }
@@ -8696,6 +8998,7 @@ export class GameScene extends Phaser.Scene {
     if (fromMineMap) this.minePanel?.setVisible(false);
     this.buildInventoryCabinet(fromMineMap);
     this.mode = 'inventory';
+    this.tutorialNotify({ k: 'panel', panel: 'inventory' });
     this.redraw();
   }
 
@@ -8706,6 +9009,7 @@ export class GameScene extends Phaser.Scene {
       this.mode = this.mineMapVisible ? 'shop' : 'idle';
       if (this.mineMapVisible) this.minePanel?.setVisible(true);
     }
+    this.tutorialNotify({ k: 'panel', panel: 'inventory-closed' });
     this.redraw();
   }
 
@@ -8871,6 +9175,7 @@ export class GameScene extends Phaser.Scene {
     }, {
       perform: (kind, id) => this.performInventoryAction(kind, id),
       close: () => this.closeInventory(),
+      tabChanged: (tab) => this.tutorialNotify({ k: 'inventory-tab', tab }),
     });
   }
 
@@ -8918,6 +9223,8 @@ export class GameScene extends Phaser.Scene {
       this.devClickGuard = false;
       return;
     }
+    // The tutorial textbox floats over the arena; a click on it is never a shot.
+    if (this.tutorialView?.blocksPointer(p.worldX, p.worldY)) return;
     // A click that just chose an action-menu option must not also target the
     // field: swallow it so the player selects their target on the next click.
     if (this.menuClickGuard) {
@@ -9367,6 +9674,7 @@ export class GameScene extends Phaser.Scene {
       this.reactionResolve = resolve;
       this.mode = 'reaction';
       this.resetSelection();
+      this.tutorialNotify({ k: 'reaction' });
       const abil = this.castableAbilities(reactor).length > 0 ? '  [Z/X] color ability' : '';
       const needle = this.canNeedle(reactor, top) ? '  [K] needle' : '';
       const physical = !top.noPhysicalReaction && this.isIncomingAttack(top, reactor);
@@ -10316,6 +10624,7 @@ export class GameScene extends Phaser.Scene {
     this.resetSelection();
     const r = this.reactionResolve;
     this.reactionResolve = null;
+    this.tutorialNotify({ k: 'reaction-done' });
     if (r) r(choice);
   }
 

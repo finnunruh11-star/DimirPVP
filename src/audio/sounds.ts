@@ -256,6 +256,11 @@ export const RECIPES = {
     k.noise({ kind: 'brown', dur: 0.8, gain: 0.2, filter: 'lowpass', freq: 520, freqTo: 110, reverb: 0.5 });
     k.tone({ type: 'sine', freq: 92, freqTo: 40, dur: 0.26, gain: 0.36 });
   },
+  'unit.defeat': (k: SynthKit) => {
+    k.noise({ kind: 'brown', dur: 0.14, gain: 0.32, filter: 'lowpass', freq: 780, freqTo: 130, attack: 0.001 });
+    k.tone({ type: 'sine', freq: k.rand(118, 142), freqTo: 42, dur: 0.3, gain: 0.38 });
+    k.noise({ dur: 0.045, gain: 0.16, filter: 'bandpass', freq: k.rand(900, 1250), q: 1.2, attack: 0.001 });
+  },
   'turn.start': (k: SynthKit) => {
     k.tone({ type: 'triangle', freq: 392, dur: 0.16, gain: 0.1, reverb: 0.3 });
     k.tone({ type: 'triangle', freq: 588, start: 0.09, dur: 0.24, gain: 0.09, reverb: 0.35 });

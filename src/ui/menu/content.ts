@@ -38,6 +38,12 @@ export const CATEGORY_COPY: Record<MenuCategory, MenuEntryCopy> = {
 };
 
 export const MODE_COPY: Record<MatchMode, MenuEntryCopy> = {
+  tutorial: {
+    label: 'Guided Tutorial',
+    detail: 'Learn the game by playing one short fight',
+    title: 'GUIDED TUTORIAL',
+    description: 'A scripted fight that walks you through the controls, spell combining and targeting, the inventory and its debuff list, reading the stack, and commanding a summon. Arrows and prompts point at what to do next.',
+  },
   ai: {
     label: 'AI Duel',
     detail: 'One human against a configurable AI table',

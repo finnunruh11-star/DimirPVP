@@ -40,7 +40,7 @@ import {
 const CATEGORY_MODES: Record<MenuCategory, readonly MatchMode[]> = {
   versus: ['ai', 'hotseat', 'online'],
   adventures: ['exploration', 'swamprun', 'expedition', 'minerun', 'raid'],
-  workshop: ['training', 'scenario', 'memory'],
+  workshop: ['tutorial', 'training', 'scenario', 'memory'],
 };
 
 const CATEGORY_LABELS: Record<MenuCategory, string> = {
@@ -53,6 +53,7 @@ const NATIVE_MODES = new Set<MatchMode>([
   'ai',
   'hotseat',
   'online',
+  'tutorial',
   'training',
   'swamprun',
   'expedition',
@@ -244,7 +245,8 @@ export class MenuExperience {
   private buildCategory(category: MenuCategory): MenuScreenView {
     const copy = CATEGORY_COPY[category];
     const view = this.createScreen(copy.label.toUpperCase(), copy.description);
-    CATEGORY_MODES[category].forEach((mode, index) => {
+    const modes = CATEGORY_MODES[category];
+    modes.forEach((mode, index) => {
       const modeCopy = MODE_COPY[mode];
       view.focus.add(this.choice(view.root, 76, 226 + index * 78, modeCopy, String(index + 1), () => {
         this.model.setMode(mode);
@@ -252,7 +254,7 @@ export class MenuExperience {
         else if (NATIVE_MODES.has(mode)) this.navigator.push({ id: 'mode-intro' });
       }, 70));
     });
-    this.addBack(view, category === 'adventures' ? 574 : 520);
+    this.addBack(view, category === 'adventures' ? 574 : modes.length > 3 ? 556 : 520);
     return view;
   }
 
@@ -260,13 +262,16 @@ export class MenuExperience {
     const copy = MODE_COPY[this.model.mode];
     const view = this.createScreen(copy.title, copy.description);
     const capability = this.model.capability;
-    const facts = [
-      capability.seats[0] === capability.seats[1]
-        ? `${capability.seats[0]} ${capability.seats[0] === 1 ? 'seat' : 'seats'}`
-        : `${capability.seats[0]}-${capability.seats[1]} seats`,
-      `${capability.loadoutSize} words`,
-      capability.allowAi ? 'AI supported' : 'No AI seats',
-    ];
+    const tutorial = this.model.mode === 'tutorial';
+    const facts = tutorial
+      ? ['Solo', 'Build supplied', 'Nothing can kill you']
+      : [
+        capability.seats[0] === capability.seats[1]
+          ? `${capability.seats[0]} ${capability.seats[0] === 1 ? 'seat' : 'seats'}`
+          : `${capability.seats[0]}-${capability.seats[1]} seats`,
+        `${capability.loadoutSize} words`,
+        capability.allowAi ? 'AI supported' : 'No AI seats',
+      ];
     const plaque = this.scene.add.text(76, 282, facts.join('  /  ').toUpperCase(), {
       fontFamily: MENU_FONT.control,
       fontSize: '14px',
@@ -280,11 +285,14 @@ export class MenuExperience {
     const proceed = new CabinetButton(this.scene, 76, 392, {
       width: 714,
       height: 64,
-      label: 'Configure This Mode',
+      label: tutorial ? 'Begin The Tutorial' : 'Configure This Mode',
       index: '>',
       primary: true,
       onActivate: () => this.advanceFromIntro(),
-      onFocus: () => this.stage.setCaption(copy.title, 'Continue to setup.'),
+      onFocus: () => this.stage.setCaption(
+        copy.title,
+        tutorial ? 'Start the guided fight.' : 'Continue to setup.'
+      ),
     });
     view.root.add([plaque, proceed]);
     view.focus.add(proceed);
@@ -1493,6 +1501,10 @@ export class MenuExperience {
   }
 
   private advanceFromIntro(): void {
+    if (this.model.mode === 'tutorial') {
+      this.launchConfigured();
+      return;
+    }
     if (this.model.mode === 'raid') {
       this.navigator.push({ id: 'raid-target' });
       return;

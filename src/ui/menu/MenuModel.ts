@@ -31,6 +31,7 @@ import {
   canSpawnReaper,
   type RaidBossKind,
 } from '../../pve/swamprun';
+import { TUTORIAL_LOADOUT } from '../../pve/tutorial';
 
 export interface MageDraft {
   words: WordId[];
@@ -294,6 +295,18 @@ export class MenuModel {
       throw new Error('Online matches are assembled by the lobby coordinator.');
     }
     if (this.mode === 'memory') throw new Error('Memory matches require a loaded scenario.');
+
+    // The tutorial teaches one scripted fight, so it supplies its own build and
+    // skips the roster / build / pack screens entirely.
+    if (this.mode === 'tutorial') {
+      return {
+        mode: 'tutorial',
+        loadouts: [[...TUTORIAL_LOADOUT], [...TUTORIAL_LOADOUT]],
+        classes: [DEFAULT_MAGE_CLASS, DEFAULT_MAGE_CLASS],
+        itemSets: { original: true, finns: false, dlc: false },
+      };
+    }
+
     for (const seat of this.localDraftSeats()) {
       if (!this.loadoutReady(seat)) throw new Error(`Player ${seat + 1}'s build is incomplete.`);
     }

@@ -45,6 +45,7 @@ export interface InventorySnapshot {
 export interface InventoryActions {
   perform(kind: InventoryActionKind, id: ItemId): void;
   close(): void;
+  tabChanged?(tab: string): void;
 }
 
 type InventoryTab = 'equipment' | 'supplies' | 'statuses';
@@ -152,6 +153,7 @@ export class InventoryView extends Phaser.GameObjects.Container {
     this.tab = tab;
     this.page = 0;
     this.renderPage();
+    this.actions.tabChanged?.(tab);
   }
 
   private renderPage(): void {

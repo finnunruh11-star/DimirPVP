@@ -27,6 +27,7 @@ const THROTTLE_MS: Partial<Record<SoundName, number>> = {
   'spell.thunder': 220,
   'spell.explode': 160,
   'unit.death': 120,
+  'unit.defeat': 120,
 };
 
 function busFor(name: SoundName): AudioBus {
@@ -36,6 +37,7 @@ function busFor(name: SoundName): AudioBus {
 /** Level trims for authored files that are hotter than the rest of the set. */
 const SOUND_GAIN: Partial<Record<SoundName, number>> = {
   'unit.death': 0.5,
+  'unit.defeat': 0.8,
   'spell.lightning': 0.45,
   'spell.thunder': 0.85,
   'spell.shatter': 0.35,

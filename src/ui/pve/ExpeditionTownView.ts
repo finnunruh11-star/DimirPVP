@@ -11,7 +11,7 @@ import {
   addSectionRule,
 } from '../cabinet/theme';
 
-export type TownTab = 'potions' | 'armor' | 'weapons' | 'guild' | 'donate';
+export type TownTab = 'potions' | 'armor' | 'weapons' | 'cargo' | 'guild' | 'donate';
 
 export interface TownItemView {
   id: ItemId;
@@ -20,6 +20,15 @@ export interface TownItemView {
   detail: string;
   accent: number;
   enabled: boolean;
+}
+
+/** One stack of carried material, sold as a lot. */
+export interface TownCargoView {
+  id: ItemId;
+  name: string;
+  count: number;
+  total: number;
+  detail: string;
 }
 
 export interface TownRecruitView {
@@ -48,6 +57,7 @@ export interface ExpeditionTownSnapshot {
   tabs: { id: TownTab; label: string }[];
   message: string;
   items: TownItemView[];
+  cargo: TownCargoView[];
   page: number;
   pages: number;
   restEnabled: boolean;
@@ -58,6 +68,7 @@ export interface ExpeditionTownSnapshot {
 export interface ExpeditionTownActions {
   selectTab(tab: TownTab): void;
   buy(id: ItemId): void;
+  sell(id: ItemId): void;
   previousPage(): void;
   nextPage(): void;
   rest(): void;
@@ -143,6 +154,7 @@ export class ExpeditionTownView extends Phaser.GameObjects.Container {
 
     if (snapshot.activeTab === 'guild') this.renderGuild();
     else if (snapshot.activeTab === 'donate') this.renderDonations();
+    else if (snapshot.activeTab === 'cargo') this.renderCargo();
     else this.renderItems();
 
     this.sceneInput = new SceneInput(scene);
@@ -164,6 +176,36 @@ export class ExpeditionTownView extends Phaser.GameObjects.Container {
     super.destroy(fromScene);
   }
 
+  private renderCargo(): void {
+    if (this.snapshot.cargo.length === 0) {
+      const empty = this.scene.add.text(76, 232, 'The bags hold no salvage. Ore and creature parts are stowed on the way down and sold here.', {
+        fontFamily: MENU_FONT.body,
+        fontSize: '15px',
+        color: MENU_HEX.boneDim,
+        fixedWidth: 1120,
+        wordWrap: { width: 1120 },
+      });
+      this.add(empty);
+      return;
+    }
+    this.snapshot.cargo.forEach((stack, index) => {
+      const column = index % 3;
+      const row = Math.floor(index / 3);
+      const button = new CabinetButton(this.scene, 76 + column * 378, 208 + row * 150, {
+        width: 358,
+        height: 134,
+        label: `${stack.name} \u00d7${stack.count}  /  ${stack.total}g`,
+        detail: stack.detail,
+        index: String(index + 1),
+        onActivate: () => this.actions.sell(stack.id),
+        onFocus: () => this.inspect(stack.name, stack.detail),
+      });
+      this.add(button);
+      this.focus.add(button);
+    });
+    this.renderPager();
+  }
+
   private renderItems(): void {
     this.snapshot.items.forEach((item, index) => {
       const column = index % 3;
@@ -181,6 +223,10 @@ export class ExpeditionTownView extends Phaser.GameObjects.Container {
       this.add(button);
       this.focus.add(button);
     });
+    this.renderPager();
+  }
+
+  private renderPager(): void {
     if (this.snapshot.pages > 1) {
       const previous = new CabinetChip(this.scene, 444, 520, {
         width: 120,

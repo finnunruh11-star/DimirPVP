@@ -52,7 +52,7 @@ export const SPELL_MANA: Record<string, number> = {};
 
 /**
  * How "potent" each word feels, used to price two-word spells (4-6 mana).
- * Strong words (curse, drain, order, ...) push a combo toward 6; weak words
+ * Strong words (curse, drain, shadow, ...) push a combo toward 6; weak words
  * (veil, mind, shatter, ...) keep it near 4. 2 = strong, 1 = medium, 0 = weak.
  */
 const WORD_POTENCY: Record<WordId, number> = {
@@ -84,7 +84,7 @@ const WORD_POTENCY: Record<WordId, number> = {
 /**
  * Base mana cost by word count: 1-word free, 3-word ~9. Two-word spells cost
  * 4-6 mana scaled by the combined potency of their two words (strong words like
- * curse/drain/order cost more than weak ones like veil/mind/shatter).
+ * curse/drain/shadow cost more than weak ones like veil/mind/shatter).
  */
 function defaultSpellMana(words: WordId[]): number {
   if (words.length <= 1) return 0;

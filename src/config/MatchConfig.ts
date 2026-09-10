@@ -11,6 +11,7 @@ export type MatchMode =
   | 'hotseat'
   | 'ai'
   | 'online'
+  | 'tutorial'
   | 'training'
   | 'swamprun'
   | 'expedition'
@@ -53,6 +54,11 @@ export const MODE_CAPABILITIES = {
     category: 'versus', roles: ['host', 'guest'], seats: [2, 4], allowAi: true,
     formats: ['teams', 'ffa'], prepModes: [], loadoutSize: LOADOUT_SIZE,
     usesBuild: true, usesContentPacks: true, requiresRaidBoss: false,
+  },
+  tutorial: {
+    category: 'workshop', roles: ['local'], seats: [1, 1], allowAi: false,
+    formats: [], prepModes: [], loadoutSize: LOADOUT_SIZE,
+    usesBuild: false, usesContentPacks: false, requiresRaidBoss: false,
   },
   training: {
     category: 'workshop', roles: ['local'], seats: [1, 1], allowAi: false,
