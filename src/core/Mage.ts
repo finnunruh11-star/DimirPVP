@@ -150,6 +150,8 @@ export class Mage {
   movedThisTurn = false;
   /** Whether this mage dealt damage to a foe during the current turn (Order Curse Drain). */
   dealtDamageThisTurn = false;
+  /** Maximum health withered away by a desecration; restored when the combat ends. */
+  witheredMaxHp = 0;
   /** Total distance (px) moved so far this turn (Momentum Boots threshold). */
   distMovedThisTurn = 0;
   /** Consecutive turns spent moving (Momentum Boots). */
@@ -630,6 +632,8 @@ export class Mage {
     this.lastAbilityManaPaid = 0;
     this.movedThisTurn = false;
     this.dealtDamageThisTurn = false;
+    this.maxHp += this.witheredMaxHp;
+    this.witheredMaxHp = 0;
     this.distMovedThisTurn = 0;
     this.rageBonus = 0;    this.spellcastActive = false;
     this.hasCastThisTurn = false;

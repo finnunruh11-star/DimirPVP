@@ -16,6 +16,7 @@ export type WordId =
   | 'heal'
   | 'sand'
   | 'death'
+  | 'desecrate'
   | 'fire'
   | 'lightning'
   | 'subtle'
@@ -131,6 +132,14 @@ export const WORDS: Record<WordId, WordDef> = {
     charges: 4,
     color: 0xb9c0cc,
     blurb: 'Reap stacks and execution thresholds.',
+  },
+  desecrate: {
+    id: 'desecrate',
+    label: 'Desecrate',
+    grantsReaction: false,
+    charges: 4,
+    color: 0x6e4d7d,
+    blurb: 'Fouled ground and field-wide decay. Spares black and minion units.',
   },
   fire: {
     id: 'fire',
@@ -252,6 +261,7 @@ export const WORD_KIND: Record<WordId, WordKind> = {
   mind: 'noun',
   fire: 'noun',
   death: 'noun',
+  desecrate: 'noun',
   shadow: 'noun',
   reality: 'noun',
   // Modifiers attach to another spell rather than forming one.

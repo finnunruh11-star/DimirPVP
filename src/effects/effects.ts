@@ -11,7 +11,7 @@
 
 import type { DamageInstance, DamageClass, DamageType } from '../core/Damage';
 import type { Dice } from '../core/Dice';
-import type { GameState } from '../core/GameState';
+import type { Desecration, DesecrationField, GameState } from '../core/GameState';
 import type { Mage } from '../core/Mage';
 import type { MageClass } from '../core/Classes';
 import { getItem } from '../core/Items';
@@ -712,6 +712,17 @@ export function heal(
   pool: 'hp' | 'sanity' = 'hp'
 ): void {
   amount = Math.max(0, Math.round(amount));
+  // Fouled ground refuses mending outright, or hands it to whoever fouled it.
+  if (amount > 0 && ctx.game.desecrationBlocksHealing(target)) {
+    ctx.log(`${target.name} cannot be healed on desecrated ground.`);
+    return;
+  }
+  const thief = amount > 0 ? ctx.game.desecrationHealThief(target) : null;
+  if (thief) {
+    ctx.log(`${target.name}'s healing is tithed away.`);
+    heal({ ...ctx, caster: thief, target: thief }, thief, amount, pool);
+    return;
+  }
   if (pool === 'sanity') {
     const before = target.sanity;
     target.sanity = Math.min(target.maxSanity, target.sanity + amount);
@@ -1627,6 +1638,33 @@ export function placeHazardZone(
     roundsLeft: critScale(ctx, opts.rounds),
   });
   ctx.log(`${ctx.caster.name} raises ${opts.name}.`);
+}
+
+/** Lay a field-wide desecration. It has no geometry — the whole board is fouled. */
+export function desecrate(
+  ctx: EffectContext,
+  opts: Omit<Desecration, 'id' | 'ownerIndex' | 'ownerTeam' | 'roundsLeft'> & { rounds: number }
+): void {
+  const { rounds, ...law } = opts;
+  ctx.game.addDesecration(ctx.caster, { ...law, roundsLeft: critScale(ctx, rounds) });
+  ctx.log(`${ctx.caster.name} desecrates the field: ${opts.name}.`);
+}
+
+/** Foul the ground around `at`. */
+export function desecrateGround(
+  ctx: EffectContext,
+  at: Vec2,
+  opts: Omit<DesecrationField, 'id' | 'x' | 'y' | 'ownerIndex' | 'ownerTeam' | 'turnsLeft'> & {
+    turns: number;
+  }
+): void {
+  const { turns, ...field } = opts;
+  ctx.game.addDesecrationField(at, ctx.caster, {
+    ...field,
+    radius: critScale(ctx, opts.radius),
+    turnsLeft: critScale(ctx, turns),
+  });
+  ctx.log(`${ctx.caster.name} fouls the ground: ${opts.name}.`);
 }
 
 /**

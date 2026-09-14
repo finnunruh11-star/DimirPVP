@@ -43,6 +43,8 @@ import {
   critScale,
   dash,
   dealDamage,
+  desecrate,
+  desecrateGround,
   dispelVeil,
   drainDamage,
   grantExtraTurn,
@@ -1642,6 +1644,298 @@ registerSpell({
       ctx.log(`${ctx.caster.name} spends 5 mana and hurls the shard at ${next.name}.`);
       foe = next;
     }
+  },
+});
+
+// ===========================================================================
+//  DESECRATE   (KAT: Corrode / Curse / Desecrate / Drain / Death)
+// ---------------------------------------------------------------------------
+//  A god-level black word. Every effect either fouls a patch of ground or lays
+//  a law over the whole board, and all of them spare "kin" — black-primary
+//  mages and minions (the drafted cast and anything they conjure). Wild
+//  creatures are what Desecrate is for.
+//
+//  Corrode and Drain stay strict mirrors here as everywhere else: the Drain
+//  version is the Corrode version plus lifesteal, never a sidegrade.
+// ===========================================================================
+
+registerSpell({
+  name: 'Desecrate',
+  words: ['desecrate'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 9,
+  description:
+    'For 3 rounds the whole battlefield is unhallowed. Every affected unit takes 1d3 shadow + 1d3 corrosive at the start of its turn and cannot be healed by anything. Black and minion units are spared.',
+  visual: { preset: 'nova', color: 0x6e4d7d, size: 120, speed: 0.8 },
+  cast(ctx) {
+    desecrate(ctx, {
+      name: 'Unhallowed Ground',
+      rounds: 3,
+      blocksHealing: true,
+      ticks: [
+        { spec: '1d3', type: 'shadow' },
+        { spec: '1d3', type: 'corrosive' },
+      ],
+    });
+  },
+});
+
+registerSpell({
+  name: 'Desecrate Corrode',
+  words: ['desecrate', 'corrode'],
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 11,
+  aoe: { kind: 'circle', radius: R(5) },
+  description:
+    'Foul a range-5 circle for 4 turns. Affected units inside take 2d4 shadow at the start of their turn and cannot be healed. A turn with nothing inside costs the ground an extra turn of life.',
+  visual: { preset: 'burst', color: 0x6e4d7d, size: R(5), speed: 0.9 },
+  noCastSprite: true,
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    desecrateGround(ctx, ctx.targetPoint, {
+      name: 'Fouled Ground',
+      radius: R(5),
+      turns: 4,
+      blocksHealing: true,
+      withersWhenEmpty: true,
+      ticks: [{ spec: '2d4', type: 'shadow' }],
+    });
+  },
+});
+
+registerSpell({
+  name: 'Desecrate Drain',
+  words: ['desecrate', 'drain'],
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 11,
+  aoe: { kind: 'circle', radius: R(5) },
+  description:
+    'Foul a range-5 circle for 4 turns. Affected units inside take 2d4 shadow at the start of their turn and cannot be healed; every black or minion unit anywhere on the field heals for the amount dealt. A turn with nothing inside costs the ground an extra turn of life.',
+  visual: { preset: 'burst', color: 0x5f7d4d, size: R(5), speed: 0.9 },
+  noCastSprite: true,
+  manualCastVisual: true,
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    desecrateGround(ctx, ctx.targetPoint, {
+      name: 'Feeding Ground',
+      radius: R(5),
+      turns: 4,
+      blocksHealing: true,
+      healKin: true,
+      withersWhenEmpty: true,
+      ticks: [{ spec: '2d4', type: 'shadow' }],
+    });
+  },
+});
+
+registerSpell({
+  name: 'Desecrate Curse',
+  words: ['desecrate', 'curse'],
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 11,
+  aoe: { kind: 'circle', radius: R(4) },
+  description:
+    'Open a range-4 blight for 6 turns that widens by 2 every round. Affected units inside take 1d6 corrosive at the start of their turn and cannot be healed. Every affected unit that dies inside widens it a further 2, up to 4 in total.',
+  visual: { preset: 'burst', color: 0x7d6e4d, size: R(4), speed: 0.9 },
+  noCastSprite: true,
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    desecrateGround(ctx, ctx.targetPoint, {
+      name: 'Creeping Blight',
+      radius: R(4),
+      turns: 6,
+      blocksHealing: true,
+      growPerRound: R(2),
+      growOnDeath: R(2),
+      growOnDeathCap: R(4),
+      ticks: [{ spec: '1d6', type: 'corrosive' }],
+    });
+  },
+});
+
+registerSpell({
+  name: 'Desecrate Death',
+  words: ['desecrate', 'death'],
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 11,
+  aoe: { kind: 'circle', radius: R(5) },
+  description:
+    'Open a range-5 sink for 5 turns. Anything inside at the start of its turn, or entering during its turn, loses a bonus action and a reaction for that cycle, and walking cannot carry it back out. Whenever anything inside dies, every unit on the field is hauled 5 toward the corpse and anything inside is dragged to the centre. Anything within range 1 of the centre below 10 health is unmade outright.',
+  visual: { preset: 'nova', color: 0x4d3d5d, size: R(5), speed: 0.8 },
+  noCastSprite: true,
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    desecrateGround(ctx, ctx.targetPoint, {
+      name: 'The Sink',
+      radius: R(5),
+      turns: 5,
+      sealed: true,
+      stripsActions: true,
+      pullOnDeath: R(5),
+      executeRadius: R(1),
+      executeBelow: 10,
+      ticks: [],
+    });
+  },
+});
+
+registerSpell({
+  name: 'Desecrate Corrode Curse',
+  words: ['desecrate', 'corrode', 'curse'],
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'circle', radius: R(5) },
+  description:
+    'Foul a range-5 circle for 5 turns. Affected units inside take 1d3 corrosive and catch a rot that deals 1d3 per stack each turn, up to 4 stacks. The rot travels with its carrier and spreads to affected units within range 3 of one. Nothing rotting can be healed.',
+  visual: { preset: 'burst', color: 0x5d6e4d, size: R(5), speed: 1 },
+  noCastSprite: true,
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    desecrateGround(ctx, ctx.targetPoint, {
+      name: 'Plaguewell',
+      radius: R(5),
+      turns: 5,
+      blocksHealing: true,
+      rot: { spec: '1d3', maxStacks: 4, spreadRadius: R(3) },
+      ticks: [{ spec: '1d3', type: 'corrosive' }],
+    });
+  },
+});
+
+registerSpell({
+  name: 'Desecrate Corrode Drain',
+  words: ['desecrate', 'corrode', 'drain'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 13,
+  description:
+    'For 4 rounds the world digests them. Every affected unit takes 2d3 corrosive at the start of its turn, cannot be healed, and loses 2 maximum health, to a total of 8. You drink everything it deals. All lost maximum health returns when the combat ends.',
+  visual: { preset: 'nova', color: 0x5f7d4d, size: 120, speed: 0.8 },
+  manualCastVisual: true,
+  cast(ctx) {
+    desecrate(ctx, {
+      name: 'Digestion',
+      rounds: 4,
+      blocksHealing: true,
+      lifesteal: true,
+      wither: { perTurn: 2, cap: 8 },
+      ticks: [{ spec: '2d3', type: 'corrosive' }],
+    });
+  },
+});
+
+registerSpell({
+  name: 'Desecrate Corrode Death',
+  words: ['desecrate', 'corrode', 'death'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 13,
+  description:
+    'For 3 rounds every affected unit cannot be healed and takes 1d3 shadow + 1d3 cold + 1d3 corrosive at the start of its turn. Whenever any creature dies, every affected unit gains 2 Reap.',
+  visual: { preset: 'nova', color: 0x6e5d4d, size: 120, speed: 0.8 },
+  cast(ctx) {
+    desecrate(ctx, {
+      name: 'Last Harvest',
+      rounds: 3,
+      blocksHealing: true,
+      reapOnDeath: 2,
+      ticks: [
+        { spec: '1d3', type: 'shadow' },
+        { spec: '1d3', type: 'cold' },
+        { spec: '1d3', type: 'corrosive' },
+      ],
+    });
+  },
+});
+
+registerSpell({
+  name: 'Desecrate Drain Death',
+  words: ['desecrate', 'drain', 'death'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 13,
+  description:
+    'For 3 rounds every affected unit cannot be healed and takes 1d3 shadow + 1d3 cold + 1d3 corrosive at the start of its turn. Whenever any creature dies, every affected unit gains 2 Reap and every black or minion unit heals 3.',
+  visual: { preset: 'nova', color: 0x4d7d6e, size: 120, speed: 0.8 },
+  manualCastVisual: true,
+  cast(ctx) {
+    desecrate(ctx, {
+      name: 'The Reaping',
+      rounds: 3,
+      blocksHealing: true,
+      reapOnDeath: 2,
+      healKinOnDeath: 3,
+      ticks: [
+        { spec: '1d3', type: 'shadow' },
+        { spec: '1d3', type: 'cold' },
+        { spec: '1d3', type: 'corrosive' },
+      ],
+    });
+  },
+});
+
+registerSpell({
+  name: 'Desecrate Curse Drain',
+  words: ['desecrate', 'curse', 'drain'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 13,
+  description:
+    'For 6 rounds every point of healing an affected unit would receive anywhere on the field is tithed to you instead. They also take 1d4 shadow + 1d4 corrosive at the start of their turn.',
+  visual: { preset: 'nova', color: 0x7d4d6e, size: 120, speed: 0.8 },
+  manualCastVisual: true,
+  cast(ctx) {
+    desecrate(ctx, {
+      name: 'Tithe of the Fallow',
+      rounds: 6,
+      redirectHealing: true,
+      ticks: [
+        { spec: '1d4', type: 'shadow' },
+        { spec: '1d4', type: 'corrosive' },
+      ],
+    });
+  },
+});
+
+registerSpell({
+  name: 'Desecrate Curse Death',
+  words: ['desecrate', 'curse', 'death'],
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 13,
+  aoe: { kind: 'circle', radius: R(5) },
+  description:
+    'Consecrate a range-5 grave for 5 turns. Affected units inside take 1d6 shadow at the start of their turn, cannot be healed, and gain 2 Reap for every turn they begin there. Whenever an affected unit dies anywhere on the field the grave moves to its corpse and refreshes, at most once a round.',
+  visual: { preset: 'burst', color: 0x5d4d6e, size: R(5), speed: 0.9 },
+  noCastSprite: true,
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    desecrateGround(ctx, ctx.targetPoint, {
+      name: 'Last Rites',
+      radius: R(5),
+      turns: 5,
+      blocksHealing: true,
+      reapPerTurn: 2,
+      relocateOnDeath: true,
+      ticks: [{ spec: '1d6', type: 'shadow' }],
+    });
   },
 });
 

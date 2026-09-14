@@ -12766,6 +12766,8 @@ export class GameScene extends Phaser.Scene {
         zone.ownerTeam
       );
     for (const b of this.gs.barriers) show(`ba${b.id}`, b.x, b.y, b.ttl, b.owner);
+    for (const field of this.gs.desecrationFields)
+      show(`dg${field.id}`, field.x, field.y - field.radius - 10, field.turnsLeft, field.ownerTeam);
     // Sand is unowned, so its count is neutral rather than team-tinted.
     for (const patch of this.gs.sand)
       show(`sa${patch.id}`, patch.x, patch.y - patch.radius - 10, patch.charges, 0, 'SAND');
@@ -13065,6 +13067,15 @@ export class GameScene extends Phaser.Scene {
       g.fillStyle(zone.color, 0.16).fillCircle(zone.x, zone.y, zone.radius);
       g.lineStyle(2, zone.color, 0.7).strokeCircle(zone.x, zone.y, zone.radius);
       g.lineStyle(1, zone.color, 0.35).strokeCircle(zone.x, zone.y, zone.radius * 0.7);
+    }
+    for (const field of this.gs.desecrationFields) {
+      g.fillStyle(0x2a1630, 0.32).fillCircle(field.x, field.y, field.radius);
+      g.lineStyle(field.sealed ? 4 : 2, 0x6e4d7d, 0.8).strokeCircle(field.x, field.y, field.radius);
+      g.lineStyle(1, 0x3d2a47, 0.7).strokeCircle(field.x, field.y, field.radius * 0.72);
+      g.lineStyle(1, 0x3d2a47, 0.5).strokeCircle(field.x, field.y, field.radius * 0.44);
+      if (field.executeRadius != null) {
+        g.fillStyle(0x100610, 0.7).fillCircle(field.x, field.y, field.executeRadius);
+      }
     }
   }
 
@@ -15479,7 +15490,7 @@ export class GameScene extends Phaser.Scene {
         )
         .map((label) => `   ◈ ${label}`)
         .join('');
-      const state = `${swap}${needlepoint}${hexcraft}`.trim();
+      const state = `${swap}${needlepoint}${hexcraft}${this.desecrationHud()}`.trim();
       this.turnText
         .setFontSize(state ? '13px' : '17px')
         .setText(this.gs.isOver
@@ -15580,6 +15591,13 @@ export class GameScene extends Phaser.Scene {
     if (this.endTurnButton) this.endTurnButton.setText(reacting ? 'PASS' : 'END TURN');
 
     this.drawLog();
+  }
+
+  /** Banner text for any field-wide desecration currently standing. */
+  private desecrationHud(): string {
+    return this.gs.desecrations
+      .map((law) => `   ◈ ${law.name.toUpperCase()} ${law.roundsLeft}`)
+      .join('');
   }
 
   /** Show the active mage's colour identity, abilities, stats and carried gear. */
@@ -15809,6 +15827,28 @@ export class GameScene extends Phaser.Scene {
       if (zone.healMult != null && zone.healMult !== 1) {
         parts.push(`Healing received inside is multiplied by ${zone.healMult}.`);
       }
+      return parts.join(' ');
+    }
+    for (const field of this.gs.desecrationFields) {
+      if (Math.hypot(p.x - field.x, p.y - field.y) > field.radius) continue;
+      const parts = [`${field.name} - affects every unit inside except black and minion units.`];
+      for (const tick of field.ticks) {
+        parts.push(`Affected units take ${tick.spec} ${tick.type} at turn start.`);
+      }
+      if (field.rot) parts.push(`Turn start also applies ${field.rot.spec} rot, stacking to ${field.rot.maxStacks} and spreading.`);
+      if (field.blocksHealing) parts.push('Affected units cannot be healed.');
+      if (field.lifesteal) parts.push('The caster heals for the damage dealt.');
+      if (field.healKin) parts.push('Black and minion units inside are healed instead.');
+      if (field.sealed) parts.push('Affected units cannot walk out.');
+      if (field.stripsActions) parts.push('Costs affected units a bonus action and their reaction.');
+      if (field.reapPerTurn) parts.push(`Affected units gain ${field.reapPerTurn} Reap at turn start.`);
+      if (field.executeRadius != null && field.executeBelow != null) {
+        parts.push(`Affected units below ${field.executeBelow} health at the centre are killed.`);
+      }
+      if (field.growPerRound) parts.push('Grows every round.');
+      if (field.growOnDeath) parts.push('Grows whenever a creature dies.');
+      if (field.pullOnDeath) parts.push('Drags units in whenever a creature dies.');
+      if (field.relocateOnDeath) parts.push('Moves to a creature that dies, once per round.');
       return parts.join(' ');
     }
     return null;

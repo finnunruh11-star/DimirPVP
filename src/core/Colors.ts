@@ -24,6 +24,7 @@ export const WORD_COLOR: Record<WordId, WordColor> = {
   curse: 'black',
   drain: 'black',
   death: 'black',
+  desecrate: 'black',
   fire: 'red',
   lightning: 'red',
   stop: 'blue',
@@ -63,6 +64,7 @@ const WORD_POTENCY: Record<WordId, number> = {
   shadow: 2,
   reality: 2,
   death: 2,
+  desecrate: 2,
   // Medium: solid utility / damage.
   corrode: 1,
   bind: 1,

@@ -3,7 +3,7 @@ import { Mage } from './Mage';
 import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
 import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
-import { dealDamage, drainDamage, heal, applyDot, applyDebuff, applyForget, applyInvisibility, applyStun, dash, rollDice, teleport } from '../effects/effects';
+import { dealDamage, drainDamage, heal, applyDot, applyStackingDot, applyDebuff, applyForget, applyInvisibility, applyStun, dash, rollDice, teleport } from '../effects/effects';
 import { dmg } from './Damage';
 import type { DamageType, DamageClass, DamageInstance } from './Damage';
 import type { ItemId, ItemDef } from './Items';
@@ -188,6 +188,84 @@ export interface CorrosionPool {
   roundsLeft: number;
 }
 
+/** One die the desecration rolls on every affected unit at its turn start. */
+export interface DesecrationTick {
+  spec: string;
+  type: DamageType;
+}
+
+/**
+ * Desecrate's field-wide law. It has no geometry: every affected unit on the
+ * board suffers it wherever it stands. "Affected" spares black and minion units.
+ */
+export interface Desecration {
+  id: number;
+  ownerIndex: number;
+  ownerTeam: number;
+  roundsLeft: number;
+  name: string;
+  ticks: DesecrationTick[];
+  /** Affected units cannot be healed by anything while this stands. */
+  blocksHealing?: boolean;
+  /** The owner drinks everything the ticks deal. */
+  lifesteal?: boolean;
+  /** Healing an affected unit would receive is handed to the owner instead. */
+  redirectHealing?: boolean;
+  /** Maximum health stripped from each affected unit per turn, and the total cap. */
+  wither?: { perTurn: number; cap: number };
+  /** Reap handed to every affected unit whenever anything at all dies. */
+  reapOnDeath?: number;
+  /** Health restored to every black or minion unit whenever anything dies. */
+  healKinOnDeath?: number;
+}
+
+/**
+ * Desecrate's anchored form: fouled ground. Same "affected" rule as the laws,
+ * but bounded to a circle — several of them still reach the whole field when
+ * something dies.
+ */
+export interface DesecrationField {
+  id: number;
+  x: number;
+  y: number;
+  radius: number;
+  ownerIndex: number;
+  ownerTeam: number;
+  turnsLeft: number;
+  name: string;
+  ticks: DesecrationTick[];
+  blocksHealing?: boolean;
+  /** The owner drinks everything the ticks deal. */
+  lifesteal?: boolean;
+  /** Every black or minion unit anywhere heals for what the ticks dealt. */
+  healKin?: boolean;
+  /** A turn with nobody inside costs the field an extra turn of life. */
+  withersWhenEmpty?: boolean;
+  /** Growth in pixels applied at every round rollover. */
+  growPerRound?: number;
+  /** Extra growth whenever an affected unit dies inside, and its total cap. */
+  growOnDeath?: number;
+  grownByDeath?: number;
+  growOnDeathCap?: number;
+  /** Walking cannot carry a unit out of the circle. */
+  sealed?: boolean;
+  /** Affected units inside lose a bonus action and a reaction for the cycle. */
+  stripsActions?: boolean;
+  /** Reap handed to affected units that begin a turn inside. */
+  reapPerTurn?: number;
+  /** On a death inside, everything on the board is hauled this far toward it. */
+  pullOnDeath?: number;
+  /** Anything this close to the centre dies outright below `executeBelow` health. */
+  executeRadius?: number;
+  executeBelow?: number;
+  /** Rot handed out inside, which then travels with its carrier. */
+  rot?: { spec: string; maxStacks: number; spreadRadius: number };
+  /** The field jumps to the corpse of any affected unit that dies anywhere. */
+  relocateOnDeath?: boolean;
+  /** Round stamp of the last relocation, so it moves at most once per round. */
+  relocatedRound?: number;
+}
+
 /**
  * An indiscriminate standing hazard (Bind Veil Corrode's mist, Shadow Corrode
  * Curse's death zone). Everything inside is affected, allies and caster too.
@@ -276,6 +354,10 @@ export class GameState {
   rottingDarks: RottingDark[] = [];
   /** Standing indiscriminate hazards (Bind Veil Corrode, Shadow Corrode Curse). */
   hazardZones: HazardZone[] = [];
+  /** Desecrate's field-wide laws. */
+  desecrations: Desecration[] = [];
+  /** Desecrate's fouled ground. */
+  desecrationFields: DesecrationField[] = [];
   /** Bind Curse Pierce: pierce damage waiting to be dealt again at its dealer's turn end. */
   private pierceEchoes: { sourceIndex: number; targetIndex: number; amount: number }[] = [];
   /** Guard so a replayed pierce echo can never queue another echo. */
@@ -1002,6 +1084,8 @@ export class GameState {
     this.applyAnchorSpikes(m);
     this.applySeals(m);
     this.applyHazardZones(m);
+    this.applyDesecrations(m);
+    this.applyDesecrationFields(m);
     this.applyFeedingDarks(m);
     this.applyRottingDarks(m);
     this.applyWoundShades(m);
@@ -1040,6 +1124,7 @@ export class GameState {
     // Reveal anyone a foe is already standing next to at the start of the turn.
     this.breakProximityVeils();
     m.beginTurn();
+    this.applyDesecrationActionTax(m);
   }
 
   /**
@@ -1530,6 +1615,254 @@ export class GameState {
     this.hazardZones = this.hazardZones.filter((zone) => zone.roundsLeft > 0);
   }
 
+  // ---- Desecrate -----------------------------------------------------------
+
+  /**
+   * Minions are the drafted mages and the things they conjure — the player's own
+   * kind. Wild creatures spawned by a wave or a room are not.
+   */
+  isMinion(m: Mage): boolean {
+    return !m.enemyKind;
+  }
+
+  /** Desecrate spares black things and minions; everything else is fair game. */
+  isDesecrationAffected(m: Mage): boolean {
+    return m.alive && !this.isMinion(m) && m.profile.primary !== 'black';
+  }
+
+  /** Whether any desecration currently forbids `m` from being healed at all. */
+  desecrationBlocksHealing(m: Mage): boolean {
+    if (!this.isDesecrationAffected(m)) return false;
+    if (this.desecrations.some((law) => law.blocksHealing)) return true;
+    return this.desecrationFieldsAt(m.pos).some((field) => field.blocksHealing);
+  }
+
+  /** The owner a desecration hands `m`'s healing to instead, if one is stealing it. */
+  desecrationHealThief(m: Mage): Mage | null {
+    if (!this.isDesecrationAffected(m)) return null;
+    for (const law of this.desecrations) {
+      if (!law.redirectHealing) continue;
+      const owner = this.mages[law.ownerIndex];
+      if (owner?.alive && owner !== m) return owner;
+    }
+    return null;
+  }
+
+  addDesecration(owner: Mage, opts: Omit<Desecration, 'id' | 'ownerIndex' | 'ownerTeam'>): Desecration {
+    const law: Desecration = {
+      ...opts,
+      id: this.nextId++,
+      ownerIndex: this.mages.indexOf(owner),
+      ownerTeam: owner.team,
+    };
+    this.desecrations.push(law);
+    return law;
+  }
+
+  addDesecrationField(
+    at: Vec2,
+    owner: Mage,
+    opts: Omit<DesecrationField, 'id' | 'x' | 'y' | 'ownerIndex' | 'ownerTeam'>
+  ): DesecrationField {
+    const field: DesecrationField = {
+      ...opts,
+      id: this.nextId++,
+      x: at.x,
+      y: at.y,
+      ownerIndex: this.mages.indexOf(owner),
+      ownerTeam: owner.team,
+    };
+    this.desecrationFields.push(field);
+    return field;
+  }
+
+  desecrationFieldsAt(at: Vec2): DesecrationField[] {
+    return this.desecrationFields.filter(
+      (field) => dist(at, { x: field.x, y: field.y }) <= field.radius
+    );
+  }
+
+  /** Roll one desecration's dice on `m`, returning the total it actually dealt. */
+  private rollDesecrationTicks(m: Mage, owner: Mage, ticks: DesecrationTick[]): number {
+    let dealt = 0;
+    for (const tick of ticks) {
+      if (!m.alive) break;
+      dealt += dealDamage(
+        this.effectContext(owner, m, m.pos),
+        m,
+        dmg(this.rng.roll(tick.spec).total, tick.type, 'physical'),
+        { canMiss: false, aoe: true, noImpactFx: true }
+      );
+    }
+    if (dealt > 0) this.vfxSink?.spellEffect?.(m, 'corrosive');
+    return dealt;
+  }
+
+  /** Field-wide desecration upkeep at the start of an affected unit's turn. */
+  private applyDesecrations(m: Mage): void {
+    if (this.desecrations.length === 0 || !this.isDesecrationAffected(m)) return;
+    for (const law of this.desecrations) {
+      if (!m.alive) return;
+      const owner = this.mages[law.ownerIndex] ?? m;
+      const dealt = this.rollDesecrationTicks(m, owner, law.ticks);
+      if (law.lifesteal && dealt > 0 && owner.alive && owner !== m) {
+        heal(this.effectContext(owner, m, null), owner, dealt);
+      }
+      if (law.wither && m.alive) {
+        const room = Math.max(0, law.wither.cap - m.witheredMaxHp);
+        const bite = Math.min(law.wither.perTurn, room, Math.max(0, m.maxHp - 1));
+        if (bite > 0) {
+          m.maxHp -= bite;
+          m.witheredMaxHp += bite;
+          m.hp = Math.min(m.hp, m.maxHp);
+          this.log(`${law.name} strips ${bite} maximum health from ${m.name}.`);
+        }
+      }
+      this.log(`${m.name} suffers under ${law.name}.`);
+    }
+  }
+
+  /** Fouled-ground upkeep at the start of a unit's turn. */
+  private applyDesecrationFields(m: Mage): void {
+    if (this.desecrationFields.length === 0) return;
+    for (const field of this.desecrationFieldsAt(m.pos)) {
+      if (!m.alive) return;
+      if (!this.isDesecrationAffected(m)) continue;
+      const owner = this.mages[field.ownerIndex] ?? m;
+      const dealt = this.rollDesecrationTicks(m, owner, field.ticks);
+      if (dealt > 0) {
+        if (field.lifesteal && owner.alive && owner !== m) {
+          heal(this.effectContext(owner, m, null), owner, dealt);
+        }
+        if (field.healKin) {
+          for (const kin of this.mages) {
+            if (!kin.alive || kin === m) continue;
+            if (this.isMinion(kin) || kin.profile.primary === 'black') {
+              heal(this.effectContext(owner, kin, null), kin, dealt);
+            }
+          }
+        }
+      }
+      if (field.reapPerTurn && m.alive) this.applyReap(m, field.reapPerTurn, owner);
+      if (field.rot && m.alive) {
+        applyStackingDot(this.effectContext(owner, m, m.pos), m, {
+          name: 'Plague Rot',
+          key: 'dot:plague-rot',
+          damage: dmg(0, 'corrosive', 'physical'),
+          perStackSpec: field.rot.spec,
+          maxStacks: field.rot.maxStacks,
+          refreshDuration: 2,
+          decayPerTick: true,
+          infectRadius: field.rot.spreadRadius,
+        });
+      }
+      if (field.executeRadius != null && field.executeBelow != null && m.alive) {
+        const core = dist(m.pos, { x: field.x, y: field.y }) <= field.executeRadius;
+        if (core && m.hp <= field.executeBelow) {
+          this.log(`${m.name} is drawn into the heart of ${field.name} and unmade.`);
+          this.killByDeathWord(m, owner);
+        }
+      }
+    }
+  }
+
+  /**
+   * The sink's toll. This runs AFTER `Mage.beginTurn()` has refilled the turn,
+   * and again whenever a unit walks in, so it cannot simply be reset away.
+   */
+  applyDesecrationActionTax(m: Mage): void {
+    if (!m.alive) return;
+    const taxed = this.desecrationFieldsAt(m.pos).some((field) => field.stripsActions);
+    if (!taxed) return;
+    if (m.actions.bonus <= 0 && m.reactedThisCycle) return;
+    m.actions.bonus = Math.max(0, m.actions.bonus - 1);
+    m.reactedThisCycle = true;
+    this.log(`Desecrated ground smothers ${m.name}'s bonus action and reaction.`);
+  }
+
+  /** Everything a desecration does when something dies anywhere on the board. */
+  private onDesecrationDeath(victim: Mage, source: Mage): void {
+    for (const law of this.desecrations) {
+      const owner = this.mages[law.ownerIndex] ?? source;
+      if (law.reapOnDeath) {
+        for (const m of this.mages) {
+          if (this.isDesecrationAffected(m)) this.applyReap(m, law.reapOnDeath, owner);
+        }
+      }
+      if (law.healKinOnDeath) {
+        for (const m of this.mages) {
+          if (!m.alive) continue;
+          if (this.isMinion(m) || m.profile.primary === 'black') {
+            heal(this.effectContext(owner, m, null), m, law.healKinOnDeath);
+          }
+        }
+      }
+    }
+    for (const field of this.desecrationFields) {
+      const owner = this.mages[field.ownerIndex] ?? source;
+      const centre = { x: field.x, y: field.y };
+      const inside = dist(victim.pos, centre) <= field.radius;
+      if (inside && field.growOnDeath) {
+        const room = Math.max(0, (field.growOnDeathCap ?? Infinity) - (field.grownByDeath ?? 0));
+        const grow = Math.min(field.growOnDeath, room);
+        if (grow > 0) {
+          field.radius += grow;
+          field.grownByDeath = (field.grownByDeath ?? 0) + grow;
+        }
+      }
+      if (inside && field.pullOnDeath) {
+        const corpse = { ...victim.pos };
+        for (const m of this.mages) {
+          if (!m.alive || m === victim) continue;
+          const drawn = dist(m.pos, centre) <= field.radius;
+          const dest = drawn ? corpse : stepTowards(m.pos, corpse, field.pullOnDeath);
+          this.forceMove(owner, m, dest);
+        }
+        this.log(`${field.name} collapses inward around ${victim.name}.`);
+      }
+      if (field.relocateOnDeath && this.isDesecrationAffected(victim) === false) continue;
+      if (field.relocateOnDeath && field.relocatedRound !== this.round) {
+        field.relocatedRound = this.round;
+        field.x = victim.x;
+        field.y = victim.y;
+        field.turnsLeft = Math.max(field.turnsLeft, 5);
+        this.log(`${field.name} settles over ${victim.name}'s remains.`);
+      }
+    }
+  }
+
+  /** Age desecrations once per round, growing the ground that creeps. */
+  private tickDesecrations(): void {
+    for (const law of this.desecrations) law.roundsLeft -= 1;
+    this.desecrations = this.desecrations.filter((law) => law.roundsLeft > 0);
+    for (const field of this.desecrationFields) {
+      field.turnsLeft -= 1;
+      if (field.growPerRound) field.radius += field.growPerRound;
+      if (field.withersWhenEmpty) {
+        const fed = this.mages.some(
+          (m) =>
+            this.isDesecrationAffected(m) &&
+            dist(m.pos, { x: field.x, y: field.y }) <= field.radius
+        );
+        if (!fed) field.turnsLeft -= 1;
+      }
+    }
+    this.desecrationFields = this.desecrationFields.filter((field) => field.turnsLeft > 0);
+  }
+
+  /** A sealed desecration will not let a walker cross back out of it. */
+  clampToDesecrationFields(mover: Mage, from: Vec2, to: Vec2): Vec2 {
+    let dest = to;
+    for (const field of this.desecrationFields) {
+      if (!field.sealed) continue;
+      const centre = { x: field.x, y: field.y };
+      if (dist(from, centre) > field.radius) continue;
+      if (dist(dest, centre) <= field.radius) continue;
+      dest = stepTowards(centre, dest, field.radius);
+    }
+    return dest;
+  }
+
   /**
    * Bind Shadow Veil: the sealed bearer is worn down each turn. Its own side
    * cannot reach it to help (see {@link isUntargetable}), but the sealer can.
@@ -1959,6 +2292,7 @@ export class GameState {
         this.tickFeedingDarks();
         this.tickRottingDarks();
         this.tickHazardZones();
+        this.tickDesecrations();
         this.startRound();
       }
       const idx = this.initiativeOrder[this.turnPtr];
@@ -3184,6 +3518,7 @@ export class GameState {
       this.log(`${owner.name}'s Wings claim 1 Energy (${owner.deathsAngelEnergy}).`);
     }
     this.transferReapOnDeath(target, owner);
+    this.onDesecrationDeath(target, owner);
     this.onMageDefeated?.(target, source);
   }
 
@@ -5545,6 +5880,8 @@ export class GameState {
     this.mutivargZones = [];
     this.corrosionPools = [];
     this.hazardZones = [];
+    this.desecrations = [];
+    this.desecrationFields = [];
     this.pierceEchoes = [];
     this.extraTurnQueue = [];
     this.stack = [];
@@ -5640,8 +5977,10 @@ export class GameState {
     const mut = phased ? { dest: clamp.dest } : this.clampToMutivargZones(source, source.pos, clamp.dest);
     // A Reaper leashes its prey: you cannot flee further than allowed.
     const leash = this.clampToReaperLeash(source, source.pos, mut.dest);
+    // A sealed desecration will not let its prisoners walk back out.
+    const sealed = this.clampToDesecrationFields(source, source.pos, leash);
     // Stop short of running into the other mage's body.
-    const dest = phased ? leash : this.clampToMages(source, source.pos, leash);
+    const dest = phased ? sealed : this.clampToMages(source, source.pos, sealed);
     return {
       id: this.nextId++,
       kind: 'move',

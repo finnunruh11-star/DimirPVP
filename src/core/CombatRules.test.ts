@@ -1,7 +1,8 @@
-import { applyDebuff, applyDot, applyInvisibility, applyStun, dealDamage } from '../effects/effects';
+import { applyDebuff, applyDot, applyInvisibility, applyStun, dealDamage, heal } from '../effects/effects';
 import { applyEnemyTraits } from '../pve/swamprun';
 import { RANGE_UNIT } from '../config/constants';
 import { FIELD, MELEE_RANGE } from '../config/constants';
+import { dmg } from './Damage';
 import { Dice } from './Dice';
 import { analyzeDodge, dodgeGrantsBonusAction } from './Dodge';
 import { GameState, hazardDistance } from './GameState';
@@ -1104,6 +1105,156 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       'The caster is carried somewhere else entirely'
     );
     assert(bystander.hp < 9000, 'Anything the ride passes over is grazed');
+  }],
+
+  ['spares black and minion units from a field-wide desecration', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: ['desecrate'] });
+    const beast = new Mage({ name: 'Beast', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    applyEnemyTraits(beast, 'zombie', new Dice(3));
+    const ally = new Mage({ name: 'Ally', isAI: false, team: 1, position: { x: 340, y: 270 }, loadout: [] });
+    const blackBeast = new Mage({ name: 'Black Beast', isAI: true, team: 2, position: { x: 440, y: 270 }, loadout: ['curse', 'drain'] });
+    applyEnemyTraits(blackBeast, 'zombie', new Dice(3));
+    for (const m of [beast, ally, blackBeast]) {
+      m.maxHp = 400;
+      m.hp = 400;
+    }
+    const game = new GameState([caster, beast, ally, blackBeast], 11);
+    const spell = getSpell(['desecrate']);
+    assert(spell, 'Expected Desecrate to be registered.');
+
+    void spell.cast(game.effectContext(caster, null, null));
+    equal(game.desecrations.length, 1, 'The law is laid over the whole board');
+    equal(game.isDesecrationAffected(beast), true, 'A wild creature is fair game');
+    equal(game.isDesecrationAffected(ally), false, 'Minions are spared');
+    equal(game.isDesecrationAffected(blackBeast), false, 'So is anything black');
+
+    for (const m of [beast, ally, blackBeast]) {
+      game.currentIndex = game.mages.indexOf(m);
+      game.beginTurn();
+    }
+    assert(beast.hp < 400, 'The creature rots wherever it stands');
+    equal(ally.hp, 400, 'The minion is untouched');
+    equal(blackBeast.hp, 400, 'The black creature is untouched');
+  }],
+
+  ['refuses all healing on desecrated ground and hands it back when tithed', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: ['desecrate'] });
+    const beast = new Mage({ name: 'Beast', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    applyEnemyTraits(beast, 'zombie', new Dice(3));
+    beast.maxHp = 400;
+    beast.hp = 100;
+    caster.maxHp = 400;
+    caster.hp = 100;
+    const game = new GameState([caster, beast], 13);
+
+    // A blanket law stops mending outright.
+    void getSpell(['desecrate'])!.cast(game.effectContext(caster, null, null));
+    heal(game.effectContext(caster, beast, null), beast, 50);
+    equal(beast.hp, 100, 'Nothing mends on unhallowed ground');
+
+    // The tithe steals it instead of blocking it.
+    const tithed = new GameState([caster, beast], 13);
+    caster.hp = 100;
+    beast.hp = 100;
+    void getSpell(['desecrate', 'curse', 'drain'])!.cast(tithed.effectContext(caster, null, null));
+    heal(tithed.effectContext(caster, beast, null), beast, 50);
+    equal(beast.hp, 100, 'The victim still gains nothing');
+    assert(caster.hp > 100, 'Its healing is handed to the desecrator');
+  }],
+
+  ['mirrors Desecrate Corrode Death and Desecrate Drain Death but for the lifesteal', () => {
+    const corrode = getSpell(['desecrate', 'corrode', 'death']);
+    const drain = getSpell(['desecrate', 'drain', 'death']);
+    assert(corrode && drain, 'Expected both Death desecrations to be registered.');
+
+    const build = (spell: NonNullable<typeof corrode>) => {
+      const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: ['desecrate'] });
+      const beast = new Mage({ name: 'Beast', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+      const doomed = new Mage({ name: 'Doomed', isAI: true, team: 2, position: { x: 500, y: 270 }, loadout: [] });
+      for (const m of [beast, doomed]) applyEnemyTraits(m, 'zombie', new Dice(3));
+      beast.maxHp = 400;
+      beast.hp = 400;
+      caster.maxHp = 400;
+      caster.hp = 200;
+      const game = new GameState([caster, beast, doomed], 17);
+      void spell.cast(game.effectContext(caster, null, null));
+      return { caster, beast, doomed, game };
+    };
+
+    const a = build(corrode);
+    const b = build(drain);
+    equal(
+      a.game.desecrations[0].ticks.map((t) => `${t.spec} ${t.type}`),
+      b.game.desecrations[0].ticks.map((t) => `${t.spec} ${t.type}`),
+      'Identical dice'
+    );
+    equal(a.game.desecrations[0].roundsLeft, b.game.desecrations[0].roundsLeft, 'Identical duration');
+    equal(a.game.desecrations[0].healKinOnDeath, undefined, 'Corrode gives nothing back');
+    equal(b.game.desecrations[0].healKinOnDeath, 3, 'Drain heals its own kind');
+
+    // A death anywhere reaps every affected unit under either law.
+    dealDamage(a.game.effectContext(a.caster, a.doomed, null), a.doomed, dmg(9999, 'typeless'));
+    assert(a.game.reapOn(a.beast) >= 2, 'Any death reaps the affected');
+    dealDamage(b.game.effectContext(b.caster, b.doomed, null), b.doomed, dmg(9999, 'typeless'));
+    assert(b.caster.hp > 200, 'Only the Drain version pays its caster');
+  }],
+
+  ['withers maximum health under Digestion and hands it back after the combat', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: ['desecrate'] });
+    const beast = new Mage({ name: 'Beast', isAI: true, team: 2, position: { x: 400, y: 270 }, loadout: [] });
+    applyEnemyTraits(beast, 'zombie', new Dice(3));
+    beast.maxHp = 400;
+    beast.hp = 400;
+    const game = new GameState([caster, beast], 19);
+    void getSpell(['desecrate', 'corrode', 'drain'])!.cast(game.effectContext(caster, null, null));
+
+    for (let turn = 0; turn < 6; turn++) {
+      game.currentIndex = 1;
+      game.beginTurn();
+    }
+    equal(beast.witheredMaxHp, 8, 'It stops biting at the eight-point cap');
+    equal(beast.maxHp, 392, 'Maximum health really is gone while it runs');
+
+    beast.resetForNewCombat();
+    equal(beast.maxHp, 400, 'The combat ending gives every point back');
+    equal(beast.witheredMaxHp, 0, 'And clears the tally');
+  }],
+
+  ['seals walkers inside the Desecrate Death sink and unmakes them at its heart', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 200, y: 270 }, loadout: ['desecrate'] });
+    const beast = new Mage({ name: 'Beast', isAI: true, team: 2, position: { x: 600, y: 270 }, loadout: [] });
+    applyEnemyTraits(beast, 'zombie', new Dice(3));
+    beast.maxHp = 400;
+    beast.hp = 400;
+    const game = new GameState([caster, beast], 23);
+    void getSpell(['desecrate', 'death'])!.cast(game.effectContext(caster, null, { x: 600, y: 270 }));
+    const field = game.desecrationFields[0];
+    assert(field?.sealed, 'Expected a sealed sink.');
+
+    // Walking cannot carry it back out of the circle.
+    const bolt = game.makeMoveItem(beast, { x: 600 + 40 * RANGE_UNIT, y: 270 });
+    const dest = bolt.targetPoint!;
+    assert(
+      Math.hypot(dest.x - field.x, dest.y - field.y) <= field.radius + 1,
+      'The sink will not let a walker leave'
+    );
+
+    // Its turn start costs it a bonus action and its reaction.
+    const outside = new Mage({ name: 'Free', isAI: true, team: 2, position: { x: 100, y: 270 }, loadout: [] });
+    applyEnemyTraits(outside, 'zombie', new Dice(3));
+    outside.beginTurn();
+    game.currentIndex = 1;
+    game.beginTurn();
+    equal(beast.actions.bonus, outside.actions.bonus - 1, 'The sink costs one bonus action');
+    equal(beast.reactedThisCycle, true, 'And the reaction with it');
+
+    // A wounded body dragged to the heart is unmade outright.
+    beast.hp = 6;
+    beast.x = field.x;
+    beast.y = field.y;
+    game.currentIndex = 1;
+    game.beginTurn();
+    equal(beast.alive, false, 'Below ten health at the centre is simply death');
   }],
 ];
 
