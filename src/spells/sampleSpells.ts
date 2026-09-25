@@ -62,6 +62,14 @@ import {
   twistStrike,
 } from '../effects/effects';
 import { registerSpell } from './registry';
+import {
+  applyMindLightningStack,
+  closestMindLightningDirection,
+  MIND_LIGHTNING_DIRECTIONS,
+  mindLightningBoltTarget,
+  mindLightningDamage,
+  mindLightningDashCount,
+} from './mindLightning';
 import type { Mage } from '../core/Mage';
 import {
   makeDesertblight,
@@ -80,6 +88,15 @@ import { dist, type Vec2 } from '../core/utils';
 
 /** Convert an abstract range number (5 / 10 / 15) to pixels. */
 const R = (units: number): number => units * RANGE_UNIT;
+const MIND_LIGHTNING_PIERCE_DC = 16;
+
+async function stormDie(ctx: EffectContext, sides: number, label: string): Promise<number> {
+  let value = rollDice(ctx, `1d${sides}`, label, ctx.caster);
+  if (await ctx.requestReroll?.({ label, value, sides })) {
+    value = rollDice(ctx, `1d${sides}`, `${label} reroll`, ctx.caster);
+  }
+  return value;
+}
 
 /** Nearest living enemy of the caster within `radius` of `at`, if any. */
 function enemyNear(ctx: EffectContext, at: { x: number; y: number }, radius: number): Mage | null {
@@ -2003,6 +2020,154 @@ registerSpell({
 });
 
 registerSpell({
+  name: 'Lightning Storm',
+  words: ['lightning', 'storm'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 18,
+  description:
+    'Roll two d20s for range, a d8 for hits, a d6 for recoil, a shared d4 for damage, and a d3 for repeat rounds. Each die may be rerolled once. Choose each eligible target once before repeating any; the same volley repeats automatically at your next upkeeps.',
+  visual: { preset: 'nova', color: 0x72d7ff, size: R(10), speed: 2 },
+  async cast(ctx) {
+    const range = R(
+      (await stormDie(ctx, 20, 'Lightning Storm range')) +
+      (await stormDie(ctx, 20, 'Lightning Storm range'))
+    );
+    const hits = await stormDie(ctx, 8, 'Lightning Storm hits');
+    const recoil = await stormDie(ctx, 6, 'Lightning Storm recoil');
+    const damage = await stormDie(ctx, 4, 'Lightning Storm damage');
+    const repeats = await stormDie(ctx, 3, 'Lightning Storm repeats');
+    const eligible = ctx.game.mages.filter(
+      (target) =>
+        target !== ctx.caster &&
+        target.alive &&
+        dist(ctx.caster.pos, target.pos) <= range
+    );
+    const targetIndices: number[] = [];
+    let remaining = [...eligible];
+    for (let hit = 1; hit <= hits && eligible.length > 0; hit += 1) {
+      if (remaining.length === 0) remaining = [...eligible].filter((target) => target.alive);
+      const target = ctx.requestCombatant
+        ? await ctx.requestCombatant({
+            candidates: remaining,
+            range,
+            prompt: `Lightning Storm: choose strike ${hit}/${hits}`,
+          })
+        : remaining[0];
+      if (!target) break;
+      targetIndices.push(ctx.game.mages.indexOf(target));
+      remaining = remaining.filter((candidate) => candidate !== target);
+    }
+    for (const targetIndex of targetIndices) {
+      const target = ctx.game.mages[targetIndex];
+      if (!target?.alive) continue;
+      await ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
+      dealDamage(ctx, target, dmg(damage, 'heat', 'physical'), { canMiss: false });
+    }
+    dealDamage(ctx, ctx.caster, dmg(recoil, 'heat', 'physical'), { canMiss: false });
+    addOrExtendStatus(
+      ctx.caster.statuses,
+      {
+        key: 'lightning-storm',
+        name: 'Lightning Storm',
+        kind: 'lightningStorm',
+        duration: repeats,
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        targetIndices,
+        damage,
+        critical: !!ctx.crit,
+      },
+      false
+    );
+  },
+});
+
+registerSpell({
+  name: 'Mind Storm',
+  words: ['mind', 'storm'],
+  actionType: 'main',
+  range: R(20),
+  targeting: 'point',
+  dc: 18,
+  aoe: { kind: 'circle', radius: R(10) },
+  description:
+    'Every other living entity within 10cm of a target point within 20cm becomes Foreseen for 10 turns: it cannot react and takes +20 damage.',
+  visual: { preset: 'burst', color: 0xff8be0, size: R(10), speed: 1.5 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    for (const target of ctx.game.magesInRadius(ctx.targetPoint, R(10), ctx.caster)) {
+      if (target === ctx.caster) continue;
+      applyControl(ctx, target, { name: 'Foreseen', mode: 'expose', duration: 10 });
+      applyDebuff(ctx, target, {
+        name: 'Foreseen',
+        key: 'mind-storm-foreseen',
+        duration: 10,
+        mods: { damageTaken: 20 },
+      });
+    }
+  },
+});
+
+registerSpell({
+  name: 'Fire Storm',
+  words: ['fire', 'storm'],
+  actionType: 'main',
+  range: R(10),
+  targeting: 'point',
+  dc: 18,
+  aoe: { kind: 'circle', radius: R(10) },
+  description:
+    'Choose a point within 10cm. Roll 1d8 once; every other living entity within 10cm of that point gains that many Fire stacks.',
+  visual: { preset: 'burst', color: 0xff5a36, size: R(10), speed: 1.8 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const stacks = rollDice(ctx, '1d8', 'Fire Storm');
+    for (const target of ctx.game.magesInRadius(ctx.targetPoint, R(10), ctx.caster)) {
+      if (target !== ctx.caster) applyFireStacks(ctx, target, stacks);
+    }
+  },
+});
+
+registerSpell({
+  name: 'Lightning Mind Storm',
+  words: ['lightning', 'mind', 'storm'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 20,
+  description:
+    'Twice for every living entity, apply 2 Mindconduct stacks to a random living enemy. Then roll 1d10 and resolve that many normal weighted Mindconduct bolts.',
+  visual: { preset: 'nova', color: 0x4ba8ff, size: R(12), speed: 2 },
+  async cast(ctx) {
+    const living = ctx.game.mages.filter((target) => target.alive);
+    const enemies = living.filter((target) => target.team !== ctx.caster.team);
+    for (let application = 0; application < living.length * 2 && enemies.length > 0; application += 1) {
+      const target = ctx.rng.pick(enemies);
+      applyMindLightningStack(target, 2);
+      ctx.log(`${target.name} gains 2 Mind Lightning stacks (${target.lightningMindStacks}).`);
+    }
+    const bolts = rollDice(ctx, '1d10', 'Lightning Mind Storm bolts', ctx.caster);
+    for (let bolt = 1; bolt <= bolts; bolt += 1) {
+      const marked = enemies.filter((target) => target.alive && target.lightningMindStacks > 0);
+      const sides = 1 + marked.reduce((total, target) => total + target.lightningMindStacks, 0);
+      const route = rollDice(ctx, `1d${sides}`, `Lightning Mind Storm bolt ${bolt}`, ctx.caster);
+      const target = mindLightningBoltTarget(ctx.caster, marked, route);
+      await (
+        ctx.vfx?.mindLightningBolt?.(ctx.caster.pos, target.pos) ??
+        ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos)
+      );
+      const base = rollDice(ctx, '1d3', `Lightning Mind Storm damage ${bolt}`, target);
+      dealDamage(ctx, target, dmg(mindLightningDamage(base, target.lightningMindStacks), 'heat', 'sanity'), {
+        canMiss: false,
+      });
+      await ctx.resolveImpacts?.();
+      if (bolt < bolts) await ctx.vfx?.pause?.(240);
+    }
+  },
+});
+
+registerSpell({
   name: 'Fire Mind',
   words: ['fire', 'mind'],
   actionType: 'main',
@@ -2122,7 +2287,7 @@ registerSpell({
   targeting: 'self',
   dc: 11,
   description:
-    'Enchant your active weapon. Each hit arcs half its dealt damage as sanity. The conductor may overload you, surge to two targets, or on a natural 20 arc to everything nearby.',
+    'Enchant your active weapon for a roll-scaled number of hits. Each hit adds 1 persistent Mind Lightning stack to its enemy, then a weighted arc strikes you or a marked enemy for stack-scaled sanity damage.',
   visual: { preset: 'conjure', color: 0x79bfff, size: 46, speed: 1.7 },
   cast(ctx) {
     const target = ctx.target ?? ctx.caster;
@@ -2132,24 +2297,15 @@ registerSpell({
       return;
     }
     const power = lightningPower(ctx);
-    const gamble = lightningGamble(ctx);
-    if (gamble === 'overload') {
-      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Synaptic overload'), 'heat', 'sanity'), {
-        canMiss: false,
-      });
-      if (!ctx.crit) {
-        ctx.log(`The conductor grounds into ${target.name} before it can bind.`);
-        return;
-      }
-      ctx.log(`The critical conductor grounds into ${target.name} and binds anyway.`);
-    }
+    const effectivePower = power * (ctx.crit ? 2 : 1);
     target.weaponEnchant = 'lightningMind';
     target.enchantedWeapon = weaponId;
     target.lightningMindPower = power;
     target.lightningMindCritical = !!ctx.crit;
-    target.lightningMindSurged = gamble === 'surge';
+    target.lightningMindRange = lightningRange(ctx, Math.max(1, Math.ceil(effectivePower / 3)));
+    target.lightningMindCharges = critScale(ctx, Math.max(1, Math.ceil(effectivePower / 6)));
     ctx.log(
-      `${target.name}'s weapon holds a ${power}-power mindstorm${ctx.crit ? ' that will arc to everything nearby' : ''}.`
+      `${target.name}'s weapon holds ${target.lightningMindCharges} ${power}-power Mind Lightning charge${target.lightningMindCharges === 1 ? '' : 's'}.`
     );
   },
 });
@@ -2298,7 +2454,7 @@ registerSpell({
   targeting: 'enemy',
   dc: 14,
   description:
-    'Deal roll-scaled Fire to health and sanity, then apply 2–4 Blueflare based on Lightning power (range 15).',
+    'Deal roll-scaled Fire to health and sanity, then apply 2–4 Blueflare based on Lightning power (range 15). The target gains 1 persistent Mind Lightning stack; sanity damage scales by 50% per stack after the first.',
   visual: { preset: 'beam', color: 0x6caeff, size: 13, speed: 1.6 },
   cast(ctx) {
     if (!ctx.target) return;
@@ -2312,10 +2468,11 @@ registerSpell({
     }
     if (!ctx.target.alive) return;
     const sanityAmount = rollDice(ctx, '1d6', 'Fire Lightning Mind sanity') + bonus;
+    const stacks = applyMindLightningStack(ctx.target);
     dealDamage(
       ctx,
       ctx.target,
-      dmg(sanityAmount, 'heat', 'sanity')
+      dmg(mindLightningDamage(sanityAmount, stacks), 'heat', 'sanity')
     );
     if (ctx.target.alive) {
       applyBlueflareStacks(ctx, ctx.target, Math.min(4, 2 + Math.floor(power / 12)));
@@ -2331,7 +2488,10 @@ registerSpell({
       if (candidates.length > 0) {
         const arcTarget = ctx.rng.pick(candidates);
         ctx.vfx?.lightningBolt?.(ctx.target.pos, arcTarget.pos);
-        dealDamage(ctx, arcTarget, dmg(sanityAmount, 'heat', 'sanity'), { canMiss: false });
+        const arcStacks = applyMindLightningStack(arcTarget);
+        dealDamage(ctx, arcTarget, dmg(mindLightningDamage(sanityAmount, arcStacks), 'heat', 'sanity'), {
+          canMiss: false,
+        });
       }
     }
   },
@@ -2469,113 +2629,116 @@ registerSpell({
   actionType: 'main',
   range: 0,
   targeting: 'self',
-  dc: 14,
+  dc: MIND_LIGHTNING_PIERCE_DC,
+  noCrit: true,
   description:
-    'Chain through random unvisited allies or enemies within Lightning-power range. Each jump deals 1d6 Pierce, 1d6 sanity, and applies 1 Blueflare; the range is divided by 3 each jump.',
+    'Choose 4 different compass directions. Then dash 1d4cm, 2d4cm, 3d4cm, and 4d4cm in that order. Each enemy crossed gains 1 persistent Mind Lightning stack. Then fire 4 bolts: each rolls 1d(1 + all enemy stacks); 1 hits you and each enemy owns outcomes equal to its stacks. Each bolt deals 1d3 x 50% x (target stacks + 1) sanity.',
   visual: { preset: 'nova', color: 0x65b8ff, size: 76, speed: 1.6 },
   async cast(ctx) {
-    const power = lightningPower(ctx);
-    let range = R(power * (ctx.crit ? 2 : 1));
-    const visited = new Set<Mage>();
-    while (range >= R(1) && ctx.caster.alive) {
-      const candidates = ctx.game.mages.filter(
-        (target) =>
-          target !== ctx.caster &&
-          target.alive &&
-          !visited.has(target) &&
-          Math.hypot(target.x - ctx.caster.x, target.y - ctx.caster.y) <= range
+    const dashCount = mindLightningDashCount(Math.floor(MIND_LIGHTNING_PIERCE_DC / 4));
+    const directionRange = Math.hypot(FIELD.w, FIELD.h);
+    const remainingDirections = [...MIND_LIGHTNING_DIRECTIONS];
+    const chosenDirections: Vec2[] = [];
+    for (let step = 1; step <= dashCount; step += 1) {
+      const origin = { ...ctx.caster.pos };
+      const fallback = remainingDirections[0];
+      const chosen = ctx.requestPoint
+        ? await ctx.requestPoint({
+            maxRange: directionRange,
+            origin,
+            prompt: `Lightning Mind Pierce: choose direction ${step}/${dashCount}`,
+            directions: remainingDirections,
+            required: true,
+          })
+        : { x: origin.x + fallback.x, y: origin.y + fallback.y };
+      if (!chosen) return;
+      const direction = closestMindLightningDirection(
+        { x: chosen.x - origin.x, y: chosen.y - origin.y },
+        remainingDirections
       );
-      if (candidates.length === 0) break;
-      if (ctx.rng.chance(1 / Math.max(1, power))) {
-        ctx.log(`${ctx.caster.name}'s neural current folds back into its source!`);
-        dealDamage(
-          ctx,
-          ctx.caster,
-          dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce backlash') + Math.floor(power / 8), 'heat', 'sanity'),
-          { canMiss: false }
-        );
-        break;
-      }
-      const target = ctx.rng.pick(candidates);
-      visited.add(target);
-      const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
-      blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
-      await bolt;
-      const bonus = Math.floor(power / 8);
-      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce') + bonus, 'pierce', 'physical'), {
-        canMiss: false,
+      chosenDirections.push(direction);
+      remainingDirections.splice(remainingDirections.indexOf(direction), 1);
+    }
+
+    for (let step = 1; step <= chosenDirections.length && ctx.caster.alive; step += 1) {
+      const distance = R(
+        rollDice(ctx, `${step}d4`, `Lightning Mind Pierce dash ${step}`, ctx.caster)
+      );
+      await ctx.resolveImpacts?.();
+      const from = { ...ctx.caster.pos };
+      dash(ctx, ctx.caster, {
+        direction: chosenDirections[step - 1],
+        distance,
       });
-      if (target.alive) {
-        dealDamage(
-          ctx,
-          target,
-          dmg(rollDice(ctx, '1d6', 'Lightning Mind Pierce sanity') + bonus, 'heat', 'sanity'),
-          { canMiss: false }
-        );
-      }
-      if (target.alive) applyBlueflareStacks(ctx, target, 1);
-      if (ctx.crit) {
-        const forkCandidates = candidates.filter((candidate) => candidate !== target);
-        if (forkCandidates.length > 0) {
-          const fork = ctx.rng.pick(forkCandidates);
-          await ctx.vfx?.lightningBolt?.(target.pos, fork.pos);
-          dealDamage(ctx, fork, dmg(rollDice(ctx, '1d6', 'Neural fork') + bonus, 'heat', 'sanity'), {
-            canMiss: false,
-          });
-          if (fork.alive) applyBlueflareStacks(ctx, fork, 1);
-          visited.add(fork);
+      const segment = { from, to: { ...ctx.caster.pos } };
+      for (const enemy of ctx.game.mages) {
+        if (
+          enemy.alive &&
+          enemy.team !== ctx.caster.team &&
+          segmentHitsMage(segment, enemy)
+        ) {
+          applyMindLightningStack(enemy);
+          ctx.log(`${enemy.name} gains 1 Mind Lightning stack (${enemy.lightningMindStacks}).`);
         }
       }
-      range /= 3;
+      await ctx.reactionWindow?.(`Lightning Mind Pierce dash ${step}`, ctx.caster.pos);
+      if (step < chosenDirections.length) await ctx.vfx?.pause?.(420);
+    }
+
+    const marked = ctx.game.mages.filter(
+      (target) =>
+        target.alive &&
+        target.team !== ctx.caster.team &&
+        target.lightningMindStacks > 0
+    );
+    const sides = 1 + marked.reduce((total, target) => total + target.lightningMindStacks, 0);
+    for (let boltIndex = 1; boltIndex <= dashCount; boltIndex += 1) {
+      const result = rollDice(ctx, `1d${sides}`, `Lightning Mind Pierce bolt ${boltIndex}`, ctx.caster);
+      const target = mindLightningBoltTarget(ctx.caster, marked, result);
+      await (
+        ctx.vfx?.mindLightningBolt?.(ctx.caster.pos, target.pos) ??
+        ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos)
+      );
+      const base = rollDice(ctx, '1d3', `Lightning Mind Pierce damage ${boltIndex}`, target);
+      dealDamage(ctx, target, dmg(mindLightningDamage(base, target.lightningMindStacks), 'heat', 'sanity'), {
+        canMiss: false,
+      });
+      await ctx.resolveImpacts?.();
+      if (boltIndex < dashCount) await ctx.vfx?.pause?.(240);
     }
   },
 });
 
 registerSpell({
-  name: 'Lightning Mind Veil',
+  name: 'Faraday Veil',
   words: ['lightning', 'mind', 'veil'],
   actionType: 'main',
   range: R(20),
-  targeting: 'point',
+  targeting: 'ally',
   dc: 14,
   description:
-    'Tear open indiscriminate sanity storms at departure and arrival, then vanish. Power expands and intensifies both storms. A natural 20 strikes every living unit, including caster, for 20d6 sanity and 20 Blueflare at both sites.',
-  visual: { preset: 'nova', color: 0x8fa7ff, size: R(6), speed: 1.7 },
-  async cast(ctx) {
-    if (!ctx.targetPoint) return;
+    'Protect yourself or an ally. Direct hostile hits may be reduced by up to 90% and discharged into the strongest nearby Mind Lightning conductor; a failed route leaves the hit intact and deals power/8 sanity to the bearer. Duration and arc range scale heavily with Lightning power.',
+  visual: { preset: 'heal', color: 0x65b8ff, size: 58, speed: 1.5 },
+  cast(ctx) {
+    const bearer = ctx.target ?? ctx.caster;
     const power = lightningPower(ctx);
-    const origin = { ...ctx.caster.pos };
-    const storm = async (centre: { x: number; y: number }) => {
-      const targets = ctx.crit
-        ? ctx.game.mages.filter((mage) => mage.alive)
-        : ctx.game.magesInRadius(centre, R(3 + Math.floor(power / 5)), ctx.caster);
-      for (const target of targets) {
-        await ctx.vfx?.lightningBolt?.(centre, target.pos);
-        dealDamage(
-          ctx,
-          target,
-          dmg(
-            ctx.crit
-              ? rollDice(ctx, '20d6', 'Lightning Mind Veil catastrophe')
-              : rollDice(ctx, '2d6', 'Lightning Mind Veil') + Math.floor(power / 4),
-            'heat',
-            'sanity'
-          ),
-          { canMiss: false, aoe: true }
-        );
-        if (target.alive) applyBlueflareStacks(ctx, target, ctx.crit ? 20 : 2 + Math.floor(power / 10));
-      }
-    };
-    await storm(origin);
-    blinkstep(ctx, ctx.caster, {
-      toPoint: ctx.targetPoint,
-      distance: R(Math.min(20, power * (ctx.crit ? 2 : 1))),
-    });
-    await storm(ctx.caster.pos);
-    applyInvisibility(ctx, ctx.caster, {
-      duration: ctx.crit ? 20 : Math.max(1, Math.ceil(power / 6)),
-      mode: 'full',
-    });
+    const effectivePower = power * (ctx.crit ? 2 : 1);
+    addOrExtendStatus(
+      bearer.statuses,
+      {
+        key: 'faraday-veil',
+        name: 'Faraday Veil',
+        kind: 'faradayVeil',
+        duration: critScale(ctx, Math.max(1, Math.ceil(effectivePower / 6))),
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        power,
+        effectivePower,
+        arcRange: lightningRange(ctx, Math.max(1, Math.ceil(effectivePower / 3))),
+        critical: !!ctx.crit,
+      },
+      false
+    );
+    ctx.log(`${bearer.name} is protected by a ${effectivePower}-power Faraday Veil.`);
   },
 });
 

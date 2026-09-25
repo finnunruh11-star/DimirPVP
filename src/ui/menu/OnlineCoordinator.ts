@@ -52,7 +52,10 @@ export function defaultRelayUrl(): string {
 export function sanitizeOnlineLoadout(value: unknown): WordId[] {
   const source = Array.isArray(value) ? value : [];
   const words = source.filter((word): word is WordId => typeof word === 'string' && word in WORDS);
-  const base = words.filter((word) => !isModifierWord(word)).slice(0, 5);
+  const offeredBase = words.filter((word) => !isModifierWord(word));
+  const sniffWords: WordId[] = ['pierce', 'mind', 'veil', 'fire', 'lightning', 'storm'];
+  const isSniff = sniffWords.every((word) => offeredBase.includes(word));
+  const base = isSniff ? sniffWords : offeredBase.filter((word) => word !== 'storm').slice(0, 5);
   if (base.length === 0) base.push('pierce');
   return [...base, words.find(isModifierWord) ?? MODIFIER_WORDS[0]];
 }

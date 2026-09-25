@@ -2,6 +2,7 @@ import { Dice, type RollResult } from './Dice';
 import { Mage } from './Mage';
 import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
+import { applyMindLightningStack, mindLightningBoltTarget, mindLightningDamage } from '../spells/mindLightning';
 import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
 import { dealDamage, drainDamage, heal, applyDot, applyStackingDot, applyDebuff, applyForget, applyInvisibility, applyStun, dash, rollDice, teleport } from '../effects/effects';
 import { dmg } from './Damage';
@@ -29,6 +30,7 @@ import {
 } from '../config/constants';
 import { WORDS } from './Words';
 import { splitModifiers } from './Words';
+import { stormWordsCompatible } from './Colors';
 import { makeSandCadett, makeRemnant } from './sandSummons';
 import type { WordId } from './Words';
 import type { ShadowZone } from './Shadow';
@@ -46,6 +48,7 @@ import {
   type DotStatus,
   type FireVeilAuraStatus,
   type FireStatus,
+  type FaradayVeilStatus,
   type InvisibilityStatus,
   type ReapStatus,
   type SentinelFireStatus,
@@ -55,6 +58,7 @@ import {
   type AnchorSpikeStatus,
   type SealStatus,
   type StormConduitStatus,
+  type LightningStormStatus,
   type MemoryShackleStatus,
   type ShadowHookStatus,
   type PhaseOutStatus,
@@ -458,6 +462,12 @@ export class GameState {
     return result;
   }
 
+  /** Roll a d20 check and apply the acting mage's face transformation. */
+  rollD20(roller?: Mage): number {
+    const face = this.rng.roll('1d20').total;
+    return roller?.gambledD20(face) ?? face;
+  }
+
   private nextId = 1;
 
   constructor(mages: Mage[], seed?: number) {
@@ -474,7 +484,7 @@ export class GameState {
   private rollInitiative(): void {
     const scored = this.mages.flatMap((m, i) => {
       if (m.isSummon) return [];
-      const roll = this.rng.roll('1d20').total;
+      const roll = this.rollD20(m);
       const total = roll + m.effectiveDex();
       const priority = Math.max(m.profile.redPrimaryTier ? 1 : 0, m.intrinsicInitiativePriority);
       const sloth = m.swamprunCurse === 'sloth' ? 1 : 0;
@@ -499,7 +509,7 @@ export class GameState {
     this.mages.push(m);
     const idx = this.mages.length - 1;
     this.initiativeOrder.push(idx);
-    const roll = this.rng.roll('1d20').total;
+    const roll = this.rollD20(m);
     this.initiativeRolls[idx] = roll + m.effectiveDex();
   }
 
@@ -515,6 +525,11 @@ export class GameState {
     const ptr = this.initiativeOrder.indexOf(currentIndex);
     this.turnPtr = ptr >= 0 ? ptr : 0;
     this.currentIndex = this.initiativeOrder[this.turnPtr] ?? 0;
+  }
+
+  /** Roll initiative afresh for everyone present (after an ambush's free opening blow). */
+  rerollInitiative(): void {
+    this.rollInitiative();
   }
 
   /** Replace the scarab swarm with a saved one, issuing fresh object ids. */
@@ -862,6 +877,7 @@ export class GameState {
       !knight.alive ||
       !attacker.alive ||
       knight.team === attacker.team ||
+      knight === this.current ||
       knight.deathknightReactionRound === this.round
     ) return null;
     knight.deathknightReactionRound = this.round;
@@ -1098,6 +1114,7 @@ export class GameState {
     this.applyBindCurseAuras(m);
     this.applyLightAuras(m);
     this.applyFireVeilAuras(m);
+    this.applyLightningStorm(m);
     this.applyFireDamage(m);
     this.applySentinelFireDamage(m);
     this.pulseDeathsAngelWings(m);
@@ -1941,6 +1958,85 @@ export class GameState {
     } finally {
       this.stormArcing = false;
     }
+  }
+
+  /** Replay the fixed hit sequence chosen when Lightning Storm was cast. */
+  private applyLightningStorm(bearer: Mage): void {
+    const storm = bearer.statuses.find((status) => status.kind === 'lightningStorm') as
+      | LightningStormStatus
+      | undefined;
+    if (!storm) return;
+    const owner = this.mages[storm.ownerIndex] ?? bearer;
+    const ctx = this.effectContext(owner, null, bearer.pos);
+    ctx.crit = storm.critical;
+    ctx.spellRoll = undefined;
+    for (const targetIndex of storm.targetIndices) {
+      const target = this.mages[targetIndex];
+      if (!target?.alive) continue;
+      void this.vfxSink?.lightningBolt?.(bearer.pos, target.pos);
+      dealDamage(ctx, target, dmg(storm.damage, 'heat', 'physical'), {
+        canMiss: false,
+      });
+    }
+    this.log(`${bearer.name}'s Lightning Storm repeats ${storm.targetIndices.length} strikes.`);
+  }
+
+  /** Let a Faraday Veil reduce one direct hostile hit and discharge through Mindconduct. */
+  interceptFaradayVeil(attacker: Mage, bearer: Mage, amount: number): number {
+    if (amount <= 0 || attacker === bearer || attacker.team === bearer.team) return amount;
+    const veil = bearer.statuses.find((status) => status.kind === 'faradayVeil') as
+      | FaradayVeilStatus
+      | undefined;
+    if (!veil) return amount;
+
+    const conductor = this.mages
+      .filter(
+        (mage) =>
+          mage.alive &&
+          mage.team !== bearer.team &&
+          mage.lightningMindStacks > 0 &&
+          !this.isUnreachable(mage) &&
+          dist(mage.pos, bearer.pos) <= veil.arcRange
+      )
+      .sort(
+        (left, right) =>
+          right.lightningMindStacks - left.lightningMindStacks ||
+          dist(left.pos, bearer.pos) - dist(right.pos, bearer.pos) ||
+          this.mages.indexOf(left) - this.mages.indexOf(right)
+      )[0];
+    if (!conductor) return amount;
+
+    const owner = this.mages[veil.ownerIndex]?.alive ? this.mages[veil.ownerIndex] : bearer;
+    const spec = `1d${conductor.lightningMindStacks + 1}`;
+    const route = this.showRoll(spec, 'Faraday Veil conductivity', bearer).total;
+    const arcContext = this.effectContext(owner, conductor, bearer.pos);
+    arcContext.crit = false;
+    arcContext.spellRoll = undefined;
+
+    if (route === 1) {
+      const backlash = Math.max(1, Math.ceil(veil.power / 8)) * (veil.critical ? 2 : 1);
+      applyMindLightningStack(conductor);
+      void this.vfxSink?.lightningBolt?.(conductor.pos, bearer.pos);
+      dealDamage(arcContext, bearer, dmg(backlash, 'heat', 'sanity'), {
+        canMiss: false,
+        bypassFaraday: true,
+      });
+      this.log(`${bearer.name}'s Faraday Veil grounds for ${backlash} sanity damage.`);
+      return amount;
+    }
+
+    const reduction = Math.min(0.9, 0.3 + veil.effectivePower * 0.02);
+    const reduced = Math.max(0, Math.floor(amount * (1 - reduction)));
+    const prevented = amount - reduced;
+    const stacks = applyMindLightningStack(conductor);
+    const discharge = mindLightningDamage(prevented, stacks) * (veil.critical ? 2 : 1);
+    void this.vfxSink?.lightningBolt?.(bearer.pos, conductor.pos);
+    dealDamage(arcContext, conductor, dmg(discharge, 'heat', 'sanity'), {
+      canMiss: false,
+      bypassFaraday: true,
+    });
+    this.log(`${bearer.name}'s Faraday Veil prevents ${prevented} damage and discharges into ${conductor.name}.`);
+    return reduced;
   }
 
   /** Bind Curse Pierce: queue a pierce hit to be repeated at the dealer's turn end. */
@@ -5255,6 +5351,12 @@ export class GameState {
       requestEnemy: this.subTargeter
         ? (opts) => this.subTargeter!.requestEnemy(source, opts)
         : undefined,
+      requestCombatant: this.subTargeter
+        ? (opts) => this.subTargeter!.requestCombatant(source, opts)
+        : undefined,
+      requestReroll: this.subTargeter?.requestReroll
+        ? (opts) => this.subTargeter!.requestReroll!(source, opts)
+        : undefined,
       reactionWindow: this.subTargeter
         ? (label, at) => this.subTargeter!.reactionWindow(source, label, at)
         : undefined,
@@ -5280,7 +5382,10 @@ export class GameState {
       case 'self':
         return target === source;
       case 'ally':
-        return target === source;
+        if (target.team !== source.team) return false;
+        if (target === source) return true;
+        if (spell.minRange && dist(source.pos, target.pos) < spell.minRange) return false;
+        return this.withinCastRange(source, target.pos, spell.range);
       case 'any':
         // Castable on any living mage — yourself, an ally, or an enemy.
         if (target === source) return true;
@@ -5361,11 +5466,13 @@ export class GameState {
     const ctx = this.effectContext(source, target, null);
     let dealt = dealDamage(ctx, target, dmg(pierce, 'pierce', 'physical'), {
       canMiss: false,
+      triggersFaraday: true,
       noImpactFx: true,
     });
     if (target.alive) {
       dealt += dealDamage(ctx, target, dmg(shadow, 'shadow', 'physical'), {
         canMiss: false,
+        triggersFaraday: true,
         noImpactFx: true,
       });
     }
@@ -6167,7 +6274,7 @@ export class GameState {
         if (w?.toHit) {
           // Crossbow: roll d20 to hit versus DC = floor(distance in tiles) × dcPerUnit.
           const dc = Math.floor(distUnits) * w.toHit.dcPerUnit;
-          const roll = game.rng.roll('1d20').total;
+          const roll = game.rollD20(source);
           type = w.damageType;
           if (roll >= dc) {
             let dmgTotal = game.rng.roll(w.toHit.rollSpec).total;
@@ -6205,7 +6312,7 @@ export class GameState {
           let total = 0;
           if (!missed) {
             for (let h = 0; h < hits; h++) {
-              const roll = game.rng.roll('1d20').total;
+              const roll = game.rollD20(source);
               rolls.push(roll);
               total += Math.max(0, Math.floor((roll + dex + bonus - 10) / 2));
             }
@@ -6323,37 +6430,33 @@ export class GameState {
           game.log(`${source.name}'s enchanted weapon kindles Blueflare on ${target.name}.`);
         }
         if (enchant === 'lightningMind' && activeId === source.enchantedWeapon && dealt > 0) {
-          const arcDamage = Math.max(1, Math.floor(dealt / 2));
-          const arcRange = RANGE_UNIT * Math.min(12, 3 + Math.floor(source.lightningMindPower / 3));
-          const candidates = game.mages.filter(
+          if (target.team !== source.team && target.alive) applyMindLightningStack(target);
+          const marked = game.mages.filter(
             (mage) =>
-              mage !== target &&
               mage.alive &&
-              dist(mage.pos, target.pos) <= arcRange
+              mage.team !== source.team &&
+              mage.lightningMindStacks > 0 &&
+              dist(mage.pos, target.pos) <= source.lightningMindRange
           );
-          let struck: Mage[];
-          if (source.lightningMindCritical) {
-            struck = candidates;
-          } else if (source.lightningMindSurged && candidates.length > 0) {
-            const first = game.rng.pick(candidates);
-            const remaining = candidates.filter((candidate) => candidate !== first);
-            struck = remaining.length > 0 ? [first, game.rng.pick(remaining)] : [first];
-          } else {
-            struck = candidates.length > 0 ? [game.rng.pick(candidates)] : [];
-          }
-          for (const arcTarget of struck) {
-            game.vfxSink?.lightningBolt?.(target.pos, arcTarget.pos);
-            dealDamage(
-              game.effectContext(source, arcTarget, null),
-              arcTarget,
-              dmg(arcDamage, 'heat', 'sanity'),
-              { canMiss: false }
-            );
-          }
-          if (struck.length > 0) {
-            game.log(
-              `${source.name}'s weapon arcs ${arcDamage} sanity damage to ${struck.map((mage) => mage.name).join(', ')}.`
-            );
+          const sides = 1 + marked.reduce((total, mage) => total + mage.lightningMindStacks, 0);
+          const route = game.showRoll(`1d${sides}`, 'Lightning Mind arc', source).total;
+          const arcTarget = mindLightningBoltTarget(source, marked, route);
+          void game.vfxSink?.lightningBolt?.(target.pos, arcTarget.pos);
+          const baseDamage = game.showRoll('1d3', 'Lightning Mind damage', arcTarget).total;
+          const arcDamage = mindLightningDamage(baseDamage, arcTarget.lightningMindStacks) *
+            (source.lightningMindCritical ? 2 : 1);
+          dealDamage(
+            game.effectContext(source, arcTarget, null),
+            arcTarget,
+            dmg(arcDamage, 'heat', 'sanity'),
+            { canMiss: false }
+          );
+          source.lightningMindCharges = Math.max(0, source.lightningMindCharges - 1);
+          game.log(`${source.name}'s weapon arcs ${arcDamage} sanity damage to ${arcTarget.name}.`);
+          if (source.lightningMindCharges === 0) {
+            source.weaponEnchant = undefined;
+            source.enchantedWeapon = undefined;
+            game.log(`${source.name}'s Lightning Mind enchant is spent.`);
           }
         }
         if (
@@ -6365,7 +6468,10 @@ export class GameState {
           const mentalEcho = Math.max(1, Math.round(dealt * 0.25));
           game.log(`${source.name}'s weapon releases a Lightning Echo.`);
           dealDamage(ctx, target, dmg(fireEcho, 'heat', 'physical'), { canMiss: false });
-          dealDamage(ctx, target, dmg(mentalEcho, 'heat', 'sanity'), { canMiss: false });
+          const stacks = applyMindLightningStack(target);
+          dealDamage(ctx, target, dmg(mindLightningDamage(mentalEcho, stacks), 'heat', 'sanity'), {
+            canMiss: false,
+          });
           if (target.alive) game.applyBlueflareStacks(target, 1, source);
           if (source.lightningEchoCritical) {
             const echoRange = RANGE_UNIT * Math.min(12, 3 + Math.floor(source.lightningEchoPower / 3));
@@ -6508,6 +6614,7 @@ export class GameState {
       description: `${source.name} casts ${spell.name}${targetName}. ${spell.description}`,
       isStillValid: (game) => {
         if (!source.alive) return false;
+        if (!stormWordsCompatible([...spell.words, ...(modifiers ?? [])])) return false;
         if (!game.canCastSpellNow(spell)) return false;
         if (spell.targeting === 'enemy' || spell.targeting === 'ally' || spell.targeting === 'any') {
           return !!target && game.isValidSpellTarget(spell, source, target);

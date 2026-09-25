@@ -1,65 +1,111 @@
-// Exploration run state and the single funnel every change to it passes through.
-//
-// Two rules keep this mode ready for multiplayer without paying for it yet:
-//   1. Nothing mutates a run except `applyExplorationCommand`. Relaying those
-//      commands is all lockstep will need.
-//   2. No `Math.random`. Every roll derives from the run's seed plus the step
-//      that triggered it, so a reload — or a second peer — reproduces it exactly.
+// Exploration run state. No `Math.random` anywhere: every roll derives from the
+// run's seed plus the step that triggered it, so a reload reproduces it exactly.
 
 import { Dice } from '../../core/Dice';
 import type { Scenario } from '../../core/Scenario';
-import {
-  canTravel,
-  createWorld,
-  nodeAt,
-  rollPathEncounter,
-  START_NODE,
-  type PathEncounter,
-  type WorldMap,
-  type WorldNode,
-} from './world';
+import { START_HOUR } from './clock';
+import { packExplored, revealTiles, unpackExplored } from './explored';
+import { placeById, START_PLACE } from './world';
 
-export const EXPLORATION_VERSION = 1;
+export const EXPLORATION_VERSION = 4;
+
+/** How the world is crossed: planned trips on the map, or on foot like the wilds. */
+export type MapStyle = 'travel' | 'open';
+
+export type BountyKind = 'slay' | 'gather' | 'deliver';
+
+export interface ActiveBounty {
+  id: string;
+  /** The guild that posted it; rewards are claimed there (deliveries: at `target`). */
+  town: string;
+  kind: BountyKind;
+  /** slay: enemy family id; gather: item id; deliver: destination town id. */
+  target: string;
+  count: number;
+  progress: number;
+  rewardGold: number;
+  rewardXp: number;
+  label: string;
+}
+
+/** Where the party stands inside a walkable place (town, forest glade, wilds). */
+export interface LocaleState {
+  id: string;
+  x: number;
+  y: number;
+}
 
 export interface ExplorationRun {
   version: number;
   seed: number;
-  /** Travels taken so far. Seeds each roll, so a reload replays the same road. */
+  /** Trips and searches made so far. Seeds each roll, so a reload replays the same road. */
   steps: number;
-  nodeId: string;
+  /** The world tile the party stands on. */
+  pos: { x: number; y: number };
+  /** Hours into the current day, 0 <= hour < 24. */
+  hour: number;
+  /** Walked world tiles, packed (see explored.ts). */
+  explored: string;
+  /** Tiles already searched, keyed `x,y:day`, so an area yields once a day. */
+  searched: string[];
   gold: number;
   /** The party, stored as a one-scene Scenario so it round-trips through JSON. */
   party: Scenario;
   /** Secrets uncovered, wilds mapped, bosses felled. */
   flags: string[];
+  /** Places the party has reached. */
   visited: string[];
-}
-
-export type ExplorationCommand =
-  | { t: 'travel'; to: string }
-  | { t: 'enter' }
-  | { t: 'flag'; id: string }
-  | { t: 'spend'; gold: number }
-  | { t: 'earn'; gold: number };
-
-/** What travelling produced, for the scene to act on. */
-export interface TravelOutcome {
-  node: WorldNode;
-  encounter: PathEncounter;
-  /** Enemy strength for this fight, when there is one. */
-  depth: number;
+  level: number;
+  xp: number;
+  /** Levels earned outside a fight whose rewards are still to be chosen. */
+  pendingLevels: number;
+  /** Turns over at midnight; shops restock and wild packs return. */
+  day: number;
+  /** The last town entered; a beaten party wakes up there. */
+  lastTown: string;
+  bounties: ActiveBounty[];
+  /** Bounty ids already taken, so a board never re-offers them. */
+  bountiesTaken: string[];
+  /** Shop stock slots bought, keyed `shop:day:slot`. */
+  purchases: string[];
+  locale: LocaleState | null;
+  forest: { depth: number; deepest: number };
+  /** Discovered chunks of the wilds, keyed `wildId:cx,cy`. */
+  wildsSeen: string[];
+  /** Wild enemy groups beaten, with the day they fell. */
+  groupsBeaten: Record<string, number>;
+  mapStyle: MapStyle;
 }
 
 export function createRun(seed: number, party: Scenario): ExplorationRun {
+  const start = placeById(START_PLACE)!;
+  const explored = unpackExplored('');
+  revealTiles(explored, [start], 4);
   return {
     version: EXPLORATION_VERSION,
     seed: seed >>> 0,
     steps: 0,
-    nodeId: START_NODE,
+    pos: { x: start.x, y: start.y },
+    hour: START_HOUR,
+    explored: packExplored(explored),
+    searched: [],
     gold: 0,
     party,
     flags: [],
-    visited: [START_NODE],
+    visited: [START_PLACE],
+    level: 1,
+    xp: 0,
+    pendingLevels: 0,
+    day: 1,
+    lastTown: START_PLACE,
+    bounties: [],
+    bountiesTaken: [],
+    purchases: [],
+    locale: null,
+    forest: { depth: 0, deepest: 0 },
+    wildsSeen: [],
+    groupsBeaten: {},
+    mapStyle: 'travel',
   };
 }
 
@@ -79,66 +125,6 @@ export function stepDice(run: ExplorationRun, step: number): Dice {
   return new Dice(mix(run.seed, step));
 }
 
-export function currentNode(run: ExplorationRun, world: WorldMap = createWorld()): WorldNode {
-  return nodeAt(world, run.nodeId);
-}
-
 export function hasFlag(run: ExplorationRun, id: string): boolean {
   return run.flags.includes(id);
-}
-
-/**
- * The only way a run changes. Returns a travel outcome when the command moved
- * the party onto a road that had something waiting on it.
- */
-export function applyExplorationCommand(
-  run: ExplorationRun,
-  cmd: ExplorationCommand,
-  world: WorldMap = createWorld(),
-): TravelOutcome | null {
-  switch (cmd.t) {
-    case 'travel': {
-      if (!canTravel(world, run.nodeId, cmd.to)) return null;
-      const node = nodeAt(world, cmd.to);
-      run.steps += 1;
-      run.nodeId = node.id;
-      if (!run.visited.includes(node.id)) run.visited.push(node.id);
-      // Only roads are dangerous to walk; everywhere else is arrived at safely.
-      const encounter: PathEncounter =
-        node.kind === 'path' ? rollPathEncounter(stepDice(run, run.steps).float()) : 'nothing';
-      return { node, encounter, depth: node.depth };
-    }
-    case 'flag':
-      if (!run.flags.includes(cmd.id)) run.flags.push(cmd.id);
-      return null;
-    case 'spend':
-      run.gold = Math.max(0, run.gold - Math.max(0, cmd.gold));
-      return null;
-    case 'earn':
-      run.gold += Math.max(0, cmd.gold);
-      return null;
-    case 'enter':
-      return null;
-  }
-}
-
-/**
- * Where a fight on a road spits you out when you break off. Running back the way
- * you came returns you to the last node; running on skips the encounter and puts
- * you through. Any other border leaves you where you stood.
- */
-export function fleeDestination(
-  run: ExplorationRun,
-  cameFrom: string | null,
-  edge: 'north' | 'south' | 'east' | 'west',
-  world: WorldMap = createWorld(),
-): string {
-  const node = nodeAt(world, run.nodeId);
-  if (node.kind !== 'path') return run.nodeId;
-  if (edge === 'west') return cameFrom && canTravel(world, node.id, cameFrom) ? cameFrom : run.nodeId;
-  if (edge === 'east') {
-    const onward = node.links.find((id) => id !== cameFrom);
-    return onward ?? run.nodeId;
-  }
-  return run.nodeId;
 }

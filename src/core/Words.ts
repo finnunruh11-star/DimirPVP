@@ -1,4 +1,4 @@
-// The eight words of power. Add new words here to extend the game — every other
+// The words of power. Add new words here to extend the game — every other
 // system (loadout UI, spell registry, AI) reads from this single source of truth.
 
 export type WordId =
@@ -19,6 +19,7 @@ export type WordId =
   | 'desecrate'
   | 'fire'
   | 'lightning'
+  | 'storm'
   | 'subtle'
   | 'delay'
   | 'channel'
@@ -157,6 +158,14 @@ export const WORDS: Record<WordId, WordDef> = {
     color: 0xffe45c,
     blurb: 'Chains and dashes scaled by the cast roll, with self-risk.',
   },
+  storm: {
+    id: 'storm',
+    label: 'Storm',
+    grantsReaction: false,
+    charges: 4,
+    color: 0x72d7ff,
+    blurb: 'SNIFF-only apex word. Amplifies coloured spell effects to absurd scale.',
+  },
   stop: {
     id: 'stop',
     label: 'Stop',
@@ -264,6 +273,7 @@ export const WORD_KIND: Record<WordId, WordKind> = {
   desecrate: 'noun',
   shadow: 'noun',
   reality: 'noun',
+  storm: 'other',
   // Modifiers attach to another spell rather than forming one.
   subtle: 'modifier',
   delay: 'modifier',
@@ -284,7 +294,7 @@ export const MODIFIER_WORDS: WordId[] = ['subtle', 'delay', 'channel'];
 export const ALL_GRID_WORDS: WordId[] = [
   ...WORD_ORDER,
   ...(Object.keys(WORDS) as WordId[]).filter(
-    (word) => !WORD_ORDER.includes(word) && WORD_KIND[word] !== 'modifier',
+    (word) => word !== 'storm' && !WORD_ORDER.includes(word) && WORD_KIND[word] !== 'modifier',
   ),
 ];
 

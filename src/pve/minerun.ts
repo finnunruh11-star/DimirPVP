@@ -18,7 +18,12 @@ export type MineEnemyKind =
   | 'pftlhb'
   | 'cavern-bat'
   | 'red-dragonborn'
-  | 'black-dragonborn';
+  | 'black-dragonborn'
+  | 'bandit'
+  | 'bandit-archer'
+  | 'bandit-captain'
+  | 'sand-stalker'
+  | 'sandworm';
 
 export type SentinelRole = 'tank' | 'healer' | 'dps';
 
@@ -242,6 +247,80 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     scale: 1.18,
     unlock: 7,
     cost: 10,
+  },
+  bandit: {
+    kind: 'bandit',
+    name: 'Bandit',
+    hpSpec: '2d4+4',
+    sanity: 8,
+    moveUnits: 6,
+    stats: { strength: 3, dex: 4, int: 1 },
+    statGrowth: { strength: 3, dex: 3, int: 0 },
+    tint: 0x9a7b5c,
+    scale: 0.95,
+    unlock: 1,
+    cost: 3,
+  },
+  'bandit-archer': {
+    kind: 'bandit-archer',
+    name: 'Bandit Archer',
+    hpSpec: '2d3+3',
+    sanity: 8,
+    moveUnits: 5,
+    stats: { strength: 1, dex: 5, int: 1 },
+    statGrowth: { strength: 0, dex: 3, int: 0 },
+    melee: { spec: '1d4', type: 'pierce', damageClass: 'physical', reach: 225 },
+    tint: 0x6f8a55,
+    scale: 0.92,
+    unlock: 2,
+    cost: 4,
+  },
+  'bandit-captain': {
+    kind: 'bandit-captain',
+    name: 'Bandit Captain',
+    hpSpec: '3d6+8',
+    sanity: 10,
+    moveUnits: 6,
+    stats: { strength: 5, dex: 4, int: 2 },
+    statGrowth: { strength: 2, dex: 3, int: 0 },
+    initiativePriority: 1,
+    tint: 0x8c3a3a,
+    scale: 1.05,
+    unlock: 3,
+    cost: 7,
+  },
+  'sand-stalker': {
+    kind: 'sand-stalker',
+    name: 'Sand Stalker',
+    hpSpec: '2d6+5',
+    sanity: 8,
+    moveUnits: 9,
+    stats: { strength: 3, dex: 7, int: 1 },
+    statGrowth: { strength: 3, dex: 2, int: 0 },
+    melee: { spec: '1d6', type: 'corrosive', damageClass: 'physical' },
+    resistTypes: ['heat'],
+    weakTypes: ['cold'],
+    tint: 0xc8a66a,
+    scale: 0.85,
+    unlock: 1,
+    cost: 4,
+  },
+  sandworm: {
+    kind: 'sandworm',
+    name: 'Sandworm',
+    hpSpec: '6d10+24',
+    sanity: 14,
+    moveUnits: 7,
+    stats: { strength: 8, dex: 2, int: 0 },
+    statGrowth: { strength: 2, dex: 0, int: 0 },
+    melee: { spec: '3d8', type: 'pierce', damageClass: 'physical', reach: 140 },
+    resistTypes: ['heat', 'slashing'],
+    weakTypes: ['cold', 'water'],
+    bodyRadius: 58,
+    tint: 0xb89160,
+    scale: 1.9,
+    unlock: 6,
+    cost: 12,
   },
 };
 
@@ -485,6 +564,11 @@ const BASE_GOLD: Record<MineEnemyKind, number> = {
   'cavern-bat': 0.5,
   'red-dragonborn': 4,
   'black-dragonborn': 4,
+  bandit: 1.5,
+  'bandit-archer': 1.5,
+  'bandit-captain': 4,
+  'sand-stalker': 1.5,
+  sandworm: 8,
 };
 
 const BONUS_SALVAGE: Record<MineEnemyKind, ItemId | null> = {
@@ -499,6 +583,11 @@ const BONUS_SALVAGE: Record<MineEnemyKind, ItemId | null> = {
   'cavern-bat': 'echoMembrane',
   'red-dragonborn': 'redDrakeScale',
   'black-dragonborn': 'blackDrakeScale',
+  bandit: 'crudeTrinket',
+  'bandit-archer': 'crudeTrinket',
+  'bandit-captain': 'crudeTrinket',
+  'sand-stalker': null,
+  sandworm: 'gemDiamond',
 };
 
 export function rollMineLoot(kind: MineEnemyKind, rng: Dice): MineLootResult {
@@ -515,6 +604,8 @@ export function rollMineLoot(kind: MineEnemyKind, rng: Dice): MineLootResult {
 
 /** Seeded creature equipment; returned items are equipped directly and never drop. */
 export function rollMineEnemyWeapon(kind: MineEnemyKind, level: number, rng: Dice): ItemId | null {
+  if (kind === 'bandit') return rng.chance(0.7) ? rng.pick<ItemId>(['primitiveClub', 'crudeSpear']) : null;
+  if (kind === 'bandit-captain') return level >= 4 ? 'ironAxe' : 'stoneAxe';
   if (kind === 'kobold' || kind === 'elite-kobold') {
     if (!rng.chance(0.5)) return null;
     if (level >= 6) return 'ironSpear';

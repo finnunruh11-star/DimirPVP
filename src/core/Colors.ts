@@ -27,6 +27,7 @@ export const WORD_COLOR: Record<WordId, WordColor> = {
   desecrate: 'black',
   fire: 'red',
   lightning: 'red',
+  storm: 'none',
   stop: 'blue',
   mind: 'blue',
   bind: 'blue',
@@ -41,6 +42,12 @@ export const WORD_COLOR: Record<WordId, WordColor> = {
   delay: 'none',
   channel: 'none',
 };
+
+/** Storm may amplify coloured words, but never another colourless word or modifier. */
+export function stormWordsCompatible(words: readonly WordId[]): boolean {
+  return !words.includes('storm') ||
+    words.every((word) => word === 'storm' || WORD_COLOR[word] !== 'none');
+}
 
 /**
  * Optional per-spell base mana override, keyed by the spell's combo key (sorted
@@ -73,6 +80,7 @@ const WORD_POTENCY: Record<WordId, number> = {
   sand: 2,
   fire: 1,
   lightning: 1,
+  storm: 2,
   stop: 2,
   // Weak: cheap, low-impact words.
   veil: 0,

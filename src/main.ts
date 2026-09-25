@@ -4,6 +4,8 @@ import { COLORS, GAME_HEIGHT, GAME_WIDTH } from './config/constants';
 import { MenuScene } from './scenes/MenuScene';
 import { GameScene } from './scenes/GameScene';
 import { ExplorationScene } from './scenes/ExplorationScene';
+import { LocaleScene } from './scenes/LocaleScene';
+import { LocaleHudScene } from './scenes/LocaleHudScene';
 import { GalleryScene } from './scenes/GalleryScene';
 import { installMobileShell } from './ui/mobileShell';
 
@@ -43,7 +45,7 @@ const gameConfig: Phaser.Types.Core.GameConfig = {
     autoCenter: Phaser.Scale.CENTER_BOTH,
     autoRound: true,
   },
-  scene: galleryMode ? [GalleryScene] : [MenuScene, GameScene, ExplorationScene],
+  scene: galleryMode ? [GalleryScene] : [MenuScene, GameScene, ExplorationScene, LocaleScene, LocaleHudScene],
   callbacks: {
     postBoot: (game) => {
       const canvas = game.canvas;

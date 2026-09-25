@@ -202,7 +202,8 @@ export class Mage {
   enchantedWeapon?: ItemId;
   lightningMindPower = 0;
   lightningMindCritical = false;
-  lightningMindSurged = false;
+  lightningMindRange = 0;
+  lightningMindCharges = 0;
   /** Red boon: whether this combat's first weapon attack bonus has been spent. */
   redFirstWeaponAttackUsed = false;
   /** Red Hexcraft primary ability: generate one extra color charge each turn. */
@@ -405,6 +406,9 @@ export class Mage {
   bannedAbilityIds = new Set<string>();
   /** Whether this mage's unarmed strike has been disabled by a Needle of Serenity. */
   unarmedBanned = false;
+
+  /** Persistent marks used by Lightning Mind spells for the current combat. */
+  lightningMindStacks = 0;
 
   statuses: Status[] = [];
   actions: ActionPool = { ...ACTIONS_PER_TURN };
@@ -673,6 +677,15 @@ export class Mage {
     this.bannedItemIds.clear();
     this.bannedAbilityIds.clear();
     this.unarmedBanned = false;
+    this.lightningMindStacks = 0;
+    if (this.weaponEnchant === 'lightningMind') {
+      this.weaponEnchant = undefined;
+      this.enchantedWeapon = undefined;
+    }
+    this.lightningMindPower = 0;
+    this.lightningMindCritical = false;
+    this.lightningMindRange = 0;
+    this.lightningMindCharges = 0;
     this.resetCombatReactions(false);
     this.resetDodges();
     if (this.expeditionCompanion === 'elf') this.companionHealCharges = 3;
@@ -1223,6 +1236,19 @@ export class Mage {
   /** Does this mage carry the Blessing of Roaring Thunder? */
   hasThunderBlessing(): boolean {
     return this.hasItemWhere((d) => !!d.thunderBlessing);
+  }
+
+  /** Does this mage carry the Gambler's Curse (skewed natural d20 faces)? */
+  hasGamblersCurse(): boolean {
+    return this.hasItemWhere((d) => !!d.gamblersCurse);
+  }
+
+  /** Apply the Gambler's Curse to one natural d20 face: 1-3 → 1, 18-20 → 20. */
+  gambledD20(face: number): number {
+    if (!this.hasGamblersCurse()) return face;
+    if (face <= 3) return 1;
+    if (face >= 18) return 20;
+    return face;
   }
 
   /** Does this mage wear the Second Ring of Lareneg? */

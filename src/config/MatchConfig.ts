@@ -3,8 +3,8 @@ import type { Scenario } from '../core/Scenario';
 import type { WordId } from '../core/Words';
 import type { Net } from '../net/Net';
 import type { RaidBossKind } from '../pve/swamprun';
-import type { ExplorationRun } from '../pve/exploration/run';
-import type { PathEncounter } from '../pve/exploration/world';
+import type { ExplorationRun, LocaleState } from '../pve/exploration/run';
+import type { EncounterKind, EncounterSpawn, EncounterZone } from '../pve/exploration/encounters';
 import { LOADOUT_SIZE } from './constants';
 
 export type MatchMode =
@@ -141,12 +141,28 @@ export interface SeatConfig {
 /** A fight the overworld started, and everything needed to hand the run back. */
 export interface ExplorationCombat {
   run: ExplorationRun;
-  encounter: PathEncounter;
+  encounter: EncounterKind;
   /** How far into the region this fight sits; sets enemy strength. */
   depth: number;
   /** Where the party stood before walking in, so fleeing can send them back. */
   cameFrom: string | null;
+  /** Which roster the fight draws from when no explicit roster is given. */
+  zone?: EncounterZone;
+  /** An exact roster (events, wild packs); otherwise one is rolled. */
+  spawns?: EncounterSpawn[];
+  /** Resume inside a walkable place instead of on the overworld. */
+  returnTo?: LocaleState;
+  /** Where breaking off leads, when that differs from `returnTo`. */
+  fleeTo?: LocaleState;
+  /** Identifies the source of the fight (a wild pack, a forest depth). */
+  tag?: string;
+  /** Opening log line in place of the default. */
+  label?: string;
+  /** The party sprang this fight: one free strike lands before initiative is rolled. */
+  opening?: ExplorationOpening;
 }
+
+export type ExplorationOpening = { kind: 'weapon' } | { kind: 'spell'; word: WordId };
 
 export interface MatchConfig {
   mode: MatchMode;

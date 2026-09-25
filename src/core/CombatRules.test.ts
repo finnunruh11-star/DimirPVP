@@ -145,6 +145,31 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(game.stunPrevents(quick), 'stunned', 'A stunned mage cannot take bonus actions');
   }],
 
+  ['never lets a Deathknight react during its own turn', () => {
+    const attacker = new Mage({
+      name: 'Attacker', isAI: false, team: 1, position: { x: 300, y: 270 }, loadout: [],
+    });
+    const knight = new Mage({
+      name: 'Deathknight', isAI: true, team: 2, position: { x: 340, y: 270 }, loadout: [],
+    });
+    knight.deathknightKind = true;
+    const game = new GameState([attacker, knight], 9);
+
+    game.setCurrent(knight);
+    equal(
+      game.makeDeathknightTargetReaction(knight, attacker, 1, false),
+      null,
+      'Own-turn Deathknight counter'
+    );
+    equal(knight.deathknightReactionRound, -1, 'Rejected reaction does not consume the counter');
+
+    game.setCurrent(attacker);
+    assert(
+      game.makeDeathknightTargetReaction(knight, attacker, 1, false),
+      'The Deathknight may still counter off-turn'
+    );
+  }],
+
   ['reads an active Edgelord dark light as one of its bearer\'s shadows', () => {
     const bearer = new Mage({
       name: 'Bearer',

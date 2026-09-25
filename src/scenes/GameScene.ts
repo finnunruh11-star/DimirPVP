@@ -154,7 +154,7 @@ import {
   type WordId,
 } from '../core/Words';
 import { MAGE_CLASSES, MAGE_CLASS_DEFS, type MageClass } from '../core/Classes';
-import { WORD_COLOR, wordSpellMana, type ColorName } from '../core/Colors';
+import { stormWordsCompatible, WORD_COLOR, wordSpellMana, type ColorName } from '../core/Colors';
 import {
   STAT_DEFS,
   STAT_ORDER,
@@ -192,15 +192,18 @@ import type { StackItem } from '../core/Stack';
 import { barrierContains } from '../core/Barrier';
 import { FLEE_EDGE_LABEL, fleeEdgeAt, type FleeEdge } from '../core/Flee';
 import { capturePartySnapshot } from '../pve/exploration/party';
+import { addXp, levelReward, rackIsFull, xpToNext } from '../pve/progression';
 import type { ExplorationEntry } from './ExplorationScene';
 import type { Spell, SpellVisual } from '../spells/Spell';
 import { allSpells, getSpell, isClassSpellCombo, spellById, setActiveSpellSets } from '../spells/registry';
+import { closestMindLightningDirection } from '../spells/mindLightning';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type {
   CombatFeedback,
   SubTargetCombatantOpts,
   SubTargetPointOpts,
   SubTargetEnemyOpts,
+  SubTargetRerollOpts,
 } from '../effects/effects';
 import {
   ACTION_FX_PRESETS,
@@ -261,7 +264,7 @@ interface PendingRoll extends DiceRollView {
   seq: number;
 }
 
-import type { ExplorationCombat, MatchConfig, SeatConfig, SwampPrepMode } from '../config/MatchConfig';
+import type { ExplorationCombat, ExplorationOpening, MatchConfig, SeatConfig, SwampPrepMode } from '../config/MatchConfig';
 import {
   MINE_ROOM_VISUAL_LABEL,
   buildMineRoomTextures,
@@ -290,10 +293,10 @@ import {
   rollMineEnemyWeapon,
   rollMineLoot,
   MINE_ENEMY_DEFS,
-  OVERWORLD_SPAWN_KINDS,
   type MineEnemyKind,
   type MineSpawnSpec,
 } from '../pve/minerun';
+import { rollEncounter } from '../pve/exploration/encounters';
 import { canUseMineAction, commitMineAction, makeMineActionItem } from '../pve/mineActions';
 import {
   MINE_DIRECTIONS,
@@ -614,6 +617,17 @@ interface ArenaTheme {
   shadow: number;
 }
 
+/** Exploration fights take the look of the region they happen in. */
+const EXPLORATION_ARENAS: Record<string, ArenaTheme> = {
+  capitol: { kind: 'duel', floor: 0x1b2616, tile: 0x2b3a22, grid: 0x5e7048, accent: 0x9fb070, shadow: 0x0a0f08 },
+  black: { kind: 'swamp', floor: 0x12221c, tile: 0x20372c, grid: 0x526b59, accent: 0x82946b, shadow: 0x07100d },
+  forest: { kind: 'swamp', floor: 0x10200f, tile: 0x1c3219, grid: 0x4a6a42, accent: 0x7aa060, shadow: 0x060d05 },
+  red: { kind: 'mine', floor: 0x1e1511, tile: 0x2e1f18, grid: 0x7a4a34, accent: 0xc0683a, shadow: 0x0c0806 },
+  wilds: { kind: 'mine', floor: 0x1a1210, tile: 0x2c1a14, grid: 0x8a3a22, accent: 0xe0602a, shadow: 0x0a0605 },
+  lake: { kind: 'duel', floor: 0x14262c, tile: 0x1f3a42, grid: 0x5a8a94, accent: 0x9fd0da, shadow: 0x081216 },
+  white: { kind: 'duel', floor: 0x2c2416, tile: 0x3c3120, grid: 0x8a7650, accent: 0xe0c890, shadow: 0x120e08 },
+};
+
 /**
  * One entry in the context-aware action menu / on-screen action list. The
  * registry that produces these is the single source of truth for "what can I do
@@ -710,6 +724,7 @@ type ReactionCommand =
 type SubCommand =
   | { t: 'sub-point'; x: number; y: number }
   | { t: 'sub-enemy'; target: number }
+  | { t: 'sub-reroll'; reroll: boolean }
   | { t: 'sub-none' };
 
 /** A mid-resolution draft pick (Gambler's Blade cash-out): the chosen card index. */
@@ -779,8 +794,8 @@ const ACTION_GROUPS: { title: string; ids: string[] }[] = [
 ];
 /** Practice targets kept standing during raid preparation. */
 const RAID_PREP_EFFIGIES = 3;
-/** Loadout slots plus the single modifier word a build carries. */
-const WORD_SLOTS = LOADOUT_SIZE + 1;
+/** Standard loadout, SNIFF's extra Storm word, and the modifier slot. */
+const WORD_SLOTS = LOADOUT_SIZE + 2;
 
 type RaidRestoreKind = 'vitals' | 'mana' | 'words';
 
@@ -1008,6 +1023,7 @@ export class GameScene extends Phaser.Scene {
   private subtargetOrigin: Vec2 | null = null;
   private subtargetRange = 0;
   private subtargetMinRange = 0;
+  private subtargetDirections: Vec2[] | null = null;
   private subtargetCandidates: Set<Mage> | null = null;
   private subtargetRequired = false;
 
@@ -1148,6 +1164,9 @@ export class GameScene extends Phaser.Scene {
   private fledEdge: FleeEdge | null = null;
   /** Set when the overworld started this fight; drives the hand-back. */
   private explorationCombat: ExplorationCombat | null = null;
+  /** Creature kinds the party felled in this exploration fight, for bounties. */
+  private explorationKills: string[] = [];
+  private explorationWon = false;
   private autoPassButton?: CabinetChip;
   // When on (offline only), every seat is played by the AI so the match runs
   // itself and the player can just watch. Toggled via key [Y] or the button.
@@ -1313,6 +1332,8 @@ export class GameScene extends Phaser.Scene {
     this.arrowStruck = null;
     this.fleeAllowed = false;
     this.fledEdge = null;
+    this.explorationKills = [];
+    this.explorationWon = false;
     this.mode = 'idle';
     this.busy = false;
     this.gameEnded = false;
@@ -1334,6 +1355,7 @@ export class GameScene extends Phaser.Scene {
     this.subtargetOrigin = null;
     this.subtargetRange = 0;
     this.subtargetMinRange = 0;
+    this.subtargetDirections = null;
     this.subtargetCandidates = null;
     this.subtargetRequired = false;
     this.endCard = undefined;
@@ -1358,6 +1380,8 @@ export class GameScene extends Phaser.Scene {
     this.actionMenu = undefined;
     this.actionMenuEntries = [];
     this.pauseView = undefined;
+    this.swamprunHudText = undefined;
+    this.vignette = undefined;
     this.pauseReturn = 'idle';
     this.targetListPage = 0;
     this.trainPanel = undefined;
@@ -1528,15 +1552,16 @@ export class GameScene extends Phaser.Scene {
         this.gs.log(`${target.name} falls. The raid is won.`);
       }
       if (
-        !this.expedition ||
+        !(this.expedition || this.explorationCombat) ||
         target.team !== 2 ||
         !this.swamprunWaveEnemies.includes(target) ||
         this.swamprunWispCopies.has(target) ||
         this.expeditionXpEnemies.has(target)
       ) return;
       this.expeditionXpEnemies.add(target);
+      if (target.enemyKind) this.explorationKills.push(target.enemyKind);
       this.addExpeditionXp(1);
-      this.gs.log(`${target.name} defeated — +1 XP.`);
+      this.gs.log(`${target.name} defeated. +1 XP.`);
       this.updateWaveHud();
     };
     this.gs.vfxSink = {
@@ -1565,6 +1590,16 @@ export class GameScene extends Phaser.Scene {
         playSound('spell.lightning');
         return this.vfxLightningBolt(from, to);
       },
+      mindLightningBolt: async (caster, target) => {
+        await this.playPendingDice();
+        playSound('spell.lightning');
+        const from = {
+          x: Phaser.Math.Between(Math.ceil(FIELD.x + 12), Math.floor(FIELD.x + FIELD.w - 12)),
+          y: FIELD.y - 12,
+        };
+        return this.lightningFx?.mindBolt(from, caster, target, 0x4aa8ff) ?? Promise.resolve();
+      },
+      pause: (durationMs) => this.delay(durationMs),
       spellEffect: (m, kind) => {
         if (kind === 'vanish') this.pendingSounds.push('spell.vanish');
         this.pendingEffects.push({ mage: m, kind });
@@ -1637,6 +1672,10 @@ export class GameScene extends Phaser.Scene {
       requestCombatant: async (source, opts) => {
         await this.playPendingDice();
         return this.requestSubtargetCombatant(source, opts);
+      },
+      requestReroll: async (source, opts) => {
+        await this.playPendingDice();
+        return this.requestStormReroll(source, opts);
       },
       reactionWindow: (source, label, at) => this.offerReactionWindow(source, label, { at }),
       resolveImpacts: () => this.resolveImpacts(),
@@ -1747,6 +1786,8 @@ export class GameScene extends Phaser.Scene {
     if (this.swamprun) {
       if (this.explorationCombat) {
         this.setupExplorationCombat(this.explorationCombat);
+        const opening = this.explorationCombat.opening;
+        if (opening && (await this.runOpeningStrike(opening))) return;
         this.startTurn();
         return;
       }
@@ -2033,6 +2074,11 @@ export class GameScene extends Phaser.Scene {
     this.swamprunGold = 0;
     this.swamprunWaveEnemies = [];
     this.swamprunWispCopies.clear();
+    this.expeditionXpEnemies.clear();
+    this.explorationKills = [];
+    this.expeditionLevel = combat.run.level;
+    this.expeditionXp = combat.run.xp;
+    this.expeditionPendingLevels = 0;
     // The party arrives carrying the positions it held when the last fight
     // ended, so line it up afresh before anything is spawned opposite it.
     const party = this.gs.mages.filter((m) => m.team === 1);
@@ -2042,24 +2088,34 @@ export class GameScene extends Phaser.Scene {
       if (!at) return;
       mage.x = at.x;
       mage.y = at.y;
+      this.swamprunArrowsOwned.set(mage, mage.arrows);
     });
-    const spawns = mineWaveComposition(
-      this.swamprunWave,
-      this.gs.rng,
-      1,
-      OVERWORLD_SPAWN_KINDS,
-    );
+    const kind = combat.encounter === 'robbery' ? 'robbery' : 'monsters';
+    const spawns = combat.spawns?.length
+      ? combat.spawns
+      : rollEncounter(combat.zone ?? 'capitol', kind, this.swamprunWave, this.gs.rng);
     this.gs.log(
       combat.encounter === 'robbery'
-        ? `— Ambush! ${spawns.length} of them, and they moved first. —`
-        : `— ${spawns.length} foe${spawns.length === 1 ? '' : 's'} bar the road. —`
+        ? `— Ambush! ${spawns.length} bandit${spawns.length === 1 ? '' : 's'}, and they moved first. —`
+        : `— ${combat.label ?? `${spawns.length} foe${spawns.length === 1 ? '' : 's'} bar the road.`} —`
     );
-    for (const spawn of spawns) this.spawnMineEnemy(spawn);
+    for (const spawn of spawns) {
+      if (spawn.family === 'swamp') this.spawnEnemy(spawn.kind);
+      else this.spawnMineEnemy(spawn.spec);
+    }
     this.gs.startNewCombat({ preserveScarabs: true });
     // An ambush means exactly that: the road takes its turn before you take yours.
     if (combat.encounter === 'robbery') this.giveAmbushersFirstTurn();
     this.updateWaveHud();
     this.redraw();
+  }
+
+  /** A won overworld fight: pay out, train, then hand the run back. */
+  private async finishExplorationFight(): Promise<void> {
+    this.awardWaveLoot();
+    await this.resolveExpeditionLevelUps();
+    this.explorationWon = true;
+    this.endGame();
   }
 
   /** Reorder initiative so the ambushers act before anyone they jumped. */
@@ -2069,6 +2125,50 @@ export class GameScene extends Phaser.Scene {
       .sort((a, b) => Number(a.mage.team === 1) - Number(b.mage.team === 1))
       .map((entry) => entry.index);
     this.gs.restoreTurnOrder(order, order.map(() => 0), 0);
+  }
+
+  /**
+   * The party sprang this fight from hiding: the leader lands one free blow that
+   * nobody may answer, and only then is initiative rolled. Returns true when
+   * that blow ended the fight.
+   */
+  private async runOpeningStrike(opening: ExplorationOpening): Promise<boolean> {
+    const leader = this.gs.mages.find((m) => m.team === 1 && !m.isSummon && m.alive);
+    const target = this.swamprunWaveEnemies.find((m) => m.alive);
+    if (!leader || !target) return false;
+    const spell = opening.kind === 'spell' ? getSpell([opening.word], leader.mageClass) : undefined;
+    if (opening.kind === 'spell' && (!spell || !['enemy', 'point', 'any'].includes(spell.targeting))) {
+      this.gs.log('Ambush failed: no usable spell for that word.');
+      return false;
+    }
+    // The prey stands where the blow can reach it.
+    const weapon = leader.activeWeapon();
+    const far = spell ? spell.range : weapon ? weapon.rangePx : leader.intrinsicMeleeReach ?? MELEE_RANGE;
+    const near = spell ? spell.minRange ?? 0 : weapon?.minRangePx ?? 0;
+    const reach = Math.max(near + 6, Math.min(far * 0.8, far - 6));
+    const angle = Math.atan2(target.y - leader.y, target.x - leader.x) || 0;
+    target.x = Math.min(FIELD.x + FIELD.w - 24, Math.max(FIELD.x + 24, leader.x + Math.cos(angle) * reach));
+    target.y = Math.min(FIELD.y + FIELD.h - 24, Math.max(FIELD.y + 24, leader.y + Math.sin(angle) * reach));
+    this.redraw();
+    let item: StackItem | null = null;
+    if (spell) {
+      const atPoint = spell.targeting === 'point';
+      item = this.gs.makeSpellItem(leader, spell, atPoint ? null : target, atPoint ? { x: target.x, y: target.y } : null);
+    } else if (this.gs.canMelee(leader, target)) {
+      item = this.gs.makeMeleeItem(leader, target);
+    }
+    if (!item) {
+      this.gs.log('Ambush failed: the attack cannot reach.');
+      return false;
+    }
+    item.silent = true;
+    this.gs.log(`— Ambush: ${leader.name} strikes first. —`);
+    await this.runStack(item);
+    if (this.gameEnded || this.gs.isOver) return true;
+    this.gs.rerollInitiative();
+    this.gs.log('— Initiative is rolled. —');
+    this.redraw();
+    return false;
   }
 
   /** Arm the party of survivors and unleash the first wave. */
@@ -3163,7 +3263,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Spawn the next wave once the field is cleared (and the party still lives). */
   private swamprunWaveCleared(): boolean {
-    if (!this.swamprun || this.raid || this.swamprunInterludeActive) return false;
+    if (!this.swamprun || this.raid || this.swamprunInterludeActive || this.gameEnded) return false;
     if (this.mineRun && !this.mineInCombat) return false;
     const survives = (mage: Mage): boolean =>
       mage.alive || (!!mage.edgelordCapturedBy && mage.vitalsAlive);
@@ -3186,6 +3286,10 @@ export class GameScene extends Phaser.Scene {
     this.swamprunInterludeActive = true;
     try {
       this.gs.finishCurrentTurn();
+      if (this.explorationCombat) {
+        await this.finishExplorationFight();
+        return false;
+      }
       this.awardWaveLoot();
       for (const m of this.gs.mages) {
         if (m.team !== 1 || !m.alive) continue;
@@ -3303,7 +3407,7 @@ export class GameScene extends Phaser.Scene {
    */
   private collectMaterials(items: readonly ItemId[]): { text: string; left: ItemId[] } {
     if (items.length === 0) return { text: 'nothing', left: [] };
-    if (!this.expedition) {
+    if (!this.expedition && !this.explorationCombat) {
       const gold = Math.round(items.reduce((sum, id) => sum + this.swampSellValue(id), 0) * 2) / 2;
       this.swamprunGold += gold;
       return { text: `${this.materialTally(items)} sold for ${gold}g`, left: [] };
@@ -3331,7 +3435,7 @@ export class GameScene extends Phaser.Scene {
     const salvage: ItemId[] = [];
     for (const m of this.swamprunWaveEnemies) {
       if (!m.enemyKind) continue;
-      const loot = this.mineRun && isMineEnemyKind(m.enemyKind)
+      const loot = isMineEnemyKind(m.enemyKind)
         ? rollMineLoot(m.enemyKind, this.gs.rng)
         : rollLoot(m.enemyKind as EnemyKind, this.gs.rng, this.swamprunWispCopies.has(m));
       gold += loot.gold;
@@ -3369,13 +3473,14 @@ export class GameScene extends Phaser.Scene {
     const drops = tally.length ? ` — salvage: ${tally.join(', ')}` : '';
     const supplyText = supplyGold > 0 ? ` (${supplyGold}g party supplies)` : '';
     this.gs.log(
-      `${this.mineRun ? 'Encounter' : 'Wave'} ${this.swamprunWave} cleared! Sold loot for ${gold}g${supplyText}${drops}. Party gold: ${this.swamprunGold}g.`
+      this.explorationCombat
+        ? `Fight won. Loot sold for ${gold}g${drops}.`
+        : `${this.mineRun ? 'Encounter' : 'Wave'} ${this.swamprunWave} cleared! Sold loot for ${gold}g${supplyText}${drops}. Party gold: ${this.swamprunGold}g.`
     );
   }
 
   private expeditionXpToNext(): number {
-    const l = this.expeditionLevel;
-    return Math.ceil(10 * Math.pow(1.7, l - 1));
+    return xpToNext(this.expeditionLevel);
   }
 
   private expeditionPlayers(): Mage[] {
@@ -3397,31 +3502,23 @@ export class GameScene extends Phaser.Scene {
   }
 
   private addExpeditionXp(amount: number): void {
-    this.expeditionXp += Math.max(0, amount);
-    while (this.expeditionXp >= this.expeditionXpToNext()) {
-      this.expeditionXp -= this.expeditionXpToNext();
-      this.expeditionLevel += 1;
-      this.expeditionPendingLevels += 1;
-    }
+    const track = { level: this.expeditionLevel, xp: this.expeditionXp, pendingLevels: this.expeditionPendingLevels };
+    addXp(track, amount);
+    this.expeditionLevel = track.level;
+    this.expeditionXp = track.xp;
+    this.expeditionPendingLevels = track.pendingLevels;
   }
 
   private async resolveExpeditionLevelUps(): Promise<void> {
     while (this.expeditionPendingLevels > 0) {
       const resolvedLevel = this.expeditionLevel - this.expeditionPendingLevels + 1;
       this.expeditionPendingLevels -= 1;
-      const isMilestone = resolvedLevel % 5 === 0;
-      const isWordLevel = resolvedLevel % 2 === 0;
+      const reward = levelReward(resolvedLevel);
       const players = this.gs.mages.filter((mage) => mage.team === 1 && !mage.isAI && !mage.expeditionCompanion);
       for (const player of players) {
         await this.syncExpeditionPlayerChoice(player, async () => {
-          if (isMilestone) {
-            await this.promptExpeditionStats(player, resolvedLevel, 2);
-            await this.promptExpeditionWord(player, resolvedLevel);
-          } else if (isWordLevel) {
-            await this.promptExpeditionWord(player, resolvedLevel);
-          } else {
-            await this.promptExpeditionStats(player, resolvedLevel, 1);
-          }
+          if (reward.stats > 0) await this.promptExpeditionStats(player, resolvedLevel, reward.stats);
+          if (reward.word) await this.promptExpeditionWord(player, resolvedLevel);
           await this.promptExpeditionColorIdentity(player);
         });
         this.gs.log(`${player.name} reaches level ${resolvedLevel}.`);
@@ -3502,11 +3599,11 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'shop';
     return new Promise((resolve) => {
       const panel = new ChoiceMenuView(this, `LEVEL ${level} / NEW WORD`,
-        player.loadout.length >= 5 ? 'Choose a word, then replace one of your five.' : 'Choose one of three words.',
+        rackIsFull(player.loadout) ? 'Choose a word, then replace one of your five.' : 'Choose one of three words.',
         offers.map((word) => ({ id: word, label: WORDS[word].label, detail: WORDS[word].blurb })),
         async (word) => {
           panel.destroy();
-          if (player.loadout.length >= 5) {
+          if (rackIsFull(player.loadout)) {
             const replaced = await this.promptExpeditionWordReplacement(player, word);
             if (!replaced) {
               this.mode = previousMode;
@@ -3524,11 +3621,11 @@ export class GameScene extends Phaser.Scene {
 
   private promptExpeditionWordReplacement(player: Mage, gained: WordId): Promise<boolean> {
     return new Promise((resolve) => {
-      const choices = player.loadout.map((word, index) => ({
+      const choices = player.loadout.flatMap((word, index) => isModifierWord(word) ? [] : [{
         id: String(index),
         label: WORDS[word].label,
         detail: `Replace ${WORDS[word].label} with ${WORDS[gained].label}.`,
-      }));
+      }]);
       const panel = new ChoiceMenuView(this, `LEARN ${WORDS[gained].label.toUpperCase()}`,
         'Choose a known word to replace.', choices, (indexText) => {
           const index = Number(indexText) | 0;
@@ -5213,6 +5310,7 @@ export class GameScene extends Phaser.Scene {
     // shop + next wave) runs before we check for a match end — clearing a wave
     // never ends the run.
     if (this.swamprunWaveCleared() && (await this.runWaveInterlude())) return this.startTurn();
+    if (this.gameEnded) return;
     if (this.gs.isOver) return this.endGame();
     const turnOwner = this.gs.current;
     this.gs.beginTurn();
@@ -5255,6 +5353,7 @@ export class GameScene extends Phaser.Scene {
     // the interlude rather than declaring the run over, and skip a creature that
     // just died.
     if (this.swamprunWaveCleared() && (await this.runWaveInterlude())) return this.startTurn();
+    if (this.gameEnded) return;
     if (this.gs.isOver) return this.endGame();
     if (this.swamprun && !this.gs.current.alive) return this.nextTurn();
 
@@ -5392,6 +5491,7 @@ export class GameScene extends Phaser.Scene {
     // Swamprun: refill the board the instant a wave is cleared so the run never
     // stalls out on an empty arena.
     if (this.swamprunWaveCleared() && (await this.runWaveInterlude())) return this.startTurn();
+    if (this.gameEnded) return;
     // As the acting mage moves to end their turn, opponents get one last chance
     // to spend their reaction (counter-magic only) before the turn passes.
     if (!skipReactionWindow) {
@@ -6380,6 +6480,17 @@ export class GameScene extends Phaser.Scene {
     this.net?.send({ k: 'sub', cmd });
   }
 
+  private async recvSubReroll(): Promise<boolean> {
+    const msg = await this.net!.recv();
+    const cmd = msg.cmd as SubCommand | undefined;
+    return cmd?.t === 'sub-reroll' && cmd.reroll;
+  }
+
+  private sendSubReroll(reroll: boolean): void {
+    const cmd: SubCommand = { t: 'sub-reroll', reroll };
+    this.net?.send({ k: 'sub', cmd });
+  }
+
   // --- Gambler's Blade cash-out (interactive mid-combat draft) ---------------
 
   /**
@@ -6543,7 +6654,7 @@ export class GameScene extends Phaser.Scene {
     // interlude (loot + shop + next wave) before the game-over check — otherwise
     // the run would freeze on an empty board.
     const restartedCombat = this.swamprunWaveCleared() ? await this.runWaveInterlude() : false;
-    if (this.gs.isOver) {
+    if (this.gs.isOver || this.gameEnded) {
       this.mode = 'over';
     } else if (this.mineRun && this.mineExploring) {
       this.mode = 'shop';
@@ -6639,19 +6750,19 @@ export class GameScene extends Phaser.Scene {
 
   /** Subtle casting: a DC 11 check decides whether the spell makes any sound. */
   private async rollSubtleSilence(item: StackItem): Promise<void> {
-    const roll = this.gs.rng.roll('1d20');
+    const roll = this.gs.rollD20(item.source);
     this.pendingDice = [
       {
         spec: '1d20',
-        total: roll.total,
-        rolls: roll.rolls,
+        total: roll,
+        rolls: [roll],
         label: 'Subtle — silent?',
         seq: this.vfxSeq++,
       },
     ];
-    item.silent = roll.total >= 11;
+    item.silent = roll >= 11;
     this.gs.log(
-      `${item.source.name} casts subtly: 1d20=${roll.total} vs DC 11 — ${
+      `${item.source.name} casts subtly: 1d20=${roll} vs DC 11 — ${
         item.silent ? 'utterly silent; nothing may answer it.' : 'the casting is heard.'
       }`
     );
@@ -6670,7 +6781,6 @@ export class GameScene extends Phaser.Scene {
       resolve: (game) => game.resolveOniTurnEnd(pending.player),
     });
     trigger.noPhysicalReaction = true;
-    trigger.allowCurrentReaction = true;
     return trigger;
   }
 
@@ -7014,39 +7124,39 @@ export class GameScene extends Phaser.Scene {
     const dc = baseDc + ordinarySurcharge - (source.profile.bluePrimaryTier ? 2 : 0) - source.dcReduction();
     // Focus grants advantage on this one cast: roll the DC twice, keep the best.
     const focused = source.focusNextSpell;
-    const first = this.gs.rng.roll('1d20');
+    const first = this.gs.rollD20(source);
     let best = first;
-    let naturalRolls = first.rolls;
+    let naturalRolls = [first];
     if (focused) {
-      const second = this.gs.rng.roll('1d20');
-      naturalRolls = [...first.rolls, ...second.rolls];
-      if (second.total > best.total) best = second;
+      const second = this.gs.rollD20(source);
+      naturalRolls = [first, second];
+      if (second > best) best = second;
       source.focusNextSpell = false;
     }
     this.pendingDice.push({
       spec: focused ? '2d20 (keep higher)' : '1d20',
-      total: best.total,
+      total: best,
       rolls: naturalRolls,
       label: `${spell.name} — success?${focused ? ' (focus)' : ''}`,
       seq: this.vfxSeq++,
     });
-    let ok = Dev.autoSuccess || best.total >= dc;
+    let ok = Dev.autoSuccess || best >= dc;
     // Luck can turn a near-miss into a hit: spend the minimum needed to reach
     // the DC. Both peers know the roll and the luck pool, so this stays in
     // lockstep without any extra network decision.
     let luckSpent = 0;
-    if (!ok && source.luck > 0 && dc - best.total <= source.luck) {
-      luckSpent = source.spendLuck(dc - best.total);
+    if (!ok && source.luck > 0 && dc - best <= source.luck) {
+      luckSpent = source.spendLuck(dc - best);
       ok = true;
     }
     const luckNote = luckSpent > 0 ? ` (+${luckSpent} luck → ${source.luck} left)` : '';
     // A natural 20 on the kept die is a critical: the spell's damage (or its
     // area / duration) is doubled during resolution. Spells flagged noCrit
     // (Life / Hexcraft class variants) succeed on a 20 but never double.
-    const crit = ok && best.rolls.includes(20) && !spell.noCrit;
+    const crit = ok && best === 20 && !spell.noCrit;
     const rollText = focused
-      ? `2d20=[${naturalRolls.join(', ')}], kept ${best.total}`
-      : `1d20=${best.total}`;
+      ? `2d20=[${naturalRolls.join(', ')}], kept ${best}`
+      : `1d20=${best}`;
     this.gs.log(
       `${source.name}'s ${spell.name}: ${rollText} vs DC ${dc} — ${ok ? 'success!' : 'fizzles.'}${luckNote}${crit ? ' CRITICAL — natural 20!' : ''}`
     );
@@ -7054,7 +7164,7 @@ export class GameScene extends Phaser.Scene {
     if (!ok) {
       for (const line of source.onSpellFizzle()) this.gs.log(line);
     }
-    return { ok, crit, roll: best.total };
+    return { ok, crit, roll: best };
   }
 
   /** Reaction spells the reactor could actually cast right now (charges + valid target). */
@@ -7122,8 +7232,8 @@ export class GameScene extends Phaser.Scene {
           m &&
           m.alive &&
           m !== top.source &&
-          (top.allowCurrentReaction || m !== this.gs.current) &&
-          (top.allowCurrentReaction || m !== turnOwner) &&
+          m !== this.gs.current &&
+          m !== turnOwner &&
           m.team !== top.source.team
       );
   }
@@ -7138,8 +7248,8 @@ export class GameScene extends Phaser.Scene {
     if (reactor === top.source) return false;
     // You may never react during your own turn (including while you puppet a
     // summon via Command, when `current` is the summon rather than you).
-    if (!top.allowCurrentReaction && reactor === this.gs.current) return false;
-    if (!top.allowCurrentReaction && reactor === this.puppet?.owner) return false;
+    if (reactor === this.gs.current) return false;
+    if (reactor === this.puppet?.owner) return false;
     // Physical reactions are meaningless against non-attack triggers (end of
     // turn, a blink step) — only counter-magic answers those.
     const physical = !top.noPhysicalReaction && this.isIncomingAttack(top, reactor);
@@ -7317,7 +7427,7 @@ export class GameScene extends Phaser.Scene {
     const actionHotkey = (hotkey: string, fallback: () => void): (() => void) => () => {
       if (!this.consumeActionMenuHotkey(hotkey)) fallback();
     };
-    const keys = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX'];
+    const keys = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN'];
     controls.bindKeys(
       keys.map((key, index) => ({
         key,
@@ -7690,6 +7800,7 @@ export class GameScene extends Phaser.Scene {
   private currentComboSpell(): Spell | undefined {
     const words = this.selectedWords();
     if (words.length === 0) return undefined;
+    if (!stormWordsCompatible(words)) return undefined;
     const { base, modifiers } = splitModifiers(words);
     // Delay is the one modifier that is also a spell in its own right.
     if (base.length === 0) {
@@ -8814,7 +8925,7 @@ export class GameScene extends Phaser.Scene {
     // Skipping an interactive sub-target resolves it as "no target".
     if (this.mode === 'subtarget-point' || this.mode === 'subtarget-enemy') {
       if (this.subtargetRequired) {
-        this.flashHint('Choose a valid target for the next lightning arc.', true);
+        this.flashHint('This choice is required.', true);
         return;
       }
       this.flashHint('Sub-target skipped.', false, 'info');
@@ -9066,6 +9177,10 @@ export class GameScene extends Phaser.Scene {
         return `Blood Oath. Every point of pierce damage you deal is dealt again at the end of your turn. (${turns})`;
       case 'stormConduit':
         return `Storm Conduit. Every wound you take arcs ${Math.round(s.sharePct * 100)}% of itself as heat to up to ${s.maxTargets} unit${s.maxTargets === 1 ? '' : 's'} within ${Math.round(s.radius / RANGE_UNIT)}cm, either side. (${turns})`;
+      case 'lightningStorm':
+        return `Lightning Storm. Repeats ${s.targetIndices.length} fixed lightning strike${s.targetIndices.length === 1 ? '' : 's'} for ${s.damage} base damage at each upkeep. (${turns})`;
+      case 'faradayVeil':
+        return `Faraday Veil. Direct hostile hits seek the strongest Mind Lightning conductor within ${Math.round(s.arcRange / RANGE_UNIT)}cm. Successful routing prevents ${Math.round(Math.min(0.9, 0.3 + s.effectivePower * 0.02) * 100)}% and retaliates with the prevented damage; grounding failures deal ${Math.ceil(s.power / 8)} sanity. (${turns})`;
       case 'phaseOut':
         return s.mode === 'self'
           ? 'Phased. Cannot be targeted, damaged or affected until your next turn. Movement only, passing through walls, zones and bodies. Enemies you pass through take 1d6 corrosive. Upkeep is skipped; statuses still count down.'
@@ -9244,7 +9359,18 @@ export class GameScene extends Phaser.Scene {
 
     if (this.mode === 'subtarget-point') {
       const origin = this.subtargetOrigin ?? me.pos;
-      const capped = stepTowards(origin, pt, this.subtargetRange);
+      const direction = this.subtargetDirections
+        ? closestMindLightningDirection(
+            { x: pt.x - origin.x, y: pt.y - origin.y },
+            this.subtargetDirections
+          )
+        : null;
+      const capped = direction
+        ? {
+            x: origin.x + direction.x * this.subtargetRange,
+            y: origin.y + direction.y * this.subtargetRange,
+          }
+        : stepTowards(origin, pt, this.subtargetRange);
       if (this.subtargetMinRange && dist(origin, capped) < this.subtargetMinRange - 0.5) {
         this.flashHint('Too close — aim farther away.');
         return;
@@ -9361,7 +9487,10 @@ export class GameScene extends Phaser.Scene {
       }
       const spell = this.pendingSpell;
       if (!spell) return;
-      const target = this.clickedMage(pt, spell.targeting === 'any' ? null : me);
+      const target = this.clickedMage(
+        pt,
+        spell.targeting === 'any' || spell.targeting === 'ally' ? null : me
+      );
       if (target && this.gs.isValidSpellTarget(spell, me, target)) {
         const ability = this.pendingAbility != null;
         this.mode = 'busy';
@@ -10676,6 +10805,16 @@ export class GameScene extends Phaser.Scene {
     const origin = opts.origin ?? source.pos;
     if (this.controllerIsAI(source)) {
       const foe = this.gs.opponentOf(source);
+      if (opts.directions?.length) {
+        const direction = closestMindLightningDirection(
+          { x: foe.x - origin.x, y: foe.y - origin.y },
+          opts.directions
+        );
+        return {
+          x: origin.x + direction.x * opts.maxRange,
+          y: origin.y + direction.y * opts.maxRange,
+        };
+      }
       const reach = Math.max(opts.minRange ?? 0, Math.min(opts.maxRange, dist(origin, foe.pos)));
       return stepTowards(origin, foe.pos, reach);
     }
@@ -10691,8 +10830,9 @@ export class GameScene extends Phaser.Scene {
       this.subtargetOrigin = origin;
       this.subtargetRange = opts.maxRange;
       this.subtargetMinRange = opts.minRange ?? 0;
+      this.subtargetDirections = opts.directions?.map((direction) => ({ ...direction })) ?? null;
       this.subtargetCandidates = null;
-      this.subtargetRequired = false;
+      this.subtargetRequired = opts.required ?? false;
       this.mode = 'subtarget-point';
       this.flashHint(opts.prompt ?? `${source.name}: pick a point  (Esc to skip).`, true);
       this.redraw();
@@ -10765,6 +10905,32 @@ export class GameScene extends Phaser.Scene {
     return value;
   }
 
+  private async requestStormReroll(source: Mage, opts: SubTargetRerollOpts): Promise<boolean> {
+    if (this.controllerIsAI(source)) return opts.value <= Math.floor(opts.sides / 2);
+    if (this.online && !this.isLocalDecider(source)) return this.recvSubReroll();
+    const previousMode = this.mode;
+    this.mode = 'shop';
+    const value = await new Promise<boolean>((resolve) => {
+      const finish = (reroll: boolean): void => {
+        panel.destroy();
+        this.mode = previousMode;
+        resolve(reroll);
+      };
+      const panel = new ChoiceMenuView(
+        this,
+        'LIGHTNING STORM',
+        `${opts.label}: ${opts.value} on 1d${opts.sides}.`,
+        [
+          { id: 'keep', label: 'Keep', detail: `Keep ${opts.value}.` },
+          { id: 'reroll', label: 'Reroll', detail: 'Roll this die once more and keep the new result.' },
+        ],
+        (choice) => finish(choice === 'reroll')
+      );
+    });
+    if (this.online) this.sendSubReroll(value);
+    return value;
+  }
+
   private canPickSubtargetMage(target: Mage): boolean {
     const source = this.subtargetSource ?? this.gs.current;
     const origin = this.subtargetOrigin ?? source.pos;
@@ -10781,6 +10947,7 @@ export class GameScene extends Phaser.Scene {
     this.subtargetOrigin = null;
     this.subtargetRange = 0;
     this.subtargetMinRange = 0;
+    this.subtargetDirections = null;
     this.subtargetCandidates = null;
     this.subtargetRequired = false;
     this.mode = 'busy';
@@ -10908,7 +11075,10 @@ export class GameScene extends Phaser.Scene {
   private arenaTheme(): ArenaTheme {
     if (this.arenaThemeCache) return this.arenaThemeCache;
     let theme: ArenaTheme;
-    if (this.mineRun) {
+    const regional = this.explorationCombat ? EXPLORATION_ARENAS[this.explorationCombat.zone ?? 'capitol'] : undefined;
+    if (regional) {
+      theme = regional;
+    } else if (this.mineRun) {
       theme = {
         kind: 'mine',
         floor: 0x171817,
@@ -13290,6 +13460,32 @@ export class GameScene extends Phaser.Scene {
     // Interactive sub-targeting: draw the reach from its origin and an aim line.
     if (this.mode === 'subtarget-point' || this.mode === 'subtarget-enemy') {
       const origin = this.subtargetOrigin ?? this.gs.current.pos;
+      if (this.mode === 'subtarget-point' && this.subtargetDirections?.length) {
+        const selected = closestMindLightningDirection(
+          { x: this.pointer.x - origin.x, y: this.pointer.y - origin.y },
+          this.subtargetDirections
+        );
+        const markerDistance = 76;
+        for (const direction of this.subtargetDirections) {
+          const active = direction === selected;
+          const marker = {
+            x: origin.x + direction.x * markerDistance,
+            y: origin.y + direction.y * markerDistance,
+          };
+          g.lineStyle(active ? 4 : 2, active ? 0x72c7ff : 0x317fbf, active ? 1 : 0.66)
+            .lineBetween(origin.x, origin.y, marker.x, marker.y);
+          g.fillStyle(active ? 0xbbe7ff : 0x173d68, active ? 0.95 : 0.82)
+            .fillCircle(marker.x, marker.y, active ? 8 : 6);
+          g.lineStyle(2, 0x72c7ff, active ? 1 : 0.72).strokeCircle(marker.x, marker.y, active ? 11 : 8);
+        }
+        const pointerDistance = Math.max(markerDistance, dist(origin, this.pointer));
+        const guideDistance = Math.min(this.subtargetRange, pointerDistance);
+        this.drawAimGuide(g, origin, {
+          x: origin.x + selected.x * guideDistance,
+          y: origin.y + selected.y * guideDistance,
+        });
+        return;
+      }
       if (this.subtargetRange > 0 && Number.isFinite(this.subtargetRange)) {
         this.drawMeasuredRange(g, origin, this.subtargetRange);
       }
@@ -15115,6 +15311,15 @@ export class GameScene extends Phaser.Scene {
           : MENU_COLOR.amethyst;
     const active = m === this.gs.current && !this.gs.isOver;
     const bodyY = m.y + MAGE_RADIUS * 0.72;
+    if (m.lightningMindStacks > 0) {
+      const strength = Math.min(1, 0.28 + Math.log2(m.lightningMindStacks + 1) * 0.22);
+      const pulse = this.reducedMotion ? 1 : 0.9 + Math.sin(this.time.now / 170) * 0.1;
+      const thickness = 2 + Math.min(6, m.lightningMindStacks) * 0.7;
+      g.lineStyle(thickness + 5, 0x0d4f9c, 0.18 * strength * alpha)
+        .strokeEllipse(m.x, m.y, MAGE_RADIUS * 2.55, MAGE_RADIUS * 3.25);
+      g.lineStyle(thickness, 0x4aa8ff, strength * pulse * alpha)
+        .strokeEllipse(m.x, m.y, MAGE_RADIUS * 2.4, MAGE_RADIUS * 3.1);
+    }
     g.fillStyle(MENU_COLOR.pitch, 0.62 * alpha).fillEllipse(m.x + 2, bodyY + 3, MAGE_RADIUS * 2.1, 13);
     g.fillStyle(teamColor, 0.12 * alpha).fillEllipse(m.x, bodyY, MAGE_RADIUS * 2.35, 16);
     g.lineStyle(active ? 3 : 2, active ? MENU_COLOR.brassLight : teamColor, active ? alpha : 0.72 * alpha)
@@ -15348,7 +15553,9 @@ export class GameScene extends Phaser.Scene {
       }).setOrigin(0.5, 0);
       this.mageLabels.set(m, t);
     }
-    const statusEntries = m.statuses
+    const statusEntries = [
+      ...(m.lightningMindStacks > 0 ? [`MIND LIGHTNING ×${m.lightningMindStacks}`] : []),
+      ...m.statuses
       .map((s) =>
         s.kind === 'fire' ||
         s.kind === 'sentinelFire' ||
@@ -15360,7 +15567,8 @@ export class GameScene extends Phaser.Scene {
           : Number.isFinite(s.duration) && s.duration > 0
             ? `${s.name} ⌛${s.duration}`
             : s.name
-          );
+          ),
+    ];
     const statuses = [
       ...statusEntries.slice(0, 2),
       ...(statusEntries.length > 2 ? [`+${statusEntries.length - 2}`] : []),
@@ -15926,6 +16134,23 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     // Swamprun: the run ends only when the survivor falls. Report the score.
+    if (this.explorationCombat) {
+      this.mode = 'over';
+      this.busy = false;
+      const won = this.explorationWon;
+      this.showEndCard({
+        eyebrow: won ? 'FIGHT WON' : 'DEFEATED',
+        title: won ? 'VICTORY' : 'PARTY LOST',
+        detail: won
+          ? `${this.explorationKills.length} felled. Level ${this.expeditionLevel} (${this.expeditionXp}/${this.expeditionXpToNext()} XP).`
+          : 'Carried back to the last town. 20% of your gold is lost.',
+        actionLabel: 'CONTINUE',
+        tone: won ? 'victory' : 'defeat',
+        onActivate: () => this.returnToMenu(),
+      });
+      this.redraw();
+      return;
+    }
     if (this.swamprun) {
       this.mode = 'over';
       this.busy = false;
@@ -16011,14 +16236,25 @@ export class GameScene extends Phaser.Scene {
     const combat = this.explorationCombat;
     if (combat) {
       const survivors = this.gs.mages.filter((m) => m.team === 1 && m.alive && !m.isSummon);
+      for (const m of survivors) {
+        const owned = this.swamprunArrowsOwned.get(m);
+        if (owned != null) m.arrows = owned;
+      }
       if (survivors.length) combat.run.party = capturePartySnapshot(survivors);
-      combat.run.gold += Math.round(this.swamprunGold);
+      combat.run.gold = Math.round((combat.run.gold + this.swamprunGold) * 2) / 2;
+      combat.run.level = this.expeditionLevel;
+      combat.run.xp = this.expeditionXp;
       this.scene.start('Exploration', {
         result: {
           run: combat.run,
           outcome: this.fledEdge ? 'fled' : survivors.length ? 'won' : 'lost',
           edge: this.fledEdge ?? undefined,
           cameFrom: combat.cameFrom,
+          kills: [...this.explorationKills],
+          returnTo: combat.returnTo,
+          fleeTo: combat.fleeTo,
+          tag: combat.tag,
+          robbery: combat.encounter === 'robbery',
         },
       } satisfies ExplorationEntry);
       return;

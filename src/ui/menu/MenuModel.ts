@@ -45,7 +45,7 @@ const PRESET_LOADOUTS: Record<SecretPreset, readonly WordId[]> = {
   NAD: ['mind', 'shatter', 'twist', 'reality'],
   KAT: ['corrode', 'curse', 'desecrate', 'drain', 'death'],
   GEN: ['heal', 'sand', 'corrode', 'pierce', 'shadow'],
-  SNIFF: ['pierce', 'mind', 'veil', 'fire', 'lightning'],
+  SNIFF: ['pierce', 'mind', 'veil', 'fire', 'lightning', 'storm'],
 };
 
 const makeDraft = (): MageDraft => ({
@@ -189,8 +189,15 @@ export class MenuModel {
     if (isModifierWord(word)) return false;
     const draft = this.draftFor(seat);
     const selected = draft.words.indexOf(word);
+    if (word === 'storm') {
+      if (selected < 0) return false;
+      draft.words.splice(selected, 1);
+      return true;
+    }
     if (selected >= 0) {
       draft.words.splice(selected, 1);
+      const storm = draft.words.indexOf('storm');
+      if (storm >= 0) draft.words.splice(storm, 1);
       return true;
     }
     if (draft.words.length >= this.loadoutLimit()) return false;
@@ -215,11 +222,12 @@ export class MenuModel {
     for (const word of words) {
       if (!WORD_ORDER.includes(word)) this.unlockedWords.add(word);
     }
-    this.draftFor(seat).words = words.slice(0, this.loadoutLimit());
+    const limit = preset === 'SNIFF' && this.loadoutLimit() >= 5 ? 6 : this.loadoutLimit();
+    this.draftFor(seat).words = words.slice(0, limit);
   }
 
   visibleWords(): WordId[] {
-    return ALL_GRID_WORDS;
+    return this.unlockedWords.has('storm') ? [...ALL_GRID_WORDS, 'storm'] : ALL_GRID_WORDS;
   }
 
   loadoutLimit(): number {
@@ -228,11 +236,18 @@ export class MenuModel {
 
   loadoutReady(seat: number): boolean {
     const words = this.draftFor(seat).words;
+    if (this.isSniffSelection(words)) return true;
+    if (words.includes('storm')) return false;
     return words.length === this.loadoutLimit() || this.isNadSelection(words);
   }
 
   missingWords(seat: number): number {
-    return Math.max(0, this.loadoutLimit() - this.draftFor(seat).words.length);
+    return Math.max(0, this.loadoutTarget(seat) - this.draftFor(seat).words.length);
+  }
+
+  loadoutTarget(seat: number): number {
+    const words = this.draftFor(seat).words;
+    return this.loadoutLimit() >= 5 && words.includes('storm') ? 6 : this.loadoutLimit();
   }
 
   buildSeatsReady(): boolean {
@@ -374,13 +389,21 @@ export class MenuModel {
 
   private trimDrafts(): void {
     const limit = this.loadoutLimit();
-    for (const draft of this.drafts) draft.words = draft.words.slice(0, limit);
+    for (const draft of this.drafts) {
+      const draftLimit = limit >= 5 && this.isSniffSelection(draft.words) ? 6 : limit;
+      draft.words = draft.words.slice(0, draftLimit);
+    }
   }
 
   private isNadSelection(words: readonly WordId[]): boolean {
     // Three-word campaign builds can never hold the four-word NAD preset.
     if (this.loadoutLimit() < 4 || (words.length !== 4 && words.length !== 5)) return false;
     return PRESET_LOADOUTS.NAD.every((word) => words.includes(word));
+  }
+
+  private isSniffSelection(words: readonly WordId[]): boolean {
+    return words.length === PRESET_LOADOUTS.SNIFF.length &&
+      PRESET_LOADOUTS.SNIFF.every((word) => words.includes(word));
   }
 
   private withModifier(draft: MageDraft): WordId[] {

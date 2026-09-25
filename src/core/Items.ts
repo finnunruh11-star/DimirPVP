@@ -97,6 +97,7 @@ export type ItemId =
   | 'momentumBoots'
   | 'smartRing'
   | 'gamblersBlade'
+  | 'gamblersCurse'
   | 'anchorBoots'
   | 'battleRobe'
   | 'soulBattery'
@@ -122,7 +123,40 @@ export type ItemId =
   | 'ironSpear'
   | 'primitiveClub'
   | 'stoneAxe'
-  | 'ironAxe';
+  | 'ironAxe'
+  // ---- Adventure gear (sold and forged in Exploration towns only) ----
+  | 'travellersDagger'
+  | 'quarterstaff'
+  | 'huntingBow'
+  | 'ironShortsword'
+  | 'apprenticeWand'
+  | 'forgedWarAxe'
+  | 'leatherCap'
+  | 'paddedJerkin'
+  | 'leatherBoots'
+  | 'chainShirt'
+  | 'ironGreaves'
+  | 'emberplate'
+  | 'drakescaleHelm'
+  | 'copperRing'
+  | 'ironBand'
+  | 'quicksilverAnklet'
+  | 'rubyPendant'
+  | 'sapphireRing'
+  | 'emeraldCharm'
+  | 'onyxAmulet'
+  | 'amethystCirclet'
+  | 'stillsuit'
+  // ---- Adventure materials: gems and herbs ----
+  | 'gemRuby'
+  | 'gemSapphire'
+  | 'gemEmerald'
+  | 'gemAmethyst'
+  | 'gemOnyx'
+  | 'gemDiamond'
+  | 'herbMoonleaf'
+  | 'herbEmberroot'
+  | 'herbBogcap';
 
 /**
  * Rarity tiers, ordered from most common to rarest. The shop draft rolls a
@@ -410,6 +444,8 @@ export interface ItemDef {
   shadowDagger?: { teleportManaCost: number; stealthManaPerRound: number };
   /** Grants the Roaring Thunder stack engine + Charge Up / Discharge bonus actions. */
   thunderBlessing?: boolean;
+  /** Skews every d20 the bearer rolls: 1-3 become a natural 1, 18-20 a natural 20. */
+  gamblersCurse?: boolean;
   /** A one-time reaction that stifles an ability/weapon attack and bans it forever (Needle of Serenity). */
   needleOfSerenity?: boolean;
   /** Untouchable to all hostile effects during turn cycles 3 and 4 (Second Ring of Lareneg). */
@@ -422,6 +458,12 @@ export interface ItemDef {
   lightInBag?: boolean;
   /** Exclude this item from every draft/shop outside Swamprun. */
   swamprunOnly?: boolean;
+  /** Only sold, forged or found in Exploration; never drafted anywhere. */
+  adventureOnly?: boolean;
+  /** Keeps the desert sun off the wearer while worn. */
+  heatProof?: boolean;
+  /** Material subtype read by the Gem shop and the Apothecary. */
+  materialKind?: 'gem' | 'herb';
   /** Creature equipment that is never offered or accepted as player gear. */
   enemyOnly?: boolean;
   /** Torch: number of combats a lit torch burns for before it is used up. */
@@ -1280,6 +1322,18 @@ export const ITEM_DEFS: ItemDef[] = [
     weaponAbility: 'gamblerCash',
   },
   {
+    id: 'gamblersCurse',
+    name: "Gambler's Curse",
+    slot: 'utility',
+    set: 'finns',
+    rarity: 'unreal',
+    cost: g(0),
+    weight: 0,
+    blurb:
+      'Every d20 you roll of 1-3 counts as a natural 1. Every d20 you roll of 18-20 counts as a natural 20.',
+    gamblersCurse: true,
+  },
+  {
     id: 'anchorBoots',
     name: 'Anchor Boots',
     slot: 'boots',
@@ -1440,6 +1494,301 @@ export const ITEM_DEFS: ItemDef[] = [
     enemyOnly: true,
     weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.3, damageType: 'slashing' },
   },
+  // ---- Adventure gear --------------------------------------------------------
+  {
+    id: 'travellersDagger',
+    name: "Traveller's Dagger",
+    slot: 'hand',
+    rarity: 'common',
+    cost: g(4),
+    weight: 1,
+    blurb: 'Dex attack, pierce.',
+    adventureOnly: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'dex', damageType: 'pierce' },
+  },
+  {
+    id: 'quarterstaff',
+    name: 'Quarterstaff',
+    slot: 'hand',
+    rarity: 'common',
+    cost: g(3),
+    weight: 2,
+    blurb: '90% Strength shatter, +0.5cm range.',
+    adventureOnly: true,
+    weapon: { rangePx: MELEE_RANGE + U * 0.5, kind: 'strength', multiplier: 0.9, damageType: 'shatter' },
+  },
+  {
+    id: 'huntingBow',
+    name: 'Hunting Bow',
+    slot: 'hand',
+    rarity: 'common',
+    cost: g(6),
+    weight: 1,
+    weaponFamily: 'bow',
+    blurb: 'Dex attack +1, pierce, range 16cm. 100% hit to 10cm, 50% to 16cm. Uses arrows.',
+    adventureOnly: true,
+    weapon: {
+      rangePx: 16 * U,
+      kind: 'dex',
+      dexBonus: 1,
+      usesArrows: true,
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 10 * U, maxRange: 16 * U, farChance: 0.5 },
+    },
+  },
+  {
+    id: 'ironShortsword',
+    name: 'Iron Shortsword',
+    slot: 'hand',
+    rarity: 'common',
+    cost: g(6),
+    weight: 2,
+    blurb: '110% Strength slashing.',
+    adventureOnly: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.1, damageType: 'slashing' },
+  },
+  {
+    id: 'apprenticeWand',
+    name: 'Apprentice Wand',
+    slot: 'hand',
+    rarity: 'common',
+    cost: g(5),
+    weight: 0.5,
+    blurb: 'Wand. +1 Int.',
+    adventureOnly: true,
+    isWand: true,
+    statMods: { int: 1 },
+  },
+  {
+    id: 'forgedWarAxe',
+    name: 'Forged War Axe',
+    slot: 'hand',
+    rarity: 'rare',
+    cost: g(14),
+    weight: 4,
+    blurb: '140% Strength slashing.',
+    adventureOnly: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.4, damageType: 'slashing' },
+  },
+  {
+    id: 'leatherCap',
+    name: 'Leather Cap',
+    slot: 'head',
+    rarity: 'common',
+    cost: g(4),
+    weight: 1,
+    blurb: '+1 magic armour.',
+    adventureOnly: true,
+    armor: { flat: 0, magicFlat: 1 },
+  },
+  {
+    id: 'paddedJerkin',
+    name: 'Padded Jerkin',
+    slot: 'torso',
+    rarity: 'common',
+    cost: g(6),
+    weight: 3,
+    blurb: '+1 armour.',
+    adventureOnly: true,
+    armor: { flat: 1 },
+  },
+  {
+    id: 'leatherBoots',
+    name: 'Leather Boots',
+    slot: 'boots',
+    rarity: 'common',
+    cost: g(4),
+    weight: 1,
+    blurb: '+10% move.',
+    adventureOnly: true,
+    moveMult: 1.1,
+  },
+  {
+    id: 'chainShirt',
+    name: 'Chain Shirt',
+    slot: 'torso',
+    rarity: 'rare',
+    cost: g(14),
+    weight: 6,
+    blurb: '+2 armour. -10% move.',
+    adventureOnly: true,
+    armor: { flat: 2 },
+    moveMult: 0.9,
+  },
+  {
+    id: 'ironGreaves',
+    name: 'Iron Greaves',
+    slot: 'boots',
+    rarity: 'rare',
+    cost: g(10),
+    weight: 4,
+    blurb: '+1 armour.',
+    adventureOnly: true,
+    armor: { flat: 1 },
+  },
+  {
+    id: 'emberplate',
+    name: 'Emberplate',
+    slot: 'torso',
+    rarity: 'epic',
+    cost: g(30),
+    weight: 8,
+    blurb: '+2 armour. Resist heat.',
+    adventureOnly: true,
+    armor: { flat: 2 },
+    resist: { resist: ['heat'] },
+  },
+  {
+    id: 'drakescaleHelm',
+    name: 'Drakescale Helm',
+    slot: 'head',
+    rarity: 'epic',
+    cost: g(24),
+    weight: 3,
+    blurb: '+1 armour, +1 magic armour. Resist slashing.',
+    adventureOnly: true,
+    armor: { flat: 1, magicFlat: 1 },
+    resist: { resist: ['slashing'] },
+  },
+  {
+    id: 'copperRing',
+    name: 'Copper Ring',
+    slot: 'accessory',
+    rarity: 'common',
+    cost: g(6),
+    weight: 0,
+    blurb: '+1 Int.',
+    adventureOnly: true,
+    statMods: { int: 1 },
+  },
+  {
+    id: 'ironBand',
+    name: 'Iron Band',
+    slot: 'accessory',
+    rarity: 'common',
+    cost: g(6),
+    weight: 0,
+    blurb: '+1 Strength.',
+    adventureOnly: true,
+    statMods: { str: 1 },
+  },
+  {
+    id: 'quicksilverAnklet',
+    name: 'Quicksilver Anklet',
+    slot: 'accessory',
+    rarity: 'common',
+    cost: g(6),
+    weight: 0,
+    blurb: '+1 Dex.',
+    adventureOnly: true,
+    statMods: { dex: 1 },
+  },
+  {
+    id: 'rubyPendant',
+    name: 'Ruby Pendant',
+    slot: 'accessory',
+    rarity: 'rare',
+    cost: g(16),
+    weight: 0,
+    blurb: 'Resist heat.',
+    adventureOnly: true,
+    resist: { resist: ['heat'] },
+  },
+  {
+    id: 'sapphireRing',
+    name: 'Sapphire Ring',
+    slot: 'accessory',
+    rarity: 'rare',
+    cost: g(18),
+    weight: 0,
+    blurb: '+2 Int.',
+    adventureOnly: true,
+    statMods: { int: 2 },
+  },
+  {
+    id: 'emeraldCharm',
+    name: 'Emerald Charm',
+    slot: 'accessory',
+    rarity: 'rare',
+    cost: g(16),
+    weight: 0,
+    blurb: '-20% debuff duration.',
+    adventureOnly: true,
+    debuffDurationMult: 0.8,
+  },
+  {
+    id: 'onyxAmulet',
+    name: 'Onyx Amulet',
+    slot: 'accessory',
+    rarity: 'rare',
+    cost: g(16),
+    weight: 0,
+    blurb: 'Resist shadow.',
+    adventureOnly: true,
+    resist: { resist: ['shadow'] },
+  },
+  {
+    id: 'amethystCirclet',
+    name: 'Amethyst Circlet',
+    slot: 'head',
+    rarity: 'rare',
+    cost: g(18),
+    weight: 1,
+    blurb: '-1 to all incoming sanity damage.',
+    adventureOnly: true,
+    mentalReduce: 1,
+  },
+  {
+    id: 'stillsuit',
+    name: 'Stillsuit',
+    slot: 'torso',
+    rarity: 'rare',
+    cost: g(20),
+    weight: 2,
+    blurb: 'Immunity to desert heat. +1 armour.',
+    adventureOnly: true,
+    heatProof: true,
+    armor: { flat: 1 },
+  },
+  ...(
+    [
+      ['gemRuby', 'Ruby', 3],
+      ['gemSapphire', 'Sapphire', 3],
+      ['gemEmerald', 'Emerald', 3],
+      ['gemAmethyst', 'Amethyst', 2],
+      ['gemOnyx', 'Onyx', 2],
+      ['gemDiamond', 'Diamond', 8],
+    ] as const
+  ).map(([id, name, gold]): ItemDef => ({
+    id,
+    name,
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(gold),
+    weight: 0.2,
+    blurb: 'Material. Gemstone.',
+    material: true,
+    materialKind: 'gem',
+    adventureOnly: true,
+  })),
+  ...(
+    [
+      ['herbMoonleaf', 'Moonleaf', 0.5],
+      ['herbEmberroot', 'Emberroot', 1],
+      ['herbBogcap', 'Bogcap', 0.5],
+    ] as const
+  ).map(([id, name, gold]): ItemDef => ({
+    id,
+    name,
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(gold),
+    weight: 0.2,
+    blurb: 'Material. Herb.',
+    material: true,
+    materialKind: 'herb',
+    adventureOnly: true,
+  })),
 ];
 
 const ITEM_BY_ID: Record<ItemId, ItemDef> = ITEM_DEFS.reduce((acc, def) => {
@@ -1541,6 +1890,7 @@ export function itemsOfRarity(rarity: Rarity, includeSwamprunOnly = false): Item
       ACTIVE_ITEM_SETS.has(d.set ?? 'original') &&
       !d.enemyOnly &&
       !d.material &&
+      !d.adventureOnly &&
       (includeSwamprunOnly || !d.swamprunOnly)
   );
 }

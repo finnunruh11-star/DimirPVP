@@ -79,6 +79,90 @@ export class LightningFxDirector {
     });
   }
 
+  /** Fall toward the caster, then bend away shortly before impact when redirected. */
+  mindBolt(
+    from: Vec2,
+    caster: Vec2,
+    target: Vec2,
+    color = 0x4aa8ff,
+    thickness = 1.15,
+  ): Promise<void> {
+    if (dist(caster, target) < 3) {
+      return this.playStrike(from, caster, color, thickness, {
+        charge: false,
+        feedback: true,
+        anticipation: false,
+      });
+    }
+    if (this.destroyed) return Promise.resolve();
+
+    const incomingDistance = Math.max(1, dist(from, caster));
+    const lead = Math.min(56, Math.max(28, incomingDistance * 0.16));
+    const junction = {
+      x: caster.x - ((caster.x - from.x) / incomingDistance) * lead,
+      y: caster.y - ((caster.y - from.y) / incomingDistance) * lead,
+    };
+    const reduced = this.reducedMotion();
+
+    return new Promise((resolve) => {
+      const layers: Phaser.GameObjects.Sprite[] = [];
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        this.pending.delete(finish);
+        for (const layer of layers) this.release(layer);
+        resolve();
+      };
+      this.pending.add(finish);
+
+      layers.push(
+        this.createBoltLayer(from, junction, 30.9, {
+          color,
+          alpha: 0.42,
+          thickness: thickness * 2.5,
+          startFrame: 1,
+        }),
+        this.createBoltLayer(from, junction, 31.1, {
+          color: 0xe2f6ff,
+          alpha: 0.98,
+          thickness: thickness * 0.72,
+          startFrame: 0,
+        }),
+      );
+
+      const branch = (): void => {
+        if (this.destroyed || settled) return;
+        layers.push(
+          this.createBoltLayer(junction, target, 31, {
+            color,
+            alpha: 0.48,
+            thickness: thickness * 2.8,
+            startFrame: 3,
+          }),
+          this.createBoltLayer(junction, target, 31.2, {
+            color: 0xe2f6ff,
+            alpha: 1,
+            thickness: thickness * 0.78,
+            startFrame: 2,
+          }),
+        );
+        this.createAnimatedSprite(LIGHTNING_FX_SHEETS.charge, junction, 42, color, 31.25);
+        this.createAnimatedSprite(LIGHTNING_FX_SHEETS.strike, target, 138, color, 31.35);
+        this.createAnimatedSprite(LIGHTNING_FX_SHEETS.impact, target, 92, color, 31.5);
+        this.createResidue(target, color, 82);
+        if (!reduced) {
+          this.scene.cameras.main.flash(70, 80, 165, 255, false);
+          this.scene.cameras.main.shake(110, 0.0018);
+        }
+        this.schedule(reduced ? 120 : 300, finish);
+      };
+
+      if (reduced) branch();
+      else this.schedule(78, branch);
+    });
+  }
+
   nova(at: Vec2, color: number, thickness = 1): Promise<void> {
     const radius = 34 + thickness * 7;
     const directions = [

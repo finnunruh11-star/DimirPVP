@@ -57,8 +57,6 @@ export interface StackItem {
    * such as an end-of-turn window or a blink step.
    */
   noPhysicalReaction?: boolean;
-  /** This trigger exceptionally permits the active mage to answer it. */
-  allowCurrentReaction?: boolean;
   /** Modifier words attached to this cast (Subtle / Delay / Channel). */
   modifiers?: WordId[];
   /** A silent cast: nobody may react to it at all. */

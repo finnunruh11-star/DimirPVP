@@ -2,21 +2,57 @@ import Phaser from 'phaser';
 import { playMusic, playSound } from '../audio';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from '../config/constants';
 import type { MatchConfig } from '../config/MatchConfig';
-import { Dice } from '../core/Dice';
+import { getItem, type ItemId } from '../core/Items';
 import { Mage } from '../core/Mage';
-import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
-import {
-  applyExplorationCommand,
-  createRun,
-  currentNode,
-  type ExplorationRun,
-  type TravelOutcome,
-} from '../pve/exploration/run';
+import { recordKills } from '../pve/exploration/bounties';
+import { advanceHours, durationLabel, isNight } from '../pve/exploration/clock';
+import { absoluteHour, applyHeat, heatFor, isSandstorm, partyHeatProof, stormHoursLeft } from '../pve/exploration/desert';
+import { grantToMage, partyOf, withParty } from '../pve/exploration/economy';
+import type { EncounterKind, EncounterSpawn, EncounterZone } from '../pve/exploration/encounters';
+import { pickEvent } from '../pve/exploration/events';
+import { isExplored, unpackExplored } from '../pve/exploration/explored';
+import { rollFind } from '../pve/exploration/finds';
+import { resolveLocale } from '../pve/exploration/locales';
+import { OPEN_WORLD_ID, openWorldCell } from '../pve/exploration/openWorld';
+import { capturePartySnapshot } from '../pve/exploration/party';
+import { createRun, stepDice, type ExplorationRun, type LocaleState } from '../pve/exploration/run';
 import { loadRun, saveRun } from '../pve/exploration/save';
-import { createWorld, nodeAt, type NodeKind, type WorldMap, type WorldNode } from '../pve/exploration/world';
+import {
+  canSearch,
+  dangerWord,
+  exploreAlong,
+  findRoute,
+  findsWord,
+  planTrip,
+  rollSearch,
+  rollTrip,
+  SEARCH_HOURS,
+  TRAVEL_MODES,
+  TRAVEL_ORDER,
+  type TravelMode,
+  type TripPlan,
+  type TripStop,
+} from '../pve/exploration/travel';
+import {
+  createWorld,
+  describeTile,
+  isPassable,
+  placeAt,
+  placeById,
+  REGIONS,
+  regionAt,
+  type RegionId,
+  type WorldMap,
+} from '../pve/exploration/world';
 import { CabinetButton, MenuFocusGroup } from '../ui/cabinet/controls';
 import { SceneInput } from '../engine/SceneInput';
-import { MENU_COLOR, MENU_FONT, MENU_HEX } from '../ui/cabinet/theme';
+import { MENU_FONT, MENU_HEX } from '../ui/cabinet/theme';
+import { preloadLocaleAssets } from '../world/localeRender';
+import { createMageAnims, MAGE_FIRST_FRAME, MAGE_IDLE, MAGE_RUN, preloadMageFrames } from '../world/mageSprite';
+import { OverworldView, OW_CELL, OW_SCALE } from '../world/overworldRender';
+import type { Cell } from '../world/pathfind';
+import type { HudOwner, LocaleHudScene, WorldPanel } from './LocaleHudScene';
+import type { LocaleEntry } from './LocaleScene';
 
 /** What the scene was handed when it started. */
 export interface ExplorationEntry {
@@ -25,6 +61,9 @@ export interface ExplorationEntry {
   resume?: boolean;
   /** Handed back by GameScene once a fight is done. */
   result?: ExplorationCombatResult;
+  /** Handed back by a walkable place the party just left. */
+  run?: ExplorationRun;
+  notice?: string;
 }
 
 export interface ExplorationCombatResult {
@@ -32,44 +71,60 @@ export interface ExplorationCombatResult {
   outcome: 'won' | 'lost' | 'fled';
   /** Border the party broke off by, when they fled. */
   edge?: 'north' | 'south' | 'east' | 'west';
-  /** Where the party stood before walking into the fight. */
   cameFrom: string | null;
+  /** Creature kinds felled, for bounty progress. */
+  kills?: string[];
+  returnTo?: LocaleState;
+  /** Where a party that broke off goes, when that differs from `returnTo`. */
+  fleeTo?: LocaleState;
+  tag?: string;
+  robbery?: boolean;
 }
 
-const NODE_COLOR: Record<NodeKind, number> = {
-  city: MENU_COLOR.brassLight,
-  path: 0x6f6455,
-  dungeon: MENU_COLOR.blood,
-  wilderness: 0xc4622d,
-  wip: 0x4d4a55,
-};
+const STARTER_WEAPONS: { id: ItemId; extra?: string }[] = [
+  { id: 'travellersDagger' },
+  { id: 'quarterstaff' },
+  { id: 'huntingBow', extra: '15 arrows' },
+  { id: 'apprenticeWand' },
+];
+
+const START_GOLD = 20;
+const DEFEAT_TOLL = 0.2;
+const ROBBERY_TOLL = 0.25;
+const DRAG_SLOP = 8;
+
+const halfGold = (value: number): number => Math.floor(value * 2) / 2;
 
 /**
- * The overworld. Owns the run, draws the map, and hands off to GameScene for
- * every fight. It is a scene of its own rather than another GameScene overlay
- * because GameScene is already far too large to take a second world on.
+ * The overworld. Owns the run, draws the world map, plans and walks trips, and
+ * hands off to GameScene for every fight and to LocaleScene for every town,
+ * forest and wild.
  */
-export class ExplorationScene extends Phaser.Scene {
+export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private world: WorldMap = createWorld();
   private run!: ExplorationRun;
-  private cameFrom: string | null = null;
   private layer?: Phaser.GameObjects.Container;
-  private readonly focus = new MenuFocusGroup();
+  private focus = new MenuFocusGroup();
   private keys?: SceneInput;
   private notice = '';
   private pendingConfig?: MatchConfig;
-  /** The party, rebuilt only when the run's snapshot actually changes. */
-  private partyCache: { snapshot: unknown; mages: Mage[] } | null = null;
-
-  private party(): Mage[] {
-    if (this.partyCache?.snapshot !== this.run.party) {
-      this.partyCache = { snapshot: this.run.party, mages: restoreParty(this.run.party) };
-    }
-    return this.partyCache.mages;
-  }
+  private view?: OverworldView;
+  private token?: Phaser.GameObjects.Sprite;
+  private routeGfx?: Phaser.GameObjects.Graphics;
+  private hud?: LocaleHudScene;
+  private busy = false;
+  private needsStarterKit = false;
+  private route: Cell[] | null = null;
+  private drag: { x: number; y: number; moved: boolean } | null = null;
+  private overview = false;
 
   constructor() {
     super('Exploration');
+  }
+
+  preload(): void {
+    preloadLocaleAssets(this);
+    preloadMageFrames(this);
   }
 
   create(entry: ExplorationEntry): void {
@@ -77,21 +132,51 @@ export class ExplorationScene extends Phaser.Scene {
     playMusic('menu');
     this.world = createWorld();
     this.pendingConfig = entry.config;
+    this.busy = false;
+    this.needsStarterKit = false;
+    this.hud = undefined;
+    this.view = undefined;
+    this.token = undefined;
+    this.route = null;
+    this.drag = null;
+    this.overview = false;
+    this.focus.clear();
     this.keys?.destroy();
     this.keys = new SceneInput(this);
+    // While a HUD window is open the keys are its alone.
+    const free = (run: () => void) => (): void => {
+      if (!this.hud?.modalOpen) run();
+    };
     this.keys.bindKeys([
-      { key: 'UP', capture: true, run: () => this.focus.move(-1) },
-      { key: 'W', run: () => this.focus.move(-1) },
-      { key: 'DOWN', capture: true, run: () => this.focus.move(1) },
-      { key: 'S', run: () => this.focus.move(1) },
-      { key: 'ENTER', capture: true, run: () => this.focus.activate() },
-      { key: 'SPACE', capture: true, run: () => this.focus.activate() },
+      { key: 'UP', capture: true, run: free(() => this.focus.move(-1)) },
+      { key: 'W', run: free(() => this.focus.move(-1)) },
+      { key: 'DOWN', capture: true, run: free(() => this.focus.move(1)) },
+      { key: 'S', run: free(() => this.focus.move(1)) },
+      { key: 'ENTER', capture: true, run: free(() => this.focus.activate()) },
+      { key: 'SPACE', capture: true, run: free(() => this.focus.activate()) },
+      { key: 'I', run: free(() => void this.openPack()) },
+      { key: 'M', run: free(() => this.toggleOverview()) },
+      { key: 'C', run: free(() => this.followParty()) },
+      { key: 'ESC', run: free(() => (this.route ? this.clearRoute() : void this.openMenu())) },
     ]);
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.keys?.destroy());
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.keys?.destroy();
+      this.input.off(Phaser.Input.Events.POINTER_DOWN);
+      this.input.off(Phaser.Input.Events.POINTER_MOVE);
+      this.input.off(Phaser.Input.Events.POINTER_UP);
+      this.input.off(Phaser.Input.Events.POINTER_WHEEL);
+      this.view?.destroy();
+      this.view = undefined;
+      this.scene.stop('LocaleHud');
+    });
+    createMageAnims(this);
 
     if (entry.result) {
       this.run = entry.result.run;
-      this.resolveCombatResult(entry.result);
+      if (this.resolveCombatResult(entry.result)) return;
+    } else if (entry.run) {
+      this.run = entry.run;
+      this.notice = entry.notice ?? '';
     } else {
       const saved = loadRun();
       // A run already on the road is never thrown away without being asked.
@@ -100,16 +185,34 @@ export class ExplorationScene extends Phaser.Scene {
         this.drawResumePrompt(saved);
         return;
       }
-      this.run = createRun(this.freshSeed(), this.buildParty(entry.config));
-      this.notice = 'You set out from the Capitol.';
+      this.beginFreshRun();
     }
+    if (this.run.mapStyle === 'open' && !this.needsStarterKit) {
+      this.enterOpenWorld(this.notice);
+      return;
+    }
+    this.openOverworld();
+  }
 
+  /** Walk the world on foot from wherever the party stands on the map. */
+  private enterOpenWorld(notice?: string): void {
+    this.run.mapStyle = 'open';
+    this.run.locale = null;
     saveRun(this.run);
-    this.draw();
+    this.scene.stop('LocaleHud');
+    this.scene.start('Locale', { run: this.run, locale: OPEN_WORLD_ID, at: openWorldCell(this.run.pos), notice } satisfies LocaleEntry);
   }
 
   private freshSeed(): number {
     return Math.floor(Math.random() * 0xffffffff) >>> 0;
+  }
+
+  private beginFreshRun(): void {
+    this.run = createRun(this.freshSeed(), this.buildParty(this.pendingConfig));
+    this.run.gold = START_GOLD;
+    this.needsStarterKit = true;
+    this.notice = 'You set out from the Capitol with 20g, two health potions and a mana potion.';
+    saveRun(this.run);
   }
 
   /** Standing offer when an old run is found: pick it up, or set it down. */
@@ -118,7 +221,8 @@ export class ExplorationScene extends Phaser.Scene {
     this.focus.clear();
     const root = this.add.container(0, 0);
     this.layer = root;
-    const where = nodeAt(this.world, saved.nodeId);
+    const inside = saved.locale ? resolveLocale(saved, saved.locale.id)?.def.name : null;
+    const where = inside ?? describeTile(this.world, saved.pos.x, saved.pos.y);
     root.add(
       this.add.text(GAME_WIDTH / 2, 220, 'A RUN IS ALREADY ON THE ROAD', {
         fontFamily: MENU_FONT.display,
@@ -130,20 +234,30 @@ export class ExplorationScene extends Phaser.Scene {
       this.add.text(
         GAME_WIDTH / 2,
         266,
-        `${where.name} \u00b7 ${saved.gold}g \u00b7 ${saved.steps} leagues walked`,
+        `${where}  /  ${saved.gold}g  /  Level ${saved.level}  /  Day ${saved.day}`,
         { fontFamily: MENU_FONT.control, fontSize: '16px', color: MENU_HEX.bone }
       ).setOrigin(0.5)
     );
     const options: [string, string, () => void][] = [
-      ['Continue', `Pick up at ${where.name}`, () => {
+      ['Continue', `Pick up at ${where}`, () => {
+        root.destroy();
+        this.focus.clear();
+        if (saved.locale && resolveLocale(saved, saved.locale.id)) {
+          this.scene.start('Locale', { run: saved, locale: saved.locale.id, notice: 'Where you left off.' } satisfies LocaleEntry);
+          return;
+        }
+        if (saved.mapStyle === 'open') {
+          this.enterOpenWorld('Where you left off.');
+          return;
+        }
         this.notice = 'The road is where you left it.';
-        this.draw();
+        this.openOverworld();
       }],
       ['Start Over', 'Abandon that run and set out fresh', () => {
-        this.run = createRun(this.freshSeed(), this.buildParty(this.pendingConfig));
-        this.notice = 'You set out from the Capitol.';
-        saveRun(this.run);
-        this.draw();
+        root.destroy();
+        this.focus.clear();
+        this.beginFreshRun();
+        this.openOverworld();
       }],
       ['Back', 'Return to the main menu', () => this.scene.start('Menu')],
     ];
@@ -160,7 +274,7 @@ export class ExplorationScene extends Phaser.Scene {
     });
   }
 
-  /** A fresh traveller: Expedition's build, standing in the Capitol. */
+  /** A fresh traveller: the chosen build, standing in the Capitol with a starter kit. */
   private buildParty(config?: MatchConfig): ReturnType<typeof capturePartySnapshot> {
     const seat = config?.seats?.[0];
     const mage = new Mage({
@@ -172,7 +286,7 @@ export class ExplorationScene extends Phaser.Scene {
       mageClass: seat?.mageClass,
     });
     mage.assignFlatStats(3);
-    mage.bag.push('torch');
+    for (const id of ['torch', 'healthPotion', 'healthPotion', 'manaPotion'] as ItemId[]) grantToMage(mage, id);
     return capturePartySnapshot([mage]);
   }
 
@@ -180,245 +294,527 @@ export class ExplorationScene extends Phaser.Scene {
   //  COMBAT ROUND TRIP
   // ---------------------------------------------------------------------------
 
-  private resolveCombatResult(result: ExplorationCombatResult): void {
-    this.cameFrom = result.cameFrom;
+  /** Settle a finished fight. Returns true when the scene has already moved on. */
+  private resolveCombatResult(result: ExplorationCombatResult): boolean {
+    const run = this.run;
+    const finished = recordKills(run, result.kills ?? []);
+    const bountyNote = finished.length ? ` Bounty ready: ${finished.join(', ')}.` : '';
+
     if (result.outcome === 'lost') {
-      this.notice = 'You were carried back to the Capitol with nothing but your life.';
-      this.run.nodeId = 'capitol';
-      return;
+      const toll = halfGold(run.gold * DEFEAT_TOLL);
+      run.gold = halfGold(run.gold - toll);
+      const town = placeById(run.lastTown) ?? placeById('capitol')!;
+      run.pos = { x: town.x, y: town.y };
+      run.locale = null;
+      this.notice = `You were carried back to ${town.name}.${toll > 0 ? ` ${toll}g went missing on the way.` : ''}`;
+      saveRun(run);
+      this.scene.start('Locale', { run, locale: town.locale ?? town.id, notice: this.notice } satisfies LocaleEntry);
+      return true;
     }
-    if (result.outcome === 'fled' && result.edge) {
-      const destination = this.fleeTarget(result.edge, result.cameFrom);
-      this.run.nodeId = destination;
-      this.notice =
-        destination === result.cameFrom
-          ? 'You broke off and fell back the way you came.'
-          : destination === this.run.nodeId
-            ? 'You broke off, but the road held you where you stood.'
-            : 'You broke off and pushed on past the ambush.';
-      return;
+
+    let note = '';
+    if (result.outcome === 'fled' && result.robbery) {
+      const toll = halfGold(run.gold * ROBBERY_TOLL);
+      run.gold = halfGold(run.gold - toll);
+      if (toll > 0) note = ` The bandits took ${toll}g as you ran.`;
     }
-    this.notice = 'The road is clear again.';
+    if (result.outcome === 'won' && result.tag) run.groupsBeaten[result.tag] = run.day;
+
+    const back = result.outcome === 'fled' ? result.fleeTo ?? result.returnTo : result.returnTo;
+    if (back) {
+      saveRun(run);
+      const line = result.outcome === 'won' ? `The way is clear.${bountyNote}` : `You broke away.${note}`;
+      this.scene.start('Locale', {
+        run,
+        locale: back.id,
+        at: { x: back.x, y: back.y },
+        notice: line,
+        grace: result.outcome === 'fled' ? 3000 : 0,
+      } satisfies LocaleEntry);
+      return true;
+    }
+
+    this.notice = result.outcome === 'fled' ? `You broke away and caught your breath.${note}` : `The road is clear again.${bountyNote}`;
+    saveRun(run);
+    return false;
   }
 
-  /** Running back the way you came retreats; running onward skips the fight. */
-  private fleeTarget(edge: 'north' | 'south' | 'east' | 'west', cameFrom: string | null): string {
-    const node = nodeAt(this.world, this.run.nodeId);
-    if (node.kind !== 'path') return this.run.nodeId;
-    if (edge === 'west' && cameFrom && node.links.includes(cameFrom)) return cameFrom;
-    if (edge === 'east') return node.links.find((id) => id !== cameFrom) ?? this.run.nodeId;
-    return this.run.nodeId;
-  }
-
-  private startCombat(outcome: TravelOutcome): void {
+  private startCombat(encounter: EncounterKind, zone: EncounterZone, depth: number, spawns?: EncounterSpawn[], label?: string): void {
     saveRun(this.run);
+    this.scene.stop('LocaleHud');
     this.scene.start('Game', {
       mode: 'exploration',
       loadouts: [[], []],
       exploration: {
         run: this.run,
-        encounter: outcome.encounter,
-        depth: outcome.depth,
-        cameFrom: this.cameFrom,
+        encounter,
+        depth,
+        cameFrom: null,
+        zone,
+        spawns,
+        label,
       },
     } satisfies MatchConfig);
+  }
+
+  // ---------------------------------------------------------------------------
+  //  THE MAP
+  // ---------------------------------------------------------------------------
+
+  private openOverworld(): void {
+    this.layer?.destroy();
+    this.layer = undefined;
+    this.focus.clear();
+    this.view?.destroy();
+    const view = new OverworldView(this, this.world);
+    this.view = view;
+    view.setExplored(unpackExplored(this.run.explored));
+    this.routeGfx = this.add.graphics().setDepth(21);
+    const at = this.tileCenter(this.run.pos);
+    this.token = this.add.sprite(at.x, at.y, MAGE_FIRST_FRAME).setOrigin(0.5, 0.85).setScale(OW_SCALE + 0.5).setDepth(22);
+    this.token.play(MAGE_IDLE);
+    const cam = this.cameras.main;
+    cam.setBounds(0, 0, view.width, view.height);
+    cam.setZoom(1);
+    cam.setRoundPixels(true);
+    cam.startFollow(this.token, true, 0.15, 0.15);
+    this.bindMapInput();
+    this.scene.launch('LocaleHud', { owner: this });
+  }
+
+  onHudReady(hud: LocaleHudScene): void {
+    this.hud = hud;
+    hud.setHint('Click the map: plan a trip     Drag: look around     Wheel: zoom     M: map     C: centre     I: pack     Esc: menu');
+    this.refresh();
+    if (this.notice) hud.toast(this.notice, 4200);
+    void (async () => {
+      if (this.needsStarterKit) {
+        await this.chooseMapStyle();
+        await this.chooseStarterWeapon();
+        if (this.run.mapStyle === 'open') {
+          this.enterOpenWorld(this.notice);
+          return;
+        }
+      }
+      if (await hud.levelUps(this.run)) saveRun(this.run);
+      this.refresh();
+    })();
+  }
+
+  /** A new run asks how the world should be crossed; the pause menu can change it later. */
+  private async chooseMapStyle(): Promise<void> {
+    if (!this.hud) return;
+    const style = await this.hud.choose<'travel' | 'open'>('HOW DO YOU TRAVEL?', 'You can switch at any time from the pause menu.', [
+      { id: 'travel', label: 'Travel map', detail: 'Click a destination and choose how to travel: Sprint, Sneak, Explore or Fast travel.' },
+      { id: 'open', label: 'Open world', detail: 'Walk the whole world on foot, like the forests and the wilds.' },
+    ]);
+    this.run.mapStyle = style;
+    saveRun(this.run);
+  }
+
+  private async chooseStarterWeapon(): Promise<void> {
+    if (!this.hud) return;
+    this.needsStarterKit = false;
+    const pick = await this.hud.choose<ItemId>('CHOOSE A WEAPON', 'Every traveller leaves the Capitol armed.',
+      STARTER_WEAPONS.map(({ id, extra }) => {
+        const def = getItem(id);
+        return { id, label: def.name, detail: `${def.blurb}${extra ? ` Comes with ${extra}.` : ''}` };
+      }));
+    withParty(this.run, (leader) => {
+      grantToMage(leader, pick);
+      if (pick === 'huntingBow') leader.arrows += 15;
+    });
+    saveRun(this.run);
+  }
+
+  private tileCenter(cell: Cell): { x: number; y: number } {
+    return { x: (cell.x + 0.5) * OW_CELL, y: (cell.y + 0.5) * OW_CELL };
+  }
+
+  private bindMapInput(): void {
+    this.input.off(Phaser.Input.Events.POINTER_DOWN);
+    this.input.off(Phaser.Input.Events.POINTER_MOVE);
+    this.input.off(Phaser.Input.Events.POINTER_UP);
+    this.input.off(Phaser.Input.Events.POINTER_WHEEL);
+    this.input.on(Phaser.Input.Events.POINTER_DOWN, (pointer: Phaser.Input.Pointer) => {
+      this.drag = { x: pointer.x, y: pointer.y, moved: false };
+    });
+    this.input.on(Phaser.Input.Events.POINTER_MOVE, (pointer: Phaser.Input.Pointer) => {
+      const drag = this.drag;
+      if (!drag || !pointer.isDown) return;
+      if (!drag.moved && Math.hypot(pointer.x - drag.x, pointer.y - drag.y) < DRAG_SLOP) return;
+      drag.moved = true;
+      const cam = this.cameras.main;
+      cam.stopFollow();
+      cam.scrollX -= (pointer.x - pointer.prevPosition.x) / cam.zoom;
+      cam.scrollY -= (pointer.y - pointer.prevPosition.y) / cam.zoom;
+    });
+    this.input.on(Phaser.Input.Events.POINTER_UP, (pointer: Phaser.Input.Pointer) => {
+      const drag = this.drag;
+      this.drag = null;
+      if (!drag || drag.moved || this.busy || this.hud?.modalOpen) return;
+      this.pickTile({ x: Math.floor(pointer.worldX / OW_CELL), y: Math.floor(pointer.worldY / OW_CELL) });
+    });
+    this.input.on(Phaser.Input.Events.POINTER_WHEEL, (_p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
+      if (this.overview) return;
+      this.cameras.main.setZoom(dy > 0 ? 0.5 : 1);
+    });
+  }
+
+  private toggleOverview(): void {
+    const view = this.view;
+    if (!view || !this.token) return;
+    const cam = this.cameras.main;
+    this.overview = !this.overview;
+    if (this.overview) {
+      cam.stopFollow();
+      cam.removeBounds();
+      cam.setZoom(Math.min(GAME_WIDTH / view.width, GAME_HEIGHT / view.height));
+      cam.centerOn(view.width / 2, view.height / 2);
+    } else {
+      cam.setZoom(1);
+      cam.setBounds(0, 0, view.width, view.height);
+      cam.startFollow(this.token, true, 0.15, 0.15);
+    }
+  }
+
+  private followParty(): void {
+    if (!this.token || this.overview) return;
+    this.cameras.main.startFollow(this.token, true, 0.15, 0.15);
+  }
+
+  private pickTile(cell: Cell): void {
+    if (cell.x < 0 || cell.y < 0 || cell.x >= this.world.w || cell.y >= this.world.h) return;
+    if (cell.x === this.run.pos.x && cell.y === this.run.pos.y) {
+      this.clearRoute();
+      return;
+    }
+    if (!isPassable(this.world, cell.x, cell.y)) {
+      this.hud?.toast('Nobody can walk there.', 1800);
+      return;
+    }
+    const route = findRoute(this.world, this.run, cell);
+    if (!route || route.length === 0) {
+      this.hud?.toast('You cannot find a way there from here.', 2000);
+      return;
+    }
+    playSound('ui.click');
+    this.route = route;
+    this.drawRoute();
+    this.refresh();
+  }
+
+  private clearRoute(): void {
+    this.route = null;
+    this.routeGfx?.clear();
+    this.refresh();
+  }
+
+  private drawRoute(): void {
+    const g = this.routeGfx;
+    if (!g) return;
+    g.clear();
+    const route = this.route;
+    if (!route) return;
+    const mask = unpackExplored(this.run.explored);
+    route.forEach((cell, index) => {
+      const at = this.tileCenter(cell);
+      const known = isExplored(mask, cell.x, cell.y);
+      g.fillStyle(0x16100a, 0.8).fillCircle(at.x, at.y, index === route.length - 1 ? 0 : 5);
+      g.fillStyle(known ? 0xf3e2b0 : 0xe08a3c, 1).fillCircle(at.x, at.y, index === route.length - 1 ? 0 : 3);
+    });
+    const end = this.tileCenter(route[route.length - 1]);
+    g.lineStyle(4, 0x16100a, 0.8).strokeCircle(end.x, end.y, 13);
+    g.lineStyle(2, 0xffe08a, 1).strokeCircle(end.x, end.y, 13);
+  }
+
+  private hereTitle(): string {
+    return describeTile(this.world, this.run.pos.x, this.run.pos.y);
+  }
+
+  private refresh(): void {
+    const { run } = this;
+    const region: RegionId = regionAt(this.world, run.pos.x, run.pos.y);
+    const storm = isSandstorm(run);
+    const weather = storm ? `Sandstorm over the desert (${Math.ceil(stormHoursLeft(run))} h)` : '';
+    const subtitle = [placeAt(run.pos.x, run.pos.y) ? REGIONS[region].name : '', weather].filter(Boolean).join('  ·  ');
+    this.hud?.refresh(run, this.hereTitle(), subtitle);
+    this.view?.setNight(isNight(run.hour));
+    this.view?.setStorm(storm);
+    this.hud?.setWorldPanel(this.worldPanel());
+  }
+
+  /** Whether the whole party wears something that keeps the desert sun off. */
+  private heatProof(): boolean {
+    return partyHeatProof(partyOf(this.run));
+  }
+
+  private worldPanel(): WorldPanel {
+    const { run, world } = this;
+    const place = placeAt(run.pos.x, run.pos.y);
+    const lines: string[] = [];
+    const actions: WorldPanel['actions'] = [];
+    if (place) {
+      actions.push({
+        id: 'enter',
+        label: place.locale ? `Enter ${place.name}` : `${place.name}: ${place.note ?? 'closed'}`,
+        enabled: !this.busy && !!place.locale,
+        tone: 'primary',
+      });
+    }
+    const route = this.route;
+    if (route) {
+      const end = route[route.length - 1];
+      const heatProof = this.heatProof();
+      const plans = TRAVEL_ORDER.map((mode) => planTrip(world, run, route, mode, { heatProof }));
+      lines.push(`To ${describeTile(world, end.x, end.y)}`);
+      lines.push(`${route.length} tiles, ${Math.round(plans[0].known * 100)}% of the way explored`);
+      if (plans[0].storm) lines.push('A sandstorm hides the desert: the way counts as unknown.');
+      plans.forEach((plan) => actions.push({ id: `mode:${plan.mode}`, label: this.modeLabel(plan), enabled: !this.busy && plan.allowed }));
+      actions.push({ id: 'clear', label: 'Clear route', enabled: !this.busy });
+    } else {
+      lines.push('Click anywhere on the map to plan a trip.');
+    }
+    const search = canSearch(run);
+    actions.push({
+      id: 'search',
+      label: search.allowed ? `Search the Area  ${SEARCH_HOURS} h, stay put` : 'Search the Area (done here today)',
+      enabled: !this.busy && search.allowed,
+    });
+    actions.push({ id: 'pack', label: 'Pack', enabled: !this.busy });
+    return {
+      title: this.hereTitle(),
+      lines,
+      actions,
+      onAction: (id) => this.onPanelAction(id),
+    };
+  }
+
+  private modeLabel(plan: TripPlan): string {
+    const rule = TRAVEL_MODES[plan.mode];
+    if (!plan.allowed) return `${rule.label}  (${plan.reason ?? 'not possible'})`;
+    const heat = plan.heat >= 1 ? `  /  heat -${Math.round(plan.heat)} HP` : '';
+    if (plan.mode === 'fast') return `${rule.label}  ${durationLabel(plan.hours)}  /  one roll, danger ${dangerWord(plan.fights)}${heat}`;
+    return `${rule.label}  ${durationLabel(plan.hours)}  /  danger ${dangerWord(plan.fights)}  /  finds ${findsWord(plan.finds)}${heat}`;
+  }
+
+  private onPanelAction(id: string): void {
+    if (this.busy || this.hud?.modalOpen) return;
+    if (id === 'enter') this.enterHere();
+    else if (id === 'clear') this.clearRoute();
+    else if (id === 'search') void this.search();
+    else if (id === 'pack') void this.openPack();
+    else if (id.startsWith('mode:')) void this.travel(id.slice(5) as TravelMode);
   }
 
   // ---------------------------------------------------------------------------
   //  TRAVEL
   // ---------------------------------------------------------------------------
 
-  private travel(to: string): void {
-    const from = this.run.nodeId;
-    const outcome = applyExplorationCommand(this.run, { t: 'travel', to }, this.world);
-    if (!outcome) return;
-    this.cameFrom = from;
-    saveRun(this.run);
-
-    if (outcome.encounter === 'robbery' || outcome.encounter === 'monsters') {
-      this.notice =
-        outcome.encounter === 'robbery' ? 'Ambushed on the road!' : 'Something blocks the way.';
-      this.startCombat(outcome);
-      return;
-    }
-    if (outcome.encounter === 'event') {
-      this.rollEvent(outcome);
-      return;
-    }
-    this.notice = `You reach ${outcome.node.name}.`;
-    this.draw();
+  private stepToken(cell: Cell, ms: number): Promise<void> {
+    const token = this.token;
+    if (!token) return Promise.resolve();
+    const at = this.tileCenter(cell);
+    if (at.x !== token.x) token.setFlipX(at.x < token.x);
+    return new Promise((resolve) => {
+      this.tweens.add({ targets: token, x: at.x, y: at.y, duration: ms, ease: 'Linear', onComplete: () => resolve() });
+    });
   }
 
-  /** Small roadside happenings. Deliberately light: no fight, just a moment. */
-  private rollEvent(outcome: TravelOutcome): void {
-    const rng = new Dice(this.run.steps * 7919 + this.run.seed);
-    const purse = rng.die(4);
-    const events = [
-      () => {
-        applyExplorationCommand(this.run, { t: 'earn', gold: purse });
-        return `A traveller pays you ${purse}g for directions.`;
-      },
-      () => 'You help a carter free a stuck wheel. They have nothing to give but thanks.',
-      () => {
-        applyExplorationCommand(this.run, { t: 'earn', gold: purse });
-        return `You find ${purse}g in an abandoned camp.`;
-      },
-      () => 'A shrine by the road stands cold and unattended.',
-    ];
-    this.notice = `${outcome.node.name}: ${events[rng.die(events.length) - 1]()}`;
+  private async travel(mode: TravelMode): Promise<void> {
+    const route = this.route;
+    if (!route || this.busy || !this.hud) return;
+    const plan = planTrip(this.world, this.run, route, mode, { heatProof: this.heatProof() });
+    if (!plan.allowed) {
+      this.hud.toast(plan.reason ?? 'You cannot go that way.', 2200);
+      return;
+    }
+    this.busy = true;
+    this.run.steps += 1;
+    const stops = rollTrip(this.run, plan);
     saveRun(this.run);
-    this.draw();
+    this.route = null;
+    this.routeGfx?.clear();
+    this.refresh();
+    this.followParty();
+    this.token?.play(MAGE_RUN);
+    const reveal = TRAVEL_MODES[mode].reveal;
+    let next = 0;
+    let heat = 0;
+    let burned = 0;
+    const burn = (): void => {
+      if (burned > 0) this.hud?.toast(`The desert sun takes ${burned} HP.`, 2200);
+      burned = 0;
+    };
+    for (let index = 0; index < plan.steps.length; index++) {
+      const step = plan.steps[index];
+      await this.stepToken(step.cell, Phaser.Math.Clamp(step.hours * 260, 50, 280));
+      this.run.pos = { x: step.cell.x, y: step.cell.y };
+      const days = advanceHours(this.run, step.hours);
+      if (reveal > 0 && exploreAlong(this.run, [step.cell], step.storm ? 0 : reveal)) {
+        this.view?.setExplored(unpackExplored(this.run.explored));
+      }
+      heat += step.heat;
+      if (heat >= 1) {
+        burned += applyHeat(this.run, heat);
+        heat -= Math.floor(heat);
+      }
+      if (days) this.hud?.toast(`Day ${this.run.day} dawns.`, 1800);
+      this.refresh();
+      const stop = stops[next];
+      if (stop && stop.index === index) {
+        next += 1;
+        this.token?.play(MAGE_IDLE);
+        burn();
+        if ((await this.handleStop(stop)) === 'fight') return;
+        this.token?.play(MAGE_RUN);
+      }
+    }
+    this.token?.play(MAGE_IDLE);
+    burn();
+    this.arrive();
+  }
+
+  /** Mark where the trip ended and give the controls back. */
+  private arrive(): void {
+    const place = placeAt(this.run.pos.x, this.run.pos.y);
+    if (place && !this.run.visited.includes(place.id)) this.run.visited.push(place.id);
+    saveRun(this.run);
+    this.busy = false;
+    if (place) this.hud?.toast(`You reach ${place.name}.`, 2000);
+    this.refresh();
+  }
+
+  /** Something on the way. Returns 'fight' when the scene has moved on to a fight. */
+  private async handleStop(stop: TripStop): Promise<'fight' | 'done'> {
+    const hud = this.hud;
+    if (!hud) return 'done';
+    if (stop.kind === 'robbery' || stop.kind === 'monsters') {
+      hud.toast(stop.kind === 'robbery' ? 'Ambushed on the road!' : 'Something blocks the way.', 1600);
+      this.cameras.main.shake(200, 0.004);
+      saveRun(this.run);
+      this.time.delayedCall(650, () => this.startCombat(stop.kind as EncounterKind, stop.zone, stop.depth));
+      return 'fight';
+    }
+    if (stop.kind === 'loot') {
+      const message = rollFind(this.run, stop.zone, stop.depth, stepDice(this.run, this.run.steps * 7 + 5 + stop.index));
+      playSound('ui.confirm');
+      hud.toast(message, 3000);
+      saveRun(this.run);
+      this.refresh();
+      if (this.run.pendingLevels > 0 && (await hud.levelUps(this.run))) saveRun(this.run);
+      await new Promise<void>((resolve) => this.time.delayedCall(450, () => resolve()));
+      return 'done';
+    }
+    return this.runEvent(stop.zone, stop.depth, stepDice(this.run, this.run.steps * 7 + 6 + stop.index));
+  }
+
+  /** A roadside happening with a choice; the trip's own dice decide it. */
+  private async runEvent(zone: EncounterZone, depth: number, dice: ReturnType<typeof stepDice>): Promise<'fight' | 'done'> {
+    const hud = this.hud;
+    if (!hud) return 'done';
+    const event = pickEvent(zone, dice);
+    const ctx = { run: this.run, zone, depth, dice };
+    const choice = await hud.choose(event.title, event.text, event.choices.map((c, i) => ({
+      id: String(i),
+      label: c.label,
+      detail: c.detail,
+      enabled: !c.available || c.available(ctx),
+    })));
+    const picked = event.choices[Number(choice)] ?? event.choices[event.choices.length - 1];
+    const result = picked.resolve(ctx);
+    saveRun(this.run);
+    hud.toast(result.message, 4200);
+    this.refresh();
+    if (result.fight) {
+      const fight = result.fight;
+      this.time.delayedCall(900, () => this.startCombat(fight.encounter, zone, fight.depth, fight.spawns, fight.label));
+      return 'fight';
+    }
+    if (await hud.levelUps(this.run)) saveRun(this.run);
+    return 'done';
+  }
+
+  /** Stay put and comb the area: one roll, weighted toward finds. */
+  private async search(): Promise<void> {
+    const hud = this.hud;
+    if (!hud || this.busy) return;
+    const allowed = canSearch(this.run);
+    if (!allowed.allowed) {
+      hud.toast(allowed.reason ?? 'Nothing more to find here today.', 2000);
+      return;
+    }
+    this.busy = true;
+    this.run.steps += 1;
+    const burned = this.heatProof()
+      ? 0
+      : applyHeat(this.run, heatFor(this.world, this.run, this.run.pos.x, this.run.pos.y, SEARCH_HOURS, absoluteHour(this.run)));
+    advanceHours(this.run, SEARCH_HOURS);
+    if (burned > 0) hud.toast(`The desert sun takes ${burned} HP while you search.`, 2200);
+    if (exploreAlong(this.run, [this.run.pos], 2)) this.view?.setExplored(unpackExplored(this.run.explored));
+    const { outcome, zone, depth } = rollSearch(this.world, this.run);
+    saveRun(this.run);
+    this.refresh();
+    const dice = stepDice(this.run, this.run.steps * 7 + 4);
+    if (outcome === 'robbery' || outcome === 'monsters') {
+      if ((await this.handleStop({ index: 0, kind: outcome, zone, depth })) === 'fight') return;
+    } else if (outcome === 'loot') {
+      playSound('ui.confirm');
+      hud.toast(rollFind(this.run, zone, depth, dice), 3200);
+      if (await hud.levelUps(this.run)) saveRun(this.run);
+    } else if (outcome === 'event') {
+      if ((await this.runEvent(zone, depth, dice)) === 'fight') return;
+    } else {
+      hud.toast('Two hours of searching turn up nothing.', 2400);
+    }
+    saveRun(this.run);
+    this.busy = false;
+    this.refresh();
   }
 
   private enterHere(): void {
-    const node = currentNode(this.run, this.world);
-    if (node.kind === 'wip') {
-      this.notice = node.note ?? 'Nothing here yet.';
-    } else if (node.kind === 'dungeon') {
-      this.notice = `${node.name} is not yet open from the overworld.`;
-    } else if (node.kind === 'wilderness') {
-      this.notice = `${node.name} is not yet mapped.`;
-    } else if (node.kind === 'city') {
-      this.notice = `${node.name} has no open doors yet.`;
+    if (this.busy || this.hud?.modalOpen) return;
+    const place = placeAt(this.run.pos.x, this.run.pos.y);
+    if (!place) return;
+    if (!place.locale || !resolveLocale(this.run, place.locale)) {
+      this.hud?.toast(place.note ?? `${place.name} cannot be entered yet.`, 2400);
+      return;
     }
-    this.draw();
-  }
-
-  // ---------------------------------------------------------------------------
-  //  DRAWING
-  // ---------------------------------------------------------------------------
-
-  private draw(): void {
-    this.layer?.destroy();
-    this.focus.clear();
-    const root = this.add.container(0, 0);
-    this.layer = root;
-
-    const here = currentNode(this.run, this.world);
-    root.add(this.drawMap(here));
-    root.add(this.drawHeader(here));
-    this.drawControls(root, here);
-  }
-
-  private drawHeader(here: WorldNode): Phaser.GameObjects.GameObject[] {
-    const party = this.party();
-    const carried = party.reduce((sum, m) => sum + m.carriedWeight(), 0);
-    const capacity = party.reduce((sum, m) => sum + m.carryCap(), 0);
-    const hp = party.reduce((sum, m) => sum + m.hp, 0);
-    const maxHp = party.reduce((sum, m) => sum + m.maxHp, 0);
-    const title = this.add
-      .text(40, 28, here.name.toUpperCase(), {
-        fontFamily: MENU_FONT.display,
-        fontSize: '30px',
-        color: MENU_HEX.brassLight,
-      })
-      .setOrigin(0, 0);
-    const stats = this.add
-      .text(
-        40,
-        66,
-        `${this.run.gold}g   ·   ${hp}/${maxHp} HP   ·   ${carried.toFixed(1)}/${Number.isFinite(capacity) ? capacity : '\u221e'}kg   ·   depth ${here.depth}   ·   ${this.run.steps} leagues walked`,
-        { fontFamily: MENU_FONT.control, fontSize: '14px', color: MENU_HEX.bone }
-      )
-      .setOrigin(0, 0);
-    const note = this.add
-      .text(40, 90, this.notice, {
-        fontFamily: MENU_FONT.control,
-        fontSize: '14px',
-        color: '#ffd978',
-        wordWrap: { width: GAME_WIDTH - 400 },
-      })
-      .setOrigin(0, 0);
-    return [title, stats, note];
-  }
-
-  private drawMap(here: WorldNode): Phaser.GameObjects.GameObject[] {
-    const g = this.add.graphics().setDepth(1);
-    const drawn = new Set<string>();
-    for (const node of this.world.values()) {
-      for (const link of node.links) {
-        const key = [node.id, link].sort().join('|');
-        if (drawn.has(key)) continue;
-        drawn.add(key);
-        const to = nodeAt(this.world, link);
-        const known = this.run.visited.includes(node.id) || this.run.visited.includes(link);
-        g.lineStyle(known ? 2 : 1, known ? 0x6f6455 : 0x3a3630, known ? 0.9 : 0.5);
-        g.lineBetween(node.at.x, node.at.y, to.at.x, to.at.y);
-      }
-    }
-
-    const labels: Phaser.GameObjects.GameObject[] = [g];
-    for (const node of this.world.values()) {
-      const reachable = here.links.includes(node.id);
-      const seen = this.run.visited.includes(node.id);
-      const isHere = node.id === here.id;
-      const place = node.kind !== 'path';
-      const radius = place ? 12 : 5;
-      g.fillStyle(NODE_COLOR[node.kind], isHere ? 1 : seen || reachable ? 0.85 : 0.35);
-      g.fillCircle(node.at.x, node.at.y, radius);
-      if (isHere) {
-        g.lineStyle(3, MENU_COLOR.brassLight, 1).strokeCircle(node.at.x, node.at.y, radius + 7);
-      } else if (reachable) {
-        g.lineStyle(1, MENU_COLOR.brassLight, 0.8).strokeCircle(node.at.x, node.at.y, radius + 4);
-      }
-      if (place && (seen || reachable || isHere)) {
-        labels.push(
-          this.add
-            .text(node.at.x, node.at.y + radius + 6, node.name, {
-              fontFamily: MENU_FONT.control,
-              fontSize: '12px',
-              color: isHere ? MENU_HEX.brassLight : MENU_HEX.bone,
-            })
-            .setOrigin(0.5, 0)
-            .setDepth(2)
-        );
-      }
-    }
-    return labels;
-  }
-
-  private drawControls(root: Phaser.GameObjects.Container, here: WorldNode): void {
-    const x = GAME_WIDTH - 330;
-    let y = 130;
-    const add = (label: string, detail: string, run: () => void, enabled = true): void => {
-      const button = new CabinetButton(this, x, y, {
-        width: 300,
-        label,
-        detail,
-        enabled,
-        onActivate: run,
-      });
-      root.add(button);
-      this.focus.add(button);
-      y += 62;
-    };
-
-    if (here.kind !== 'path') {
-      add('Enter', here.name, () => this.enterHere());
-    }
-
-    for (const id of here.links) {
-      const node = nodeAt(this.world, id);
-      const seen = this.run.visited.includes(id);
-      add(
-        node.kind === 'path' ? `Take the ${node.name}` : `Go to ${node.name}`,
-        seen ? 'Travelled before' : 'Unwalked',
-        () => this.travel(id)
-      );
-    }
-
-    y = GAME_HEIGHT - 80;
-    const leave = new CabinetButton(this, x, y, {
-      width: 300,
-      label: 'Save and Leave',
-      detail: 'Return to the main menu',
-      onActivate: () => {
-        saveRun(this.run);
-        playSound('ui.back');
-        this.scene.start('Menu');
-      },
+    this.busy = true;
+    if (!this.run.visited.includes(place.id)) this.run.visited.push(place.id);
+    playSound('ui.confirm');
+    this.cameras.main.fadeOut(240, 0, 0, 0);
+    this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
+      saveRun(this.run);
+      this.scene.stop('LocaleHud');
+      this.scene.start('Locale', { run: this.run, locale: place.locale! } satisfies LocaleEntry);
     });
-    root.add(leave);
-    this.focus.add(leave);
+  }
+
+  private async openPack(): Promise<void> {
+    if (!this.hud || this.busy || this.hud.modalOpen) return;
+    await this.hud.openPack(this.run, () => {
+      saveRun(this.run);
+      this.refresh();
+    });
+    this.refresh();
+  }
+
+  private async openMenu(): Promise<void> {
+    if (!this.hud || this.busy || this.hud.modalOpen) return;
+    const choice = await this.hud.choose('PAUSED', 'The run is saved after every step.', [
+      { id: 'resume', label: 'Resume', detail: 'Back to the map.' },
+      { id: 'pack', label: 'Pack', detail: 'Gear, words and stats.' },
+      { id: 'open', label: 'Map: open world', detail: 'Walk the whole world on foot instead of planning trips.' },
+      { id: 'quit', label: 'Save and Quit', detail: 'Return to the main menu.' },
+    ], 'resume');
+    if (choice === 'pack') void this.openPack();
+    if (choice === 'open') this.enterOpenWorld('Open world.');
+    if (choice === 'quit') {
+      saveRun(this.run);
+      playSound('ui.back');
+      this.scene.stop('LocaleHud');
+      this.scene.start('Menu');
+    }
   }
 }

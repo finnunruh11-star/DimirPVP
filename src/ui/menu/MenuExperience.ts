@@ -666,7 +666,7 @@ export class MenuExperience {
     const nextSeat = draftSeats[draftIndex + 1];
     const view = this.createScreen(
       draftSeats.length > 1 ? `BUILD PLAYER ${seat + 1}` : 'BUILD YOUR MAGE',
-      `Choose 1 discipline, ${this.model.loadoutLimit()} words and 1 method.`
+      `Choose 1 discipline, ${this.model.loadoutTarget(seat)} words and 1 method.`
     );
 
     const disciplineLabel = this.scene.add.text(76, 230, 'DISCIPLINE', {
@@ -793,7 +793,7 @@ export class MenuExperience {
       for (const [mageClass, button] of classButtons) button.setSelected(draft.mageClass === mageClass);
       for (const [word, button] of wordButtons) button.setSelectedOrder(draft.words.indexOf(word) + 1);
       modifier.setCopy(`Method: ${WORDS[draft.modifier].label}`);
-      wordsLabel.setText(`WORDS  ${draft.words.length}/${this.model.loadoutLimit()}`);
+      wordsLabel.setText(`WORDS  ${draft.words.length}/${this.model.loadoutTarget(seat)}`);
       const ready = this.model.loadoutReady(seat);
       const missing = this.model.missingWords(seat);
       const finalLabel = returnToReview ? 'Return to Review' : nextSeat != null ? `Build Player ${nextSeat + 1}` : 'Review Setup';
@@ -1258,7 +1258,7 @@ export class MenuExperience {
 
   /** Every word that can head a spell; the three methods are modifiers. */
   private codexWordList(): WordId[] {
-    return (Object.keys(WORDS) as WordId[]).filter((word) => !MODIFIER_WORDS.includes(word));
+    return this.model.visibleWords();
   }
 
   /** Spells castable from exactly the selected words, shortest combos first. */

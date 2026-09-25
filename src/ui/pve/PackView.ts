@@ -1,0 +1,220 @@
+// The traveller's pack outside a fight: what is worn, what is carried, and the
+// words on the rack. Equip, stow or drop; nothing here costs an action.
+
+import Phaser from 'phaser';
+import { playSound } from '../../audio';
+import { getItem, type ItemId } from '../../core/Items';
+import type { Mage } from '../../core/Mage';
+import { isModifierWord, WORDS } from '../../core/Words';
+import { SceneInput } from '../../engine/SceneInput';
+import { dropItem, equipItem, partyOf, unequipItem, type ShopResult } from '../../pve/exploration/economy';
+import type { ExplorationRun } from '../../pve/exploration/run';
+import { xpToNext } from '../../pve/progression';
+import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
+import { addCabinetBackdrop, addRecess, addSectionRule, MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
+import { itemDetail } from './ShopView';
+
+const PER_PAGE = 8;
+
+export class PackView extends Phaser.GameObjects.Container {
+  private readonly sceneInput: SceneInput;
+  private focus = new MenuFocusGroup();
+  private dropping = false;
+  private page = 0;
+  private message = '';
+  private disposed = false;
+  private inspectorTitle!: Phaser.GameObjects.Text;
+  private inspectorBody!: Phaser.GameObjects.Text;
+
+  constructor(
+    scene: Phaser.Scene,
+    private readonly run: ExplorationRun,
+    private readonly hooks: { changed(): void; close(): void },
+  ) {
+    super(scene, 0, 0);
+    scene.add.existing(this);
+    this.setDepth(120);
+    this.sceneInput = new SceneInput(scene);
+    this.sceneInput.bindKeys([
+      { key: 'LEFT', capture: true, run: () => this.focus.move(-1) },
+      { key: 'UP', capture: true, run: () => this.focus.move(-1) },
+      { key: 'RIGHT', capture: true, run: () => this.focus.move(1) },
+      { key: 'DOWN', capture: true, run: () => this.focus.move(1) },
+      { key: 'TAB', capture: true, run: (event) => this.focus.move(event.shiftKey ? -1 : 1) },
+      { key: 'SPACE', capture: true, run: () => this.focus.activate() },
+      { key: 'ENTER', capture: true, run: () => this.focus.activate() },
+      { key: 'ESC', capture: true, run: () => this.hooks.close() },
+      { key: 'I', run: () => this.hooks.close() },
+    ]);
+    this.render();
+  }
+
+  override destroy(fromScene?: boolean): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.sceneInput.destroy();
+    super.destroy(fromScene);
+  }
+
+  private apply(result: ShopResult): void {
+    this.message = result.message;
+    playSound(result.ok ? 'ui.confirm' : 'ui.deny');
+    if (result.ok) this.hooks.changed();
+    this.render();
+  }
+
+  private render(): void {
+    this.removeAll(true);
+    this.focus = new MenuFocusGroup();
+    const { scene, run } = this;
+    const leader = partyOf(run)[0];
+    addCabinetBackdrop(scene, this);
+    this.add(scene.add.text(58, 42, 'PACK', {
+      fontFamily: MENU_FONT.display,
+      fontSize: '29px',
+      fontStyle: 'bold',
+      color: MENU_HEX.bone,
+    }));
+
+    // The inspector must exist before the first button takes focus and writes to it.
+    addRecess(scene, this, 58, 586, 1164, 82, MENU_COLOR.woodDeep);
+    this.inspectorTitle = scene.add.text(76, 596, 'PACK', {
+      fontFamily: MENU_FONT.control,
+      fontSize: '11px',
+      fontStyle: 'bold',
+      color: MENU_HEX.brassLight,
+    });
+    this.inspectorBody = scene.add.text(76, 614, 'Choose worn gear to stow it, or carried gear to equip it.', {
+      fontFamily: MENU_FONT.body,
+      fontSize: '12px',
+      color: MENU_HEX.boneDim,
+      fixedWidth: 640,
+      wordWrap: { width: 640 },
+      maxLines: 3,
+    });
+    this.add([this.inspectorTitle, this.inspectorBody]);
+    if (leader) this.renderLeader(leader);
+
+    const mode = new CabinetChip(scene, 740, 606, {
+      width: 220,
+      height: 42,
+      label: this.dropping ? 'Stop Dropping' : 'Drop Items...',
+      tone: this.dropping ? 'danger' : 'normal',
+      onActivate: () => { this.dropping = !this.dropping; this.render(); },
+    });
+    const close = new CabinetChip(scene, 980, 606, {
+      width: 222,
+      height: 42,
+      label: 'Close Pack',
+      tone: 'primary',
+      onActivate: () => this.hooks.close(),
+    });
+    this.add([mode, close]);
+    this.focus.add(mode);
+    this.focus.add(close);
+    if (this.message) this.inspect('Latest', this.message);
+  }
+
+  private renderLeader(leader: Mage): void {
+    const { scene, run } = this;
+    const words = leader.loadout.filter((word) => !isModifierWord(word)).map((word) => WORDS[word].label);
+    const modifier = leader.loadout.find(isModifierWord);
+    this.add(scene.add.text(60, 82, [
+      `Level ${run.level}  (${run.xp}/${xpToNext(run.level)} XP)  /  ${run.gold}g  /  ${leader.carriedWeight().toFixed(1)}/${leader.carryCap()}kg`,
+    ].join(''), { fontFamily: MENU_FONT.body, fontSize: '14px', color: MENU_HEX.boneDim }));
+    addSectionRule(scene, this, 58, 116, 1164);
+
+    // Left: the mage.
+    addRecess(scene, this, 58, 136, 360, 432, MENU_COLOR.woodDeep);
+    const sheet = [
+      `Health   ${leader.hp}/${leader.maxHp}`,
+      `Mana     ${leader.mana}/${leader.maxMana}`,
+      `Sanity   ${leader.sanity}/${leader.maxSanity}`,
+      `Luck     ${leader.luck}/${leader.maxLuck}`,
+      '',
+      `Strength ${leader.statStrength}`,
+      `Dex      ${leader.statDex}`,
+      `Int      ${leader.statInt}`,
+      '',
+      `Words (${words.length}/5)`,
+      ...words.map((word) => `  ${word}`),
+      modifier ? `Method   ${WORDS[modifier].label}` : '',
+    ];
+    this.add(scene.add.text(80, 152, sheet.join('\n'), {
+      fontFamily: '"Consolas", monospace',
+      fontSize: '14px',
+      color: MENU_HEX.bone,
+      lineSpacing: 4,
+    }));
+
+    // Right: everything worn and carried.
+    addRecess(scene, this, 438, 136, 784, 432);
+    const worn: { id: ItemId; where: string }[] = [
+      ...leader.hands.map((id) => ({ id, where: 'In hand' })),
+      ...(leader.head ? [{ id: leader.head, where: 'Head' }] : []),
+      ...(leader.torso ? [{ id: leader.torso, where: 'Torso' }] : []),
+      ...(leader.boots ? [{ id: leader.boots, where: 'Boots' }] : []),
+      ...leader.accessories.map((id) => ({ id, where: 'Accessory' })),
+    ];
+    const carried = [...leader.bag, ...leader.utility];
+    const counts = new Map<ItemId, number>();
+    for (const id of carried) counts.set(id, (counts.get(id) ?? 0) + 1);
+    const entries: { label: string; detail: string; enabled: boolean; run: () => void }[] = [];
+    for (const item of worn) {
+      const def = getItem(item.id);
+      entries.push({
+        label: `${item.where}: ${def.name}`,
+        detail: itemDetail(def),
+        enabled: !this.dropping,
+        run: () => this.apply(unequipItem(run, item.id)),
+      });
+    }
+    for (const [id, count] of counts) {
+      const def = getItem(id);
+      const equippable = def.slot !== 'utility' && leader.canEquipFromBag(id);
+      entries.push({
+        label: `${def.name}${count > 1 ? ` x${count}` : ''}${this.dropping ? '  /  drop one' : equippable ? '  /  equip' : ''}`,
+        detail: itemDetail(def),
+        enabled: this.dropping ? !def.permanentlyBinding : equippable,
+        run: () => this.apply(this.dropping ? dropItem(run, id) : equipItem(run, id)),
+      });
+    }
+    if (leader.arrows > 0) {
+      entries.push({ label: `Arrows x${leader.arrows}`, detail: 'Ammunition for bows.', enabled: false, run: () => undefined });
+    }
+    const pages = Math.max(1, Math.ceil(entries.length / PER_PAGE));
+    this.page = Math.min(this.page, pages - 1);
+    entries.slice(this.page * PER_PAGE, (this.page + 1) * PER_PAGE).forEach((entry, index) => {
+      const button = new CabinetButton(scene, 452 + (index % 2) * 384, 150 + Math.floor(index / 2) * 92, {
+        width: 372,
+        height: 82,
+        label: entry.label,
+        detail: entry.detail.split('\n')[0],
+        index: String(index + 1),
+        enabled: entry.enabled,
+        onActivate: entry.run,
+        onFocus: () => this.inspect(entry.label, entry.detail),
+      });
+      this.add(button);
+      this.focus.add(button);
+    });
+    if (pages > 1) {
+      for (const [label, step, x] of [['Previous', -1, 700], ['Next', 1, 900]] as const) {
+        const chip = new CabinetChip(scene, x, 530, {
+          width: 120,
+          height: 30,
+          label,
+          enabled: step < 0 ? this.page > 0 : this.page < pages - 1,
+          onActivate: () => { this.page += step; this.render(); },
+        });
+        this.add(chip);
+        this.focus.add(chip);
+      }
+    }
+  }
+
+  private inspect(title: string, body: string): void {
+    this.inspectorTitle.setText(title.toUpperCase());
+    this.inspectorBody.setText(body);
+  }
+}

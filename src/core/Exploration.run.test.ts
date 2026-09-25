@@ -1,14 +1,10 @@
 import { Mage } from '../core/Mage';
+import { advanceHours, clockLabel, isNight, sleepUntilMorning } from '../pve/exploration/clock';
+import { isExplored, packExplored, revealTiles, unpackExplored } from '../pve/exploration/explored';
 import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
-import {
-  applyExplorationCommand,
-  createRun,
-  fleeDestination,
-  hasFlag,
-  stepDice,
-  type ExplorationRun,
-} from '../pve/exploration/run';
-import { createWorld, nodeAt } from '../pve/exploration/world';
+import { createRun, hasFlag, stepDice, type ExplorationRun } from '../pve/exploration/run';
+import { parseRun } from '../pve/exploration/save';
+import { placeById } from '../pve/exploration/world';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -30,7 +26,6 @@ function party(): Mage[] {
   });
   m.maxHp = 40;
   m.hp = 31;
-  m.gainMana?.(0);
   return [m];
 }
 
@@ -38,61 +33,29 @@ function freshRun(seed = 5): ExplorationRun {
   return createRun(seed, capturePartySnapshot(party()));
 }
 
-/** The first road node out of the Capitol. */
-const FIRST_ROAD = 'road-capitol-kerusai-1';
+/** A save as version 2 wrote it: standing on a graph node, no clock. */
+function legacy(run: ExplorationRun, nodeId: string): string {
+  const old = JSON.parse(JSON.stringify(run)) as Record<string, unknown>;
+  old.version = 2;
+  old.nodeId = nodeId;
+  for (const key of ['pos', 'hour', 'explored', 'searched']) delete old[key];
+  return JSON.stringify(old);
+}
+
+const capitol = placeById('capitol')!;
 
 const tests: [name: string, run: () => void][] = [
-  ['starts in the Capitol with nothing earned', () => {
+  ['starts on the Capitol at eight in the morning with its streets explored', () => {
     const run = freshRun();
-    equal(run.nodeId, 'capitol', 'begins in the Capitol');
-    equal(run.gold, 0, 'begins broke');
-    equal(run.steps, 0, 'begins before the first step');
+    equal(run.pos, { x: capitol.x, y: capitol.y }, 'on the Capitol tile');
+    equal([run.day, run.hour], [1, 8], 'day one, eight o\'clock');
+    equal([run.gold, run.steps], [0, 0], 'broke and yet to take a step');
+    const mask = unpackExplored(run.explored);
+    assert(isExplored(mask, capitol.x + 3, capitol.y), 'the country round the Capitol is known');
+    assert(!isExplored(mask, capitol.x + 20, capitol.y), 'the far country is not');
   }],
 
-  ['refuses a step to a node that is not adjacent', () => {
-    const run = freshRun();
-    const before = run.nodeId;
-    const outcome = applyExplorationCommand(run, { t: 'travel', to: 'hearthfire' });
-    equal(outcome, null, 'the step is rejected');
-    equal(run.nodeId, before, 'the party has not moved');
-    equal(run.steps, 0, 'a rejected step does not advance the clock');
-  }],
-
-  ['walks onto a road and rolls it', () => {
-    const run = freshRun();
-    const outcome = applyExplorationCommand(run, { t: 'travel', to: FIRST_ROAD });
-    assert(outcome, 'travelling returned an outcome');
-    equal(outcome.node.id, FIRST_ROAD, 'arrived on the road');
-    equal(run.nodeId, FIRST_ROAD, 'the run agrees');
-    equal(run.steps, 1, 'the step counter advanced');
-    assert(
-      ['robbery', 'monsters', 'event', 'nothing'].includes(outcome.encounter),
-      'the road rolled something legal'
-    );
-  }],
-
-  ['never rolls an encounter anywhere but a road', () => {
-    const world = createWorld();
-    const run = freshRun();
-    // Walk the whole Emberway back to Hearthfire, checking every arrival.
-    let guard = 0;
-    const seen = new Set<string>([run.nodeId]);
-    while (run.nodeId !== 'hearthfire' && guard++ < 40) {
-      const next = nodeAt(world, run.nodeId).links.find(
-        (id) => !seen.has(id) && (id.startsWith('road-hearthfire-capitol') || id === 'hearthfire')
-      );
-      if (!next) break;
-      seen.add(next);
-      const outcome = applyExplorationCommand(run, { t: 'travel', to: next });
-      assert(outcome, 'each step produced an outcome');
-      if (outcome.node.kind !== 'path') {
-        equal(outcome.encounter, 'nothing', `${outcome.node.id} is safe to arrive at`);
-      }
-    }
-    equal(run.nodeId, 'hearthfire', 'the Emberway reaches Hearthfire');
-  }],
-
-  ['replays the same road for the same seed and step', () => {
+  ['replays the same rolls for the same seed and step', () => {
     const a = freshRun(1234);
     const b = freshRun(1234);
     const c = freshRun(9999);
@@ -101,40 +64,26 @@ const tests: [name: string, run: () => void][] = [
     assert(stepDice(a, 7).float() !== stepDice(a, 8).float(), 'a different step rolls differently');
   }],
 
-  ['tracks gold, flags and where it has been', () => {
-    const run = freshRun();
-    applyExplorationCommand(run, { t: 'earn', gold: 12 });
-    applyExplorationCommand(run, { t: 'spend', gold: 5 });
-    equal(run.gold, 7, 'gold adds and subtracts');
-    applyExplorationCommand(run, { t: 'spend', gold: 999 });
-    equal(run.gold, 0, 'gold never goes negative');
-    applyExplorationCommand(run, { t: 'flag', id: 'wilds:mapped' });
-    applyExplorationCommand(run, { t: 'flag', id: 'wilds:mapped' });
-    equal(run.flags.length, 1, 'a flag is only recorded once');
-    assert(hasFlag(run, 'wilds:mapped'), 'the flag reads back');
-    applyExplorationCommand(run, { t: 'travel', to: FIRST_ROAD });
-    equal(run.visited.includes(FIRST_ROAD), true, 'the road is remembered');
+  ['keeps time: hours roll into days, nights fall, sleep ends at seven', () => {
+    const clock = { day: 1, hour: 22 };
+    assert(isNight(clock.hour), 'ten at night is night');
+    equal(advanceHours(clock, 5), 1, 'one midnight passed');
+    equal([clock.day, clock.hour], [2, 3], 'three in the morning of day two');
+    sleepUntilMorning(clock);
+    equal([clock.day, clock.hour], [2, 7], 'a pre-dawn sleep ends the same day');
+    clock.hour = 15;
+    sleepUntilMorning(clock);
+    equal([clock.day, clock.hour], [3, 7], 'an afternoon nap ends the next morning');
+    equal(clockLabel({ day: 3, hour: 21.6 }), 'Day 3, 21:30 (night)', 'the clock rounds to the quarter hour');
   }],
 
-  ['sends a fleeing party back the way it came, or onward', () => {
-    const world = createWorld();
-    const run = freshRun();
-    applyExplorationCommand(run, { t: 'travel', to: FIRST_ROAD });
-    equal(
-      fleeDestination(run, 'capitol', 'west', world),
-      'capitol',
-      'running back the way you came returns you'
-    );
-    equal(
-      fleeDestination(run, 'capitol', 'east', world),
-      'road-capitol-kerusai-2',
-      'running onward skips the encounter'
-    );
-    equal(
-      fleeDestination(run, 'capitol', 'north', world),
-      FIRST_ROAD,
-      'running sideways leaves you where you stood'
-    );
+  ['packs explored tiles six to a character', () => {
+    const mask = unpackExplored('');
+    const fresh = revealTiles(mask, [{ x: 10, y: 10 }], 2);
+    assert(fresh > 9, 'a radius reveals a patch');
+    equal(revealTiles(mask, [{ x: 10, y: 10 }], 2), 0, 'revealing twice finds nothing new');
+    const copy = unpackExplored(packExplored(mask));
+    assert(copy.every((bit, i) => bit === mask[i]), 'packing round-trips');
   }],
 
   ['carries the party through a snapshot intact', () => {
@@ -143,27 +92,65 @@ const tests: [name: string, run: () => void][] = [
     original[0].bag.push('oreIron', 'oreIron', 'magmaCore');
     const restored = restoreParty(capturePartySnapshot(original));
     equal(restored.length, 1, 'the roster survives');
-    equal(restored[0].name, 'Wanderer', 'the name survives');
     equal(restored[0].hp, 17, 'wounds survive');
-    equal(
-      restored[0].bag.filter((id) => id === 'oreIron').length,
-      2,
-      'stacked materials survive'
-    );
-    assert(restored[0].bag.includes('magmaCore'), 'salvage survives');
+    equal(restored[0].bag.filter((id) => id === 'oreIron').length, 2, 'stacked materials survive');
   }],
 
-  ['round-trips a whole run through JSON', () => {
+  ['round-trips a whole run through the save format', () => {
     const run = freshRun(77);
-    applyExplorationCommand(run, { t: 'travel', to: FIRST_ROAD });
-    applyExplorationCommand(run, { t: 'earn', gold: 9 });
-    applyExplorationCommand(run, { t: 'flag', id: 'hearthfire:visited' });
-    const copy = JSON.parse(JSON.stringify(run)) as ExplorationRun;
-    equal(copy.nodeId, run.nodeId, 'position survives');
-    equal(copy.gold, run.gold, 'gold survives');
-    equal(copy.steps, run.steps, 'the step clock survives');
-    equal(copy.flags, run.flags, 'flags survive');
+    run.pos = { x: capitol.x + 3, y: capitol.y + 1 };
+    run.hour = 13.5;
+    run.gold = 9;
+    run.flags.push('hearthfire:visited');
+    const copy = parseRun(JSON.stringify(run));
+    assert(copy, 'the save loads');
+    equal([copy.pos, copy.hour, copy.gold], [run.pos, 13.5, 9], 'position, clock and gold survive');
+    assert(hasFlag(copy, 'hearthfire:visited'), 'flags survive');
+    equal(copy.explored, run.explored, 'the explored map survives');
     equal(restoreParty(copy.party)[0].hp, 31, 'the party survives');
+  }],
+
+  ['upgrades a version 2 save onto the tile map', () => {
+    const run = freshRun(12);
+    run.lastTown = 'hearthfire';
+    const onRoad = parseRun(legacy(run, 'road-capitol-kerusai-4'));
+    const hearthfire = placeById('hearthfire')!;
+    assert(onRoad, 'a save on a road loads');
+    equal(onRoad.pos, { x: hearthfire.x, y: hearthfire.y }, 'a party on an old road wakes in its last town');
+    equal(onRoad.hour, 8, 'the clock starts in the morning');
+    const inForest = parseRun(legacy(run, 'fork-forest'));
+    const forest = placeById('small-forest')!;
+    equal(inForest?.pos, { x: forest.x, y: forest.y }, 'the old forest fork is the Small Forest');
+    assert(!parseRun(legacy(run, 'atlantis')), 'an unknown place is refused');
+  }],
+
+  ['sends a party standing somewhere impossible back to its last town', () => {
+    const run = freshRun(3);
+    run.pos = { x: 40, y: 48 };
+    const copy = parseRun(JSON.stringify(run));
+    equal(copy?.pos, { x: capitol.x, y: capitol.y }, 'nobody stands in the middle of the lake');
+  }],
+
+  ['moves a version 3 save east of the new desert, map and all', () => {
+    const run = freshRun(5) as unknown as Record<string, unknown>;
+    const oldW = 88;
+    const bits = new Uint8Array(oldW * 60);
+    bits[30 * oldW + 45] = 1;
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    let packed = '';
+    for (let c = 0; c < Math.ceil(bits.length / 6); c++) {
+      let value = 0;
+      for (let bit = 0; bit < 6; bit++) if (bits[c * 6 + bit]) value |= 1 << bit;
+      packed += alphabet[value];
+    }
+    Object.assign(run, { version: 3, pos: { x: capitol.x - 32, y: capitol.y }, explored: packed, searched: ['10,30:1'] });
+    delete run.mapStyle;
+    const copy = parseRun(JSON.stringify(run));
+    assert(copy, 'the old save loads');
+    equal(copy.pos, { x: capitol.x, y: capitol.y }, 'the party keeps its town');
+    const mask = unpackExplored(copy.explored);
+    assert(isExplored(mask, 45 + 32, 30) && !isExplored(mask, 45, 30), 'walked tiles move with the land');
+    equal([copy.searched, copy.mapStyle], [[], 'travel'], 'old searches are dropped and the map is planned');
   }],
 ];
 

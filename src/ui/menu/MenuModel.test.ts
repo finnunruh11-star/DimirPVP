@@ -206,6 +206,37 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(model.loadoutReady(0), true, 'Expedition preset readiness');
   }],
 
+  ['reveals Storm only through the six-word SNIFF preset', () => {
+    const model = new MenuModel();
+    model.setMode('ai');
+    assert(!model.visibleWords().includes('storm'), 'Storm starts hidden from the normal grid.');
+
+    model.applyPreset('SNIFF');
+    equal(
+      model.draftFor(0).words,
+      ['pierce', 'mind', 'veil', 'fire', 'lightning', 'storm'],
+      'SNIFF loadout'
+    );
+    assert(model.visibleWords().includes('storm'), 'SNIFF reveals Storm.');
+    equal(model.loadoutReady(0), true, 'Six-word SNIFF readiness');
+    equal(
+      sanitizeOnlineLoadout([...model.draftFor(0).words, 'subtle']),
+      ['pierce', 'mind', 'veil', 'fire', 'lightning', 'storm', 'subtle'],
+      'Online SNIFF loadout'
+    );
+    equal(
+      sanitizeOnlineLoadout(['mind', 'storm', 'subtle']),
+      ['mind', 'subtle'],
+      'Storm cannot be injected outside SNIFF'
+    );
+    equal(model.toggleWord(0, 'pierce'), true, 'SNIFF word removal');
+    assert(!model.draftFor(0).words.includes('storm'), 'Editing SNIFF removes Storm.');
+    equal(model.loadoutReady(0), false, 'Edited SNIFF readiness');
+    equal(model.toggleWord(0, 'storm'), false, 'Manual Storm selection');
+    model.draftFor(0).words = ['bind', 'mind', 'veil', 'fire', 'lightning', 'storm'];
+    equal(model.loadoutReady(0), false, 'Altered six-word Storm readiness');
+  }],
+
   ['assembles local seats with exactly one modifier per build', () => {
     const model = new MenuModel();
     model.setMode('hotseat');

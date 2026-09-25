@@ -38,6 +38,8 @@ export type StatusKind =
   | 'anchorSpike'
   | 'pierceEcho'
   | 'stormConduit'
+  | 'lightningStorm'
+  | 'faradayVeil'
   | 'deathCurse';
 export type StunType = 'main' | 'movement' | 'full';
 export type InvisMode = 'full' | 'partial';
@@ -181,6 +183,28 @@ export interface StormConduitStatus extends BaseStatus {
   radius: number;
   /** Fraction of the wound passed to each of them. */
   sharePct: number;
+}
+
+/** Lightning Storm: replay one chosen volley at the caster's next upkeeps. */
+export interface LightningStormStatus extends BaseStatus {
+  kind: 'lightningStorm';
+  ownerIndex: number;
+  targetIndices: number[];
+  damage: number;
+  critical: boolean;
+}
+
+/** Lightning Mind Veil: converts direct wounds into risky Mindconduct arcs. */
+export interface FaradayVeilStatus extends BaseStatus {
+  kind: 'faradayVeil';
+  ownerIndex: number;
+  /** Unmodified Lightning power, used by the grounding backlash. */
+  power: number;
+  /** Power after Lightning's natural-20 roll doubling. */
+  effectivePower: number;
+  /** Search radius for a marked enemy to receive a successful discharge. */
+  arcRange: number;
+  critical: boolean;
 }
 
 /** Stacking execution mark: the bearer dies at or below this much health. */
@@ -477,6 +501,8 @@ export type Status =
   | AnchorSpikeStatus
   | PierceEchoStatus
   | StormConduitStatus
+  | LightningStormStatus
+  | FaradayVeilStatus
   | DeathCurseStatus;
 
 /**

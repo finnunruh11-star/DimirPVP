@@ -1,12 +1,21 @@
-import { Dice } from '../core/Dice';
+import { findPath } from '../world/pathfind';
 import {
-  START_NODE,
-  canTravel,
   createWorld,
-  nodeAt,
-  rollPathEncounter,
-  type PathEncounter,
-  type WorldMap,
+  depthAt,
+  isPassable,
+  line4,
+  MIN_TERRAIN_TIME,
+  nearTown,
+  placeById,
+  PLACES,
+  REGIONS,
+  regionAt,
+  START_PLACE,
+  TERRAIN,
+  terrainAt,
+  WORLD_H,
+  WORLD_W,
+  type Terrain,
 } from '../pve/exploration/world';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -19,112 +28,137 @@ function equal(actual: unknown, expected: unknown, label: string): void {
   assert(actualJson === expectedJson, `${label}: expected ${expectedJson}, received ${actualJson}`);
 }
 
-/** Shortest number of steps between two nodes, or -1 when unreachable. */
-function distance(world: WorldMap, fromId: string, toId: string): number {
-  const seen = new Set([fromId]);
-  let frontier = [fromId];
-  let steps = 0;
-  while (frontier.length) {
-    if (frontier.includes(toId)) return steps;
-    const next: string[] = [];
-    for (const id of frontier) {
-      for (const link of nodeAt(world, id).links) {
-        if (seen.has(link)) continue;
-        seen.add(link);
-        next.push(link);
-      }
-    }
-    frontier = next;
-    steps += 1;
+const world = createWorld();
+const towns = PLACES.filter((place) => place.kind === 'city');
+
+/** Tiles of `terrain` within `radius` of a place. */
+function around(x: number, y: number, radius: number, terrain: Terrain): number {
+  let count = 0;
+  for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) {
+    if (terrainAt(world, x + dx, y + dy) === terrain) count += 1;
   }
-  return -1;
+  return count;
 }
 
 const tests: [name: string, run: () => void][] = [
-  ['starts a run in the Capitol', () => {
-    const world = createWorld();
-    equal(nodeAt(world, START_NODE).kind, 'city', 'the start is a city');
-    equal(nodeAt(world, START_NODE).name, 'The Capitol', 'the start is the Capitol');
+  ['lays out one fixed world, starting in the Capitol', () => {
+    equal([world.w, world.h], [WORLD_W, WORLD_H], 'map size');
+    equal(world.terrain.length, WORLD_W * WORLD_H, 'a terrain entry per tile');
+    const start = placeById(START_PLACE);
+    assert(start && start.kind === 'city' && start.name === 'The Capitol', 'the run starts in the Capitol');
+    assert(createWorld() === world, 'the world is built once');
   }],
 
-  ['lays every road at its authored length', () => {
-    const world = createWorld();
-    // A road of N path nodes puts its two ends N+1 steps apart.
-    equal(distance(world, 'capitol', 'kerusai'), 11, 'Capitol to Kerusai across 10 path nodes');
-    equal(distance(world, 'kerusai', 'swamps'), 2, 'Kerusai to the Swamps across 1 path node');
-    equal(distance(world, 'kerusai', 'fork-forest'), 3, 'Kerusai to the forest fork across 2');
-    equal(distance(world, 'fork-forest', 'fork-wilds'), 7, 'the forest fork to the red fork across 6');
-    equal(distance(world, 'fork-wilds', 'hearthfire'), 3, 'the red fork to Hearthfire across 2');
-    equal(distance(world, 'hearthfire', 'capitol'), 8, 'Hearthfire to the Capitol across 7');
-  }],
-
-  ['hangs the dungeons and the wilds off the right places', () => {
-    const world = createWorld();
-    assert(canTravel(world, 'hearthfire', 'mines'), 'the mines open off Hearthfire');
-    assert(canTravel(world, 'fork-wilds', 'red-wilds'), 'the wilds open off the red fork');
-    equal(nodeAt(world, 'mines').dungeon, 'mines', 'the mine mouth names its dungeon');
-    equal(nodeAt(world, 'swamps').dungeon, 'swamps', 'the swamp mouth names its dungeon');
-  }],
-
-  ['closes the loop, so every node is reachable from the start', () => {
-    const world = createWorld();
-    for (const id of world.keys()) {
-      assert(distance(world, START_NODE, id) >= 0, `${id} is reachable from the Capitol`);
-    }
-  }],
-
-  ['keeps every link reciprocal', () => {
-    const world = createWorld();
-    for (const node of world.values()) {
-      for (const link of node.links) {
-        assert(
-          nodeAt(world, link).links.includes(node.id),
-          `${link} links back to ${node.id}`
-        );
-      }
-    }
-  }],
-
-  ['deepens each road as it runs', () => {
-    const world = createWorld();
-    const road = [...world.values()]
-      .filter((n) => n.id.startsWith('road-fork-redfork-'))
-      .sort((a, b) => a.depth - b.depth);
-    equal(road.length, 6, 'the Ashen Way has six stretches');
-    for (let i = 1; i < road.length; i++) {
-      assert(road[i].depth === road[i - 1].depth + 1, 'each stretch is one deeper than the last');
-    }
-  }],
-
-  ['only roads roll for encounters', () => {
-    const world = createWorld();
-    const kinds = new Set([...world.values()].map((n) => n.kind));
-    for (const kind of ['city', 'path', 'dungeon', 'wilderness', 'wip']) {
-      assert(kinds.has(kind as never), `the map uses its ${kind} nodes`);
-    }
-  }],
-
-  ['rolls road encounters at the authored odds', () => {
-    const rng = new Dice(11);
-    const seen: Record<PathEncounter, number> = { robbery: 0, monsters: 0, event: 0, nothing: 0 };
-    const runs = 20000;
-    for (let i = 0; i < runs; i++) seen[rollPathEncounter(rng.float())] += 1;
-    const near = (actual: number, expected: number, label: string): void => {
-      const share = actual / runs;
-      assert(
-        Math.abs(share - expected) < 0.02,
-        `${label}: expected about ${expected}, saw ${share.toFixed(3)}`
-      );
+  ['puts eight towns in the right regions and none in the swamps', () => {
+    equal(
+      towns.map((t) => t.id).sort(),
+      ['capitol', 'hearthfire', 'kerusai', 'nerogril', 'oakhaven', 'pennybruck', 'thassa', 'theocracy'],
+      'the towns',
+    );
+    const region = (id: string): string => {
+      const place = placeById(id)!;
+      return regionAt(world, place.x, place.y);
     };
-    near(seen.robbery, 0.2, 'robbery');
-    near(seen.monsters, 0.2, 'monsters');
-    near(seen.event, 0.1, 'event');
-    near(seen.nothing, 0.5, 'quiet road');
+    equal(region('capitol'), 'capitol', 'the Capitol sits on its plains');
+    equal(region('oakhaven'), 'forest', 'Oakhaven is in the Northwood');
+    equal(region('pennybruck'), 'red', 'Pennybruck is in the mountains');
+    equal(region('hearthfire'), 'red', 'Hearthfire is in the mountains');
+    equal(region('thassa'), 'lake', 'Thassa is on the Great Lake');
+    equal(region('nerogril'), 'white', 'Nerogril is in the desert');
+    equal(region('theocracy'), 'white', 'the Theocracy is in the desert');
+    for (const town of towns) assert(region(town.id) !== 'black', `${town.name} is not in the swamps`);
   }],
 
-  ['maps the ends of the roll to the ends of the table', () => {
-    equal(rollPathEncounter(0), 'robbery', 'a zero roll robs you');
-    equal(rollPathEncounter(0.999999), 'nothing', 'a top roll leaves the road quiet');
+  ['lays the desert across the north-west, vast and mostly dunes', () => {
+    const count = (id: string): number => {
+      let n = 0;
+      for (let y = 0; y < WORLD_H; y++) for (let x = 0; x < WORLD_W; x++) if (regionAt(world, x, y) === id) n += 1;
+      return n;
+    };
+    let desert = 0;
+    let dunes = 0;
+    let northWest = 0;
+    for (let y = 0; y < WORLD_H; y++) for (let x = 0; x < WORLD_W; x++) {
+      if (regionAt(world, x, y) !== 'white') continue;
+      desert += 1;
+      if (terrainAt(world, x, y) === 'dunes') dunes += 1;
+      if (x < WORLD_W / 2 && y < WORLD_H / 2) northWest += 1;
+    }
+    for (const other of ['capitol', 'forest', 'red', 'black', 'lake']) assert(desert > count(other), `the desert is bigger than ${other}`);
+    assert(dunes > desert / 2, 'most of the desert is dunes');
+    assert(northWest > desert * 0.6, 'the desert lies in the north-west');
+    const theocracy = placeById('theocracy')!;
+    const nerogril = placeById('nerogril')!;
+    assert(theocracy.x < nerogril.x, 'the Theocracy lies deeper in the desert than Nerogril');
+    assert(around(theocracy.x + 5, theocracy.y + 4, 3, 'water') > 0, 'an oasis lies below the Theocracy');
+  }],
+
+  ['keeps Kerusai just west of the swamps and Hearthfire above Pennybruck', () => {
+    const kerusai = placeById('kerusai')!;
+    let swampNear = false;
+    for (let dx = 1; dx <= 8 && !swampNear; dx++) swampNear = regionAt(world, kerusai.x + dx, kerusai.y) === 'black';
+    assert(swampNear, 'the swamps begin a few tiles east of Kerusai');
+    const hearthfire = placeById('hearthfire')!;
+    const pennybruck = placeById('pennybruck')!;
+    assert(hearthfire.y < pennybruck.y, 'Hearthfire lies further up the range');
+    assert(
+      around(hearthfire.x, hearthfire.y, 4, 'mountain') > around(pennybruck.x, pennybruck.y, 4, 'mountain'),
+      'Hearthfire is ringed by more peaks than Pennybruck',
+    );
+  }],
+
+  ['stands every place on open ground reachable from the Capitol', () => {
+    const start = placeById(START_PLACE)!;
+    const blocked = (x: number, y: number): boolean => !isPassable(world, x, y);
+    for (const place of PLACES) {
+      assert(isPassable(world, place.x, place.y), `${place.name} is on passable ground`);
+      if (place.id === START_PLACE) continue;
+      assert(findPath(world.w, world.h, blocked, start, place, world.w * world.h * 2), `${place.name} can be reached over land`);
+    }
+  }],
+
+  ['links every town to the Capitol by road', () => {
+    const start = placeById(START_PLACE)!;
+    const offRoad = (x: number, y: number): boolean => {
+      const t = terrainAt(world, x, y);
+      return t !== 'road' && t !== 'bridge';
+    };
+    for (const town of towns) {
+      if (town.id === START_PLACE) continue;
+      assert(findPath(world.w, world.h, offRoad, start, town, world.w * world.h * 2), `a road runs to ${town.name}`);
+    }
+    assert(world.roads.length >= 8, 'the roads are recorded for drawing');
+  }],
+
+  ['keeps the Great Lake and the peaks impassable, and roads the cheapest going', () => {
+    for (const [id, rule] of Object.entries(TERRAIN)) {
+      assert(rule.time >= MIN_TERRAIN_TIME, `${id} is no cheaper than a road`);
+    }
+    for (const id of ['water', 'mountain', 'bog'] as const) assert(!Number.isFinite(TERRAIN[id].time), `${id} blocks travel`);
+    assert(terrainAt(world, 40, 48) === 'water', 'the middle of the Great Lake is water');
+    assert(!isPassable(world, -1, 5) && !isPassable(world, 5, WORLD_H), 'the edge of the world is closed');
+  }],
+
+  ['ranks the regions by danger and deepens the road away from towns', () => {
+    assert(REGIONS.white.danger > REGIONS.black.danger, 'the desert is the most hostile');
+    assert(REGIONS.black.danger > REGIONS.red.danger && REGIONS.red.danger > REGIONS.forest.danger, 'swamps, then mountains, then woods');
+    assert(REGIONS.forest.danger > REGIONS.capitol.danger, 'the plains are the safest');
+    equal(REGIONS.black.robbery, 0, 'nobody robs travellers in the swamps');
+    const capitol = placeById('capitol')!;
+    equal(depthAt(world, capitol.x, capitol.y), REGIONS.capitol.depth, 'town gates are shallow');
+    const swamps = placeById('swamps')!;
+    assert(depthAt(world, swamps.x, swamps.y) >= 6, 'the deep swamp is deep');
+    assert(nearTown(capitol.x + 2, capitol.y) && !nearTown(capitol.x + 3, capitol.y), 'safety ends three tiles out');
+  }],
+
+  ['draws straight lines as joined 4-connected steps', () => {
+    const line = line4({ x: 2, y: 3 }, { x: 9, y: 7 });
+    equal(line[0], { x: 2, y: 3 }, 'starts at the start');
+    equal(line[line.length - 1], { x: 9, y: 7 }, 'ends at the end');
+    for (let i = 1; i < line.length; i++) {
+      const step = Math.abs(line[i].x - line[i - 1].x) + Math.abs(line[i].y - line[i - 1].y);
+      equal(step, 1, `step ${i} moves one tile`);
+    }
   }],
 ];
 

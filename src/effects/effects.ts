@@ -71,6 +71,10 @@ export interface VfxSink {
   pull?(mover: Mage, from: Vec2, to: Vec2): Promise<void>;
   /** Animate a lightning arc between two points and resolve after one loop. */
   lightningBolt?(from: Vec2, to: Vec2): Promise<void>;
+  /** Drop a blue bolt toward the caster, branching to `target` when redirected. */
+  mindLightningBolt?(caster: Vec2, target: Vec2): Promise<void>;
+  /** Wait on the presentation clock; combat speed scales the real elapsed time. */
+  pause?(durationMs: number): Promise<void>;
   /** Play a one-shot hit-effect overlay on `mage`. */
   spellEffect?(mage: Mage, kind: 'generic' | 'corrosive' | 'vanish'): void;
   /** Pull a stream of life particles from `from` into `to`. */
@@ -120,6 +124,10 @@ export interface SubTargetPointOpts {
   origin?: Vec2;
   /** Hint shown to the player while picking. */
   prompt?: string;
+  /** Optional unit vectors that constrain this pick to discrete directions. */
+  directions?: readonly Vec2[];
+  /** Whether this pick cannot be cancelled. */
+  required?: boolean;
 }
 
 /** Options for an interactive enemy sub-target requested mid-resolution. */
@@ -144,6 +152,12 @@ export interface SubTargetCombatantOpts {
   prompt?: string;
 }
 
+export interface SubTargetRerollOpts {
+  label: string;
+  value: number;
+  sides: number;
+}
+
 /**
  * Optional bridge the scene supplies so a spell can ask for *additional* targets
  * while it resolves (e.g. "now pick a point, then an enemy"). Because these run
@@ -155,6 +169,7 @@ export interface SubTargeter {
   requestPoint(source: Mage, opts: SubTargetPointOpts): Promise<Vec2 | null>;
   requestEnemy(source: Mage, opts: SubTargetEnemyOpts): Promise<Mage | null>;
   requestCombatant(source: Mage, opts: SubTargetCombatantOpts): Promise<Mage | null>;
+  requestReroll?(source: Mage, opts: SubTargetRerollOpts): Promise<boolean>;
   /**
    * Open a reaction window mid-resolution so opponents may spend their reaction
    * in response to the current step (e.g. one blink of a multi-step flurry).
@@ -199,6 +214,10 @@ export interface EffectContext {
    * headless logic, so always call it as `await ctx.requestEnemy?.(...)`.
    */
   requestEnemy?(opts: SubTargetEnemyOpts): Promise<Mage | null>;
+  /** Ask the player or AI to choose one combatant from an explicit set. */
+  requestCombatant?(opts: SubTargetCombatantOpts): Promise<Mage | null>;
+  /** Ask whether one Storm die should be kept or rerolled once. */
+  requestReroll?(opts: SubTargetRerollOpts): Promise<boolean>;
   /**
    * Open a reaction window mid-resolution so opponents may respond to the
    * current step. Absent in headless logic — call as `await ctx.reactionWindow?.(...)`.
@@ -314,6 +333,10 @@ export interface DealDamageOptions {
   noImpactFx?: boolean;
   /** Caption for the floating number, e.g. the name of the DoT that ticked. */
   cause?: string;
+  /** Prevent Faraday retaliation damage from recursively triggering another veil. */
+  bypassFaraday?: boolean;
+  /** Treat guaranteed targeted damage as a direct hit for Faraday Veil. */
+  triggersFaraday?: boolean;
 }
 
 export function dealDamage(
@@ -469,6 +492,12 @@ export function dealDamage(
       feedbackLabel = 'CAPPED';
     }
     target.damageBySourceThisCycle.set(ctx.caster, used + amount);
+  }
+
+  const triggersFaraday = opts.triggersFaraday ?? canMiss;
+  if (amount > 0 && triggersFaraday && !isAoe && !opts.bypassFaraday) {
+    amount = ctx.game.interceptFaradayVeil(ctx.caster, target, amount);
+    if (amount === 0) feedbackLabel = 'FARADAY';
   }
 
   if (

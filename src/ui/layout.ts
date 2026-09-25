@@ -95,10 +95,10 @@ export const TOP_MENU: Rect = { x: 1230, y: 11, w: 34, h: 30 };
 
 // ---- Spell word slots -------------------------------------------------------
 
-export const WORD_COLS = 3;
+export const WORD_COLS = 4;
 export const WORD_ROWS = 2;
 
-/** Grid geometry for the six word slots inside the spell dock. */
+/** Grid geometry for up to seven word slots inside the spell dock. */
 export function wordSlot(index: number): Rect {
   const body = panelBody(DOCK_SPELL);
   const gap = SPACE.sm;
