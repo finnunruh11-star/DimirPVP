@@ -119,22 +119,6 @@ import vanishSheetUrl from '../Sprites/Spell/Vanish.png';
 import shatterSheetUrl from '../Sprites/Spell/Shatter.png';
 import disruptSheetUrl from '../Sprites/Spell/Disrupt.png';
 import lightningSheetUrl from '../Sprites/Spell/Lightning.png';
-import zombieAttackSheetUrl from '../Sprites/Zombie/Zombie_Default_Attack1 (1).png';
-import zombieDeathSheetUrl from '../Sprites/Zombie/Zombie_Default_Dead (1).png';
-import zombieHurtSheetUrl from '../Sprites/Zombie/Zombie_Default_Hurt (1).png';
-import zombieIdleSheetUrl from '../Sprites/Zombie/Zombie_Default_Idle (1).png';
-import zombieWalkSheetUrl from '../Sprites/Zombie/Zombie_Default_Walk (1).png';
-import skeletonAttackSheetUrl from '../Sprites/Skeleton/Skeleton_Default_Attack_Unarmed (2).png';
-import skeletonHurtSheetUrl from '../Sprites/Skeleton/Skeleton_Default_Hurt (2).png';
-import skeletonIdleSheetUrl from '../Sprites/Skeleton/Skeleton_Default_Idle_Unarmed (1).png';
-import skeletonWalkSheetUrl from '../Sprites/Skeleton/MP_Skeleton_Default_Walk_Unarmed (2).png';
-import ghostSheetUrl from '../Sprites/Wisp/ghost.png';
-import defenderSheetUrl from '../Sprites/Defender/knight-Sheet_greyfx.png';
-import reaperIdleSheetUrl from '../Sprites/Reaper/wraith_original_idle_sheet.png';
-import reaperWalkSheetUrl from '../Sprites/Reaper/wraith_original_walk_sheet.png';
-import reaperAttackSheetUrl from '../Sprites/Reaper/wraith_original_attack_sheet.png';
-import reaperHitSheetUrl from '../Sprites/Reaper/wraith_original_hit_sheet.png';
-import reaperDeathSheetUrl from '../Sprites/Reaper/wraith_original_death_sheet.png';
 import edgelordImpactSheetUrl from '../../spritesheet/Lightning/lightning_burst_003/lightning_burst_003_large_violet/spritesheet.png';
 import lightningChargeSheetUrl from '../../spritesheet/Lightning/lightning_burst_001/lightning_burst_001_large_violet/spritesheet.png';
 import lightningImpactSheetUrl from '../../spritesheet/Lightning/lightning_burst_002/lightning_burst_002_large_violet/spritesheet.png';
@@ -218,6 +202,15 @@ import { CombatFeedbackLayer } from '../visuals/CombatFeedbackLayer';
 import { ImpactFxDirector } from '../visuals/ImpactFxDirector';
 import { preloadImpactSheets } from '../visuals/ImpactSheets';
 import { ParticleFx } from '../visuals/ParticleFx';
+import {
+  createCreatureAnims,
+  CREATURE_FRAME_RATIO,
+  creatureFacesRight,
+  creatureSpriteFor,
+  creatureTexture,
+  preloadCreatureSprites,
+  type CreatureSpriteKind,
+} from '../world/creatureSprite';
 import {
   LIGHTNING_FX_SHEETS,
   LightningFxDirector,
@@ -336,111 +329,6 @@ interface AnimSet {
   repeat: number;
 }
 
-interface CreatureAnimSet {
-  key: string;
-  url: string;
-  end: number;
-  frameRate: number;
-  repeat: number;
-  frameWidth?: number;
-  frameHeight?: number;
-}
-
-interface SheetFrameAnimSet {
-  key: string;
-  frames: number[];
-  frameRate: number;
-  repeat: number;
-}
-
-const CREATURE_ANIM_SETS: CreatureAnimSet[] = [
-  { key: 'enemy-zombie-idle', url: zombieIdleSheetUrl, end: 5, frameRate: 6, repeat: -1 },
-  { key: 'enemy-zombie-walk', url: zombieWalkSheetUrl, end: 5, frameRate: 10, repeat: -1 },
-  { key: 'enemy-zombie-attack', url: zombieAttackSheetUrl, end: 5, frameRate: 14, repeat: 0 },
-  { key: 'enemy-zombie-hurt', url: zombieHurtSheetUrl, end: 5, frameRate: 16, repeat: 0 },
-  { key: 'enemy-zombie-death', url: zombieDeathSheetUrl, end: 5, frameRate: 16, repeat: 0 },
-  { key: 'enemy-skeleton-idle', url: skeletonIdleSheetUrl, end: 5, frameRate: 6, repeat: -1 },
-  { key: 'enemy-skeleton-walk', url: skeletonWalkSheetUrl, end: 5, frameRate: 10, repeat: -1 },
-  { key: 'enemy-skeleton-attack', url: skeletonAttackSheetUrl, end: 5, frameRate: 14, repeat: 0 },
-  { key: 'enemy-skeleton-hurt', url: skeletonHurtSheetUrl, end: 1, frameRate: 14, repeat: 0 },
-  {
-    key: 'enemy-reaper-idle',
-    url: reaperIdleSheetUrl,
-    end: 23,
-    frameRate: 10,
-    repeat: -1,
-    frameWidth: 26,
-    frameHeight: 24,
-  },
-  {
-    key: 'enemy-reaper-walk',
-    url: reaperWalkSheetUrl,
-    end: 11,
-    frameRate: 10,
-    repeat: -1,
-    frameWidth: 26,
-    frameHeight: 24,
-  },
-  {
-    key: 'enemy-reaper-attack',
-    url: reaperAttackSheetUrl,
-    end: 5,
-    frameRate: 10,
-    repeat: 0,
-    frameWidth: 26,
-    frameHeight: 24,
-  },
-  {
-    key: 'enemy-reaper-hurt',
-    url: reaperHitSheetUrl,
-    end: 3,
-    frameRate: 10,
-    repeat: 0,
-    frameWidth: 26,
-    frameHeight: 24,
-  },
-  {
-    key: 'enemy-reaper-death',
-    url: reaperDeathSheetUrl,
-    end: 7,
-    frameRate: 10,
-    repeat: 0,
-    frameWidth: 26,
-    frameHeight: 24,
-  },
-];
-
-// ghost.png is a labelled 12x5 grid. Body/effect frames begin at column 2;
-// columns 0-1 contain labels and the trailing columns are transparent padding.
-const WISP_ANIM_SETS: SheetFrameAnimSet[] = [
-  {
-    key: 'enemy-wisp-attack',
-    frames: [2, 3, 4, 5, 6, 7, 8, 14, 15, 16, 17, 18, 19, 20],
-    frameRate: 14,
-    repeat: 0,
-  },
-  { key: 'enemy-wisp-fx', frames: [26, 27, 28, 29, 30, 31], frameRate: 16, repeat: 0 },
-  { key: 'enemy-wisp-walk', frames: [38, 39, 40, 41, 42, 43], frameRate: 10, repeat: -1 },
-  { key: 'enemy-wisp-idle', frames: [50, 51, 52, 53, 54, 55], frameRate: 6, repeat: -1 },
-];
-
-const DEFENDER_ANIM_SETS: SheetFrameAnimSet[] = [
-  { key: 'enemy-defender-idle', frames: [0, 1, 2, 3, 4, 5], frameRate: 6, repeat: -1 },
-  {
-    key: 'enemy-defender-walk',
-    frames: [6, 7, 8, 9, 10, 11, 12, 13, 24, 25, 26, 27],
-    frameRate: 10,
-    repeat: -1,
-  },
-  {
-    key: 'enemy-defender-attack',
-    frames: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
-    frameRate: 14,
-    repeat: 0,
-  },
-  { key: 'enemy-defender-hurt', frames: [34, 35, 36], frameRate: 12, repeat: 0 },
-];
-
 const ANIM_SETS: AnimSet[] = [
   {
     key: 'mage-idle',
@@ -528,7 +416,6 @@ const FX_FRAME_SETS: AnimSet[] = [
   },
 ];
 
-type CreatureSpriteKind = 'zombie' | 'skeleton' | 'wisp' | 'defender' | 'reaper';
 type BodyAnimState = 'idle' | 'run' | 'role' | 'charge' | 'attack' | 'hurt' | 'death';
 
 type HeldWeaponKind = 'sword' | 'dagger' | 'spear' | 'axe' | 'hammer' | 'club' | 'bow' | 'staff' | 'shield' | 'lantern';
@@ -737,16 +624,9 @@ type DraftCommand = { t: 'draft'; index: number };
 type DodgeBonusChoiceCommand = { t: 'dodge-bonus'; optionId: string | null };
 
 const MAGE_RADIUS = 22;
-const CREATURE_SPRITE_HEIGHT = MAGE_RADIUS * 4.5;
+const CREATURE_SPRITE_HEIGHT = MAGE_RADIUS * 2.8 * CREATURE_FRAME_RATIO;
 
-const creatureSpriteKind = (mage: Mage): CreatureSpriteKind | null => {
-  if (mage.enemyKind === 'zombie' || mage.enemyKind === 'acidZombie') return 'zombie';
-  if (mage.enemyKind === 'skeleton') return 'skeleton';
-  if (mage.enemyKind === 'wisp') return 'wisp';
-  if (mage.enemyKind === 'defender') return 'defender';
-  if (mage.enemyKind === 'reaper') return 'reaper';
-  return null;
-};
+const creatureSpriteKind = (mage: Mage): CreatureSpriteKind | null => creatureSpriteFor(mage.enemyKind);
 
 const bodyAnimationKey = (mage: Mage, state: BodyAnimState): string => {
   const kind = creatureSpriteKind(mage);
@@ -1211,14 +1091,7 @@ export class GameScene extends Phaser.Scene {
     for (const set of FX_FRAME_SETS) {
       set.frames.forEach((url, i) => this.load.image(`${set.key}-${i}`, url));
     }
-    for (const set of CREATURE_ANIM_SETS) {
-      this.load.spritesheet(set.key, set.url, {
-        frameWidth: set.frameWidth ?? 64,
-        frameHeight: set.frameHeight ?? 64,
-      });
-    }
-    this.load.spritesheet('enemy-wisp-sheet', ghostSheetUrl, { frameWidth: 32, frameHeight: 32 });
-    this.load.spritesheet('enemy-defender-sheet', defenderSheetUrl, { frameWidth: 90, frameHeight: 90 });
+    preloadCreatureSprites(this);
     // First frame of the scarab gif, used until the animated frames decode.
     this.load.image('scarab-static', scarabGifUrl);
     // Stack token icons (move / basic attack / spell cast).
@@ -13780,33 +13653,7 @@ export class GameScene extends Phaser.Scene {
         repeat: set.repeat,
       });
     }
-    for (const set of CREATURE_ANIM_SETS) {
-      if (this.anims.exists(set.key)) continue;
-      this.anims.create({
-        key: set.key,
-        frames: this.anims.generateFrameNumbers(set.key, { start: 0, end: set.end }),
-        frameRate: set.frameRate,
-        repeat: set.repeat,
-      });
-    }
-    for (const set of WISP_ANIM_SETS) {
-      if (this.anims.exists(set.key)) continue;
-      this.anims.create({
-        key: set.key,
-        frames: set.frames.map((frame) => ({ key: 'enemy-wisp-sheet', frame })),
-        frameRate: set.frameRate,
-        repeat: set.repeat,
-      });
-    }
-    for (const set of DEFENDER_ANIM_SETS) {
-      if (this.anims.exists(set.key)) continue;
-      this.anims.create({
-        key: set.key,
-        frames: set.frames.map((frame) => ({ key: 'enemy-defender-sheet', frame })),
-        frameRate: set.frameRate,
-        repeat: set.repeat,
-      });
-    }
+    createCreatureAnims(this);
     // One-shot hit-effect overlays (target-anchored spell impacts).
     const fx: { key: string; end: number; frameRate: number; repeat?: number }[] = [
       { key: 'fx-dot', end: 24, frameRate: 16 },
@@ -14086,7 +13933,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
     const kind = creatureSpriteKind(mage);
-    const nativeFacesRight = kind === 'wisp' || kind === 'defender';
+    const nativeFacesRight = !!kind && creatureFacesRight(kind);
     if (nearest && nearest.x !== mage.x) {
       const targetIsRight = nearest.x > mage.x;
       return nativeFacesRight ? !targetIsRight : targetIsRight;
@@ -14120,14 +13967,8 @@ export class GameScene extends Phaser.Scene {
         const customCreature = creatureSpriteKind(m) !== null;
         const idleKey = bodyAnimationKey(m, 'idle');
         const kind = creatureSpriteKind(m);
-        const textureKey =
-          kind === 'wisp'
-            ? 'enemy-wisp-sheet'
-            : kind === 'defender'
-              ? 'enemy-defender-sheet'
-              : idleKey;
         const sprite = this.add
-          .sprite(m.x, m.y, customCreature ? textureKey : 'mage-idle-0')
+          .sprite(m.x, m.y, kind ? creatureTexture(kind) : 'mage-idle-0')
           .setOrigin(0.5, customCreature ? 0.9 : 1)
           .setDepth(5);
         sprite.play(idleKey);

@@ -30,7 +30,11 @@ import { stepDice, type ExplorationRun, type MapStyle } from '../pve/exploration
 import { saveRun } from '../pve/exploration/save';
 import { canSearch, HOURS_PER_TILE, rollSearch, SEARCH_HOURS } from '../pve/exploration/travel';
 import { createWorld, describeTile, placeById, regionAt, type Place } from '../pve/exploration/world';
+import { ENEMY_DEFS } from '../pve/swamprun';
 import { getSpell, setActiveSpellSets } from '../spells/registry';
+import {
+  createCreatureAnims, CREATURE_FRAME_RATIO, creatureFacesRight, creatureSpriteFor, creatureTexture, preloadCreatureSprites,
+} from '../world/creatureSprite';
 import { TILE_PX, TILE_SCALE } from '../world/kenney';
 import { buildLocaleModel, type ExitDef, type Keeper, type LocaleModel } from '../world/locale';
 import { bufferTexture, LocaleView, preloadLocaleAssets } from '../world/localeRender';
@@ -57,6 +61,14 @@ interface PackState {
   pack: WildPack;
   sprite: Phaser.GameObjects.Sprite;
   marker: Phaser.GameObjects.Text;
+  idleAnim: string;
+  runAnim: string;
+  /** The figure's art faces right unflipped. */
+  facesRight: boolean;
+  /** Tint when nothing holds it; null for creature art shown as drawn. */
+  restTint: number | null;
+  /** Height of the '!' over its feet, px. */
+  lift: number;
   x: number;
   y: number;
   homeX: number;
@@ -167,6 +179,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   preload(): void {
     preloadLocaleAssets(this);
     preloadMageFrames(this);
+    preloadCreatureSprites(this);
   }
 
   create(entry: LocaleEntry): void {
@@ -203,6 +216,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.place = place;
     this.cameras.main.setBackgroundColor(0x0b0d0a);
     createMageAnims(this);
+    createCreatureAnims(this);
     this.model = place.model ?? buildLocaleModel(place.def);
     this.view = new LocaleView(this, this.model, { stream: !!place.world });
 
@@ -619,10 +633,22 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   private addPack(pack: WildPack): PackState {
     const x = (pack.x + 0.5) * TILE_PX;
     const y = (pack.y + 0.8) * TILE_PX;
-    const sprite = this.add.sprite(x, y, MAGE_FIRST_FRAME).setOrigin(0.5, 0.95)
-      .setScale(TILE_SCALE * (pack.elite ? 1.35 : 1.05)).setTint(pack.tint).setDepth(y);
-    sprite.play({ key: MAGE_IDLE, startFrame: pack.x % 4 });
-    const marker = this.add.text(x, y - TILE_PX * 1.25, pack.elite ? '!!' : '!', {
+    const size = pack.elite ? 1.35 : 1.05;
+    // The figure is the first member: in its own art where it has some, else the tinted mage, as in a fight.
+    const lead = pack.spawns?.[0];
+    const kind = lead?.family === 'swamp' ? lead.kind : null;
+    const creature = creatureSpriteFor(kind);
+    const idleAnim = creature ? `enemy-${creature}-idle` : MAGE_IDLE;
+    const sprite = this.add.sprite(x, y, creature ? creatureTexture(creature) : MAGE_FIRST_FRAME)
+      .setOrigin(0.5, creature ? 0.9 : 0.95).setDepth(y);
+    sprite.play({ key: idleAnim, startFrame: pack.x % 4 });
+    const build = creature && kind ? ENEMY_DEFS[kind].scale ?? 1 : 1;
+    const mageHeight = this.textures.getFrame(MAGE_FIRST_FRAME).height * TILE_SCALE * size;
+    sprite.setScale(creature ? (mageHeight * CREATURE_FRAME_RATIO * build) / (sprite.height || 1) : TILE_SCALE * size);
+    const restTint = !creature || kind === 'acidZombie' ? pack.tint : null;
+    if (restTint != null) sprite.setTint(restTint);
+    const lift = TILE_PX * 1.25 * Math.max(1, build);
+    const marker = this.add.text(x, y - lift, pack.elite ? '!!' : '!', {
       fontFamily: 'Georgia, serif',
       fontSize: '22px',
       fontStyle: 'bold',
@@ -631,7 +657,9 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       strokeThickness: 4,
     }).setOrigin(0.5, 1).setDepth(100000).setVisible(false);
     const state: PackState = {
-      pack, sprite, marker, x, y, homeX: x, homeY: y, wanderX: x, wanderY: y,
+      pack, sprite, marker, idleAnim, runAnim: creature ? `enemy-${creature}-walk` : MAGE_RUN,
+      facesRight: !creature || creatureFacesRight(creature), restTint, lift,
+      x, y, homeX: x, homeY: y, wanderX: x, wanderY: y,
       chasing: !!pack.hunting, sees: false, slowUntil: 0, bound: false,
       pace: this.place.world ? pack.pace ?? PACK_SPEED : PACK_SPEED,
       hunting: !!pack.hunting,
@@ -692,7 +720,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       if (bound !== state.bound) {
         state.bound = bound;
         if (bound) state.sprite.setTint(WORDS.bind.color);
-        else state.sprite.setTint(state.pack.tint);
+        else if (state.restTint == null) state.sprite.clearTint();
+        else state.sprite.setTint(state.restTint);
       }
       let tx = state.wanderX;
       let ty = state.wanderY;
@@ -714,12 +743,12 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
         const blocked = (x: number, y: number): boolean => this.model.blocked(x, y);
         if (feetFit(nx, state.y, this.model.w, this.model.h, blocked)) state.x = nx;
         if (feetFit(state.x, ny, this.model.w, this.model.h, blocked)) state.y = ny;
-        state.sprite.setFlipX(mx < 0);
+        state.sprite.setFlipX(state.facesRight ? mx < 0 : mx > 0);
       }
-      const anim = len > 2 ? MAGE_RUN : MAGE_IDLE;
+      const anim = len > 2 ? state.runAnim : state.idleAnim;
       if (state.sprite.anims.currentAnim?.key !== anim) state.sprite.play(anim);
       state.sprite.setPosition(Math.round(state.x), Math.round(state.y)).setDepth(state.y);
-      state.marker.setPosition(Math.round(state.x), Math.round(state.y - TILE_PX * 1.25)).setVisible(state.chasing);
+      state.marker.setPosition(Math.round(state.x), Math.round(state.y - state.lift)).setVisible(state.chasing);
     }
   }
 
@@ -1248,7 +1277,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       }).setOrigin(0.5, 1).setDepth(100016);
       if (!label) view.labels.set(state, tag);
       if (tag.text !== text) tag.setText(text);
-      tag.setPosition(Math.round(state.x), Math.round(state.y - TILE_PX * 1.6)).setVisible(true);
+      tag.setPosition(Math.round(state.x), Math.round(state.y - state.lift - TILE_PX * 0.35)).setVisible(true);
     }
     if (now - this.barAt > 500) this.refreshWordBar();
   }
