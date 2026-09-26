@@ -4,12 +4,20 @@
 
 import { getItem, type ItemId } from '../../core/Items';
 import { addXp } from '../progression';
-import { creatureName } from './encounters';
-import { runDice, withParty, partyOf, type ShopResult } from './economy';
+import { creatureName, creaturePower } from './encounters';
+import { money, moneyLabel, runDice, withParty, partyOf, type ShopResult } from './economy';
 import type { ActiveBounty, ExplorationRun } from './run';
+import { placeById } from './world';
 
 export const MAX_ACTIVE_BOUNTIES = 4;
 const BOARD_SIZE = 3;
+/** No bounty pays more than this, in gold; the hardest pay it. */
+export const BOUNTY_CAP = 2;
+const BOUNTY_FLOOR = 0.2;
+/** Gather bounties only ask for goods worth this much each at most. */
+const GATHER_WORTH = 1.6;
+
+const reward = (gold: number): number => Math.min(BOUNTY_CAP, Math.max(BOUNTY_FLOOR, money(gold)));
 
 const TOWN_NAMES: Record<string, string> = {
   capitol: 'the Capitol',
@@ -26,7 +34,7 @@ const SLAY_TARGETS: Record<string, string[]> = {
   capitol: ['bandit', 'kobold', 'cavern-bat', 'bandit-archer'],
   kerusai: ['zombie', 'skeleton', 'wisp', 'acidZombie', 'bandit'],
   hearthfire: ['sentinel', 'kobold', 'rockling', 'elite-kobold', 'magma-sentinel'],
-  oakhaven: ['zombie', 'cavern-bat', 'kobold', 'wisp', 'bandit'],
+  oakhaven: ['wolf', 'boar', 'rabbit', 'slime', 'bandit'],
   pennybruck: ['kobold', 'rockling', 'sentinel', 'bandit', 'elite-kobold'],
   thassa: ['wisp', 'bandit', 'zombie', 'bandit-archer', 'cavern-bat'],
   nerogril: ['sand-stalker', 'bandit', 'skeleton', 'rockling', 'bandit-archer'],
@@ -37,7 +45,7 @@ const GATHER_TARGETS: Record<string, ItemId[]> = {
   capitol: ['crudeTrinket', 'herbMoonleaf', 'gemAmethyst', 'echoMembrane'],
   kerusai: ['herbBogcap', 'herbMoonleaf', 'echoMembrane', 'gemOnyx'],
   hearthfire: ['sentinelLens', 'herbEmberroot', 'oreIron', 'gemRuby'],
-  oakhaven: ['herbMoonleaf', 'herbBogcap', 'gemEmerald', 'echoMembrane'],
+  oakhaven: ['herbMoonleaf', 'herbBogcap', 'gemEmerald', 'wolfPelt'],
   pennybruck: ['oreIron', 'oreCopper', 'gemRuby', 'herbEmberroot'],
   thassa: ['herbMoonleaf', 'gemSapphire', 'crudeTrinket', 'echoMembrane'],
   nerogril: ['herbEmberroot', 'gemSapphire', 'crudeTrinket', 'gemAmethyst'],
@@ -63,23 +71,27 @@ export function bountyBoard(run: ExplorationRun, town: string): ActiveBounty[] {
       const count = 2 + dice.die(3);
       bounty = {
         id, town, kind: 'slay', target, count, progress: 0,
-        rewardGold: 2 + count * 2, rewardXp: count * 2,
+        rewardGold: reward(0.05 * count * creaturePower(target)), rewardXp: count * 2,
         label: `Slay ${count} ${plural(creatureName(target), count)}`,
       };
     } else if (roll < 0.8) {
-      const target = dice.pick(gather);
-      const count = 1 + dice.die(3);
+      const cheap = gather.filter((item) => getItem(item).cost / 10 <= GATHER_WORTH);
+      const target = dice.pick(cheap.length ? cheap : gather);
       const worth = getItem(target).cost / 10;
+      const count = Math.max(1, Math.min(1 + dice.die(3), Math.floor(GATHER_WORTH / worth)));
       bounty = {
         id, town, kind: 'gather', target, count, progress: 0,
-        rewardGold: Math.ceil(2 + worth * count * 1.5), rewardXp: count * 2,
+        rewardGold: reward(worth * count * 1.25), rewardXp: count * 2,
         label: `Bring ${count} ${getItem(target).name}`,
       };
     } else {
       const target = dice.pick(others);
+      const from = placeById(town);
+      const to = placeById(target);
+      const tiles = from && to ? Math.hypot(from.x - to.x, from.y - to.y) : 20;
       bounty = {
         id, town, kind: 'deliver', target, count: 1, progress: 0,
-        rewardGold: 8 + dice.die(4), rewardXp: 5,
+        rewardGold: reward(0.5 + tiles / 40), rewardXp: 5,
         label: `Deliver a parcel to ${TOWN_NAMES[target]}`,
       };
     }
@@ -141,11 +153,11 @@ export function claimBounty(run: ExplorationRun, town: string, id: string): Shop
     });
   }
   run.bounties.splice(run.bounties.indexOf(bounty), 1);
-  run.gold += bounty.rewardGold;
+  run.gold = money(run.gold + bounty.rewardGold);
   const levels = addXp(run, bounty.rewardXp);
   return {
     ok: true,
-    message: `${bounty.label}: +${bounty.rewardGold}g, +${bounty.rewardXp} XP.${levels ? ` Level ${run.level}!` : ''}`,
+    message: `${bounty.label}: +${moneyLabel(bounty.rewardGold)}, +${bounty.rewardXp} XP.${levels ? ` Level ${run.level}!` : ''}`,
     levels,
   };
 }

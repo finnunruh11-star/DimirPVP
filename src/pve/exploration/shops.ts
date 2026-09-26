@@ -93,7 +93,10 @@ const SUPPLIES: StockRule['fixed'] = [
   { id: 'throwingDagger' },
 ];
 
-const guild = (town: string, name: string, restPrice: number): ShopDef => ({
+/** A night at any guild, in gold: two silver. */
+export const ROOM_PRICE = 0.2;
+
+const guild = (town: string, name: string): ShopDef => ({
   id: `${town}-guild`,
   kind: 'guild',
   name,
@@ -101,7 +104,7 @@ const guild = (town: string, name: string, restPrice: number): ShopDef => ({
   keeper: 'guildmaster',
   buys: [{ accepts: isMaterial, rate: 1 }],
   services: ['rest', 'bounties'],
-  restPrice,
+  restPrice: ROOM_PRICE,
 });
 
 const apothecary = (town: string, name: string): ShopDef => ({
@@ -152,7 +155,7 @@ export const FORGE_RECIPES: Record<string, { output: ItemId; inputs: [ItemId, nu
 const ALL_RECIPES = Object.keys(FORGE_RECIPES);
 const BASIC_RECIPES = ['ironCap', 'ironGreaves', 'chainShirt', 'buckler', ...GEM_JEWELLERY];
 
-const FORGE_SUPPLIES: StockRule['fixed'] = [{ id: 'oreCoal' }, { id: 'oreCopper' }, { id: 'oreIron' }];
+const FORGE_SUPPLIES: StockRule['fixed'] = [{ id: 'oreCoal' }, { id: 'oreCopper' }, { id: 'oreIron' }, { id: 'pickaxe' }];
 
 const outfitter = (town: string, name: string): ShopDef => ({
   id: `${town}-outfitter`,
@@ -171,7 +174,7 @@ const outfitter = (town: string, name: string): ShopDef => ({
 export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
   ([
     // ---- The Capitol: everything ----
-    guild('capitol', "Adventurers' Guild", 3),
+    guild('capitol', "Adventurers' Guild"),
     apothecary('capitol', 'Royal Apothecary'),
     {
       id: 'capitol-weaponsmith',
@@ -246,7 +249,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       recipes: BASIC_RECIPES,
     },
     // ---- Hearthfire: the basics, and the best steel in the land ----
-    guild('hearthfire', 'Hearthfire Guildhall', 3),
+    guild('hearthfire', 'Hearthfire Guildhall'),
     apothecary('hearthfire', 'Ashen Remedies'),
     {
       id: 'hearthfire-weaponsmith',
@@ -290,11 +293,11 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       recipes: ALL_RECIPES,
     },
     // ---- Kerusai: a small town ----
-    guild('kerusai', 'Kerusai Lodge', 2),
+    guild('kerusai', 'Kerusai Lodge'),
     apothecary('kerusai', 'Mirewater Tonics'),
     valuables('kerusai', 'The Drowned Coin', ['rare', 'epic']),
     // ---- Oakhaven: a timber town in the Northwood ----
-    guild('oakhaven', 'Oakhaven Lodge', 2),
+    guild('oakhaven', 'Oakhaven Lodge'),
     {
       id: 'oakhaven-herbalist',
       kind: 'herbalist',
@@ -327,7 +330,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       services: [],
     },
     // ---- Pennybruck: a small miners' village on the lower slopes ----
-    guild('pennybruck', 'Pennybruck Hall', 2),
+    guild('pennybruck', 'Pennybruck Hall'),
     apothecary('pennybruck', 'Slopeside Remedies'),
     {
       id: 'pennybruck-supply',
@@ -335,7 +338,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       name: 'Deepvein Supply',
       sign: 'SUPPLY',
       keeper: 'miner',
-      stock: { fixed: [{ id: 'torch' }, { id: 'lantern' }, { id: 'throwingDagger' }, { id: 'oreCoal' }] },
+      stock: { fixed: [{ id: 'torch' }, { id: 'lantern' }, { id: 'pickaxe' }, { id: 'throwingDagger' }, { id: 'oreCoal' }] },
       buys: [
         { accepts: isOre, rate: 1.2 },
         { accepts: isGem, rate: 1.1 },
@@ -343,7 +346,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       services: [],
     },
     // ---- Thassa: the lake port ----
-    guild('thassa', 'Tidewatch Guild', 3),
+    guild('thassa', 'Tidewatch Guild'),
     apothecary('thassa', 'Saltwind Apothecary'),
     {
       id: 'thassa-pearls',
@@ -359,11 +362,11 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       services: [],
     },
     // ---- Nerogril: the last well before the deep desert ----
-    guild('nerogril', 'Nerogril Waystation', 2),
+    guild('nerogril', 'Nerogril Waystation'),
     apothecary('nerogril', 'Sandglass Remedies'),
     outfitter('nerogril', 'Dune Outfitters'),
     // ---- The Theocracy: the holy city of the White Desert ----
-    guild('theocracy', "The Pilgrims' Hall", 3),
+    guild('theocracy', "The Pilgrims' Hall"),
     apothecary('theocracy', 'The Sacred Spring'),
     outfitter('theocracy', 'Oasis Outfitters'),
     {

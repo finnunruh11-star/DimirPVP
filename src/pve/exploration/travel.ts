@@ -5,7 +5,7 @@
 
 import { findWeightedPath, type Cell } from '../../world/pathfind';
 import { isNight } from './clock';
-import { absoluteHour, heatFor, inDesert, stormAt, STORM_DANGER, STORM_TIME } from './desert';
+import { absoluteHour, inDesert, stormAt, STORM_DANGER, STORM_TIME } from './desert';
 import { isExplored, packExplored, revealTiles, unpackExplored } from './explored';
 import { stepDice, type ExplorationRun } from './run';
 import {
@@ -69,8 +69,6 @@ export interface TripStep {
   night: boolean;
   /** Crossed in a sandstorm: the tile counts as unknown whatever the map says. */
   storm: boolean;
-  /** HP the sun takes on this tile. */
-  heat: number;
 }
 
 export interface TripPlan {
@@ -84,8 +82,6 @@ export interface TripPlan {
   /** Expected fights and finds, for the preview. */
   fights: number;
   finds: number;
-  /** HP the sun takes over the whole trip. */
-  heat: number;
   storm: boolean;
 }
 
@@ -119,7 +115,6 @@ export function planTrip(
   run: ExplorationRun,
   route: readonly Cell[],
   mode: TravelMode,
-  opts: { heatProof?: boolean } = {},
 ): TripPlan {
   const rule = TRAVEL_MODES[mode];
   const mask = unpackExplored(run.explored);
@@ -149,7 +144,6 @@ export function planTrip(
       depth: Math.min(10, depthAt(world, cell.x, cell.y) + (night ? 1 : 0)),
       night,
       storm,
-      heat: opts.heatProof ? 0 : heatFor(world, run, cell.x, cell.y, hours, abs),
     });
     prev = cell;
   }
@@ -164,7 +158,6 @@ export function planTrip(
     reason: steps.length ? undefined : 'You are already here.',
     fights: 0,
     finds: 0,
-    heat: steps.reduce((sum, step) => sum + step.heat, 0),
     storm: steps.some((step) => step.storm),
   };
   if (mode === 'fast') {

@@ -9,6 +9,7 @@ import { mineAbilityPower } from './minerun';
 
 export type MineActionId =
   | 'rockling-launch'
+  | 'rabbit-charge'
   | 'bat-shriek'
   | 'golem-wake'
   | 'golem-roll'
@@ -85,6 +86,22 @@ export function canRocklingLaunchHit(game: GameState, source: Mage, target: Mage
   return dist(landing, target!.pos) <= source.bodyRadius() + target!.bodyRadius() + 0.5;
 }
 
+/** A rabbit charges from this far away (cm, centre to centre) and leaps this far. */
+export const RABBIT_CHARGE_MIN = 4;
+export const RABBIT_CHARGE_MAX = 7;
+export const RABBIT_LEAP = 7;
+
+/** True when an unmoved Rabbit stands 4-7 cm off and its leap ends in contact. */
+export function canRabbitChargeHit(game: GameState, source: Mage, target: Mage | undefined): boolean {
+  if (
+    source.movedThisTurn ||
+    mineKind(source) !== 'rabbit' ||
+    !enemyInRange(game, source, target, RABBIT_CHARGE_MAX * RANGE_UNIT, RABBIT_CHARGE_MIN * RANGE_UNIT)
+  ) return false;
+  const landing = game.leapDestination(source, stepTowards(source.pos, target!.pos, RABBIT_LEAP * RANGE_UNIT));
+  return dist(landing, target!.pos) <= source.bodyRadius() + target!.bodyRadius() + 0.5;
+}
+
 function rolledDamage(
   game: GameState,
   source: Mage,
@@ -122,6 +139,29 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       rolledDamage(game, source, target, '1d4', 0, 'shatter', 'physical', 'Rockling impact');
       game.vfxSink?.shatterBurst?.(target.pos, 78, source.pos);
       game.defeatMage(source, source, `${source.name} breaks apart on impact.`);
+    },
+  },
+  'rabbit-charge': {
+    id: 'rabbit-charge',
+    label: 'Charge',
+    cost: 'main',
+    hostile: true,
+    visual: 'shatter',
+    available: (source) => mineKind(source) === 'rabbit',
+    canCommit: (source) => !source.movedThisTurn,
+    isStillValid: (game, source, choice) => canRabbitChargeHit(game, source, choice.target),
+    resolve: (game, source, choice) => {
+      const target = choice.target!;
+      game.leapMove(source, stepTowards(source.pos, target.pos, RABBIT_LEAP * RANGE_UNIT));
+      // The charge is the rabbit's movement for the turn.
+      source.actions.move = 0;
+      const contactDistance = source.bodyRadius() + target.bodyRadius();
+      if (!source.alive || !target.alive || dist(source.pos, target.pos) > contactDistance + 0.5) {
+        game.log(`${source.name} lands short.`);
+        return;
+      }
+      rolledDamage(game, source, target, '1d4', 1 + power(source), 'shatter', 'physical', 'Rabbit charge');
+      game.vfxSink?.shatterBurst?.(target.pos, 48, source.pos);
     },
   },
   'bat-shriek': {

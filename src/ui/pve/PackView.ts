@@ -7,7 +7,7 @@ import { getItem, type ItemId } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
 import { isModifierWord, WORDS } from '../../core/Words';
 import { SceneInput } from '../../engine/SceneInput';
-import { dropItem, equipItem, partyOf, unequipItem, type ShopResult } from '../../pve/exploration/economy';
+import { dropItem, equipItem, moneyLabel, partyOf, unequipItem, type ShopResult } from '../../pve/exploration/economy';
 import type { ExplorationRun } from '../../pve/exploration/run';
 import { xpToNext } from '../../pve/progression';
 import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
@@ -120,7 +120,7 @@ export class PackView extends Phaser.GameObjects.Container {
     const words = leader.loadout.filter((word) => !isModifierWord(word)).map((word) => WORDS[word].label);
     const modifier = leader.loadout.find(isModifierWord);
     this.add(scene.add.text(60, 82, [
-      `Level ${run.level}  (${run.xp}/${xpToNext(run.level)} XP)  /  ${run.gold}g  /  ${leader.carriedWeight().toFixed(1)}/${leader.carryCap()}kg`,
+      `Level ${run.level}  (${run.xp}/${xpToNext(run.level)} XP)  /  ${moneyLabel(run.gold)}  /  ${leader.carriedWeight().toFixed(1)}/${leader.carryCap()}kg`,
     ].join(''), { fontFamily: MENU_FONT.body, fontSize: '14px', color: MENU_HEX.boneDim }));
     addSectionRule(scene, this, 58, 116, 1164);
 

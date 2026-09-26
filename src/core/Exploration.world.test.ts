@@ -41,11 +41,11 @@ function around(x: number, y: number, radius: number, terrain: Terrain): number 
 }
 
 const tests: [name: string, run: () => void][] = [
-  ['lays out one fixed world, starting in the Capitol', () => {
+  ['lays out one fixed world, starting in Kerusai', () => {
     equal([world.w, world.h], [WORLD_W, WORLD_H], 'map size');
     equal(world.terrain.length, WORLD_W * WORLD_H, 'a terrain entry per tile');
     const start = placeById(START_PLACE);
-    assert(start && start.kind === 'city' && start.name === 'The Capitol', 'the run starts in the Capitol');
+    assert(start && start.kind === 'city' && start.name === 'Kerusai', 'the run starts in Kerusai');
     assert(createWorld() === world, 'the world is built once');
   }],
 
@@ -107,7 +107,7 @@ const tests: [name: string, run: () => void][] = [
     );
   }],
 
-  ['stands every place on open ground reachable from the Capitol', () => {
+  ['stands every place on open ground reachable from the start', () => {
     const start = placeById(START_PLACE)!;
     const blocked = (x: number, y: number): boolean => !isPassable(world, x, y);
     for (const place of PLACES) {
@@ -117,7 +117,7 @@ const tests: [name: string, run: () => void][] = [
     }
   }],
 
-  ['links every town to the Capitol by road', () => {
+  ['links every town to the start by road', () => {
     const start = placeById(START_PLACE)!;
     const offRoad = (x: number, y: number): boolean => {
       const t = terrainAt(world, x, y);

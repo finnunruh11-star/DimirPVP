@@ -1,9 +1,13 @@
 import { RANGE_UNIT } from '../config/constants';
+import { wordSpellMana } from '../core/Colors';
 import { Dice } from '../core/Dice';
 import { Mage } from '../core/Mage';
-import { applyHeat, isSandstorm, stormOnDay } from '../pve/exploration/desert';
+import type { WordId } from '../core/Words';
+import { isSandstorm, stormOnDay } from '../pve/exploration/desert';
 import { packExplored, revealTiles, unpackExplored } from '../pve/exploration/explored';
-import { AMBUSH_MAX_TILES, fieldHealAmount, fieldWordsFor } from '../pve/exploration/fieldWords';
+import {
+  AMBUSH_MAX_TILES, FIELD_RULES, fieldCombos, fieldHealAmount, fieldSpellMana, reachTiles,
+} from '../pve/exploration/fieldWords';
 import { rollFind } from '../pve/exploration/finds';
 import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
@@ -30,11 +34,19 @@ function equal(actual: unknown, expected: unknown, label: string): void {
 }
 
 const world = createWorld();
+const capitol = placeById('capitol')!;
 
+/** A run planning from the Capitol, the middle of the map. */
 function freshRun(seed = 21): ExplorationRun {
   const mage = new Mage({ name: 'Walker', isAI: false, team: 1, position: { x: 0, y: 0 }, loadout: [] });
   mage.assignFlatStats(3);
-  return createRun(seed, capturePartySnapshot([mage]));
+  const run = createRun(seed, capturePartySnapshot([mage]));
+  run.pos = { x: capitol.x, y: capitol.y };
+  return run;
+}
+
+function mage(loadout: WordId[]): Mage {
+  return new Mage({ name: 'Speaker', isAI: false, team: 1, position: { x: 0, y: 0 }, loadout });
 }
 
 function routeTo(run: ExplorationRun, id: string): Cell[] {
@@ -158,13 +170,20 @@ const tests: [name: string, run: () => void][] = [
     assert(a > 0 && b > a, 'exploring maps a wider strip');
   }],
 
-  ['hands over a find and a little experience', () => {
-    const run = freshRun();
-    const before = JSON.stringify(restoreParty(run.party)[0].bag) + run.gold;
-    const message = rollFind(run, 'forest', 3, new Dice(4));
-    assert(message.includes('+1 XP'), 'finds teach something');
-    const after = JSON.stringify(restoreParty(run.party)[0].bag) + run.gold;
-    assert(before !== after || restoreParty(run.party)[0].utility.length > 0, 'something was gained');
+  ['hands over a find: a thing, never coin or experience', () => {
+    for (const seed of [1, 4, 9, 16, 25, 36]) {
+      const run = freshRun();
+      const carried = (): number => {
+        const leader = restoreParty(run.party)[0];
+        const worn = [...leader.hands, ...leader.bag, ...leader.utility, ...leader.accessories, leader.head, leader.torso, leader.boots];
+        return worn.filter(Boolean).length + leader.arrows;
+      };
+      const before = carried();
+      const message = rollFind(run, 'forest', 3, new Dice(seed));
+      assert(!message.includes('XP') && !/\dg\b/.test(message), `seed ${seed}: no gold or XP in "${message}"`);
+      equal([run.gold, run.xp, run.pendingLevels], [freshRun().gold, 0, 0], `seed ${seed}: purse and training untouched`);
+      assert(carried() > before, `seed ${seed}: something was gained`);
+    }
   }],
 
   ['blows sandstorms over the desert about every other day', () => {
@@ -180,7 +199,7 @@ const tests: [name: string, run: () => void][] = [
     equal(stormOnDay(run, 17), stormOnDay(freshRun(31), 17), 'the same run keeps the same weather');
   }],
 
-  ['hides the desert in a storm and burns travellers by day', () => {
+  ['hides the desert in a storm', () => {
     const run = freshRun(8);
     let day = 1;
     while (!stormOnDay(run, day)) day += 1;
@@ -204,25 +223,23 @@ const tests: [name: string, run: () => void][] = [
     while (isSandstorm(calm)) calm.day += 1;
     walked(calm, route);
     const noon = planTrip(world, calm, route.slice(0, 6), 'sprint');
-    assert(noon.heat > 0, 'the noon sun burns');
-    equal(planTrip(world, calm, route.slice(0, 6), 'sprint', { heatProof: true }).heat, 0, 'a stillsuit keeps it off');
-    calm.hour = 22;
-    const midnight = planTrip(world, calm, route.slice(0, 6), 'sprint');
-    if (!midnight.storm) equal(midnight.heat, 0, 'the night is cool');
-    const lost = applyHeat(calm, 3);
-    equal(lost, 3, 'heat takes whole points');
-    const leader = restoreParty(calm.party)[0];
-    leader.hp = 2;
-    calm.party = capturePartySnapshot([leader]);
-    applyHeat(calm, 5);
-    equal(restoreParty(calm.party)[0].hp, 1, 'the sun never kills');
+    assert(!noon.storm && noon.steps.every((step) => step.known), 'in still air the mapped road is known');
   }],
 
-  ['offers the words that work outside a fight, in loadout order', () => {
-    const reach = (word: string): number | null => (word === 'fire' ? 20 * RANGE_UNIT : word === 'curse' ? null : 3 * RANGE_UNIT);
-    const words = fieldWordsFor(['fire', 'veil', 'twist', 'curse', 'shatter', 'heal', 'stop'], reach);
-    equal(words.map((w) => `${w.word}:${w.effect}`), ['fire:ambush', 'veil:veil', 'shatter:ambush', 'heal:heal'], 'field words');
-    equal(words.map((w) => w.range), [AMBUSH_MAX_TILES, 0, 3, 0], 'reach in tiles, capped');
+  ['combines up to two words outside a fight, for what the cast would cost in one', () => {
+    equal(
+      fieldCombos(['fire', 'veil', 'pierce']).map((combo) => combo.join('+')),
+      ['fire', 'veil', 'pierce', 'fire+veil', 'fire+pierce', 'veil+pierce'],
+      'each word alone, then each pair',
+    );
+    const plain = mage(['pierce', 'shatter', 'veil']);
+    equal(fieldSpellMana(plain, ['pierce']), 0, 'one word costs no mana');
+    const pair = fieldSpellMana(plain, ['pierce', 'shatter']);
+    assert(pair > 0 && pair === wordSpellMana(['pierce', 'shatter'], plain.profile), 'two words cost what they cost in a fight');
+    equal(fieldSpellMana(mage(['curse', 'corrode', 'pierce']), ['pierce']), 2, 'black words make even one word cost');
+    equal(Object.keys(FIELD_RULES).sort(), ['bind', 'heal', 'mind', 'veil'], 'Shadow does nothing of its own out here');
+    equal(FIELD_RULES.mind?.ms, 30_000, 'Mind reads packs for thirty seconds');
+    equal([reachTiles(20 * RANGE_UNIT), reachTiles(3 * RANGE_UNIT)], [AMBUSH_MAX_TILES, 3], 'reach in tiles, capped');
     equal([fieldHealAmount(4, 2), fieldHealAmount(1, -3)], [6, 1], 'field heal is 1d6 + Intellect');
   }],
 ];

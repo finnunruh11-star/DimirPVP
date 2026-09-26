@@ -1,12 +1,12 @@
 import { Mage } from '../core/Mage';
-import { forestFightDepth, forestGlade, forestLocaleId } from '../pve/exploration/forest';
 import { resolveLocale, type ResolvedLocale } from '../pve/exploration/locales';
-import { capturePartySnapshot } from '../pve/exploration/party';
+import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import { SHOPS } from '../pve/exploration/shops';
 import { TOWNS } from '../pve/exploration/towns';
 import { volcanicWilds, WILDS_ID } from '../pve/exploration/wilds';
-import { buildLocaleModel, validateLocale, type ExitDef, type LocaleDef } from '../world/locale';
+import { placeById } from '../pve/exploration/world';
+import { buildLocaleModel, validateLocale } from '../world/locale';
 import { findPath, floodReach } from '../world/pathfind';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -35,12 +35,6 @@ function assertReachable(place: ResolvedLocale): void {
     assert(ok, `${place.def.id}: secret ${secret.id} cannot be reached`);
   }
   for (const pack of place.packs) assert(open(pack.x, pack.y), `${place.def.id}: pack ${pack.id} stands out of reach`);
-}
-
-function exitTo(def: LocaleDef, to: ExitDef['to']): ExitDef {
-  const exit = def.exits.find((e) => e.to === to);
-  assert(exit, `${def.id} has a '${to}' exit`);
-  return exit;
 }
 
 const TOWN_LIST = Object.values(TOWNS);
@@ -86,48 +80,10 @@ const tests: [name: string, run: () => void][] = [
     assert(findPath(5, 5, (x) => x === 2, { x: 0, y: 0 }, { x: 4, y: 0 }) === null, 'a sealed side cannot be reached');
   }],
 
-  ['forest glades are sound, walkable and the same every time', () => {
-    for (const seed of [1, 99, 424242]) {
-      for (let depth = 1; depth <= 15; depth++) {
-        const glade = forestGlade(seed, depth);
-        equal(validateLocale(glade.def), [], `seed ${seed} depth ${depth}`);
-        equal(glade.def.id, forestLocaleId(depth), 'glade id');
-        equal(forestGlade(seed, depth).def.terrain, glade.def.terrain, 'the same glade twice');
-        exitTo(glade.def, 'deeper');
-        exitTo(glade.def, 'back');
-        const run = freshRun(seed);
-        const place = resolveLocale(run, glade.def.id);
-        assert(place && place.kind === 'forest', 'a glade resolves');
-        assertReachable(place);
-      }
-    }
-    assert(forestFightDepth(1) === 1 && forestFightDepth(10) < 10, 'the forest stays gentle');
-    assert(resolveLocale(freshRun(), 'forest:0') === null && resolveLocale(freshRun(), 'forest:x') === null, 'bad depths are refused');
-  }],
-
-  ['going deeper means a fight unless the way was cleared today; the first glade leads out', () => {
-    const run = freshRun(5);
-    const glade = resolveLocale(run, forestLocaleId(3));
-    assert(glade?.travel, 'glades have travel');
-    glade.onEnter?.(run);
-    equal([run.forest.depth, run.forest.deepest], [3, 3], 'depth recorded');
-
-    const down = glade.travel(run, exitTo(glade.def, 'deeper'));
-    assert(down.t === 'fight', 'the next depth is guarded');
-    equal(down.then.locale, forestLocaleId(4), 'a win leads deeper');
-    equal(down.fleeTo?.locale, forestLocaleId(3), 'running stays on this depth');
-    run.groupsBeaten[down.pack.id] = run.day;
-    const again = glade.travel(run, exitTo(glade.def, 'deeper'));
-    assert(again.t === 'locale' && again.locale === forestLocaleId(4), 'a cleared way is free today');
-    run.day += 1;
-    assert(glade.travel(run, exitTo(glade.def, 'deeper')).t === 'fight', 'the guard is back tomorrow');
-
-    const first = resolveLocale(run, forestLocaleId(1));
-    assert(first?.travel, 'the first glade');
-    equal(first.travel(run, exitTo(first.def, 'back')).t, 'world', 'the first glade leads out');
-    const up = glade.travel(run, exitTo(glade.def, 'back'));
-    const target = up.t === 'fight' ? up.then.locale : up.t === 'locale' ? up.locale : null;
-    equal(target, forestLocaleId(2), 'turning back climbs one depth');
+  ['the Small Forest is a dive now: its old glades no longer resolve', () => {
+    equal(placeById('small-forest')?.dungeon, 'forest', 'the Small Forest is a dungeon');
+    assert(!placeById('small-forest')?.locale, 'with no walkable map of its own');
+    for (const id of ['forest:1', 'forest:3', 'forest:x']) assert(resolveLocale(freshRun(), id) === null, `${id} is gone`);
   }],
 
   ['the wilds are sound and every secret and pack can be walked to', () => {
@@ -163,9 +119,12 @@ const tests: [name: string, run: () => void][] = [
     const first = place.search(run, hoard);
     assert(first.fight, 'the keeper wakes');
     const gold = run.gold;
+    const carried = (): number => restoreParty(run.party)[0].bag.length;
+    const before = carried();
     run.groupsBeaten[first.fight.id] = run.day;
     const second = place.search(run, hoard);
-    assert(!second.fight && run.gold > gold, 'the hoard pays out once its keeper falls');
+    assert(!second.fight && carried() > before, 'the hoard gives up its kit once its keeper falls');
+    equal(run.gold, gold, 'and not a coin of it');
     const lookout = place.secrets.find((s) => s.id === 'wilds-lookout');
     assert(lookout && place.search(run, lookout).revealAll, 'the lookout lifts the fog');
   }],

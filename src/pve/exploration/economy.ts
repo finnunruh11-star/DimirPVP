@@ -26,7 +26,19 @@ const RARITY_GOLD: Record<Rarity, number> = {
   lareneg: 24,
 };
 
-const half = (value: number): number => Math.floor(value * 2) / 2;
+/** A sum of money kept to the silver (a tenth of a gold). */
+export const money = (value: number): number => Math.round(value * 10) / 10;
+/** A computed price, rounded down to the silver. */
+const silverDown = (value: number): number => Math.floor(value * 10 + 1e-6) / 10;
+
+/** A purse as it reads: "8g", "3g 5s", "5s". Ten silver to the gold. */
+export function moneyLabel(gold: number): string {
+  const silver = Math.max(0, Math.round(gold * 10));
+  const g = Math.floor(silver / 10);
+  const s = silver % 10;
+  if (g && s) return `${g}g ${s}s`;
+  return s ? `${s}s` : `${g}g`;
+}
 
 /** What an item is worth, in gold, before any shop's cut. */
 export function itemWorth(def: ItemDef): number {
@@ -136,14 +148,14 @@ export function buyItem(run: ExplorationRun, shopId: string, key: string): ShopR
   const slot = shopStock(run, shop).find((entry) => entry.key === key);
   if (!slot) return { ok: false, message: 'Not in stock.' };
   if (slot.sold) return { ok: false, message: 'Sold out until tomorrow.' };
-  if (run.gold < slot.price) return { ok: false, message: `Costs ${slot.price}g.` };
+  if (run.gold < slot.price) return { ok: false, message: `Costs ${moneyLabel(slot.price)}.` };
   const def = getItem(slot.id);
   return withParty(run, (leader) => {
     if (!leader.canCarry(def.weight * slot.qty)) return { ok: false, message: 'Too heavy to carry.' };
     for (let i = 0; i < slot.qty; i++) grantToMage(leader, slot.id);
-    run.gold = half(run.gold - slot.price);
+    run.gold = money(run.gold - slot.price);
     if (!slot.fixed) run.purchases.push(slot.key);
-    return { ok: true, message: `Bought ${slot.qty > 1 ? `${slot.qty}x ` : ''}${def.name} for ${slot.price}g.` };
+    return { ok: true, message: `Bought ${slot.qty > 1 ? `${slot.qty}x ` : ''}${def.name} for ${moneyLabel(slot.price)}.` };
   });
 }
 
@@ -163,7 +175,7 @@ function buyRate(shop: ShopDef, def: ItemDef): number {
 }
 
 export function sellPrice(shop: ShopDef, def: ItemDef): number {
-  return half(itemWorth(def) * buyRate(shop, def));
+  return silverDown(itemWorth(def) * buyRate(shop, def));
 }
 
 /** Unequipped goods the shop will take, one row per item id. */
@@ -198,9 +210,9 @@ export function sellItem(run: ExplorationRun, shopId: string, id: ItemId, all: b
       }
     }
     if (sold === 0) return { ok: false, message: 'You have none.' };
-    const gold = half(unit * sold);
-    run.gold = half(run.gold + gold);
-    return { ok: true, message: `Sold ${sold > 1 ? `${sold}x ` : ''}${def.name} for ${gold}g.` };
+    const gold = money(unit * sold);
+    run.gold = money(run.gold + gold);
+    return { ok: true, message: `Sold ${sold > 1 ? `${sold}x ` : ''}${def.name} for ${moneyLabel(gold)}.` };
   });
 }
 
@@ -213,14 +225,14 @@ export function rest(run: ExplorationRun, shopId: string): ShopResult {
   const shop = shopById(shopId);
   const price = shop?.restPrice;
   if (!shop || price == null) return { ok: false, message: 'No beds here.' };
-  if (run.gold < price) return { ok: false, message: `A room costs ${price}g.` };
-  run.gold = half(run.gold - price);
+  if (run.gold < price) return { ok: false, message: `A room costs ${moneyLabel(price)}.` };
+  run.gold = money(run.gold - price);
   const dice = runDice(run, `rest:${shop.id}`);
   withParty(run, (_leader, party) => {
     for (const mage of party) if (mage.alive) mage.swamprunRest(dice);
   });
   sleepUntilMorning(run);
-  return { ok: true, message: `Rested for ${price}g. Day ${run.day}, 07:00. Shops have restocked.` };
+  return { ok: true, message: `Rested for ${moneyLabel(price)}. Day ${run.day}, 07:00. Shops have restocked.` };
 }
 
 export interface RecipeView {
@@ -260,7 +272,7 @@ export function forge(run: ExplorationRun, shopId: string, recipeId: string): Sh
     for (const input of view.inputs) {
       for (let n = 0; n < input.need; n++) leader.bag.splice(leader.bag.indexOf(input.id), 1);
     }
-    run.gold = half(run.gold - view.gold);
+    run.gold = money(run.gold - view.gold);
     grantToMage(leader, view.output);
     return { ok: true, message: `Forged ${output.name}.` };
   });

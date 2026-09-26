@@ -7,7 +7,10 @@ import { START_HOUR } from './clock';
 import { packExplored, revealTiles, unpackExplored } from './explored';
 import { placeById, START_PLACE } from './world';
 
-export const EXPLORATION_VERSION = 4;
+export const EXPLORATION_VERSION = 6;
+
+/** A fresh run's purse: five silver. */
+export const START_PURSE = 0.5;
 
 /** How the world is crossed: planned trips on the map, or on foot like the wilds. */
 export type MapStyle = 'travel' | 'open';
@@ -28,7 +31,18 @@ export interface ActiveBounty {
   label: string;
 }
 
-/** Where the party stands inside a walkable place (town, forest glade, wilds). */
+/** Where the party stands in the Kerusai quest (see quest.ts). */
+export interface QuestState {
+  /** The job under way; past the last job once the quest is over. */
+  job: number;
+  /** The job has been taken at the Lodge. */
+  taken: boolean;
+  progress: number;
+  /** The Lodge offers the job from this day on. */
+  opens: number;
+}
+
+/** Where the party stands inside a walkable place (a town, the wilds, the open world). */
 export interface LocaleState {
   id: string;
   x: number;
@@ -69,12 +83,15 @@ export interface ExplorationRun {
   /** Shop stock slots bought, keyed `shop:day:slot`. */
   purchases: string[];
   locale: LocaleState | null;
-  forest: { depth: number; deepest: number };
   /** Discovered chunks of the wilds, keyed `wildId:cx,cy`. */
   wildsSeen: string[];
   /** Wild enemy groups beaten, with the day they fell. */
   groupsBeaten: Record<string, number>;
+  /** Always 'open' until the party owns a map. */
   mapStyle: MapStyle;
+  /** Bought a map of the realm: the travel map is open. */
+  hasMap: boolean;
+  quest: QuestState;
 }
 
 export function createRun(seed: number, party: Scenario): ExplorationRun {
@@ -89,7 +106,7 @@ export function createRun(seed: number, party: Scenario): ExplorationRun {
     hour: START_HOUR,
     explored: packExplored(explored),
     searched: [],
-    gold: 0,
+    gold: START_PURSE,
     party,
     flags: [],
     visited: [START_PLACE],
@@ -102,10 +119,11 @@ export function createRun(seed: number, party: Scenario): ExplorationRun {
     bountiesTaken: [],
     purchases: [],
     locale: null,
-    forest: { depth: 0, deepest: 0 },
     wildsSeen: [],
     groupsBeaten: {},
-    mapStyle: 'travel',
+    mapStyle: 'open',
+    hasMap: false,
+    quest: { job: 0, taken: false, progress: 0, opens: 1 },
   };
 }
 

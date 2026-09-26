@@ -77,6 +77,9 @@ export const MIN_TERRAIN_TIME = 0.6;
 
 export type PlaceKind = 'city' | 'dungeon' | 'wilderness';
 
+/** A dive the party makes from a gate and walks back out of. */
+export type DungeonId = 'swamps' | 'mines' | 'forest';
+
 export interface Place {
   id: string;
   kind: PlaceKind;
@@ -85,6 +88,8 @@ export interface Place {
   y: number;
   /** The walkable map this place opens. Closed places carry a note instead. */
   locale?: string;
+  /** The dungeon this place's gate leads into. */
+  dungeon?: DungeonId;
   note?: string;
 }
 
@@ -97,14 +102,14 @@ export const PLACES: readonly Place[] = [
   { id: 'thassa', kind: 'city', name: 'Thassa', x: 53, y: 38, locale: 'thassa' },
   { id: 'nerogril', kind: 'city', name: 'Nerogril', x: 44, y: 24, locale: 'nerogril' },
   { id: 'theocracy', kind: 'city', name: 'The Theocracy', x: 14, y: 14, locale: 'theocracy' },
-  { id: 'small-forest', kind: 'dungeon', name: 'Small Forest', x: 51, y: 12, locale: 'forest:1' },
+  { id: 'small-forest', kind: 'dungeon', name: 'Small Forest', x: 51, y: 12, dungeon: 'forest' },
   { id: 'red-wilds', kind: 'wilderness', name: 'The Volcanic Wilds', x: 102, y: 27, locale: 'red-wilds' },
-  { id: 'mines', kind: 'dungeon', name: 'The Mines', x: 112, y: 14, note: 'The shafts are sealed until the mine guild reopens them.' },
-  { id: 'swamps', kind: 'dungeon', name: 'The Swamps', x: 108, y: 51, note: 'The drowned causeway is under water this season.' },
+  { id: 'mines', kind: 'dungeon', name: 'The Mines', x: 112, y: 14, dungeon: 'mines' },
+  { id: 'swamps', kind: 'dungeon', name: 'The Swamps', x: 108, y: 51, dungeon: 'swamps' },
 ];
 
 /** Where a fresh run begins. */
-export const START_PLACE = 'capitol';
+export const START_PLACE = 'kerusai';
 
 export function placeById(id: string): Place | undefined {
   return PLACES.find((place) => place.id === id);
@@ -113,6 +118,8 @@ export function placeById(id: string): Place | undefined {
 export interface RoadLine {
   name: string;
   points: readonly Cell[];
+  /** The authored bends the road runs straight between. */
+  waypoints: readonly Cell[];
 }
 
 export interface WorldMap {
@@ -129,7 +136,7 @@ export interface WorldMap {
 // -----------------------------------------------------------------------------
 
 /** Smooth value noise in 0..1, `scale` tiles per lattice cell. */
-function noise(x: number, y: number, scale: number, salt: number): number {
+export function noise(x: number, y: number, scale: number, salt: number): number {
   const gx = x / scale;
   const gy = y / scale;
   const x0 = Math.floor(gx);
@@ -322,7 +329,7 @@ export function createWorld(): WorldMap {
       const i = at(cell.x, cell.y);
       terrain[i] = terrain[i] === 'water' || terrain[i] === 'bridge' ? 'bridge' : 'road';
     }
-    roads.push({ name: road.name, points });
+    roads.push({ name: road.name, points, waypoints: road.points.map(([x, y]) => ({ x, y })) });
   }
 
   // Every place stands on its own square with open ground around a town.

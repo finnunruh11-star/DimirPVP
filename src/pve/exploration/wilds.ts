@@ -9,7 +9,6 @@ import { cellHash } from '../../world/kenney';
 import type { ExitDef, LocaleDef, PropPlacement } from '../../world/locale';
 import { MapBuilder } from '../../world/mapBuilder';
 import { mineEnemyLevel, MINE_ENEMY_DEFS, type MineEnemyKind } from '../minerun';
-import { addXp } from '../progression';
 import { grantToMage, hashString, withParty } from './economy';
 import { creatureName, rollEncounter, spawnKindId, type EncounterKind, type EncounterSpawn } from './encounters';
 import type { Landmark, ResolvedLocale, Secret, SecretResult, WildPack } from './locales';
@@ -97,33 +96,31 @@ const PACKS: readonly PackPlan[] = [
 interface SecretPlan extends Secret {
   /** Fought once before the secret gives anything up. */
   guard?: { fixed: MineEnemyKind[]; depth: number; label: string };
-  gold?: number;
   items?: ItemId[];
-  xp?: number;
   revealAll?: boolean;
   text: string;
 }
 
 const SECRETS: readonly SecretPlan[] = [
-  { id: 'wilds-strongbox', x: 10, y: 30, reveal: 2, label: 'Scorched strongbox', gold: 14, items: ['healthPotion'], text: 'The lock melted shut, but the hinges did not.' },
-  { id: 'wilds-emberroot', x: 19, y: 10, reveal: 2, label: 'Roots by the spring', items: ['herbEmberroot', 'herbEmberroot'], xp: 3, text: 'Emberroot, thriving in the steam.' },
-  { id: 'wilds-mine-cache', x: 9, y: 5, reveal: 2, label: "Miner's cache", gold: 8, items: ['lantern', 'gemRuby'], text: 'Someone meant to come back for this.' },
+  { id: 'wilds-strongbox', x: 10, y: 30, reveal: 2, label: 'Scorched strongbox', items: ['healthPotion', 'throwingDagger'], text: 'The lock melted shut, but the hinges did not.' },
+  { id: 'wilds-emberroot', x: 19, y: 10, reveal: 2, label: 'Roots by the spring', items: ['herbEmberroot', 'herbEmberroot'], text: 'Emberroot, thriving in the steam.' },
+  { id: 'wilds-mine-cache', x: 9, y: 5, reveal: 2, label: "Miner's cache", items: ['lantern', 'gemRuby'], text: 'Someone meant to come back for this.' },
   {
-    id: 'wilds-cellar', x: 24, y: 21, reveal: 2, label: 'Collapsed cellar', gold: 20, items: ['chainShirt'],
+    id: 'wilds-cellar', x: 24, y: 21, reveal: 2, label: 'Collapsed cellar', items: ['chainShirt'],
     guard: { fixed: ['sentinel', 'sentinel'], depth: 5, label: 'Stone wakes in the cellar.' },
     text: 'Behind the fallen stones: an old soldier\'s kit.',
   },
   { id: 'wilds-obsidian', x: 26, y: 47, reveal: 2, label: 'Obsidian vein', items: ['gemOnyx', 'gemOnyx'], text: 'Black glass, cracked loose by the heat.' },
-  { id: 'wilds-grave', x: 28, y: 32, reveal: 2, label: "Wanderer's grave", items: ['ironShortsword'], xp: 4, text: 'A blade left with its owner. They would want it used.' },
-  { id: 'wilds-lookout', x: 31, y: 38, reveal: 3, label: 'Lookout crag', xp: 3, revealAll: true, text: 'From the top of the crag the whole basin lies open.' },
+  { id: 'wilds-grave', x: 28, y: 32, reveal: 2, label: "Wanderer's grave", items: ['ironShortsword'], text: 'A blade left with its owner. They would want it used.' },
+  { id: 'wilds-lookout', x: 31, y: 38, reveal: 3, label: 'Lookout crag', revealAll: true, text: 'From the top of the crag the whole basin lies open.' },
   {
-    id: 'wilds-hoard', x: 41, y: 9, reveal: 2, label: 'Dragon hoard', gold: 60, items: ['gemDiamond', 'drakescaleHelm', 'redDrakeScale'],
+    id: 'wilds-hoard', x: 41, y: 9, reveal: 2, label: 'Dragon hoard', items: ['gemDiamond', 'drakescaleHelm', 'redDrakeScale'],
     guard: { fixed: ['black-dragonborn', 'kobold', 'kobold'], depth: 8, label: 'The hoard has a keeper.' },
-    text: 'Coins fused into a hill, and a helm worth more than all of them.',
+    text: 'Coins melted into one useless hill, and a helm worth more than all of them.',
   },
-  { id: 'wilds-warren-hoard', x: 64, y: 47, reveal: 2, label: 'Kobold hoard', gold: 25, items: ['gemRuby', 'gemSapphire'], text: 'Shiny things, sorted by how shiny.' },
-  { id: 'wilds-shrine', x: 60, y: 23, reveal: 3, label: 'Ember shrine', xp: 12, items: ['manaPotion'], text: 'The flame leans toward you, and something of it stays.' },
-  { id: 'wilds-hollow', x: 66, y: 34, reveal: 2, label: 'Sunlit hollow', items: ['herbMoonleaf', 'herbMoonleaf', 'herbEmberroot'], xp: 5, text: 'Green, somehow, in the middle of all this ash.' },
+  { id: 'wilds-warren-hoard', x: 64, y: 47, reveal: 2, label: 'Kobold hoard', items: ['gemRuby', 'gemSapphire'], text: 'Shiny things, sorted by how shiny.' },
+  { id: 'wilds-shrine', x: 60, y: 23, reveal: 3, label: 'Ember shrine', items: ['manaPotion'], text: 'The flame leans toward you, then settles.' },
+  { id: 'wilds-hollow', x: 66, y: 34, reveal: 2, label: 'Sunlit hollow', items: ['herbMoonleaf', 'herbMoonleaf', 'herbEmberroot'], text: 'Green, somehow, in the middle of all this ash.' },
   { id: 'wilds-glass', x: 47, y: 17, reveal: 2, label: 'Glassy bubble', items: ['gemAmethyst', 'magmaCore'], text: 'A blister of cooled lava, hollow and glittering.' },
 ];
 
@@ -392,16 +389,10 @@ function searchWilds(run: ExplorationRun, secret: Secret): SecretResult {
     };
   }
   const found: string[] = [];
-  if (plan.gold) {
-    run.gold += plan.gold;
-    found.push(`${plan.gold}g`);
-  }
   for (const item of plan.items ?? []) withParty(run, (leader) => grantToMage(leader, item));
   if (plan.items?.length) found.push(plan.items.length === 1 ? 'a find' : `${plan.items.length} finds`);
-  const levels = plan.xp ? addXp(run, plan.xp) : 0;
-  if (plan.xp) found.push(`${plan.xp} XP`);
   const tail = found.length ? ` (${found.join(', ')})` : '';
-  return { message: `${plan.text}${tail}${levels ? ' Level up!' : ''}`, revealAll: plan.revealAll };
+  return { message: `${plan.text}${tail}`, revealAll: plan.revealAll };
 }
 
 export function resolveWilds(run: ExplorationRun, id: string): ResolvedLocale | null {

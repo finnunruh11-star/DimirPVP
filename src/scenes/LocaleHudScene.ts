@@ -8,7 +8,8 @@ import { GAME_HEIGHT, GAME_WIDTH } from '../config/constants';
 import { SceneInput } from '../engine/SceneInput';
 import { bountyProgress } from '../pve/exploration/bounties';
 import { clockLabel } from '../pve/exploration/clock';
-import { partyOf } from '../pve/exploration/economy';
+import { moneyLabel, partyOf } from '../pve/exploration/economy';
+import { questLines } from '../pve/exploration/quest';
 import type { ExplorationRun } from '../pve/exploration/run';
 import { shopById } from '../pve/exploration/shops';
 import { xpToNext } from '../pve/progression';
@@ -95,6 +96,7 @@ export class LocaleHudScene extends Phaser.Scene {
       align: 'right',
       backgroundColor: '#080907cc',
       padding: { x: 10, y: 6 },
+      wordWrap: { width: 520 },
     }).setOrigin(1, 0);
     this.hintText = this.add.text(16, GAME_HEIGHT - 12, 'WASD / arrows or click: walk     E: talk     I: pack     Esc: menu', {
       fontFamily: MENU_FONT.control,
@@ -133,7 +135,7 @@ export class LocaleHudScene extends Phaser.Scene {
   refresh(run: ExplorationRun, place: string, extra = ''): void {
     const leader = partyOf(run)[0];
     this.title?.setText(place.toUpperCase());
-    this.line?.setText(`${clockLabel(run)}   ${run.gold}g   Level ${run.level}  (${run.xp}/${xpToNext(run.level)} XP)${extra ? `   ${extra}` : ''}`);
+    this.line?.setText(`${clockLabel(run)}   ${moneyLabel(run.gold)}   Level ${run.level}  (${run.xp}/${xpToNext(run.level)} XP)${extra ? `   ${extra}` : ''}`);
     const g = this.bars;
     if (g && leader) {
       g.clear();
@@ -148,7 +150,9 @@ export class LocaleHudScene extends Phaser.Scene {
       this.barText?.setText(`HP ${leader.hp}/${leader.maxHp}                      Mana ${leader.mana}/${leader.maxMana}                   Sanity ${leader.sanity}/${leader.maxSanity}`);
     }
     const lines = run.bounties.map((b) => `${b.label}  ${bountyProgress(run, b)}/${b.count}`);
-    this.bountyText?.setText(lines.length ? ['BOUNTIES', ...lines].join('\n') : '').setVisible(lines.length > 0);
+    const quest = questLines(run);
+    const panel = [...quest, ...(quest.length && lines.length ? [''] : []), ...(lines.length ? ['BOUNTIES', ...lines] : [])];
+    this.bountyText?.setText(panel.join('\n')).setVisible(panel.length > 0);
   }
 
   setHint(text: string): void {

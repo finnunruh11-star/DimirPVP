@@ -1,6 +1,7 @@
 // Mine Run creature data, deterministic level scaling, wave composition, and
 // salvage. Runtime actions live separately so this module stays Phaser-free.
 
+import { RANGE_UNIT } from '../config/constants';
 import type { DamageClass, DamageType } from '../core/Damage';
 import type { Dice } from '../core/Dice';
 import { getItem, type ItemId } from '../core/Items';
@@ -23,7 +24,11 @@ export type MineEnemyKind =
   | 'bandit-archer'
   | 'bandit-captain'
   | 'sand-stalker'
-  | 'sandworm';
+  | 'sandworm'
+  | 'rabbit'
+  | 'slime'
+  | 'boar'
+  | 'wolf';
 
 export type SentinelRole = 'tank' | 'healer' | 'dps';
 
@@ -68,6 +73,12 @@ export interface MineEnemyDef {
   unlock: number;
   cost: number;
   packSize?: number;
+  /** A group of this many, rolled per encounter (wolves). */
+  packRange?: readonly [number, number];
+  /** Melee hits +1 harder per `per` cm run this turn before striking, up to `max`. */
+  charge?: { per: number; max: number };
+  /** Health and bite stay the same at every level. */
+  unscaled?: boolean;
 }
 
 const FIRE_RESIST: DamageType[] = ['heat', 'light'];
@@ -322,6 +333,70 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     unlock: 6,
     cost: 12,
   },
+  // ---- Forest animals: all body, little mind ----
+  rabbit: {
+    kind: 'rabbit',
+    name: 'Rabbit',
+    hpSpec: '1d4+3',
+    sanity: 2,
+    moveUnits: 8,
+    stats: { strength: 1, dex: 6, int: 0 },
+    statGrowth: { strength: 6, dex: 3, int: 0 },
+    melee: { spec: '1d3', type: 'pierce', damageClass: 'physical' },
+    bodyRadius: 12,
+    tint: 0xc9b08a,
+    scale: 0.5,
+    unlock: 1,
+    cost: 2,
+  },
+  slime: {
+    kind: 'slime',
+    name: 'Slime',
+    hpSpec: '5',
+    sanity: 1,
+    moveUnits: 4,
+    stats: { strength: 1, dex: 1, int: 0 },
+    statGrowth: { strength: 0, dex: 0, int: 0 },
+    melee: { spec: '1d3', type: 'corrosive', damageClass: 'physical' },
+    bodyRadius: 14,
+    tint: 0x6fd35a,
+    scale: 0.55,
+    unlock: 1,
+    cost: 1,
+    unscaled: true,
+  },
+  boar: {
+    kind: 'boar',
+    name: 'Boar',
+    hpSpec: '3d6+12',
+    sanity: 5,
+    moveUnits: 12,
+    stats: { strength: 6, dex: 3, int: 0 },
+    statGrowth: { strength: 3, dex: 4, int: 0 },
+    melee: { spec: '1d6', type: 'pierce', damageClass: 'physical' },
+    charge: { per: 2, max: 6 },
+    bodyRadius: 28,
+    tint: 0x7a5238,
+    scale: 0.95,
+    unlock: 3,
+    cost: 6,
+  },
+  wolf: {
+    kind: 'wolf',
+    name: 'Wolf',
+    hpSpec: '2d6+4',
+    sanity: 4,
+    moveUnits: 10,
+    stats: { strength: 3, dex: 6, int: 1 },
+    statGrowth: { strength: 3, dex: 3, int: 0 },
+    melee: { spec: '1d6', type: 'pierce', damageClass: 'physical' },
+    bodyRadius: 18,
+    tint: 0x8a8f96,
+    scale: 0.75,
+    unlock: 2,
+    cost: 3,
+    packRange: [2, 5],
+  },
 };
 
 const SENTINEL_PROFILES: Record<SentinelRole, Partial<MineEnemyDef>> = {
@@ -461,9 +536,9 @@ function resolvedDef(spawn: MineSpawnSpec): MineEnemyDef {
 /** Configure a fresh team-2 Mage as one deterministic, level-scaled Mine creature. */
 export function applyMineEnemyTraits(mage: Mage, spawn: MineSpawnSpec, rng: Dice): void {
   const def = resolvedDef(spawn);
-  const power = mineAbilityPower(spawn.level);
+  const power = def.unscaled ? 0 : mineAbilityPower(spawn.level);
   const magma = spawn.kind === 'magma-sentinel';
-  const hpMultiplier = (1 + 0.12 * (spawn.level - 1)) * (magma ? 1.5 : 1);
+  const hpMultiplier = def.unscaled ? 1 : (1 + 0.12 * (spawn.level - 1)) * (magma ? 1.5 : 1);
   const roleSuffix = spawn.role ? ` ${spawn.role[0].toUpperCase()}${spawn.role.slice(1)}` : '';
 
   mage.enemyKind = spawn.kind;
@@ -494,6 +569,8 @@ export function applyMineEnemyTraits(mage: Mage, spawn: MineSpawnSpec, rng: Dice
         onHit: magma
           ? (ctx, target) => ctx.game.applySentinelFireStacks(target, 1, ctx.caster)
           : undefined,
+        chargePer: def.charge ? def.charge.per * RANGE_UNIT : undefined,
+        chargeMax: def.charge?.max,
       }
     : undefined;
   mage.intrinsicMeleeReach = def.melee?.reach;
@@ -569,6 +646,10 @@ const BASE_GOLD: Record<MineEnemyKind, number> = {
   'bandit-captain': 4,
   'sand-stalker': 1.5,
   sandworm: 8,
+  rabbit: 0.25,
+  slime: 0.25,
+  boar: 1.5,
+  wolf: 1,
 };
 
 const BONUS_SALVAGE: Record<MineEnemyKind, ItemId | null> = {
@@ -588,6 +669,10 @@ const BONUS_SALVAGE: Record<MineEnemyKind, ItemId | null> = {
   'bandit-captain': 'crudeTrinket',
   'sand-stalker': null,
   sandworm: 'gemDiamond',
+  rabbit: 'rabbitPelt',
+  slime: 'slimeGel',
+  boar: 'boarHide',
+  wolf: 'wolfPelt',
 };
 
 export function rollMineLoot(kind: MineEnemyKind, rng: Dice): MineLootResult {

@@ -4,8 +4,7 @@
 import type { Dice } from '../../core/Dice';
 import { getItem, type ItemId } from '../../core/Items';
 import { mineEnemyLevel } from '../minerun';
-import { addXp } from '../progression';
-import { grantToMage, partyOf, withParty } from './economy';
+import { grantToMage, money, partyOf, withParty } from './economy';
 import type { EncounterSpawn, EncounterZone } from './encounters';
 import type { ExplorationRun } from './run';
 
@@ -46,13 +45,6 @@ export interface RoadEvent {
 
 // ---- helpers ----------------------------------------------------------------
 
-const earn = (ctx: EventContext, gold: number): number => {
-  ctx.run.gold += gold;
-  return gold;
-};
-
-const xp = (ctx: EventContext, amount: number): number => addXp(ctx.run, amount);
-
 /** Change the leader's HP by a flat amount; roadside harm never kills. */
 const hp = (ctx: EventContext, delta: number): number =>
   withParty(ctx.run, (leader) => {
@@ -89,7 +81,8 @@ const hasItem = (ctx: EventContext, id: ItemId): boolean => {
   return !!leader && (leader.utility.includes(id) || leader.bag.includes(id));
 };
 
-const levelNote = (levels: number): string => (levels > 0 ? ' Level up!' : '');
+/** Heal the leader by a share of max HP. */
+const mend = (ctx: EventContext, share: number): number => hp(ctx, Math.ceil((partyOf(ctx.run)[0]?.maxHp ?? 0) * share));
 
 const leave: EventChoice = { label: 'Walk on', detail: 'Leave it be.', resolve: () => ({ message: 'You walk on.' }) };
 
@@ -103,13 +96,11 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Heave it free',
-        detail: 'Strength check, DC 12.',
+        detail: 'Strength check, DC 12. Pass: a meal, 20% HP.',
         resolve: (ctx) => {
           const roll = check(ctx, 'strength', 12);
           if (!roll.pass) return { message: `Rolled ${roll.total}. The cart slips back onto your foot. ${hp(ctx, -2)} HP.` };
-          const gold = earn(ctx, 2 + ctx.dice.die(3));
-          const levels = xp(ctx, 2);
-          return { message: `Rolled ${roll.total}. The cart rolls free. +${gold}g, +2 XP.${levelNote(levels)}` };
+          return { message: `Rolled ${roll.total}. The cart rolls free and the carter shares his food. +${mend(ctx, 0.2)} HP.` };
         },
       },
       leave,
@@ -123,22 +114,18 @@ export const ROAD_EVENTS: RoadEvent[] = [
       {
         label: 'Pray',
         detail: 'Restore 25% of max HP.',
-        resolve: (ctx) => {
-          const leader = partyOf(ctx.run)[0];
-          const healed = hp(ctx, Math.ceil((leader?.maxHp ?? 0) * 0.25));
-          return { message: `You pray. +${healed} HP.` };
-        },
+        resolve: (ctx) => ({ message: `You pray. +${mend(ctx, 0.25)} HP.` }),
       },
       {
         label: 'Take the offerings',
-        detail: '1d6 gold. 50%: -3 sanity.',
+        detail: 'A trinket. 50%: -3 sanity.',
         resolve: (ctx) => {
-          const gold = earn(ctx, ctx.dice.die(6));
+          const found = give(ctx, 'crudeTrinket');
           if (ctx.dice.chance(0.5)) {
             sanity(ctx, -3);
-            return { message: `+${gold}g. Something watches you leave. -3 sanity.` };
+            return { message: `You take ${found}. Something watches you leave. -3 sanity.` };
           }
-          return { message: `+${gold}g.` };
+          return { message: `You take ${found}.` };
         },
       },
       leave,
@@ -151,16 +138,15 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Give a Health Potion',
-        detail: 'Costs one Health Potion. +5 XP and a reward.',
+        detail: 'Costs one Health Potion. He gives you a piece of his kit.',
         available: (ctx) => hasItem(ctx, 'healthPotion'),
         resolve: (ctx) => {
           withParty(ctx.run, (leader) => {
             const index = leader.utility.indexOf('healthPotion');
             if (index >= 0) leader.utility.splice(index, 1);
           });
-          const gold = earn(ctx, 1 + ctx.dice.die(4));
-          const levels = xp(ctx, 5);
-          return { message: `The traveller recovers and pays you ${gold}g. +5 XP.${levelNote(levels)}` };
+          const kit = give(ctx, ctx.dice.pick<ItemId>(['copperRing', 'ironBand', 'leatherCap', 'leatherBoots']));
+          return { message: `The traveller recovers and presses ${kit} on you.` };
         },
       },
       leave,
@@ -177,7 +163,7 @@ export const ROAD_EVENTS: RoadEvent[] = [
         detail: 'Pass without trouble.',
         available: (ctx) => ctx.run.gold >= 3,
         resolve: (ctx) => {
-          ctx.run.gold -= 3;
+          ctx.run.gold = money(ctx.run.gold - 3);
           return { message: 'You pay. The chain drops.' };
         },
       },
@@ -210,13 +196,16 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Search it',
-        detail: 'd20: 1-5 ambush, 6-15 gold, 16-20 supplies.',
+        detail: 'd20: 1-5 ambush, 6-15 odds and ends, 16-20 supplies.',
         resolve: (ctx) => {
           const face = ctx.dice.die(20);
           if (face <= 5) {
             return { message: `Rolled ${face}. The owners come back.`, fight: { encounter: 'robbery', depth: ctx.depth } };
           }
-          if (face <= 15) return { message: `Rolled ${face}. +${earn(ctx, ctx.dice.die(4))}g.` };
+          if (face <= 15) {
+            const odd = ctx.dice.pick<ItemId>(['herbMoonleaf', 'arrow', 'torch']);
+            return { message: `Rolled ${face}. You find ${give(ctx, odd, odd === 'arrow' ? 1 + ctx.dice.die(3) : 1)}.` };
+          }
           const item = ctx.dice.pick<ItemId>(['healthPotion', 'manaPotion', 'gemAmethyst', 'throwingDagger']);
           return { message: `Rolled ${face}. You find ${give(ctx, item)}.` };
         },
@@ -234,20 +223,17 @@ export const ROAD_EVENTS: RoadEvent[] = [
         detail: 'Cheaper than town.',
         available: (ctx) => ctx.run.gold >= 3,
         resolve: (ctx) => {
-          ctx.run.gold -= 3;
+          ctx.run.gold = money(ctx.run.gold - 3);
           return { message: `You buy ${give(ctx, 'healthPotion')}.` };
         },
       },
       {
         label: 'Guard the caravan',
-        detail: '+5g now, then a fight one depth deeper.',
-        resolve: (ctx) => {
-          const gold = earn(ctx, 5);
-          return {
-            message: `+${gold}g in advance. Raiders arrive at dusk.`,
-            fight: { encounter: 'monsters', depth: ctx.depth + 1, label: 'Raiders fall on the caravan.' },
-          };
-        },
+        detail: 'A Health Potion now, then a fight one depth deeper.',
+        resolve: (ctx) => ({
+          message: `The merchant pays in kind: ${give(ctx, 'healthPotion')}. Raiders arrive at dusk.`,
+          fight: { encounter: 'monsters', depth: ctx.depth + 1, label: 'Raiders fall on the caravan.' },
+        }),
       },
       leave,
     ],
@@ -319,20 +305,20 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Bury it',
-        detail: '+3 XP.',
+        detail: '+3 sanity.',
         resolve: (ctx) => {
-          const levels = xp(ctx, 3);
-          return { message: `You bury the bones. +3 XP.${levelNote(levels)}` };
+          sanity(ctx, 3);
+          return { message: 'You bury the bones. Something is set at rest. +3 sanity.' };
         },
       },
       {
         label: 'Search it',
-        detail: '1d4 gold. 30%: it rises.',
+        detail: 'A rusted blade. 30%: it rises.',
         resolve: (ctx) => {
-          const gold = earn(ctx, ctx.dice.die(4));
-          if (!ctx.dice.chance(0.3)) return { message: `+${gold}g.` };
+          const found = give(ctx, 'throwingDagger');
+          if (!ctx.dice.chance(0.3)) return { message: `You pull out ${found}.` };
           return {
-            message: `+${gold}g. The bones stand up.`,
+            message: `You pull out ${found}. The bones stand up.`,
             fight: { encounter: 'monsters', depth: ctx.depth, spawns: [{ family: 'swamp', kind: 'skeleton' }] },
           };
         },
@@ -393,13 +379,12 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Search the hull',
-        detail: 'Dex check, DC 11. Pass: gold, maybe a sapphire. Fail: -2 HP.',
+        detail: 'Dex check, DC 11. Pass: salvage, maybe a sapphire. Fail: -2 HP.',
         resolve: (ctx) => {
           const roll = check(ctx, 'dex', 11);
           if (!roll.pass) return { message: `Rolled ${roll.total}. A rotten plank gives way under you. ${hp(ctx, -2)} HP.` };
-          const gold = earn(ctx, 1 + ctx.dice.die(4));
-          const gem = ctx.dice.chance(0.35) ? ` and ${give(ctx, 'gemSapphire')}` : '';
-          return { message: `Rolled ${roll.total}. You find ${gold}g${gem}.` };
+          const found = ctx.dice.chance(0.35) ? give(ctx, 'gemSapphire') : give(ctx, 'throwingDagger');
+          return { message: `Rolled ${roll.total}. You find ${found}.` };
         },
       },
       leave,
@@ -413,13 +398,11 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Lend a hand',
-        detail: 'Strength check, DC 11. Pass: 3g and +2 XP.',
+        detail: 'Strength check, DC 11. Pass: a share of the catch, 20% HP.',
         resolve: (ctx) => {
           const roll = check(ctx, 'strength', 11);
           if (!roll.pass) return { message: `Rolled ${roll.total}. The net slips back into the water. He thanks you anyway.` };
-          const gold = earn(ctx, 3);
-          const levels = xp(ctx, 2);
-          return { message: `Rolled ${roll.total}. The catch comes in. +${gold}g, +2 XP.${levelNote(levels)}` };
+          return { message: `Rolled ${roll.total}. The catch comes in and he cooks you a share. +${mend(ctx, 0.2)} HP.` };
         },
       },
       leave,
@@ -433,11 +416,10 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Listen',
-        detail: '+5 XP, -2 sanity.',
+        detail: 'A Mana Potion, -2 sanity.',
         resolve: (ctx) => {
           sanity(ctx, -2);
-          const levels = xp(ctx, 5);
-          return { message: `What she tells you is not comforting, but it is useful. +5 XP, -2 sanity.${levelNote(levels)}` };
+          return { message: `What she tells you is not comforting. She sends you off with ${give(ctx, 'manaPotion')}. -2 sanity.` };
         },
       },
       {
@@ -445,7 +427,7 @@ export const ROAD_EVENTS: RoadEvent[] = [
         detail: 'Two Moonleaf.',
         available: (ctx) => ctx.run.gold >= 2,
         resolve: (ctx) => {
-          ctx.run.gold -= 2;
+          ctx.run.gold = money(ctx.run.gold - 2);
           return { message: `She wraps up ${give(ctx, 'herbMoonleaf', 2)}.` };
         },
       },
@@ -460,12 +442,11 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Take the ledge',
-        detail: 'Dex check, DC 13. Pass: +3 XP and Emberroot. Fail: -3 HP.',
+        detail: 'Dex check, DC 13. Pass: Emberroot. Fail: -3 HP.',
         resolve: (ctx) => {
           const roll = check(ctx, 'dex', 13);
           if (!roll.pass) return { message: `Rolled ${roll.total}. You slide down the scree. ${hp(ctx, -3)} HP.` };
-          const levels = xp(ctx, 3);
-          return { message: `Rolled ${roll.total}. Halfway along you find ${give(ctx, 'herbEmberroot')}. +3 XP.${levelNote(levels)}` };
+          return { message: `Rolled ${roll.total}. Halfway along you find ${give(ctx, 'herbEmberroot', ctx.dice.die(2))}.` };
         },
       },
       leave,
@@ -479,16 +460,14 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Read the land',
-        detail: 'Int check, DC 13. Pass: a real well, +4 HP and +3 XP. Fail: -3 HP, -2 sanity.',
+        detail: 'Int check, DC 13. Pass: a real well, +6 HP. Fail: -3 HP, -2 sanity.',
         resolve: (ctx) => {
           const roll = check(ctx, 'int', 13);
           if (!roll.pass) {
             sanity(ctx, -2);
             return { message: `Rolled ${roll.total}. The water walks away as you walk toward it. ${hp(ctx, -3)} HP, -2 sanity.` };
           }
-          const healed = hp(ctx, 4);
-          const levels = xp(ctx, 3);
-          return { message: `Rolled ${roll.total}. Below the mirage, a real well. +${healed} HP, +3 XP.${levelNote(levels)}` };
+          return { message: `Rolled ${roll.total}. Below the mirage, a real well. +${hp(ctx, 6)} HP.` };
         },
       },
       leave,
@@ -502,14 +481,13 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Dig it out',
-        detail: 'Strength check, DC 13. Pass: gold, maybe a diamond. Fail: -3 HP.',
+        detail: 'Strength check, DC 13. Pass: grave goods, maybe a diamond. Fail: -3 HP.',
         resolve: (ctx) => {
           const roll = check(ctx, 'strength', 13);
           if (!roll.pass) return { message: `Rolled ${roll.total}. The sand pours back in faster than you dig. ${hp(ctx, -3)} HP.` };
-          const gold = earn(ctx, 4 + ctx.dice.die(6));
+          const goods = give(ctx, ctx.dice.pick<ItemId>(['copperRing', 'ironBand']));
           const gem = ctx.dice.chance(0.3) ? ` and ${give(ctx, 'gemDiamond')}` : '';
-          const levels = xp(ctx, 2);
-          return { message: `Rolled ${roll.total}. An old tomb: ${gold}g${gem}. +2 XP.${levelNote(levels)}` };
+          return { message: `Rolled ${roll.total}. An old tomb: ${goods}${gem}.` };
         },
       },
       leave,
@@ -523,11 +501,10 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Share your water',
-        detail: '-2 HP, +5 XP.',
+        detail: '-2 HP. They give you a Health Potion.',
         resolve: (ctx) => {
           const lost = hp(ctx, -2);
-          const levels = xp(ctx, 5);
-          return { message: `They bless you in a language you do not know. ${lost} HP, +5 XP.${levelNote(levels)}` };
+          return { message: `They bless you in a language you do not know and give you ${give(ctx, 'healthPotion')}. ${lost} HP.` };
         },
       },
       {
@@ -549,13 +526,10 @@ export const ROAD_EVENTS: RoadEvent[] = [
     choices: [
       {
         label: 'Stand perfectly still',
-        detail: 'Dex check, DC 12. Pass: it passes, +4 XP. Fail: it surfaces.',
+        detail: 'Dex check, DC 12. Pass: it passes. Fail: it surfaces.',
         resolve: (ctx) => {
           const roll = check(ctx, 'dex', 12);
-          if (roll.pass) {
-            const levels = xp(ctx, 4);
-            return { message: `Rolled ${roll.total}. The ripple passes beneath your feet and fades. +4 XP.${levelNote(levels)}` };
-          }
+          if (roll.pass) return { message: `Rolled ${roll.total}. The ripple passes beneath your feet and fades.` };
           return { message: `Rolled ${roll.total}. The sand opens.`, fight: wormFight(ctx) };
         },
       },

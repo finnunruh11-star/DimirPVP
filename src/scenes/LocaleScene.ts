@@ -1,4 +1,4 @@
-// A walkable place: a town, a forest glade, the open wilds, or on an open-world
+// A walkable place: a town, the open wilds, or on an open-world
 // run the whole world. The player walks the map, talks to keepers at their
 // doors, searches secrets, sneaks, and meets roaming packs, which hand off to
 // GameScene exactly like a road fight.
@@ -7,34 +7,35 @@ import Phaser from 'phaser';
 import { playMusic, playSound } from '../audio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../config/constants';
 import type { ExplorationOpening, MatchConfig } from '../config/MatchConfig';
-import { isRangedWeapon } from '../core/Items';
-import { WORDS, type WordId } from '../core/Words';
+import { getItem, isRangedWeapon, type ItemId } from '../core/Items';
+import type { Mage } from '../core/Mage';
+import { comboKey, isModifierWord, spellDisplayName, WORDS, type WordId } from '../core/Words';
+import { rollAmbush } from '../pve/exploration/ambush';
 import { advanceHours, isNight } from '../pve/exploration/clock';
-import {
-  absoluteHour, applyHeat, heatFor, inDesert, isSandstorm, partyHeatProof, STORM_SIGHT, stormHoursLeft,
-} from '../pve/exploration/desert';
-import { partyOf, withParty } from '../pve/exploration/economy';
+import { inDesert, isSandstorm, STORM_SIGHT, stormHoursLeft } from '../pve/exploration/desert';
+import { dungeonCombat, DUNGEONS } from '../pve/exploration/dungeons';
+import { grantToMage, partyOf, withParty } from '../pve/exploration/economy';
 import { rollEncounter } from '../pve/exploration/encounters';
 import { pickEvent } from '../pve/exploration/events';
 import { isExplored, packExplored, unpackExplored } from '../pve/exploration/explored';
 import {
-  BIND_SPEED, FIELD_RULES, fieldHealAmount, fieldWordsFor, MELEE_AMBUSH_TILES, reachTiles, SNEAK_SIGHT, SNEAK_SPEED,
-  VEIL_SIGHT, type FieldWord,
+  BIND_SPEED, FIELD_RULES, fieldCombos, fieldHealAmount, fieldSpellMana, isStraightAttack, MAX_FIELD_WORDS, MELEE_AMBUSH_TILES,
+  reachTiles, SNEAK_SIGHT, SNEAK_SPEED, VEIL_SIGHT, type FieldEffect, type FieldRule,
 } from '../pve/exploration/fieldWords';
 import { rollFind } from '../pve/exploration/finds';
 import { resolveLocale, type ResolvedLocale, type Secret, type WildPack } from '../pve/exploration/locales';
-import { cellWorldTile, WORLD_SCALE } from '../pve/exploration/openWorld';
-import { stepDice, type ExplorationRun } from '../pve/exploration/run';
+import { cellWorldTile, openWorldCell, openWorldMainland, openWorldPace, WORLD_SCALE } from '../pve/exploration/openWorld';
+import { MAP_PRICE, questCalm } from '../pve/exploration/quest';
+import { stepDice, type ExplorationRun, type MapStyle } from '../pve/exploration/run';
 import { saveRun } from '../pve/exploration/save';
 import { canSearch, HOURS_PER_TILE, rollSearch, SEARCH_HOURS } from '../pve/exploration/travel';
-import { createWorld, describeTile, regionAt } from '../pve/exploration/world';
-import { addXp } from '../pve/progression';
-import { getSpell } from '../spells/registry';
+import { createWorld, describeTile, placeById, regionAt, type Place } from '../pve/exploration/world';
+import { getSpell, setActiveSpellSets } from '../spells/registry';
 import { TILE_PX, TILE_SCALE } from '../world/kenney';
 import { buildLocaleModel, type ExitDef, type Keeper, type LocaleModel } from '../world/locale';
 import { bufferTexture, LocaleView, preloadLocaleAssets } from '../world/localeRender';
 import { createMageAnims, MAGE_FIRST_FRAME, MAGE_IDLE, MAGE_RUN, preloadMageFrames } from '../world/mageSprite';
-import { floodReach, type Cell } from '../world/pathfind';
+import type { Cell } from '../world/pathfind';
 import { PixelBuffer } from '../world/pixels';
 import { feetFit, Walker, WALK_SPEED } from '../world/walker';
 import type { ExplorationEntry } from './ExplorationScene';
@@ -48,6 +49,8 @@ export interface LocaleEntry {
   notice?: string;
   /** Milliseconds before roaming packs may engage (after breaking off a fight). */
   grace?: number;
+  /** A fresh run: hand over the starter weapon first. */
+  starter?: boolean;
 }
 
 interface PackState {
@@ -61,11 +64,17 @@ interface PackState {
   wanderX: number;
   wanderY: number;
   chasing: boolean;
+  /** It has the party in sight right now. */
+  sees: boolean;
   /** Scene time until which Bind holds it to a crawl. */
   slowUntil: number;
-  /** Scene time until which Mind keeps it from noticing you. */
-  calmUntil: number;
   bound: boolean;
+  /** Chase speed, tiles per second. */
+  pace: number;
+  /** On the party's trail from the start (an ambush); gives up only when it loses them. */
+  hunting: boolean;
+  /** How long a hunting pack has been unable to find the party, ms. */
+  lostMs: number;
 }
 
 const INTERACT_RANGE = 1.45;
@@ -75,6 +84,28 @@ const WORD_KEYS = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX'];
 const PACK_ACTIVE_TILES = 30;
 /** On foot across the world the clock runs at one world tile's worth of time per world tile walked. */
 const WORLD_HOURS_PER_SECOND = (HOURS_PER_TILE * WALK_SPEED) / WORLD_SCALE;
+/** World tiles walked after a fight or an ambush before the next ambush may roll. */
+const AMBUSH_COOLDOWN = 3;
+/** An ambush turns up this many tiles from the party. */
+const AMBUSH_NEAR = 9;
+const AMBUSH_FAR = 12;
+/** A hunting pack gives up after this long without finding a veiled party, or beyond this many tiles. */
+const HUNT_LOST_MS = 2000;
+const HUNT_LOST_TILES = 24;
+
+const STARTER_WEAPONS: { id: ItemId; extra?: string }[] = [
+  { id: 'travellersDagger' },
+  { id: 'quarterstaff' },
+  { id: 'huntingBow', extra: '15 arrows' },
+  { id: 'apprenticeWand' },
+];
+
+const RULE_TEXT: Record<FieldEffect, string> = {
+  veil: 'hide',
+  bind: 'slow packs',
+  mind: 'read packs',
+  heal: 'heal the party',
+};
 
 export class LocaleScene extends Phaser.Scene implements HudOwner {
   private run!: ExplorationRun;
@@ -98,25 +129,32 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   private fogCell = '';
   /** On foot across the world: the run's explored map, kept unpacked while walking. */
   private exploredMask?: Uint8Array;
-  private keys?: Record<'up' | 'down' | 'left' | 'right' | 'w' | 'a' | 's' | 'd' | 'e' | 'space' | 'enter' | 'i' | 'esc' | 'f' | 'c' | 'g', Phaser.Input.Keyboard.Key>;
+  private keys?: Record<'up' | 'down' | 'left' | 'right' | 'w' | 'a' | 's' | 'd' | 'e' | 'space' | 'enter' | 'i' | 'esc' | 'f' | 'c' | 'g' | 'r', Phaser.Input.Keyboard.Key>;
   private wordKeys: Phaser.Input.Keyboard.Key[] = [];
-  /** The leader's words that work out here, and what is left of each. */
-  private fieldWords: FieldWord[] = [];
-  private charges: Record<string, number> = {};
+  /** The leader as last read, for charges, mana and class. */
+  private leader?: Mage;
+  /** The leader's own words, in loadout order (the modifier aside). */
+  private words: WordId[] = [];
+  /** Words picked for the next spell, in the order picked. */
+  private picked: WordId[] = [];
+  /** Which of the leader's spells are straight attacks, by combo key. */
+  private attacks = new Map<string, boolean>();
   /** Weapon reach for an ambush, in tiles, and why it cannot be used (if it cannot). */
   private strikeTiles = MELEE_AMBUSH_TILES;
+  private strikeRanged = false;
   private strikeBlocked: string | null = null;
   private veilUntil = 0;
+  private mindUntil = 0;
+  private mindView?: { gfx: Phaser.GameObjects.Graphics; labels: Map<PackState, Phaser.GameObjects.Text> };
   private barAt = 0;
   private sneaking = false;
+  private starter = false;
   // ---- The whole world on foot ----
   private readonly world = createWorld();
   private worldTile = '';
+  /** World tiles still to walk before an ambush may roll. */
+  private ambushCooldown = 0;
   private hudAt = 0;
-  private heat = 0;
-  private heatLost = 0;
-  private heatToastAt = 0;
-  private heatProof = false;
   /** Extra tiles a carried light lets the party notice secrets from. */
   private lightBonus = 0;
   private nightShade?: Phaser.GameObjects.Rectangle;
@@ -140,18 +178,23 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.packs = [];
     this.secretSprites = new Map();
     this.veilUntil = 0;
+    this.mindUntil = 0;
+    this.mindView = undefined;
+    this.picked = [];
+    this.attacks = new Map();
     this.barAt = 0;
     this.sneaking = false;
     this.worldTile = '';
+    this.ambushCooldown = AMBUSH_COOLDOWN;
     this.hudAt = 0;
-    this.heat = 0;
-    this.heatLost = 0;
-    this.heatToastAt = 0;
     this.nightShade = undefined;
     this.storm = undefined;
     this.run = entry.run;
     this.notice = entry.notice ?? '';
     this.graceMs = entry.grace ?? 0;
+    this.starter = !!entry.starter;
+    // Exploration fights cast from the original catalogue; the field offers the same spells.
+    setActiveSpellSets({ original: true });
     const place = resolveLocale(this.run, entry.locale);
     if (!place) {
       this.scene.start('Exploration', { run: this.run, notice: 'That place cannot be entered yet.' } satisfies ExplorationEntry);
@@ -164,7 +207,10 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.view = new LocaleView(this, this.model, { stream: !!place.world });
 
     const stored = this.run.locale?.id === place.def.id ? this.run.locale : null;
-    const candidates = [entry.at, stored, place.def.spawn].filter((cell): cell is Cell => !!cell);
+    // Out in the world a spot that no longer stands open moves to the nearest open ground of its world tile.
+    const settle = (cell: Cell | null | undefined): Cell | null =>
+      !cell ? null : !this.model.blocked(cell.x, cell.y) ? cell : place.world ? openWorldCell(cellWorldTile(cell)) : null;
+    const candidates = [settle(entry.at), settle(stored), place.def.spawn].filter((cell): cell is Cell => !!cell);
     const start = candidates.find((cell) => !this.model.blocked(cell.x, cell.y)) ?? place.def.spawn;
     this.walker = new Walker(this, start, this.model.w, this.model.h, (x, y) => this.model.blocked(x, y));
 
@@ -192,7 +238,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       this.keys = kb.addKeys({
         up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT',
         w: 'W', a: 'A', s: 'S', d: 'D',
-        e: 'E', space: 'SPACE', enter: 'ENTER', i: 'I', esc: 'ESC', f: 'F', c: 'C', g: 'G',
+        e: 'E', space: 'SPACE', enter: 'ENTER', i: 'I', esc: 'ESC', f: 'F', c: 'C', g: 'G', r: 'R',
       }) as LocaleScene['keys'];
       this.wordKeys = WORD_KEYS.map((key) => kb.addKey(key));
     }
@@ -210,15 +256,34 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   onHudReady(hud: LocaleHudScene): void {
     this.hud = hud;
     this.refreshHud();
-    const words = this.fieldWords.length ? '1-6: words     ' : '';
+    const words = this.words.length ? `1-${this.words.length}: pick words  R: cast     ` : '';
     const ambush = this.packs.length ? 'F: ambush     C: sneak     ' : '';
     const search = this.place.world ? 'G: search     ' : '';
     hud.setHint(`WASD / arrows or click: walk     E: act     ${words}${ambush}${search}I: pack     Esc: menu`);
     this.refreshWordBar();
-    if (this.notice) hud.toast(this.notice);
-    void this.settleLevels().then(() => {
+    void (async () => {
+      if (this.starter) await this.chooseStarterWeapon();
+      if (this.notice) hud.toast(this.notice, 5200);
+      await this.settleLevels();
       this.ready = true;
+    })();
+  }
+
+  /** A fresh run: every traveller leaves Kerusai armed. */
+  private async chooseStarterWeapon(): Promise<void> {
+    if (!this.hud) return;
+    this.starter = false;
+    const pick = await this.hud.choose<ItemId>('CHOOSE A WEAPON', 'Every traveller leaves Kerusai armed.',
+      STARTER_WEAPONS.map(({ id, extra }) => {
+        const def = getItem(id);
+        return { id, label: def.name, detail: `${def.blurb}${extra ? ` Comes with ${extra}.` : ''}` };
+      }));
+    withParty(this.run, (leader) => {
+      grantToMage(leader, pick);
+      if (pick === 'huntingBow') leader.arrows += 15;
     });
+    this.readLeader();
+    this.changed();
   }
 
   private refreshHud(): void {
@@ -258,6 +323,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       strike: !!keys && Phaser.Input.Keyboard.JustDown(keys.f),
       sneak: !!keys && Phaser.Input.Keyboard.JustDown(keys.c),
       search: !!keys && Phaser.Input.Keyboard.JustDown(keys.g),
+      cast: !!keys && Phaser.Input.Keyboard.JustDown(keys.r),
       word: this.wordKeys.findIndex((key) => Phaser.Input.Keyboard.JustDown(key)),
     };
     this.view?.stream(this.cameras.main.worldView);
@@ -271,7 +337,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       return;
     }
     if (settling) {
-      pressed.act = pressed.pack = pressed.menu = pressed.strike = pressed.sneak = pressed.search = false;
+      pressed.act = pressed.pack = pressed.menu = pressed.strike = pressed.sneak = pressed.search = pressed.cast = false;
       pressed.word = -1;
     }
     const steer = {
@@ -285,15 +351,18 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     if (this.leaving || this.busy) return;
     this.updateSecrets();
     this.updateStealth();
+    this.updateMindView();
 
     const keeper = this.nearestKeeper();
     const secret = keeper ? null : this.nearestSecret(1.3);
     const exit = keeper || secret ? null : this.model.exitAt(walker.cell.x, walker.cell.y);
-    const prey = keeper || secret || exit ? null : this.preyWithin(this.strikeTiles);
+    const target = keeper || secret || exit ? null : this.spellTarget();
+    const prey = keeper || secret || exit || target ? null : this.preyWithin(this.strikeTiles, !this.strikeRanged);
     this.hud?.setPrompt(
       keeper ? `[E] Talk: ${keeper.name}`
         : secret ? `[E] Search: ${secret.label}`
         : exit ? `[E] ${exit.label}`
+        : target ? `[R] ${spellDisplayName(this.picked)}: ${target.pack.label}`
         : prey ? `[F] Ambush: ${prey.pack.label}`
         : null,
     );
@@ -302,15 +371,21 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       else if (secret) void this.search(secret);
       else if (exit) void this.useExit(exit);
     } else if (pressed.strike) {
-      this.strike(prey ?? this.preyWithin(this.strikeTiles));
+      this.strike();
     } else if (pressed.word >= 0) {
-      this.speak(pressed.word);
+      this.pick(pressed.word);
+    } else if (pressed.cast) {
+      void this.cast();
     } else if (pressed.sneak) {
       this.toggleSneak();
     } else if (pressed.search && this.place.world) {
       void this.searchHere();
     } else if (pressed.pack) {
       void this.openPack();
+    } else if (pressed.menu && this.picked.length) {
+      this.picked = [];
+      playSound('ui.back');
+      this.refreshWordBar();
     } else if (pressed.menu) {
       void this.openMenu();
     }
@@ -361,11 +436,25 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.busy = true;
     this.walker?.stop();
     this.hud.setPrompt(null);
+    const hadMap = this.run.hasMap;
     await this.hud.openShop(this.run, keeper.shop, this.place.def.id, () => this.changed());
     await this.settleLevels();
     this.readLeader();
     this.changed();
     this.busy = false;
+    if (!hadMap && this.run.hasMap) await this.offerTravelMap();
+  }
+
+  /** A map was just bought: keep walking, or plan trips on it from now on. */
+  private async offerTravelMap(): Promise<void> {
+    if (!this.hud) return;
+    this.busy = true;
+    const style = await this.hud.choose<MapStyle>('A MAP OF THE REALM', 'You can switch at any time from the pause menu.', [
+      { id: 'travel', label: 'Travel map', detail: 'Click a destination and choose how to travel: Sprint, Sneak, Explore or Fast travel.' },
+      { id: 'open', label: 'Keep walking', detail: 'Walk the whole world on foot, as so far.' },
+    ]);
+    this.busy = false;
+    this.setMapStyle(style);
   }
 
   private async openPack(): Promise<void> {
@@ -387,7 +476,12 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       { id: 'resume', label: 'Resume', detail: this.place.world ? 'Back on the road.' : 'Back to the streets.' },
       { id: 'pack', label: 'Pack', detail: 'Gear, words and stats.' },
       open
-        ? { id: 'travel', label: 'Map: travel map', detail: 'Plan trips on the world map instead of walking them.' }
+        ? {
+          id: 'travel',
+          label: 'Map: travel map',
+          detail: this.run.hasMap ? 'Plan trips on the world map instead of walking them.' : `Needs a map of the realm: ${MAP_PRICE}g at any guild.`,
+          enabled: this.run.hasMap,
+        }
         : { id: 'open', label: 'Map: open world', detail: 'Walk the whole world on foot instead of planning trips.' },
       { id: 'quit', label: 'Save and Quit', detail: 'Return to the main menu. The run waits here.' },
     ], 'resume');
@@ -403,7 +497,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   }
 
   /** Switch how the world is crossed. From the open world itself, go straight to the map. */
-  private setMapStyle(style: 'travel' | 'open'): void {
+  private setMapStyle(style: MapStyle): void {
+    if (style === this.run.mapStyle || (style === 'travel' && !this.run.hasMap)) return;
     this.run.mapStyle = style;
     if (!this.place.world) {
       saveRun(this.run);
@@ -450,6 +545,10 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       : { t: 'world' as const, notice: `You leave ${this.place.def.name}.` };
     if (travel.t === 'fight') {
       this.startFight(travel.pack, travel.then, travel.fleeTo);
+      return;
+    }
+    if (travel.t === 'dungeon') {
+      await this.enterDungeon(travel.place);
       return;
     }
     if (travel.t === 'stay') {
@@ -513,24 +612,42 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     for (const pack of this.place.packs) {
       const fell = this.run.groupsBeaten[pack.id];
       if (fell != null && fell >= this.run.day) continue;
-      const x = (pack.x + 0.5) * TILE_PX;
-      const y = (pack.y + 0.8) * TILE_PX;
-      const sprite = this.add.sprite(x, y, MAGE_FIRST_FRAME).setOrigin(0.5, 0.95)
-        .setScale(TILE_SCALE * (pack.elite ? 1.35 : 1.05)).setTint(pack.tint).setDepth(y);
-      sprite.play({ key: MAGE_IDLE, startFrame: pack.x % 4 });
-      const marker = this.add.text(x, y - TILE_PX * 1.25, pack.elite ? '!!' : '!', {
-        fontFamily: 'Georgia, serif',
-        fontSize: '22px',
-        fontStyle: 'bold',
-        color: pack.elite ? '#ff8a5a' : '#ffd070',
-        stroke: '#1a0e08',
-        strokeThickness: 4,
-      }).setOrigin(0.5, 1).setDepth(100000).setVisible(false);
-      this.packs.push({
-        pack, sprite, marker, x, y, homeX: x, homeY: y, wanderX: x, wanderY: y,
-        chasing: false, slowUntil: 0, calmUntil: 0, bound: false,
-      });
+      this.addPack(pack);
     }
+  }
+
+  private addPack(pack: WildPack): PackState {
+    const x = (pack.x + 0.5) * TILE_PX;
+    const y = (pack.y + 0.8) * TILE_PX;
+    const sprite = this.add.sprite(x, y, MAGE_FIRST_FRAME).setOrigin(0.5, 0.95)
+      .setScale(TILE_SCALE * (pack.elite ? 1.35 : 1.05)).setTint(pack.tint).setDepth(y);
+    sprite.play({ key: MAGE_IDLE, startFrame: pack.x % 4 });
+    const marker = this.add.text(x, y - TILE_PX * 1.25, pack.elite ? '!!' : '!', {
+      fontFamily: 'Georgia, serif',
+      fontSize: '22px',
+      fontStyle: 'bold',
+      color: pack.elite ? '#ff8a5a' : '#ffd070',
+      stroke: '#1a0e08',
+      strokeThickness: 4,
+    }).setOrigin(0.5, 1).setDepth(100000).setVisible(false);
+    const state: PackState = {
+      pack, sprite, marker, x, y, homeX: x, homeY: y, wanderX: x, wanderY: y,
+      chasing: !!pack.hunting, sees: false, slowUntil: 0, bound: false,
+      pace: this.place.world ? pack.pace ?? PACK_SPEED : PACK_SPEED,
+      hunting: !!pack.hunting,
+      lostMs: 0,
+    };
+    this.packs.push(state);
+    return state;
+  }
+
+  private removePack(state: PackState): void {
+    this.packs = this.packs.filter((other) => other !== state);
+    this.mindView?.labels.get(state)?.destroy();
+    this.mindView?.labels.delete(state);
+    const { sprite, marker } = state;
+    marker.destroy();
+    this.tweens.add({ targets: sprite, alpha: 0, duration: 420, onComplete: () => sprite.destroy() });
   }
 
   private updatePacks(delta: number): void {
@@ -539,23 +656,38 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const dt = Math.min(0.05, delta / 1000);
     const now = this.time.now;
     const sightMul = this.sightMultiplier();
+    const veiled = now < this.veilUntil;
+    const world = !!this.place.world;
     this.graceMs = Math.max(0, this.graceMs - delta);
-    for (const state of this.packs) {
+    for (const state of [...this.packs]) {
       const dx = walker.x - state.x;
       const dy = walker.y - state.y;
       const distance = Math.hypot(dx, dy) / TILE_PX;
-      if (distance > PACK_ACTIVE_TILES) continue;
-      const calm = this.graceMs > 0 || now < state.calmUntil;
+      if (distance > PACK_ACTIVE_TILES && !state.hunting) continue;
+      const calm = this.graceMs > 0;
       if (distance < 0.85 && !calm) {
         this.startFight(state.pack);
         return;
       }
       const leash = Math.hypot(state.x - state.homeX, state.y - state.homeY) / TILE_PX;
       const sight = state.pack.sight * sightMul;
-      // A pack notices only what it can see; once on the scent it keeps it a little longer.
+      // A pack notices only what it can see; once on the scent it keeps it a while.
       const sees = distance <= sight && (distance < 1.2 || this.clearLine(state.x, state.y - 1, walker.x, walker.y - 1));
-      const scent = state.chasing && distance <= sight * 1.3 + 1;
-      state.chasing = !calm && leash < state.pack.sight + 4 && (sees || scent);
+      state.sees = sees;
+      if (state.hunting) {
+        // An ambush runs the party down; only a veil or a long lead shakes it.
+        state.lostMs = veiled && !sees ? state.lostMs + delta : 0;
+        if (state.lostMs > HUNT_LOST_MS || distance > HUNT_LOST_TILES) {
+          this.hud?.toast('You shook them off.', 2000);
+          this.removePack(state);
+          continue;
+        }
+        state.chasing = !calm;
+      } else {
+        const scent = state.chasing && distance <= (world ? sight * 2 : sight * 1.3 + 1);
+        const reach = world ? state.pack.sight * 4 : state.pack.sight + 4;
+        state.chasing = !calm && leash < reach && (sees || scent);
+      }
       const bound = now < state.slowUntil;
       if (bound !== state.bound) {
         state.bound = bound;
@@ -568,15 +700,15 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
         tx = walker.x;
         ty = walker.y;
       } else if (Math.hypot(tx - state.x, ty - state.y) < 4) {
-        const angle = Math.random() * Math.PI * 2;
-        state.wanderX = state.homeX + Math.cos(angle) * TILE_PX * 1.5;
-        state.wanderY = state.homeY + Math.sin(angle) * TILE_PX * 1.5;
+        const wander = this.wanderPoint(state, world);
+        state.wanderX = wander.x;
+        state.wanderY = wander.y;
       }
       const mx = tx - state.x;
       const my = ty - state.y;
       const len = Math.hypot(mx, my);
       if (len > 2) {
-        const speed = (state.chasing ? PACK_SPEED : PACK_SPEED * 0.35) * (state.bound ? BIND_SPEED : 1) * TILE_PX * dt;
+        const speed = (state.chasing ? state.pace : state.pace * 0.35) * (state.bound ? BIND_SPEED : 1) * TILE_PX * dt;
         const nx = state.x + (mx / len) * speed;
         const ny = state.y + (my / len) * speed;
         const blocked = (x: number, y: number): boolean => this.model.blocked(x, y);
@@ -589,6 +721,21 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       state.sprite.setPosition(Math.round(state.x), Math.round(state.y)).setDepth(state.y);
       state.marker.setPosition(Math.round(state.x), Math.round(state.y - TILE_PX * 1.25)).setVisible(state.chasing);
     }
+  }
+
+  /** Where an idle pack strolls next: near home, and out in the world along its road if it keeps one. */
+  private wanderPoint(state: PackState, world: boolean): { x: number; y: number } {
+    const home = { x: Math.floor(state.homeX / TILE_PX), y: Math.floor(state.homeY / TILE_PX) };
+    if (world && this.model.def.terrain[home.y]?.[home.x] === '=') {
+      for (let tries = 0; tries < 8; tries++) {
+        const x = home.x + Math.round((Math.random() - 0.5) * 12);
+        const y = home.y + Math.round((Math.random() - 0.5) * 12);
+        if (this.model.def.terrain[y]?.[x] === '=') return { x: (x + 0.5) * TILE_PX, y: (y + 0.8) * TILE_PX };
+      }
+    }
+    const angle = Math.random() * Math.PI * 2;
+    const radius = TILE_PX * (world ? 4 : 1.5);
+    return { x: state.homeX + Math.cos(angle) * radius, y: state.homeY + Math.sin(angle) * radius };
   }
 
   private placeSecrets(): void {
@@ -691,7 +838,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.discoverLandmarks(fresh);
   }
 
-  /** Name (and reward) landmarks whose chunk just came out of the fog. */
+  /** Name landmarks whose chunk just came out of the fog. */
   private discoverLandmarks(fresh: string[]): void {
     const chunk = this.place.fogChunk ?? 1;
     const flag = (id: string): string => `landmark:${this.place.def.id}:${id}`;
@@ -699,12 +846,9 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       fresh.includes(`${Math.floor(mark.x / chunk)},${Math.floor(mark.y / chunk)}`) && !this.run.flags.includes(flag(mark.id)));
     if (!found.length) return;
     for (const mark of found) this.run.flags.push(flag(mark.id));
-    const xp = 2 * found.length;
-    const levels = addXp(this.run, xp);
     playSound('ui.confirm');
     const names = found.length > 2 ? `${found.length} places` : found.map((mark) => mark.name).join(' and ');
-    this.hud?.toast(`Discovered ${names}. +${xp} XP${levels ? '. Level up!' : ''}`, 3600);
-    if (levels) void this.settleLevels().then(() => this.changed());
+    this.hud?.toast(`Discovered ${names}.`, 3600);
   }
 
   private drawFog(): void {
@@ -769,27 +913,32 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   //  WORDS AND AMBUSHES
   // ---------------------------------------------------------------------------
 
-  /** Read what the leader carries: words that work out here, their charges, weapon reach. */
+  /** Read what the leader carries: words, charges, mana, weapon reach. */
   private readLeader(): void {
-    const party = partyOf(this.run);
-    const leader = party[0];
-    this.heatProof = partyHeatProof(party);
+    const leader = partyOf(this.run)[0];
+    this.leader = leader;
     this.lightBonus = leader?.lightRadius() ? 2 : 0;
-    if (!leader) {
-      this.fieldWords = [];
-      this.charges = {};
-      this.refreshWordBar();
-      return;
+    this.words = leader ? leader.loadout.filter((word) => !isModifierWord(word)).slice(0, WORD_KEYS.length) : [];
+    this.picked = this.picked.filter((word) => this.words.includes(word));
+    const weapon = leader?.activeWeapon();
+    this.strikeRanged = !!weapon && isRangedWeapon(weapon);
+    this.strikeTiles = weapon && this.strikeRanged ? reachTiles(weapon.rangePx) : MELEE_AMBUSH_TILES;
+    this.strikeBlocked = !leader ? 'Nobody can strike.'
+      : leader.outOfAmmo() ? 'Out of arrows.'
+      : leader.cannotAttack ? 'You cannot attack right now.'
+      : null;
+    if (leader) void this.readAttacks(leader);
+    this.refreshWordBar();
+  }
+
+  /** Try each of the leader's spells once to learn which are straight attacks. */
+  private async readAttacks(leader: Mage): Promise<void> {
+    for (const words of fieldCombos(this.words)) {
+      const key = comboKey(words);
+      if (this.attacks.has(key)) continue;
+      const spell = getSpell(words, leader.mageClass);
+      this.attacks.set(key, !!spell && (await isStraightAttack(spell, leader.mageClass)));
     }
-    this.fieldWords = fieldWordsFor(leader.loadout, (word) => {
-      const spell = getSpell([word], leader.mageClass);
-      if (!spell || spell.twoPointAim || spell.rotatableWall) return null;
-      return spell.targeting === 'enemy' || spell.targeting === 'point' || spell.targeting === 'any' ? spell.range : null;
-    });
-    this.charges = { ...leader.charges };
-    const weapon = leader.activeWeapon();
-    this.strikeTiles = weapon && isRangedWeapon(weapon) ? reachTiles(weapon.rangePx) : MELEE_AMBUSH_TILES;
-    this.strikeBlocked = leader.outOfAmmo() ? 'Out of arrows.' : leader.cannotAttack ? 'You cannot attack right now.' : null;
     this.refreshWordBar();
   }
 
@@ -797,14 +946,37 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     if (!this.hud) return;
     const now = this.time.now;
     this.barAt = now;
-    const parts = this.fieldWords.slice(0, WORD_KEYS.length).map((entry, index) => {
-      const left = this.charges[entry.word] ?? 0;
-      const veil = entry.effect === 'veil' && now < this.veilUntil ? ` (${Math.ceil((this.veilUntil - now) / 1000)}s)` : '';
-      return `${index + 1} ${WORDS[entry.word].label} ${left}${veil}`;
+    const charges = this.leader?.charges ?? {};
+    const words = this.words.map((word, index) => {
+      const text = `${index + 1} ${WORDS[word].label} ${charges[word] ?? 0}`;
+      return this.picked.includes(word) ? `[${text}]` : text;
     });
-    const words = parts.length ? `WORDS    ${parts.join('     ')}` : '';
-    const text = [this.sneaking ? 'SNEAKING' : '', words].filter(Boolean).join('     |     ');
+    const seconds = (until: number): number => Math.ceil((until - now) / 1000);
+    const text = [
+      this.sneaking ? 'SNEAKING' : '',
+      now < this.veilUntil ? `VEILED ${seconds(this.veilUntil)}s` : '',
+      now < this.mindUntil ? `READING ${seconds(this.mindUntil)}s` : '',
+      words.length ? `WORDS   ${words.join('    ')}` : '',
+      this.picked.length ? `${this.spellLine()}   R: cast   Esc: clear` : '',
+    ].filter(Boolean).join('     |     ');
     this.hud.setWordBar(text || null);
+  }
+
+  /** What the picked words do out here, and what they cost. */
+  private spellLine(): string {
+    const words = this.picked;
+    const name = spellDisplayName(words);
+    const leader = this.leader;
+    if (!leader) return name;
+    const mana = fieldSpellMana(leader, words);
+    const cost = mana > 0 ? `, ${mana} mana` : '';
+    const rule = words.length === 1 ? FIELD_RULES[words[0]] : undefined;
+    if (rule) return `${name}: ${RULE_TEXT[rule.effect]}${cost}`;
+    const spell = getSpell(words, leader.mageClass);
+    if (!spell) return `${name}: no such spell`;
+    const attack = this.attacks.get(comboKey(words));
+    if (attack !== true) return attack === false ? `${name}: no effect outside a fight` : name;
+    return `${name}: attack, reach ${Math.round(reachTiles(spell.range))}${cost}`;
   }
 
   /** Fade the leader while veiled or sneaking, and keep the veil's countdown fresh. */
@@ -827,10 +999,18 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   /** C: sneak (much harder to see, half the pace) or walk upright again. */
   private toggleSneak(): void {
     this.sneaking = !this.sneaking;
-    if (this.walker) this.walker.speedMul = this.sneaking ? SNEAK_SPEED : 1;
+    this.applyPace();
     playSound('ui.click');
     this.hud?.toast(this.sneaking ? 'Sneaking: packs notice you only up close. Half pace.' : 'Sneaking ended.', 2000);
     this.refreshWordBar();
+  }
+
+  /** Sneaking halves the pace; out in the world the ground underfoot sets it too. */
+  private applyPace(): void {
+    const walker = this.walker;
+    if (!walker) return;
+    const ground = this.place.world ? openWorldPace(walker.cell.x, walker.cell.y) : 1;
+    walker.speedMul = (this.sneaking ? SNEAK_SPEED : 1) * ground;
   }
 
   /** How much of their usual sight packs have on the party right now. */
@@ -839,82 +1019,114 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     return (veiled ? VEIL_SIGHT : 1) * (this.sneaking ? SNEAK_SIGHT : 1) * (this.place.world && this.inStorm() ? STORM_SIGHT : 1);
   }
 
-  /** A pack in reach that has already seen the party, if any. */
-  private seenInReach(tiles: number): PackState | null {
-    return this.packsWithin(tiles).find((state) => state.chasing) ?? null;
-  }
-
-  /** F: spring on the nearest pack within reach of your weapon. */
-  private strike(prey: PackState | null): void {
+  /** F: spring on the nearest pack within weapon reach. Up close, only on one that has not seen you. */
+  private strike(): void {
     if (!this.packs.length) return;
-    if (this.strikeBlocked) {
+    const refuse = (message: string): void => {
       playSound('ui.deny');
-      this.hud?.toast(this.strikeBlocked, 1800);
-      return;
-    }
-    if (!prey) {
-      playSound('ui.deny');
-      const seen = this.seenInReach(this.strikeTiles);
-      this.hud?.toast(
-        seen ? 'Ambush: they have seen you. Sneak, veil or hide first.' : 'Ambush: no pack in weapon range with a clear line.',
-        2200,
-      );
-      return;
-    }
-    this.ambush(prey, { kind: 'weapon' });
+      this.hud?.toast(message, 2200);
+    };
+    if (this.strikeBlocked) return refuse(this.strikeBlocked);
+    const melee = !this.strikeRanged;
+    const prey = this.preyWithin(this.strikeTiles, melee);
+    if (prey) return this.ambush(prey, { kind: 'weapon' });
+    const seen = melee && this.packsWithin(this.strikeTiles).some((state) => state.chasing);
+    refuse(seen
+      ? 'Melee ambush: they have seen you. Sneak (C) up on foes that have not.'
+      : 'Ambush: no pack in weapon reach with a clear line.');
   }
 
-  /** 1-6: speak one of the leader's words outside a fight. */
-  private speak(index: number): void {
-    const entry = this.fieldWords[index];
-    const walker = this.walker;
+  /** 1-6: pick a word for the next spell, or put it back. */
+  private pick(index: number): void {
+    const word = this.words[index];
+    if (!word) return;
+    const at = this.picked.indexOf(word);
+    if (at >= 0) {
+      this.picked.splice(at, 1);
+    } else if (this.picked.length >= MAX_FIELD_WORDS) {
+      playSound('ui.deny');
+      this.hud?.toast(`At most ${MAX_FIELD_WORDS} words outside a fight.`, 1800);
+      return;
+    } else {
+      this.picked.push(word);
+    }
+    playSound('ui.click');
+    this.refreshWordBar();
+  }
+
+  /** The pack the picked words would open a fight on, when they make an attack and one is in reach. */
+  private spellTarget(): PackState | null {
+    const leader = this.leader;
+    if (!leader || !this.picked.length || this.attacks.get(comboKey(this.picked)) !== true) return null;
+    const spell = getSpell(this.picked, leader.mageClass);
+    return spell ? this.preyWithin(reachTiles(spell.range), false) : null;
+  }
+
+  /** R: speak the picked words. An attack opens a fight with a free strike, seen or not. */
+  private async cast(): Promise<void> {
     const hud = this.hud;
-    if (!entry || !walker || !hud) return;
-    const { label, color } = WORDS[entry.word];
+    const leader = this.leader;
+    if (!hud || !leader) return;
+    const words = [...this.picked];
     const refuse = (message: string): void => {
       playSound('ui.deny');
       hud.toast(message, 2200);
     };
-    if ((this.charges[entry.word] ?? 0) <= 0) return refuse(`${label}: no charges left. Rest to restore them.`);
+    if (!words.length) return refuse(`Pick a word first (1-${this.words.length}), then R.`);
+    const name = spellDisplayName(words);
+    const spent = words.find((word) => (leader.charges[word] ?? 0) <= 0);
+    if (spent) return refuse(`${WORDS[spent].label}: no charges left. Rest to restore them.`);
+    const mana = fieldSpellMana(leader, words);
+    if (!leader.hasMana(mana)) return refuse(`${name}: needs ${mana} mana.`);
+    const rule = words.length === 1 ? FIELD_RULES[words[0]] : undefined;
+    if (rule) return this.useRule(rule, words[0], mana);
+    const spell = getSpell(words, leader.mageClass);
+    if (!spell) return refuse(`${name}: no such spell.`);
+    if (!(await isStraightAttack(spell, leader.mageClass))) {
+      return refuse(`${name}: no effect outside a fight. Only straight attacks work here.`);
+    }
+    const prey = this.preyWithin(reachTiles(spell.range), false);
+    if (!prey) return refuse(`${name}: no pack in reach with a clear line.`);
+    this.pay(words, mana);
+    this.ambush(prey, { kind: 'spell', words });
+  }
+
+  /** Veil, Bind, Mind or Heal spoken alone. */
+  private useRule(rule: FieldRule, word: WordId, mana: number): void {
+    const walker = this.walker;
+    const hud = this.hud;
+    if (!walker || !hud) return;
+    const refuse = (message: string): void => {
+      playSound('ui.deny');
+      hud.toast(message, 2200);
+    };
+    const { color } = WORDS[word];
     const now = this.time.now;
-    const ms = FIELD_RULES[entry.word]?.ms ?? 0;
-    switch (entry.effect) {
+    const seconds = rule.ms / 1000;
+    switch (rule.effect) {
       case 'veil':
-        this.veilUntil = now + ms;
-        this.spend(entry.word);
+        this.pay([word], mana);
+        this.veilUntil = now + rule.ms;
         this.ring(walker.x, walker.y, 1.4, color);
-        hud.toast(`Veil: hidden for ${ms / 1000}s. Packs notice you only up close.`, 2400);
+        hud.toast(`Veil: hidden for ${seconds}s. Packs notice you only up close.`, 2400);
         return;
       case 'bind': {
-        const caught = this.packsWithin(entry.range);
-        if (!caught.length) return refuse('Bind: no pack in range.');
-        for (const state of caught) state.slowUntil = now + ms;
-        this.spend(entry.word);
-        this.ring(walker.x, walker.y, entry.range, color);
+        const caught = this.packsWithin(rule.range);
+        if (!caught.length) return refuse(`Bind: no pack within ${rule.range} tiles.`);
+        this.pay([word], mana);
+        for (const state of caught) state.slowUntil = now + rule.ms;
+        this.ring(walker.x, walker.y, rule.range, color);
         const who = caught.length === 1 ? caught[0].pack.label : `${caught.length} packs`;
-        hud.toast(`Bind: ${who} slowed for ${ms / 1000}s.`, 2400);
+        hud.toast(`Bind: ${who} slowed for ${seconds}s.`, 2400);
         return;
       }
-      case 'mind': {
-        const target = this.packsWithin(entry.range)[0];
-        if (!target) return refuse('Mind: no pack in range.');
-        target.calmUntil = now + ms;
-        target.chasing = false;
-        this.spend(entry.word);
-        this.ring(target.x, target.y, 1.2, color);
-        hud.toast(`Mind: ${target.pack.label} ignores you for ${ms / 1000}s.`, 2400);
+      case 'mind':
+        if (!this.packsWithin(rule.range).length) return refuse(`Mind: no pack within ${rule.range} tiles.`);
+        this.pay([word], mana);
+        this.mindUntil = now + rule.ms;
+        this.ring(walker.x, walker.y, rule.range, color);
+        hud.toast(`Mind: for ${seconds}s you see how far each pack sees and where it is headed.`, 2600);
         return;
-      }
-      case 'shadow': {
-        const spot = this.shadowSpot(entry.range);
-        if (!spot) return refuse('Shadow: no free spot in that direction.');
-        this.spend(entry.word);
-        this.ring(walker.x, walker.y, 0.8, color);
-        walker.placeAt(spot.x, spot.y);
-        this.ring(spot.x, spot.y, 0.8, color);
-        this.updateFog();
-        return;
-      }
       case 'heal': {
         const healed = withParty(this.run, (leader, party) => {
           const hurt = party.filter((m) => m.hp < m.maxHp).sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
@@ -922,38 +1134,35 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
           const roll = 1 + Math.floor(Math.random() * 6);
           const amount = Math.min(hurt.maxHp - hurt.hp, fieldHealAmount(roll, leader.effectiveInt()));
           hurt.hp += amount;
-          leader.spendCharges(['heal']);
+          leader.spendCharges([word]);
+          leader.spendMana(mana);
           return { name: hurt.name, amount };
         });
         if (!healed) return refuse('Heal: the party is at full HP.');
-        this.charges.heal = Math.max(0, (this.charges.heal ?? 0) - 1);
         playSound('ui.confirm');
         this.ring(walker.x, walker.y, 1, color);
         hud.toast(`Heal: ${healed.name} +${healed.amount} HP.`, 2200);
-        this.changed();
-        this.refreshWordBar();
-        return;
-      }
-      case 'ambush': {
-        const prey = this.preyWithin(entry.range);
-        if (!prey) {
-          return refuse(this.seenInReach(entry.range)
-            ? `${label}: they have seen you. Sneak, veil or hide first.`
-            : `${label}: no pack in range with a clear line.`);
-        }
-        this.spend(entry.word);
-        this.ambush(prey, { kind: 'spell', word: entry.word });
+        this.spoke();
         return;
       }
     }
   }
 
-  private spend(word: WordId): void {
-    withParty(this.run, (leader) => leader.spendCharges([word]));
-    this.charges[word] = Math.max(0, (this.charges[word] ?? 0) - 1);
+  /** Pay a spell's charges and mana, as a fight would. */
+  private pay(words: WordId[], mana: number): void {
+    withParty(this.run, (leader) => {
+      leader.spendCharges(words);
+      leader.spendMana(mana);
+    });
     playSound('ui.confirm');
+    this.spoke();
+  }
+
+  /** After a spell: the words are put down and the leader read afresh. */
+  private spoke(): void {
+    this.picked = [];
+    this.readLeader();
     this.changed();
-    this.refreshWordBar();
   }
 
   private ambush(state: PackState, opening: ExplorationOpening): void {
@@ -973,12 +1182,12 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       .map((entry) => entry.state);
   }
 
-  /** The nearest pack within `tiles` that the leader can see and that has not seen the leader. */
-  private preyWithin(tiles: number): PackState | null {
+  /** The nearest pack within `tiles` the leader has a clear line to; with `unseenOnly`, one that has not seen the leader. */
+  private preyWithin(tiles: number, unseenOnly: boolean): PackState | null {
     const walker = this.walker;
     if (!walker || !this.packs.length) return null;
     return this.packsWithin(tiles)
-      .find((state) => !state.chasing && this.clearLine(walker.x, walker.y - 1, state.x, state.y - 1)) ?? null;
+      .find((state) => (!unseenOnly || !state.chasing) && this.clearLine(walker.x, walker.y - 1, state.x, state.y - 1)) ?? null;
   }
 
   /** Whether nothing solid stands between two points (their own cells aside). */
@@ -995,32 +1204,60 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     return true;
   }
 
-  /** The furthest open spot toward the pointer (or straight ahead), no further than `tiles`, still on your side of any wall. */
-  private shadowSpot(tiles: number): { x: number; y: number } | null {
-    const walker = this.walker!;
-    const pointer = this.input.activePointer;
-    const aim = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-    let dx = aim.x - walker.x;
-    let dy = aim.y - walker.y;
-    let len = Math.hypot(dx, dy);
-    let max = Math.min(tiles * TILE_PX, len);
-    if (len < TILE_PX * 0.5) {
-      dx = walker.sprite.flipX ? -1 : 1;
-      dy = 0;
-      len = 1;
-      max = tiles * TILE_PX;
+  /** While Mind holds: how far each pack near you sees, whether it sees you, and where it is headed. */
+  private updateMindView(): void {
+    const walker = this.walker;
+    const now = this.time.now;
+    if (!walker || now >= this.mindUntil) {
+      if (this.mindUntil > 0) {
+        this.mindUntil = 0;
+        this.clearMindView();
+        this.hud?.toast('Mind ended.', 1600);
+        this.refreshWordBar();
+      }
+      return;
     }
-    const { w, h } = this.model;
-    const blocked = (x: number, y: number): boolean => this.model.blocked(x, y);
-    const reach = floodReach(w, h, blocked, walker.cell);
-    for (let d = max; d >= TILE_PX * 0.75; d -= TILE_PX / 4) {
-      const x = walker.x + (dx / len) * d;
-      const y = walker.y + (dy / len) * d;
-      if (!feetFit(x, y, w, h, blocked)) continue;
-      if (reach[Math.floor((y - 1) / TILE_PX) * w + Math.floor(x / TILE_PX)] !== 1) continue;
-      return { x, y };
+    const view = (this.mindView ??= { gfx: this.add.graphics().setDepth(100015), labels: new Map() });
+    const g = view.gfx;
+    g.clear();
+    const range = (FIELD_RULES.mind?.range ?? 0) * TILE_PX;
+    const sightMul = this.sightMultiplier();
+    const lift = TILE_PX * 0.4;
+    for (const state of this.packs) {
+      const label = view.labels.get(state);
+      if (Math.hypot(state.x - walker.x, state.y - walker.y) > range) {
+        label?.setVisible(false);
+        continue;
+      }
+      const colour = state.chasing || state.sees ? 0xff5a4a : 0xffd070;
+      const radius = state.pack.sight * sightMul * TILE_PX;
+      g.fillStyle(colour, 0.08).fillCircle(state.x, state.y - lift, radius);
+      g.lineStyle(2, colour, 0.75).strokeCircle(state.x, state.y - lift, radius);
+      const tx = state.chasing ? walker.x : state.wanderX;
+      const ty = state.chasing ? walker.y : state.wanderY;
+      g.lineStyle(2, colour, 0.9).lineBetween(state.x, state.y - lift, tx, ty - lift);
+      g.fillStyle(colour, 1).fillCircle(tx, ty - lift, 3);
+      const text = `${state.pack.label}\n${state.chasing ? 'Hunting you' : state.sees ? 'Sees you' : 'Has not seen you'}`;
+      const tag = label ?? this.add.text(0, 0, '', {
+        fontFamily: 'Georgia, serif',
+        fontSize: '13px',
+        color: '#ffe6a0',
+        stroke: '#1a0e08',
+        strokeThickness: 3,
+        align: 'center',
+      }).setOrigin(0.5, 1).setDepth(100016);
+      if (!label) view.labels.set(state, tag);
+      if (tag.text !== text) tag.setText(text);
+      tag.setPosition(Math.round(state.x), Math.round(state.y - TILE_PX * 1.6)).setVisible(true);
     }
-    return null;
+    if (now - this.barAt > 500) this.refreshWordBar();
+  }
+
+  private clearMindView(): void {
+    if (!this.mindView) return;
+    this.mindView.gfx.destroy();
+    for (const label of this.mindView.labels.values()) label.destroy();
+    this.mindView = undefined;
   }
 
   private ring(x: number, y: number, tiles: number, color: number): void {
@@ -1034,14 +1271,44 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   //  THE WORLD ON FOOT
   // ---------------------------------------------------------------------------
 
-  /** Keep the run's world tile under the party's feet. */
+  /** Keep the run's world tile under the party's feet; every new tile may draw an ambush. */
   private syncWorldTile(): void {
     if (!this.walker) return;
     const tile = cellWorldTile(this.walker.cell);
     const key = `${tile.x},${tile.y}`;
     if (key === this.worldTile) return;
+    const stepped = this.worldTile !== '';
     this.worldTile = key;
     this.run.pos = tile;
+    if (!stepped || this.leaving || this.busy || this.graceMs > 0) return;
+    if (this.ambushCooldown > 0) {
+      this.ambushCooldown -= 1;
+      return;
+    }
+    const cover = { sneaking: this.sneaking, veiled: this.time.now < this.veilUntil };
+    const pack = rollAmbush(this.run, tile, cover, WALK_SPEED);
+    if (pack) this.spawnAmbush(pack);
+  }
+
+  /** Set an ambush down at the edge of sight, somewhere it can run the party down from. */
+  private spawnAmbush(pack: WildPack): void {
+    const walker = this.walker;
+    if (!walker) return;
+    const land = openWorldMainland();
+    const from = walker.cell;
+    for (let tries = 0; tries < 24; tries++) {
+      const angle = Math.random() * Math.PI * 2;
+      const range = AMBUSH_NEAR + Math.random() * (AMBUSH_FAR - AMBUSH_NEAR);
+      const x = Math.round(from.x + Math.cos(angle) * range);
+      const y = Math.round(from.y + Math.sin(angle) * range);
+      if (x < 0 || y < 0 || x >= this.model.w || y >= this.model.h) continue;
+      if (!land[y * this.model.w + x] || this.model.exitAt(x, y)) continue;
+      this.addPack({ ...pack, x, y });
+      this.ambushCooldown = AMBUSH_COOLDOWN;
+      playSound('ui.deny');
+      this.hud?.toast(`Ambush: ${pack.label}.`, 2600);
+      return;
+    }
   }
 
   private inStorm(): boolean {
@@ -1087,28 +1354,13 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.storm = { vignette, haze, streaks };
   }
 
-  /** Time passes while the party walks; the sun and the storms of the desert follow. */
+  /** Time passes while the party walks; the storms of the desert follow. */
   private updateWorld(delta: number, moving: boolean): void {
     const walker = this.walker;
     if (!walker) return;
     this.syncWorldTile();
-    if (moving) {
-      const hours = (delta / 1000) * WORLD_HOURS_PER_SECOND;
-      const { x, y } = this.run.pos;
-      if (!this.heatProof) this.heat += heatFor(this.world, this.run, x, y, hours, absoluteHour(this.run));
-      const days = advanceHours(this.run, hours);
-      if (days) this.newDay();
-      if (this.heat >= 1) {
-        this.heatLost += applyHeat(this.run, this.heat);
-        this.heat -= Math.floor(this.heat);
-        this.refreshHud();
-      }
-      if (this.heatLost > 0 && this.time.now - this.heatToastAt > 8000) {
-        this.heatToastAt = this.time.now;
-        this.hud?.toast(`The desert sun takes ${this.heatLost} HP. Walk by night or wear a stillsuit.`, 2400);
-        this.heatLost = 0;
-      }
-    }
+    this.applyPace();
+    if (moving && advanceHours(this.run, (delta / 1000) * WORLD_HOURS_PER_SECOND)) this.newDay();
     this.nightShade?.setVisible(isNight(this.run.hour));
     const storm = this.storm;
     if (storm) {
@@ -1136,6 +1388,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.hud?.toast(`Day ${this.run.day} dawns.`, 1800);
     const fresh = resolveLocale(this.run, this.place.def.id);
     if (!fresh) return;
+    this.clearMindView();
     for (const state of this.packs) {
       state.sprite.destroy();
       state.marker.destroy();
@@ -1159,24 +1412,24 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.busy = true;
     this.walker.stop();
     this.run.steps += 1;
-    const { x, y } = this.run.pos;
-    const burned = this.heatProof ? 0 : applyHeat(this.run, heatFor(this.world, this.run, x, y, SEARCH_HOURS, absoluteHour(this.run)));
     if (advanceHours(this.run, SEARCH_HOURS)) this.newDay();
-    const { outcome, zone, depth } = rollSearch(this.world, this.run);
+    const rolled = rollSearch(this.world, this.run);
+    const { zone, depth } = rolled;
+    const fight = rolled.outcome === 'robbery' || rolled.outcome === 'monsters';
+    const outcome = fight && questCalm(this.run, this.run.pos.x, this.run.pos.y) ? 'nothing' : rolled.outcome;
     const dice = stepDice(this.run, this.run.steps * 7 + 4);
-    const sun = burned > 0 ? ` The sun takes ${burned} HP.` : '';
     saveRun(this.run);
     this.refreshHud();
     if (outcome === 'robbery' || outcome === 'monsters') {
       const spawns = rollEncounter(zone, outcome, depth, dice);
-      hud.toast(`${outcome === 'robbery' ? 'Search: bandits attack.' : 'Search: something attacks.'}${sun}`, 2200);
+      hud.toast(outcome === 'robbery' ? 'Search: bandits attack.' : 'Search: something attacks.', 2200);
       this.busy = false;
       this.startFight({ id: `once:search:${this.run.steps}`, x: this.walker.cell.x, y: this.walker.cell.y, sight: 0, depth, spawns, label: 'Attacked while searching.', tint: 0xffffff, zone });
       return;
     }
     if (outcome === 'loot') {
       playSound('ui.confirm');
-      hud.toast(`${rollFind(this.run, zone, depth, dice)}${sun}`, 3200);
+      hud.toast(rollFind(this.run, zone, depth, dice), 3200);
     } else if (outcome === 'event') {
       const event = pickEvent(zone, dice);
       const ctx = { run: this.run, zone, depth, dice };
@@ -1200,7 +1453,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
         return;
       }
     } else {
-      hud.toast(`Search: nothing found.${sun}`, 2400);
+      hud.toast('Search: nothing found.', 2400);
     }
     await this.settleLevels();
     this.changed();
@@ -1243,6 +1496,44 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
           label: pack.label,
           opening,
         },
+      } satisfies MatchConfig);
+    });
+  }
+
+  /** A dungeon gate: say what lies inside, and go in only if the party means it. */
+  private async enterDungeon(placeId: string): Promise<void> {
+    const place = placeById(placeId);
+    const hud = this.hud;
+    if (!place?.dungeon || !hud || this.busy || this.leaving) return;
+    const def = DUNGEONS[place.dungeon];
+    this.busy = true;
+    const choice = await hud.choose(def.name.toUpperCase(), def.warning, [
+      { id: 'enter', label: 'Go in', detail: place.dungeon === 'mines' ? 'Into the tunnels.' : 'Depth 1.' },
+      { id: 'stay', label: 'Not yet', detail: 'Stay outside.' },
+    ], 'stay');
+    this.busy = false;
+    if (choice === 'enter') this.startDungeon(place);
+  }
+
+  /** Into the dungeon; the party comes back out just below its gate. */
+  private startDungeon(place: Place): void {
+    const dungeon = place.dungeon;
+    if (this.leaving || !dungeon) return;
+    this.leaving = true;
+    const out = this.place.world ? openWorldCell(place) : this.walker?.cell ?? this.place.def.spawn;
+    const back = { id: this.place.def.id, x: out.x, y: out.y };
+    this.run.locale = back;
+    this.run.pos = { x: place.x, y: place.y };
+    if (!this.run.visited.includes(place.id)) this.run.visited.push(place.id);
+    saveRun(this.run);
+    playSound('ui.confirm');
+    this.cameras.main.fadeOut(320, 0, 0, 0);
+    this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
+      this.scene.stop('LocaleHud');
+      this.scene.start('Game', {
+        mode: 'exploration',
+        loadouts: [[], []],
+        exploration: dungeonCombat(this.run, dungeon, back),
       } satisfies MatchConfig);
     });
   }

@@ -1,4 +1,4 @@
-import { RANGE_UNIT } from '../config/constants';
+import { MELEE_RANGE, RANGE_UNIT } from '../config/constants';
 import type { GameState } from '../core/GameState';
 import type { Mage } from '../core/Mage';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
@@ -7,6 +7,7 @@ import { canUseMineAction, type MineActionChoice } from './mineActions';
 export type MineAIDecision =
   | { type: 'mine-action'; choice: MineActionChoice }
   | { type: 'move'; point: Vec2 }
+  | { type: 'melee'; target: Mage }
   | { type: 'end' }
   | null;
 
@@ -29,6 +30,37 @@ function chooseTied<T>(game: GameState, entries: T[], score: (entry: T) => numbe
 
 function tryAction(game: GameState, source: Mage, choice: MineActionChoice): MineAIDecision {
   return canUseMineAction(game, source, choice) ? { type: 'mine-action', choice } : null;
+}
+
+/** Step toward `point`, no further than it and no further than a turn's move. */
+function moveToward(source: Mage, point: Vec2): MineAIDecision {
+  return { type: 'move', point: stepTowards(source.pos, point, Math.min(source.moveRange(), dist(source.pos, point))) };
+}
+
+/**
+ * Wolves hunt as one. The pack settles on the foe nearest its middle, each wolf
+ * takes its own place in a ring round that foe, and while too few could reach
+ * it this turn the rest wait at the edge of its reach so they close in together.
+ */
+function chooseWolfAction(game: GameState, source: Mage, enemies: Mage[]): MineAIDecision {
+  const pack = game.mages.filter((mage) => mage.alive && mage.team === source.team && mage.mine?.kind === 'wolf');
+  const centre = {
+    x: pack.reduce((sum, wolf) => sum + wolf.x, 0) / pack.length,
+    y: pack.reduce((sum, wolf) => sum + wolf.y, 0) / pack.length,
+  };
+  const quarry = chooseTied(game, enemies, (target) => -(Math.round(dist(centre, target.pos)) * 100 + target.hp))!;
+  if (game.canMelee(source, quarry)) return source.actions.main > 0 ? { type: 'melee', target: quarry } : { type: 'end' };
+  if (source.actions.move <= 0) return { type: 'end' };
+  const index = pack.indexOf(source);
+  const facing = Math.atan2(centre.y - quarry.y, centre.x - quarry.x) || 0;
+  const angle = facing + ((index - (pack.length - 1) / 2) * 2 * Math.PI) / Math.max(pack.length, 2);
+  const ring = quarry.bodyRadius() + source.bodyRadius() + 4;
+  const slot = { x: quarry.x + Math.cos(angle) * ring, y: quarry.y + Math.sin(angle) * ring };
+  const canJoin = (wolf: Mage): boolean => dist(wolf.pos, quarry.pos) <= wolf.moveRange() + ring + MELEE_RANGE;
+  const hold = ring + MELEE_RANGE + 2 * RANGE_UNIT;
+  const together = pack.filter(canJoin).length * 2 >= pack.length;
+  if (pack.length === 1 || together || dist(source.pos, quarry.pos) <= hold) return moveToward(source, slot);
+  return moveToward(source, { x: quarry.x + Math.cos(angle) * hold, y: quarry.y + Math.sin(angle) * hold });
 }
 
 /** Pick one authored Mine action; null intentionally falls through to generic AI. */
@@ -65,6 +97,17 @@ export function chooseMineAction(game: GameState, source: Mage): MineAIDecision 
       ? { type: 'move', point: stepTowards(source.pos, nearest.pos, source.moveRange()) }
       : { type: 'end' };
   }
+
+  if (mine.kind === 'rabbit') {
+    // Close enough at the start of its turn, a rabbit charges instead of moving.
+    const chargeTargets = enemies.filter((target) =>
+      canUseMineAction(game, source, { id: 'rabbit-charge', target })
+    );
+    const chargeTarget = chooseTied(game, chargeTargets, (target) => -Math.round(dist(source.pos, target.pos) * 1000));
+    return chargeTarget ? { type: 'mine-action', choice: { id: 'rabbit-charge', target: chargeTarget } } : null;
+  }
+
+  if (mine.kind === 'wolf') return chooseWolfAction(game, source, enemies);
 
   if (mine.kind === 'cavern-bat') {
     const radius = (mine.level >= 6 ? 5 : 4) * RANGE_UNIT;

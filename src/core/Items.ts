@@ -156,7 +156,24 @@ export type ItemId =
   | 'gemDiamond'
   | 'herbMoonleaf'
   | 'herbEmberroot'
-  | 'herbBogcap';
+  | 'herbBogcap'
+  // ---- Adventure drops: what fallen creatures leave, sold at guilds ----
+  | 'manaStoneSmall'
+  | 'manaStoneMedium'
+  | 'manaStoneBig'
+  | 'ectoplasm'
+  | 'darksteelBar'
+  | 'ghastEssence'
+  | 'lichCore'
+  | 'reaperCore'
+  | 'rabbitPelt'
+  | 'slimeGel'
+  | 'wolfPelt'
+  | 'wolfFang'
+  | 'boarHide'
+  | 'boarTusk'
+  // ---- Adventure tools ----
+  | 'pickaxe';
 
 /**
  * Rarity tiers, ordered from most common to rarest. The shop draft rolls a
@@ -460,8 +477,6 @@ export interface ItemDef {
   swamprunOnly?: boolean;
   /** Only sold, forged or found in Exploration; never drafted anywhere. */
   adventureOnly?: boolean;
-  /** Keeps the desert sun off the wearer while worn. */
-  heatProof?: boolean;
   /** Material subtype read by the Gem shop and the Apothecary. */
   materialKind?: 'gem' | 'herb';
   /** Creature equipment that is never offered or accepted as player gear. */
@@ -1745,9 +1760,9 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(20),
     weight: 2,
-    blurb: 'Immunity to desert heat. +1 armour.',
+    blurb: 'Resist heat. +1 armour.',
     adventureOnly: true,
-    heatProof: true,
+    resist: { resist: ['heat'] },
     armor: { flat: 1 },
   },
   ...(
@@ -1789,6 +1804,45 @@ export const ITEM_DEFS: ItemDef[] = [
     materialKind: 'herb',
     adventureOnly: true,
   })),
+  ...(
+    [
+      ['manaStoneSmall', 'Small Mana Stone', 2, 0.2, 'Left by the dead.'],
+      ['manaStoneMedium', 'Medium Mana Stone', 5, 0.3, 'Left by the dead.'],
+      ['manaStoneBig', 'Big Mana Stone', 12, 0.5, 'Left by the dead.'],
+      ['ectoplasm', 'Ectoplasm', 1, 0.1, 'Left by wisps and specters.'],
+      ['darksteelBar', 'Darksteel Bar', 30, 2, 'Salvaged from defenders and ghasts.'],
+      ['ghastEssence', 'Ghast Essence', 25, 0.3, 'Salvaged from a ghast.'],
+      ['lichCore', 'Lich Core', 150, 1, 'Salvaged from a lich.'],
+      ['reaperCore', 'Reaper Core', 200, 1, 'Salvaged from a reaper.'],
+      ['rabbitPelt', 'Rabbit Pelt', 1, 0.3, 'Skinned from a rabbit.'],
+      ['slimeGel', 'Slime Gel', 1, 0.2, 'Scraped from a slime.'],
+      ['wolfPelt', 'Wolf Pelt', 3, 0.8, 'Skinned from a wolf.'],
+      ['wolfFang', 'Wolf Fang', 4, 0.1, 'Pulled from a wolf.'],
+      ['boarHide', 'Boar Hide', 4, 1.5, 'Skinned from a boar.'],
+      ['boarTusk', 'Boar Tusk', 6, 0.4, 'Pulled from a boar.'],
+    ] as const
+  ).map(([id, name, silver, weight, source]): ItemDef => ({
+    id,
+    name,
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: silver,
+    weight,
+    blurb: `Material. ${source}`,
+    material: true,
+    adventureOnly: true,
+  })),
+  {
+    id: 'pickaxe',
+    name: 'Pickaxe',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: g(3),
+    weight: 3,
+    blurb: 'Tool. In the Mines each one carried is a pickaxe with 10 durability. Lost when it breaks.',
+    material: true,
+    adventureOnly: true,
+  },
 ];
 
 const ITEM_BY_ID: Record<ItemId, ItemDef> = ITEM_DEFS.reduce((acc, def) => {

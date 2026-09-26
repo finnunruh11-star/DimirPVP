@@ -1,4 +1,4 @@
-// Walkable places — towns, forest glades, the wilds — as plain data: rows of
+// Walkable places — towns, the wilds, the open world — as plain data: rows of
 // terrain characters plus lists of buildings and props. `buildLocaleModel`
 // turns a definition into collision, ground frames and a draw list; the
 // renderer only paints what this file decides. Pure: no Phaser.

@@ -112,6 +112,8 @@ export interface MineMazeState {
   steps: number;
   /** Direction used on the most recent journey, for a room's Turn Around choice. */
   arrivedVia?: MineDirection;
+  /** No supply rooms: the Mines as an Exploration run finds them. */
+  noShops?: boolean;
 }
 
 export interface MineTravelResult {
@@ -177,12 +179,12 @@ function makeExits(
   return { exits, traps };
 }
 
-function rollRoomKind(rng: Dice): MineRoomKind {
+function rollRoomKind(rng: Dice, shops: boolean): MineRoomKind {
   const roll = rng.die(100);
   if (roll <= 34) return 'enemies';
   if (roll <= 54) return 'ore';
   if (roll <= 69) return 'treasure';
-  if (roll <= 79) return 'shop';
+  if (roll <= 79) return shops ? 'shop' : 'empty';
   return 'empty';
 }
 
@@ -200,11 +202,12 @@ function makeNode(
   mapX: number,
   mapY: number,
   back?: MineDirection,
-  backTrap?: MinePassageTrap
+  backTrap?: MinePassageTrap,
+  shops = true
 ): MineMazeNode {
   const isRoom = rng.chance(0.3);
   const kind: MineMazeNode['kind'] = isRoom ? 'room' : 'crossroad';
-  const roomKind = isRoom ? rollRoomKind(rng) : undefined;
+  const roomKind = isRoom ? rollRoomKind(rng, shops) : undefined;
   const layout = makeExits(rng, back, isRoom, backTrap);
   return {
     id,
@@ -225,7 +228,7 @@ function makeNode(
 }
 
 /** Start at a junction with unexplored passages in 1-4 of the eight directions. */
-export function createMineMaze(rng: Dice): MineMazeState {
+export function createMineMaze(rng: Dice, options: { shops?: boolean } = {}): MineMazeState {
   const layout = makeExits(rng);
   const start: MineMazeNode = {
     id: 0,
@@ -235,7 +238,7 @@ export function createMineMaze(rng: Dice): MineMazeState {
     exits: layout.exits,
     traps: layout.traps,
   };
-  return { nodes: { 0: start }, currentNodeId: 0, nextNodeId: 1, steps: 0 };
+  return { nodes: { 0: start }, currentNodeId: 0, nextNodeId: 1, steps: 0, noShops: options.shops === false || undefined };
 }
 
 export function currentMineNode(maze: MineMazeState): MineMazeNode {
@@ -270,7 +273,7 @@ export function travelMineMaze(
       mapX += vector.x;
       mapY += vector.y;
     }
-    const destination = makeNode(destinationId, rng, mapX, mapY, reverse, passageTrap);
+    const destination = makeNode(destinationId, rng, mapX, mapY, reverse, passageTrap, !maze.noShops);
     destination.exits[reverse] = from.id;
     from.exits[direction] = destinationId;
     maze.nodes[destinationId] = destination;

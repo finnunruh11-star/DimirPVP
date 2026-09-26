@@ -296,7 +296,10 @@ import {
   type MineEnemyKind,
   type MineSpawnSpec,
 } from '../pve/minerun';
-import { rollEncounter } from '../pve/exploration/encounters';
+import { rollEncounter, rollForestWave, describeSpawns } from '../pve/exploration/encounters';
+import { rollDrops } from '../pve/exploration/drops';
+import { DUNGEON_REFIGHT, DUNGEONS } from '../pve/exploration/dungeons';
+import type { DungeonId } from '../pve/exploration/world';
 import { canUseMineAction, commitMineAction, makeMineActionItem } from '../pve/mineActions';
 import {
   MINE_DIRECTIONS,
@@ -1167,6 +1170,13 @@ export class GameScene extends Phaser.Scene {
   /** Creature kinds the party felled in this exploration fight, for bounties. */
   private explorationKills: string[] = [];
   private explorationWon = false;
+  /** The dungeon an exploration fight dives into: fights follow one another until the party walks out. */
+  private dungeon: DungeonId | null = null;
+  private dungeonDeepest = 0;
+  private dungeonRetreating = false;
+  private dungeonRetreatCursor = 0;
+  /** Pickaxes carried in as items; any that break are taken from the bag on the way out. */
+  private dungeonPickaxes = 0;
   private autoPassButton?: CabinetChip;
   // When on (offline only), every seat is played by the AI so the match runs
   // itself and the player can just watch. Toggled via key [Y] or the button.
@@ -1334,6 +1344,11 @@ export class GameScene extends Phaser.Scene {
     this.fledEdge = null;
     this.explorationKills = [];
     this.explorationWon = false;
+    this.dungeon = null;
+    this.dungeonDeepest = 0;
+    this.dungeonRetreating = false;
+    this.dungeonRetreatCursor = 0;
+    this.dungeonPickaxes = 0;
     this.mode = 'idle';
     this.busy = false;
     this.gameEnded = false;
@@ -1447,9 +1462,11 @@ export class GameScene extends Phaser.Scene {
     this.memoryMode = config.mode === 'memory';
     this.memoryName = config.scenario?.name ?? '';
     this.expedition = config.mode === 'expedition';
-    this.mineRun = config.mode === 'minerun';
-    this.raid = config.mode === 'raid';
     this.explorationCombat = config.exploration ?? null;
+    this.dungeon = this.explorationCombat?.dungeon ?? null;
+    // The Mines are the Mine Run's maze, whichever way the party came in.
+    this.mineRun = config.mode === 'minerun' || this.dungeon === 'mines';
+    this.raid = config.mode === 'raid';
     this.fleeAllowed = !!this.explorationCombat;
     this.raidBoss = config.raidBoss ?? 'deathknightSpear';
     this.raidTarget = undefined;
@@ -1785,6 +1802,10 @@ export class GameScene extends Phaser.Scene {
     }
     if (this.swamprun) {
       if (this.explorationCombat) {
+        if (this.dungeon) {
+          await this.setupDungeon(this.explorationCombat);
+          return;
+        }
         this.setupExplorationCombat(this.explorationCombat);
         const opening = this.explorationCombat.opening;
         if (opening && (await this.runOpeningStrike(opening))) return;
@@ -2068,28 +2089,7 @@ export class GameScene extends Phaser.Scene {
    * region the road is, never from how strong the traveller has become.
    */
   private setupExplorationCombat(combat: ExplorationCombat): void {
-    this.swamprunWave = Math.max(1, combat.depth);
-    this.swamprunEncounterPower = 0;
-    this.swamprunCurse = undefined;
-    this.swamprunGold = 0;
-    this.swamprunWaveEnemies = [];
-    this.swamprunWispCopies.clear();
-    this.expeditionXpEnemies.clear();
-    this.explorationKills = [];
-    this.expeditionLevel = combat.run.level;
-    this.expeditionXp = combat.run.xp;
-    this.expeditionPendingLevels = 0;
-    // The party arrives carrying the positions it held when the last fight
-    // ended, so line it up afresh before anything is spawned opposite it.
-    const party = this.gs.mages.filter((m) => m.team === 1);
-    const formation = this.computeSpawns(party.map(() => 1));
-    party.forEach((mage, index) => {
-      const at = formation[index];
-      if (!at) return;
-      mage.x = at.x;
-      mage.y = at.y;
-      this.swamprunArrowsOwned.set(mage, mage.arrows);
-    });
+    this.prepareExplorationParty(combat);
     const kind = combat.encounter === 'robbery' ? 'robbery' : 'monsters';
     const spawns = combat.spawns?.length
       ? combat.spawns
@@ -2118,6 +2118,100 @@ export class GameScene extends Phaser.Scene {
     this.endGame();
   }
 
+  /** Carry the run's party, level and purse into the scene and line the party up. */
+  private prepareExplorationParty(combat: ExplorationCombat): void {
+    this.swamprunWave = Math.max(1, combat.depth);
+    this.swamprunEncounterPower = 0;
+    this.swamprunCurse = undefined;
+    this.swamprunGold = 0;
+    this.swamprunWaveEnemies = [];
+    this.swamprunWispCopies.clear();
+    this.expeditionXpEnemies.clear();
+    this.explorationKills = [];
+    this.expeditionLevel = combat.run.level;
+    this.expeditionXp = combat.run.xp;
+    this.expeditionPendingLevels = 0;
+    // The party arrives carrying the positions it held when the last fight
+    // ended, so line it up afresh before anything is spawned opposite it.
+    const party = this.gs.mages.filter((m) => m.team === 1);
+    const formation = this.computeSpawns(party.map(() => 1));
+    party.forEach((mage, index) => {
+      const at = formation[index];
+      if (!at) return;
+      mage.x = at.x;
+      mage.y = at.y;
+      this.swamprunArrowsOwned.set(mage, mage.arrows);
+    });
+  }
+
+  /** Into a dungeon: the Swamps and the Small Forest start at depth 1, the Mines at their entrance. */
+  private async setupDungeon(combat: ExplorationCombat): Promise<void> {
+    this.prepareExplorationParty(combat);
+    this.dungeonDeepest = 0;
+    this.dungeonRetreating = false;
+    this.dungeonRetreatCursor = 0;
+    if (this.mineRun) {
+      await this.setupMineExploration();
+      return;
+    }
+    this.gs.log(`— ${DUNGEONS[this.dungeon!].name}. No rest or shop until you are out. —`);
+    this.spawnWave(1);
+    this.startTurn();
+  }
+
+  /** Between the waves of a dive: training, then deeper or back the way the party came. */
+  private async runDungeonInterlude(): Promise<boolean> {
+    await this.resolveExpeditionLevelUps();
+    if (this.dungeonRetreating) return this.advanceDungeonRetreat();
+    if ((await this.promptDungeonChoice()) === 'deeper') {
+      this.spawnWave(this.swamprunWave + 1);
+      return true;
+    }
+    this.dungeonRetreating = true;
+    this.dungeonRetreatCursor = this.swamprunWave - 1;
+    return this.advanceDungeonRetreat();
+  }
+
+  private async promptDungeonChoice(): Promise<'deeper' | 'back'> {
+    const previousMode = this.mode;
+    this.mode = 'shop';
+    const name = DUNGEONS[this.dungeon!].name;
+    const depth = this.swamprunWave;
+    return new Promise<'deeper' | 'back'>((resolve) => {
+      const panel = new ChoiceMenuView<'deeper' | 'back'>(this, `DEPTH ${depth} CLEARED`,
+        `${name}. No rest or shop until you are out. The way back crosses every cleared depth, with a ${Math.round(DUNGEON_REFIGHT * 100)}% chance of a fight at each.`, [
+          { id: 'deeper', label: 'Go deeper', detail: `Depth ${depth + 1}: harder foes, better drops.` },
+          { id: 'back', label: 'Turn back', detail: depth > 1 ? `Walk out through ${depth - 1} cleared depth${depth > 2 ? 's' : ''}.` : 'Walk straight out.' },
+        ], (selected) => {
+          panel.destroy();
+          this.mode = previousMode;
+          resolve(selected);
+        });
+    });
+  }
+
+  /** Walk back up through the cleared depths; now and then one has to be fought again. */
+  private async advanceDungeonRetreat(): Promise<boolean> {
+    while (this.dungeonRetreatCursor > 0) {
+      const depth = this.dungeonRetreatCursor--;
+      this.gs.log(`The way back: crossing depth ${depth}...`);
+      if (this.gs.rng.chance(DUNGEON_REFIGHT)) {
+        this.gs.log(`Depth ${depth} has to be fought again.`);
+        this.spawnWave(depth);
+        return true;
+      }
+    }
+    await this.leaveDungeon();
+    return false;
+  }
+
+  /** Out of the dungeon alive. */
+  private async leaveDungeon(): Promise<void> {
+    await this.resolveExpeditionLevelUps();
+    this.explorationWon = true;
+    this.endGame();
+  }
+
   /** Reorder initiative so the ambushers act before anyone they jumped. */
   private giveAmbushersFirstTurn(): void {
     const order = this.gs.mages
@@ -2136,9 +2230,9 @@ export class GameScene extends Phaser.Scene {
     const leader = this.gs.mages.find((m) => m.team === 1 && !m.isSummon && m.alive);
     const target = this.swamprunWaveEnemies.find((m) => m.alive);
     if (!leader || !target) return false;
-    const spell = opening.kind === 'spell' ? getSpell([opening.word], leader.mageClass) : undefined;
+    const spell = opening.kind === 'spell' ? getSpell(opening.words, leader.mageClass) : undefined;
     if (opening.kind === 'spell' && (!spell || !['enemy', 'point', 'any'].includes(spell.targeting))) {
-      this.gs.log('Ambush failed: no usable spell for that word.');
+      this.gs.log('Ambush failed: no usable spell for those words.');
       return false;
     }
     // The prey stands where the blow can reach it.
@@ -2195,15 +2289,19 @@ export class GameScene extends Phaser.Scene {
     this.swamprunWaveEnemies = [];
     this.swamprunWispCopies.clear();
     this.swamprunArrowsOwned.clear();
-    this.mineMaze = createMineMaze(this.gs.rng);
+    this.mineMaze = createMineMaze(this.gs.rng, { shops: !this.dungeon });
     this.mineExploring = true;
     this.mineInCombat = false;
     this.mineRunEnded = false;
     this.mineActiveRoomId = null;
-    this.minePickaxes = [2];
+    // An Exploration party brings its own pickaxes; the Mines sell none.
+    this.dungeonPickaxes = this.dungeon ? this.carriedPickaxes() : 0;
+    this.minePickaxes = [2, ...Array.from({ length: this.dungeonPickaxes }, () => 10)];
     this.mineChestCursor = 0;
     this.mode = 'shop';
-    this.gs.log('Mine Run — the party enters a branching tunnel with one worn pickaxe (2 durability).');
+    this.gs.log(this.dungeon
+      ? `The Mines — the party enters with ${this.minePickaxes.length === 1 ? 'one worn pickaxe (2 durability)' : `pickaxes of ${this.minePickaxes.join(', ')} durability`}. No shops inside; the way out is the entrance.`
+      : 'Mine Run — the party enters a branching tunnel with one worn pickaxe (2 durability).');
     this.updateWaveHud();
     this.redraw();
     await this.runMineExploration();
@@ -2219,6 +2317,11 @@ export class GameScene extends Phaser.Scene {
       const node = currentMineNode(this.mineMaze);
       const direction = await this.promptMineDirection(node);
       if (!direction || this.mineRunEnded || this.opponentLeft) return;
+      if (direction === 'leave') {
+        this.hideMinePanel();
+        await this.leaveDungeon();
+        return;
+      }
       await this.travelMineTunnel(direction);
     }
   }
@@ -2372,7 +2475,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private async resolveMineTreasure(room: MineRoomState): Promise<void> {
-    const gold = this.gs.rng.roll('1d6+2').total;
+    // An Exploration party finds kit in the chests, never coin.
+    const gold = this.dungeon ? 0 : this.gs.rng.roll('1d6+2').total;
     this.swamprunGold += gold;
     const recipients = this.gs.mages.filter(
       (mage) => mage.team === 1 && mage.alive && !mage.isSummon
@@ -2389,11 +2493,11 @@ export class GameScene extends Phaser.Scene {
       }
     }
     room.resolved = true;
-    this.gs.log(`The party opens a mine chest: ${gold}g. ${itemText}`);
+    this.gs.log(gold > 0 ? `The party opens a mine chest: ${gold}g. ${itemText}` : `The party opens a mine chest. ${itemText}`);
     this.updateWaveHud();
     await this.promptMineChoice(
       'TREASURE CHEST',
-      `Recovered ${gold}g for the party.`,
+      gold > 0 ? `Recovered ${gold}g for the party.` : 'The chest creaks open.',
       itemText,
       [{ id: 'continue', label: 'Leave the chest', color: '#ffd978' }],
       room
@@ -2507,7 +2611,7 @@ export class GameScene extends Phaser.Scene {
     this.redraw();
   }
 
-  private async promptMineDirection(node: MineMazeNode): Promise<MineDirection | null> {
+  private async promptMineDirection(node: MineMazeNode): Promise<MineDirection | 'leave' | null> {
     const available = MINE_DIRECTIONS.filter((direction) =>
       Object.prototype.hasOwnProperty.call(node.exits, direction)
     );
@@ -2515,7 +2619,8 @@ export class GameScene extends Phaser.Scene {
     const title = node.kind === 'room'
       ? `LEAVE ROOM  //  STEP ${this.mineMaze?.steps ?? 0}`
       : `MINE MAP  //  STEP ${this.mineMaze?.steps ?? 0}`;
-    const subtitle = `Encounters cleared: ${this.swamprunWave}  •  Party gold: ${this.swamprunGold}g  •  Pickaxes: ${this.minePickaxes.length ? this.minePickaxes.join('/') : 'none'}`;
+    const purse = this.dungeon ? '' : `  •  Party gold: ${this.swamprunGold}g`;
+    const subtitle = `Encounters cleared: ${this.swamprunWave}${purse}  •  Pickaxes: ${this.minePickaxes.length ? this.minePickaxes.join('/') : 'none'}`;
     this.mode = 'shop';
     if (this.online && this.localSeat !== 0) {
       this.drawMineNavigationPrompt(node, title, `${subtitle}  •  Waiting for the party leader.`, false);
@@ -2529,14 +2634,19 @@ export class GameScene extends Phaser.Scene {
       }
     }
     this.drawMineNavigationPrompt(node, title, subtitle, true);
-    return new Promise<MineDirection>((resolve) => {
+    const canLeave = !!this.dungeon && node.id === 0;
+    return new Promise<MineDirection | 'leave'>((resolve) => {
       this.mineChoiceResolve = (choice) => {
+        this.mineChoiceResolve = null;
+        this.hideMinePanel();
+        if (canLeave && choice === 'leave') {
+          resolve('leave');
+          return;
+        }
         const direction = available.includes(choice as MineDirection)
           ? choice as MineDirection
           : available[0];
         if (this.online) this.net?.send({ k: 'mine-choice', choice: direction });
-        this.mineChoiceResolve = null;
-        this.hideMinePanel();
         resolve(direction);
       };
     });
@@ -2654,6 +2764,14 @@ export class GameScene extends Phaser.Scene {
       onActivate: () => this.toggleInventory(),
     });
     panel.add(inventory);
+    if (interactive && this.dungeon && node.id === 0) {
+      panel.add(new CabinetChip(this, cx - 510, cy + 222, {
+        width: 200,
+        height: 40,
+        label: 'Leave the mines',
+        onActivate: () => this.mineChoiceResolve?.('leave'),
+      }));
+    }
   }
 
   /** Draw the complete discovered maze; only exits touching `node` are selectable. */
@@ -2967,6 +3085,7 @@ export class GameScene extends Phaser.Scene {
     if (this.expedition && !this.expeditionRetreating) {
       this.expeditionRunDepth = Math.max(this.expeditionRunDepth, n);
     }
+    if (this.dungeon && !this.dungeonRetreating) this.dungeonDeepest = Math.max(this.dungeonDeepest, n);
     this.swamprunWaveEnemies = [];
     this.swamprunWispCopies.clear();
     this.expeditionXpEnemies.clear();
@@ -2990,6 +3109,13 @@ export class GameScene extends Phaser.Scene {
       const spawns = mineWaveComposition(n, this.gs.rng, partySize);
       this.gs.log(`— Mine encounter ${n}: ${spawns.length} foe${spawns.length === 1 ? '' : 's'} in the room —`);
       for (const spawn of spawns) this.spawnMineEnemy(spawn);
+    } else if (this.dungeon === 'forest') {
+      const spawns = rollForestWave(n, this.gs.rng, partySize);
+      this.gs.log(`— ${DUNGEONS.forest.name}, depth ${n}: ${describeSpawns(spawns)} —`);
+      for (const spawn of spawns) {
+        if (spawn.family === 'swamp') this.spawnEnemy(spawn.kind);
+        else this.spawnMineEnemy(spawn.spec);
+      }
     } else {
       const encounter = rollSwamprunEncounter(n, this.gs.rng, partySize);
       this.swamprunEncounterPower = encounter.power;
@@ -3286,7 +3412,7 @@ export class GameScene extends Phaser.Scene {
     this.swamprunInterludeActive = true;
     try {
       this.gs.finishCurrentTurn();
-      if (this.explorationCombat) {
+      if (this.explorationCombat && !this.dungeon) {
         await this.finishExplorationFight();
         return false;
       }
@@ -3299,6 +3425,7 @@ export class GameScene extends Phaser.Scene {
         const owned = this.swamprunArrowsOwned.get(m);
         if (owned != null) m.arrows = owned;
       }
+      if (this.dungeon && !this.mineRun) return this.runDungeonInterlude();
       if (this.expedition) {
         await this.resolveExpeditionLevelUps();
         if (this.expeditionRetreating) return this.advanceExpeditionRetreat();
@@ -3312,6 +3439,7 @@ export class GameScene extends Phaser.Scene {
         return this.advanceExpeditionRetreat();
       }
       if (this.mineRun) {
+        if (this.dungeon) await this.resolveExpeditionLevelUps();
         const room = this.mineActiveRoomId == null ? undefined : this.mineMaze?.nodes[this.mineActiveRoomId]?.room;
         if (room) room.resolved = true;
         this.mineInCombat = false;
@@ -3430,6 +3558,10 @@ export class GameScene extends Phaser.Scene {
 
   /** Roll every fallen creature's drop table and pay each human expedition member. */
   private awardWaveLoot(): void {
+    if (this.explorationCombat) {
+      this.awardExplorationDrops();
+      return;
+    }
     let gold = 0;
     const tally: string[] = [];
     const salvage: ItemId[] = [];
@@ -3473,10 +3605,22 @@ export class GameScene extends Phaser.Scene {
     const drops = tally.length ? ` — salvage: ${tally.join(', ')}` : '';
     const supplyText = supplyGold > 0 ? ` (${supplyGold}g party supplies)` : '';
     this.gs.log(
-      this.explorationCombat
-        ? `Fight won. Loot sold for ${gold}g${drops}.`
-        : `${this.mineRun ? 'Encounter' : 'Wave'} ${this.swamprunWave} cleared! Sold loot for ${gold}g${supplyText}${drops}. Party gold: ${this.swamprunGold}g.`
+      `${this.mineRun ? 'Encounter' : 'Wave'} ${this.swamprunWave} cleared! Sold loot for ${gold}g${supplyText}${drops}. Party gold: ${this.swamprunGold}g.`
     );
+  }
+
+  /** Exploration pays in what the fallen leave, never in coin: each creature rolls its own drops. */
+  private awardExplorationDrops(): void {
+    const found: ItemId[] = [];
+    for (const m of this.swamprunWaveEnemies) {
+      if (!m.enemyKind || this.swamprunWispCopies.has(m)) continue;
+      found.push(...rollDrops(m.enemyKind, this.swamprunWave, this.gs.rng));
+    }
+    this.swamprunWaveEnemies = [];
+    const hauled = this.collectMaterials(found);
+    const left = hauled.left.length ? ` Too heavy to carry, left behind: ${this.materialTally(hauled.left)}.` : '';
+    this.gs.log(found.length ? `Drops: ${hauled.text}.${left}` : 'No drops.');
+    this.updateWaveHud();
   }
 
   private expeditionXpToNext(): number {
@@ -3707,7 +3851,9 @@ export class GameScene extends Phaser.Scene {
     if (!this.swamprun) return;
     const alive = this.gs.mages.filter((m) => m.team === 2 && m.alive).length;
     const localPlayer = this.online ? this.mageBySeat(this.localSeat) : this.expeditionLeader();
-    const text = this.expedition
+    const text = this.explorationCombat
+      ? this.explorationHudText(alive)
+      : this.expedition
       ? `Expedition ${this.expeditionRetreating ? 'return' : 'depth'} ${this.swamprunWave}    Foes: ${alive}    Level ${this.expeditionLevel} (${this.expeditionXp}/${this.expeditionXpToNext()} XP)    Gold: ${this.expeditionGoldOf(localPlayer)}g`
       : this.mineRun
         ? this.mineInCombat
@@ -3732,6 +3878,20 @@ export class GameScene extends Phaser.Scene {
     } else {
       this.swamprunHudText.setText(text);
     }
+  }
+
+  /** An Exploration fight earns no coin, so the bar shows where the party is and what it has learned. */
+  private explorationHudText(alive: number): string {
+    const level = `Level ${this.expeditionLevel} (${this.expeditionXp}/${this.expeditionXpToNext()} XP)`;
+    if (this.mineRun) {
+      return this.mineInCombat
+        ? `The Mines  Encounter ${this.swamprunWave}  Enemy Lv ${mineEnemyLevel(this.swamprunWave)}  Foes: ${alive}  ${level}`
+        : `The Mines  Maze step ${this.mineMaze?.steps ?? 0}  Encounters: ${this.swamprunWave}  Pickaxes: ${this.minePickaxes.join(', ') || 'none'}  ${level}`;
+    }
+    const where = this.dungeon
+      ? `${DUNGEONS[this.dungeon].name}  ${this.dungeonRetreating ? 'On the way back, depth' : 'Depth'} ${this.swamprunWave}`
+      : `Depth ${this.swamprunWave}`;
+    return `${where}  Foes: ${alive}  ${level}`;
   }
 
   private async promptExpeditionWaveChoice(): Promise<'continue' | 'return'> {
@@ -11075,7 +11235,7 @@ export class GameScene extends Phaser.Scene {
   private arenaTheme(): ArenaTheme {
     if (this.arenaThemeCache) return this.arenaThemeCache;
     let theme: ArenaTheme;
-    const regional = this.explorationCombat ? EXPLORATION_ARENAS[this.explorationCombat.zone ?? 'capitol'] : undefined;
+    const regional = this.explorationCombat && !this.mineRun ? EXPLORATION_ARENAS[this.explorationCombat.zone ?? 'capitol'] : undefined;
     if (regional) {
       theme = regional;
     } else if (this.mineRun) {
@@ -16107,6 +16267,7 @@ export class GameScene extends Phaser.Scene {
     if (this.fledEdge) {
       this.mode = 'over';
       this.busy = false;
+      if (this.mineRun) this.closeMineExploration();
       this.showEndCard({
         eyebrow: 'WITHDRAWN',
         title: 'ESCAPED',
@@ -16137,12 +16298,18 @@ export class GameScene extends Phaser.Scene {
     if (this.explorationCombat) {
       this.mode = 'over';
       this.busy = false;
+      if (this.mineRun) this.closeMineExploration();
       const won = this.explorationWon;
+      const trained = `${this.explorationKills.length} felled. Level ${this.expeditionLevel} (${this.expeditionXp}/${this.expeditionXpToNext()} XP).`;
+      const dungeon = this.dungeon ? DUNGEONS[this.dungeon] : null;
+      const reached = !dungeon ? ''
+        : this.mineRun ? `${this.mineMaze?.steps ?? 0} tunnels walked. `
+        : `Deepest depth ${this.dungeonDeepest}. `;
       this.showEndCard({
-        eyebrow: won ? 'FIGHT WON' : 'DEFEATED',
-        title: won ? 'VICTORY' : 'PARTY LOST',
+        eyebrow: won ? (dungeon ? 'OUT ALIVE' : 'FIGHT WON') : 'DEFEATED',
+        title: won ? (dungeon ? dungeon.name.toUpperCase() : 'VICTORY') : 'PARTY LOST',
         detail: won
-          ? `${this.explorationKills.length} felled. Level ${this.expeditionLevel} (${this.expeditionXp}/${this.expeditionXpToNext()} XP).`
+          ? `${reached}${trained}`
           : 'Carried back to the last town. 20% of your gold is lost.',
         actionLabel: 'CONTINUE',
         tone: won ? 'victory' : 'defeat',
@@ -16158,16 +16325,7 @@ export class GameScene extends Phaser.Scene {
         0,
         this.swamprunWave - (this.mineRun && this.mineInCombat ? 1 : 0)
       );
-      if (this.mineRun) {
-        this.mineRunEnded = true;
-        this.mineExploring = false;
-        this.mineInCombat = false;
-        this.mineChoiceResolve?.('');
-        this.mineChoiceResolve = null;
-        this.mineCombatResolve?.();
-        this.mineCombatResolve = null;
-        this.hideMinePanel();
-      }
+      if (this.mineRun) this.closeMineExploration();
       const eyebrow = this.mineRun
         ? 'MINE RUN ENDED'
         : this.expedition
@@ -16229,6 +16387,33 @@ export class GameScene extends Phaser.Scene {
     this.endCard = new EndCardView(this, options);
   }
 
+  /** Stop the maze: no more prompts, no fight waiting to resume. */
+  private closeMineExploration(): void {
+    this.mineRunEnded = true;
+    this.mineExploring = false;
+    this.mineInCombat = false;
+    this.mineChoiceResolve?.('');
+    this.mineChoiceResolve = null;
+    this.mineCombatResolve?.();
+    this.mineCombatResolve = null;
+    this.hideMinePanel();
+  }
+
+  /** Pickaxes the party carries as items. */
+  private carriedPickaxes(): number {
+    return this.gs.mages
+      .filter((mage) => mage.team === 1 && !mage.isSummon)
+      .reduce((sum, mage) => sum + mage.bag.filter((id) => id === 'pickaxe').length, 0);
+  }
+
+  /** Carried pickaxes that broke in the Mines are gone; the worn one always breaks first. */
+  private dropBrokenPickaxes(party: readonly Mage[]): void {
+    let broken = Math.max(0, this.dungeonPickaxes - this.minePickaxes.length);
+    for (const mage of party) {
+      while (broken > 0 && this.gs.removeItem(mage, 'pickaxe')) broken -= 1;
+    }
+  }
+
   private returnToMenu(): void {
     if (this.leaving) return;
     this.leaving = true;
@@ -16240,8 +16425,9 @@ export class GameScene extends Phaser.Scene {
         const owned = this.swamprunArrowsOwned.get(m);
         if (owned != null) m.arrows = owned;
       }
+      if (this.dungeon === 'mines') this.dropBrokenPickaxes(survivors);
       if (survivors.length) combat.run.party = capturePartySnapshot(survivors);
-      combat.run.gold = Math.round((combat.run.gold + this.swamprunGold) * 2) / 2;
+      combat.run.gold = Math.round((combat.run.gold + this.swamprunGold) * 10) / 10;
       combat.run.level = this.expeditionLevel;
       combat.run.xp = this.expeditionXp;
       this.scene.start('Exploration', {
@@ -16255,6 +16441,7 @@ export class GameScene extends Phaser.Scene {
           fleeTo: combat.fleeTo,
           tag: combat.tag,
           robbery: combat.encounter === 'robbery',
+          dungeon: combat.dungeon,
         },
       } satisfies ExplorationEntry);
       return;

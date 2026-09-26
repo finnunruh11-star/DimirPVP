@@ -1,6 +1,5 @@
 // Nerogril: the last well before the deep desert, a walled caravan stop on
-// the edge of the dunes. The guild, an apothecary and the outfitter who sells
-// the stillsuits nobody crosses the White Desert without.
+// the edge of the dunes. The guild, an apothecary and a desert outfitter.
 
 import type { BuildingPlacement, LocaleDef, PropPlacement } from '../../../world/locale';
 import { MapBuilder } from '../../../world/mapBuilder';

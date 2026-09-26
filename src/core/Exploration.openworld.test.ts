@@ -5,15 +5,21 @@ import {
   OPEN_WORLD_ID,
   openWorldCell,
   openWorldDef,
+  openWorldMainland,
   openWorldModel,
+  openWorldPace,
   openWorldPacks,
   openWorldSecrets,
   WORLD_SCALE,
 } from '../pve/exploration/openWorld';
-import { capturePartySnapshot } from '../pve/exploration/party';
+import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import { createWorld, PLACES, placeById, regionAt } from '../pve/exploration/world';
 import { validateLocale } from '../world/locale';
+import { findPath } from '../world/pathfind';
+
+/** WALK_SPEED in world/walker.ts, which cannot load outside Vite. */
+const WALK_SPEED = 4.4;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -36,14 +42,53 @@ function freshRun(seed = 11): ExplorationRun {
 const tests: [name: string, run: () => void][] = [
   ['lays the whole world out on foot, sound and built once', () => {
     const def = openWorldDef();
-    equal([def.terrain[0].length, def.terrain.length], [world.w * WORLD_SCALE, world.h * WORLD_SCALE], 'three tiles to a world tile');
+    equal([def.terrain[0].length, def.terrain.length], [world.w * WORLD_SCALE, world.h * WORLD_SCALE], 'ten tiles to a world tile');
     equal(validateLocale(def), [], 'the world map is sound');
     assert(openWorldDef() === def && openWorldModel() === openWorldModel(), 'built once');
     const model = openWorldModel();
     const capitol = placeById('capitol')!;
     const inside = openWorldCell(capitol);
     assert(!model.blocked(inside.x, inside.y) && !model.exitAt(inside.x, inside.y), 'the party arrives on open ground beside a gate');
-    equal(cellWorldTile(inside), { x: capitol.x, y: capitol.y + 1 }, 'just below the Capitol gate');
+    equal(cellWorldTile(inside), { x: capitol.x, y: capitol.y }, 'on the Capitol tile');
+    equal(model.exitAt(inside.x, inside.y - 1)?.place, 'capitol', 'just below the Capitol gate');
+  }],
+
+  ['puts neighbouring towns most of a minute apart on the road, and every gate on the mainland', () => {
+    const model = openWorldModel();
+    const land = openWorldMainland();
+    for (const p of PLACES) {
+      const at = openWorldCell(p);
+      assert(land[at.y * model.w + at.x], `${p.name} can be walked to from the start`);
+    }
+    const from = openWorldCell(placeById('kerusai')!);
+    const to = openWorldCell(placeById('capitol')!);
+    const path = findPath(model.w, model.h, model.blocked, from, to, 2_000_000);
+    assert(path, 'Kerusai and the Capitol are joined on foot');
+    let cells = 0;
+    let prev = from;
+    for (const cell of path) {
+      cells += Math.hypot(cell.x - prev.x, cell.y - prev.y);
+      prev = cell;
+    }
+    const seconds = cells / WALK_SPEED;
+    assert(seconds > 35 && seconds < 60, `Kerusai to the Capitol takes about 45 s at full pace (${seconds.toFixed(0)} s)`);
+  }],
+
+  ['walks full pace on the road and slower in rough country', () => {
+    const def = openWorldDef();
+    const find = (ch: string): { x: number; y: number } => {
+      for (let y = 0; y < def.terrain.length; y++) {
+        const x = def.terrain[y].indexOf(ch);
+        if (x >= 0) return { x, y };
+      }
+      throw new Error(`no '${ch}' on the map`);
+    };
+    const road = find('=');
+    equal(openWorldPace(road.x, road.y), 1, 'full pace on the road');
+    const ford = find('_');
+    assert(openWorldPace(ford.x, ford.y) < 0.6, 'fords are slow going');
+    const tree = find('T');
+    assert(openWorldPace(tree.x, tree.y + 1) < 1, 'off the road is slower');
   }],
 
   ['makes every place a gate, and says so when it is closed', () => {
@@ -59,17 +104,22 @@ const tests: [name: string, run: () => void][] = [
       if (p.locale) {
         equal(travel, { t: 'locale', locale: p.locale, notice: `You enter ${p.name}.` }, `${p.name} can be entered`);
         equal(run.pos, { x: p.x, y: p.y }, 'the run stands on the place it entered');
+      } else if (p.dungeon) {
+        equal(travel, { t: 'dungeon', place: p.id }, `${p.name} leads into its dungeon`);
       } else {
         equal(travel.t, 'stay', `${p.name} turns the party away`);
       }
     }
   }],
 
-  ['rolls packs across the country each day, never at a town gate', () => {
+  ['rolls packs across the country each day, many on the roads, never at a town gate', () => {
     const run = freshRun(21);
     const model = openWorldModel();
     const today = openWorldPacks(run);
-    assert(today.length >= 25, `plenty of packs roam (${today.length})`);
+    assert(today.length >= 120, `plenty of packs roam (${today.length})`);
+    const onRoad = today.filter((pack) => model.def.terrain[pack.y][pack.x] === '=').length;
+    assert(onRoad >= 20, `many wait on the roads (${onRoad})`);
+    assert(today.every((pack) => (pack.pace ?? 0) >= 3 && (pack.pace ?? 0) <= 7), 'every pack has a chase pace');
     equal(openWorldPacks(run), today, 'the same day keeps the same packs');
     run.day += 1;
     assert(JSON.stringify(openWorldPacks(run)) !== JSON.stringify(today), 'a new day brings new packs');
@@ -83,7 +133,7 @@ const tests: [name: string, run: () => void][] = [
     assert(today.some((pack) => pack.zone === 'white'), 'the desert has its hunters');
   }],
 
-  ['hides caches for the whole run and hands out a find', () => {
+  ['hides caches for the whole run and hands out a find: things, never coin or experience', () => {
     const run = freshRun(4);
     const caches = openWorldSecrets(run);
     assert(caches.length >= 15, `caches lie across the world (${caches.length})`);
@@ -92,9 +142,11 @@ const tests: [name: string, run: () => void][] = [
     equal(openWorldSecrets(run), caches, 'they wait day after day');
     const place = resolveLocale(run, OPEN_WORLD_ID)!;
     const gold = run.gold;
+    const before = JSON.stringify(restoreParty(run.party)[0]);
     const result = place.search!(run, caches[0]);
-    assert(result.message.includes('+1 XP'), 'a cache teaches something');
-    assert(run.gold >= gold, 'and never costs anything');
+    assert(!result.message.includes('XP'), 'a cache teaches nothing');
+    equal([run.gold, run.xp], [gold, 0], 'and holds no coin');
+    assert(JSON.stringify(restoreParty(run.party)[0]) !== before, 'but something is found');
   }],
 ];
 

@@ -6228,7 +6228,11 @@ export class GameState {
             }
             return;
           }
-          const amount = game.rng.roll(im.spec).total;
+          const charge = im.chargePer
+            ? Math.min(im.chargeMax ?? Infinity, Math.floor(source.distMovedThisTurn / im.chargePer))
+            : 0;
+          if (charge > 0) game.log(`${source.name} charges in: +${charge} damage.`);
+          const amount = game.rng.roll(im.spec).total + charge;
           source.lastAttackRound = game.round;
           if (source.sandUpkeepEvery > 0) {
             source.attacksSinceSandUpkeep += 1;

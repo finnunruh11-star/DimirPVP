@@ -1524,7 +1524,7 @@ export class MenuExperience {
     const humans = this.model.humanCount();
     if (this.model.mode === 'training') return 'Solo sandbox with one configurable training opponent.';
     if (this.model.mode === 'expedition') return 'One local explorer in a solo campaign.';
-    if (this.model.mode === 'exploration') return 'One local traveller, setting out from the Capitol.';
+    if (this.model.mode === 'exploration') return 'One local traveller, setting out from Kerusai.';
     if (isPveRunMode(this.model.mode)) {
       return `${this.model.seatCount} explorer${this.model.seatCount === 1 ? '' : 's'}: ${humans} human, ${this.model.aiCount} AI.`;
     }

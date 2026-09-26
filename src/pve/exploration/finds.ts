@@ -1,10 +1,9 @@
-// What a party turns up off the road: a little gold, the local herbs and
-// stones, dropped supplies, and now and then a lost piece of kit. Every roll
-// comes from the dice the caller hands in, so a reload finds the same thing.
+// What a party turns up off the road: the local herbs and stones, dropped
+// supplies, and now and then a lost piece of kit. Every roll comes from the
+// dice the caller hands in, so a reload finds the same thing.
 
 import type { Dice } from '../../core/Dice';
 import { getItem, type ItemId } from '../../core/Items';
-import { addXp } from '../progression';
 import { grantToMage, withParty } from './economy';
 import type { ExplorationRun } from './run';
 import type { RegionId } from './world';
@@ -39,24 +38,15 @@ const WHERE: Record<RegionId, string[]> = {
   white: ['Under a dune crest', 'In a sun-bleached skeleton', 'Beside a half-buried pillar'],
 };
 
-/** Hand the leader one find and say what it was. */
+/** Hand the leader one find and say what it was. Things, never coin, and nothing learned from it. */
 export function rollFind(run: ExplorationRun, zone: RegionId, depth: number, dice: Dice): string {
   const where = dice.pick(WHERE[zone]);
   const roll = dice.float();
-  let found: string;
-  if (roll < 0.3) {
-    const gold = dice.die(4) + Math.max(0, depth);
-    run.gold += gold;
-    found = `${gold}g`;
-  } else {
-    const pool = roll < 0.55 ? HERBS[zone] : roll < 0.75 ? SUPPLIES : roll < 0.93 || depth < 3 ? GEMS[zone] : LOST_KIT;
-    const id = dice.pick(pool);
-    const count = pool === HERBS[zone] ? dice.die(2) : id === 'arrow' ? 3 + dice.die(4) : 1;
-    withParty(run, (leader) => {
-      for (let i = 0; i < count; i++) grantToMage(leader, id);
-    });
-    found = `${count > 1 ? `${count}x ` : ''}${getItem(id).name}`;
-  }
-  const levels = addXp(run, 1);
-  return `${where}: ${found}. +1 XP${levels ? '. Level up!' : '.'}`;
+  const pool = roll < 0.55 ? HERBS[zone] : roll < 0.75 ? SUPPLIES : roll < 0.93 || depth < 3 ? GEMS[zone] : LOST_KIT;
+  const id = dice.pick(pool);
+  const count = pool === HERBS[zone] ? dice.die(2) : id === 'arrow' ? 3 + dice.die(4) : 1;
+  withParty(run, (leader) => {
+    for (let i = 0; i < count; i++) grantToMage(leader, id);
+  });
+  return `${where}: ${count > 1 ? `${count}x ` : ''}${getItem(id).name}.`;
 }

@@ -5,6 +5,7 @@ import type { Net } from '../net/Net';
 import type { RaidBossKind } from '../pve/swamprun';
 import type { ExplorationRun, LocaleState } from '../pve/exploration/run';
 import type { EncounterKind, EncounterSpawn, EncounterZone } from '../pve/exploration/encounters';
+import type { DungeonId } from '../pve/exploration/world';
 import { LOADOUT_SIZE } from './constants';
 
 export type MatchMode =
@@ -160,9 +161,11 @@ export interface ExplorationCombat {
   label?: string;
   /** The party sprang this fight: one free strike lands before initiative is rolled. */
   opening?: ExplorationOpening;
+  /** A dive into a dungeon: fights follow one another until the party walks back out. */
+  dungeon?: DungeonId;
 }
 
-export type ExplorationOpening = { kind: 'weapon' } | { kind: 'spell'; word: WordId };
+export type ExplorationOpening = { kind: 'weapon' } | { kind: 'spell'; words: WordId[] };
 
 export interface MatchConfig {
   mode: MatchMode;

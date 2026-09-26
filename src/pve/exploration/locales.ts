@@ -1,10 +1,9 @@
 // Which walkable place an id names, and what lives there beyond the map
 // itself: roaming packs that start fights, and hidden secrets. Towns carry
-// neither; the forest and the wilds fill them in.
+// neither; the wilds and the open world fill them in.
 
 import type { ExitDef, LocaleDef, LocaleModel } from '../../world/locale';
 import type { EncounterSpawn, EncounterZone } from './encounters';
-import { resolveForest } from './forest';
 import { resolveOpenWorld } from './openWorld';
 import type { ExplorationRun } from './run';
 import { townById } from './towns';
@@ -26,6 +25,10 @@ export interface WildPack {
   elite?: boolean;
   /** The roster and arena its fight uses, when not the place's own. */
   zone?: EncounterZone;
+  /** Chase speed in tiles per second, when not the place's default. */
+  pace?: number;
+  /** Already on the party's trail: it chases from the start and never settles. */
+  hunting?: boolean;
 }
 
 export interface Secret {
@@ -60,8 +63,8 @@ export interface ResolvedLocale {
   model?: LocaleModel;
   /**
    * The whole world on foot: the fog is the run's explored map (one chunk per
-   * world tile), the clock runs while the party walks, and the sun and the
-   * sandstorms of the desert apply.
+   * world tile), the clock runs while the party walks, and the sandstorms of
+   * the desert apply.
    */
   world?: boolean;
 }
@@ -85,6 +88,7 @@ export type LocaleTravel =
   | { t: 'world'; notice?: string }
   | { t: 'locale'; locale: string; at?: { x: number; y: number }; notice?: string }
   | { t: 'fight'; pack: WildPack; then: { locale: string; at?: { x: number; y: number } }; fleeTo?: { locale: string; at?: { x: number; y: number } } }
+  | { t: 'dungeon'; place: string }
   | { t: 'stay'; notice: string };
 
 type Resolver = (run: ExplorationRun, id: string) => ResolvedLocale | null;
@@ -94,7 +98,6 @@ const resolvers: Resolver[] = [
     const def = townById(id);
     return def ? { def, kind: 'town', zone: 'capitol', depth: 1, packs: [], secrets: [] } : null;
   },
-  resolveForest,
   resolveWilds,
   resolveOpenWorld,
 ];

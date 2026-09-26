@@ -64,11 +64,14 @@ export class LocaleView {
   private sink: Phaser.GameObjects.GameObject[] = this.objects;
   private readonly pending = new Map<string, LocaleSprite[]>();
   private readonly live = new Map<string, Phaser.GameObjects.GameObject[]>();
+  /** Ground painted per chunk, for maps too big for one tilemap. */
+  private readonly groundChunks = new Map<string, Phaser.Tilemaps.Tilemap>();
+  private readonly streamed: boolean;
   private streamRange = '';
 
-  /** `stream` paints sprites only near the camera; call `stream()` each frame. */
+  /** `stream` paints ground and sprites only near the camera; call `stream()` each frame. */
   constructor(private readonly scene: Phaser.Scene, readonly model: LocaleModel, options: { stream?: boolean } = {}) {
-    this.paintGround();
+    this.streamed = !!options.stream;
     if (options.stream) {
       for (const sprite of model.sprites) {
         const at = sprite.t === 'building' ? sprite.placement : sprite;
@@ -78,6 +81,7 @@ export class LocaleView {
         else this.pending.set(key, [sprite]);
       }
     } else {
+      this.paintGround();
       const shadows = scene.add.graphics().setDepth(-5);
       this.objects.push(shadows);
       for (const sprite of model.sprites) this.paintSprite(sprite, shadows);
@@ -87,7 +91,7 @@ export class LocaleView {
 
   /** Paint the chunks around `view` (world pixels) and drop the ones long out of sight. */
   stream(view: Phaser.Geom.Rectangle): void {
-    if (!this.pending.size && !this.live.size) return;
+    if (!this.streamed) return;
     const size = STREAM_CHUNK * TILE_PX;
     const x0 = Math.floor(view.x / size) - 1;
     const y0 = Math.floor(view.y / size) - 1;
@@ -102,6 +106,8 @@ export class LocaleView {
         if (this.live.has(key)) continue;
         const chunk: Phaser.GameObjects.GameObject[] = [];
         this.live.set(key, chunk);
+        const ground = this.paintGroundChunk(cx, cy);
+        if (ground) this.groundChunks.set(key, ground);
         const sprites = this.pending.get(key);
         if (!sprites) continue;
         const shadows = this.scene.add.graphics().setDepth(-5);
@@ -115,6 +121,8 @@ export class LocaleView {
       const [cx, cy] = key.split(',').map(Number);
       if (cx >= x0 - 1 && cx <= x1 + 1 && cy >= y0 - 1 && cy <= y1 + 1) continue;
       for (const obj of chunk) obj.destroy();
+      this.groundChunks.get(key)?.destroy();
+      this.groundChunks.delete(key);
       this.live.delete(key);
     }
   }
@@ -132,27 +140,44 @@ export class LocaleView {
     this.objects.length = 0;
     for (const chunk of this.live.values()) for (const obj of chunk) obj.destroy();
     this.live.clear();
+    for (const map of this.groundChunks.values()) map.destroy();
+    this.groundChunks.clear();
     this.map?.destroy();
   }
 
   private paintGround(): void {
+    const map = this.groundMap(0, 0, this.model.w, this.model.h);
+    if (map) this.map = map;
+  }
+
+  private paintGroundChunk(cx: number, cy: number): Phaser.Tilemaps.Tilemap | null {
+    const x0 = cx * STREAM_CHUNK;
+    const y0 = cy * STREAM_CHUNK;
+    if (x0 < 0 || y0 < 0 || x0 >= this.model.w || y0 >= this.model.h) return null;
+    return this.groundMap(x0, y0, Math.min(STREAM_CHUNK, this.model.w - x0), Math.min(STREAM_CHUNK, this.model.h - y0));
+  }
+
+  /** Two tilemap layers of Kenney ground for one rectangle of the map. */
+  private groundMap(x0: number, y0: number, w: number, h: number): Phaser.Tilemaps.Tilemap | null {
     const { model, scene } = this;
-    const map = scene.make.tilemap({ tileWidth: 16, tileHeight: 16, width: model.w, height: model.h });
-    this.map = map;
+    const map = scene.make.tilemap({ tileWidth: 16, tileHeight: 16, width: w, height: h });
     const tiles = map.addTilesetImage(KENNEY_KEY, KENNEY_KEY, 16, 16, 0, 1, 0);
-    if (!tiles) return;
-    const ground = map.createBlankLayer('ground', tiles, 0, 0);
-    const overlay = map.createBlankLayer('overlay', tiles, 0, 0);
-    if (!ground || !overlay) return;
+    const ground = tiles && map.createBlankLayer('ground', tiles, x0 * TILE_PX, y0 * TILE_PX);
+    const overlay = tiles && map.createBlankLayer('overlay', tiles, x0 * TILE_PX, y0 * TILE_PX);
+    if (!ground || !overlay) {
+      map.destroy();
+      return null;
+    }
     ground.setScale(TILE_SCALE).setDepth(-20);
     overlay.setScale(TILE_SCALE).setDepth(-19);
-    for (let y = 0; y < model.h; y++) {
-      for (let x = 0; x < model.w; x++) {
-        const i = y * model.w + x;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y0 + y) * model.w + x0 + x;
         ground.putTileAt(model.ground[i], x, y);
         if (model.overlay[i] >= 0) overlay.putTileAt(model.overlay[i], x, y);
       }
     }
+    return map;
   }
 
   private image(key: string, x: number, y: number, depth: number, frame?: string | number): Phaser.GameObjects.Image {

@@ -284,6 +284,9 @@ export class Mage {
     damageClass: DamageClass;
     /** Optional rider applied to the victim after a successful intrinsic hit. */
     onHit?: (ctx: import('../effects/effects').EffectContext, target: Mage) => void;
+    /** A charge: +1 damage per this many px run this turn before the strike, up to `chargeMax`. */
+    chargePer?: number;
+    chargeMax?: number;
   };
   /** Reach (px) of the intrinsic melee, so bulky bodies can still connect. */
   intrinsicMeleeReach?: number;

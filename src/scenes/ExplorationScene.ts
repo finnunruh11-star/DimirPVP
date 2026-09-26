@@ -2,12 +2,13 @@ import Phaser from 'phaser';
 import { playMusic, playSound } from '../audio';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from '../config/constants';
 import type { MatchConfig } from '../config/MatchConfig';
-import { getItem, type ItemId } from '../core/Items';
+import type { ItemId } from '../core/Items';
 import { Mage } from '../core/Mage';
 import { recordKills } from '../pve/exploration/bounties';
 import { advanceHours, durationLabel, isNight } from '../pve/exploration/clock';
-import { absoluteHour, applyHeat, heatFor, isSandstorm, partyHeatProof, stormHoursLeft } from '../pve/exploration/desert';
-import { grantToMage, partyOf, withParty } from '../pve/exploration/economy';
+import { isSandstorm, stormHoursLeft } from '../pve/exploration/desert';
+import { dungeonCombat, DUNGEONS } from '../pve/exploration/dungeons';
+import { grantToMage, money, moneyLabel } from '../pve/exploration/economy';
 import type { EncounterKind, EncounterSpawn, EncounterZone } from '../pve/exploration/encounters';
 import { pickEvent } from '../pve/exploration/events';
 import { isExplored, unpackExplored } from '../pve/exploration/explored';
@@ -15,6 +16,7 @@ import { rollFind } from '../pve/exploration/finds';
 import { resolveLocale } from '../pve/exploration/locales';
 import { OPEN_WORLD_ID, openWorldCell } from '../pve/exploration/openWorld';
 import { capturePartySnapshot } from '../pve/exploration/party';
+import { questFightWon } from '../pve/exploration/quest';
 import { createRun, stepDice, type ExplorationRun, type LocaleState } from '../pve/exploration/run';
 import { loadRun, saveRun } from '../pve/exploration/save';
 import {
@@ -41,6 +43,8 @@ import {
   placeById,
   REGIONS,
   regionAt,
+  START_PLACE,
+  type DungeonId,
   type RegionId,
   type WorldMap,
 } from '../pve/exploration/world';
@@ -79,21 +83,16 @@ export interface ExplorationCombatResult {
   fleeTo?: LocaleState;
   tag?: string;
   robbery?: boolean;
+  /** The dungeon the party dived into, when the fight was a dive. */
+  dungeon?: DungeonId;
 }
 
-const STARTER_WEAPONS: { id: ItemId; extra?: string }[] = [
-  { id: 'travellersDagger' },
-  { id: 'quarterstaff' },
-  { id: 'huntingBow', extra: '15 arrows' },
-  { id: 'apprenticeWand' },
-];
-
-const START_GOLD = 20;
 const DEFEAT_TOLL = 0.2;
 const ROBBERY_TOLL = 0.25;
 const DRAG_SLOP = 8;
 
-const halfGold = (value: number): number => Math.floor(value * 2) / 2;
+/** A share of the purse, rounded down to the silver. */
+const silverDown = (value: number): number => Math.floor(value * 10 + 1e-6) / 10;
 
 /**
  * The overworld. Owns the run, draws the world map, plans and walks trips, and
@@ -113,7 +112,6 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private routeGfx?: Phaser.GameObjects.Graphics;
   private hud?: LocaleHudScene;
   private busy = false;
-  private needsStarterKit = false;
   private route: Cell[] | null = null;
   private drag: { x: number; y: number; moved: boolean } | null = null;
   private overview = false;
@@ -133,7 +131,6 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.world = createWorld();
     this.pendingConfig = entry.config;
     this.busy = false;
-    this.needsStarterKit = false;
     this.hud = undefined;
     this.view = undefined;
     this.token = undefined;
@@ -186,8 +183,10 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         return;
       }
       this.beginFreshRun();
+      return;
     }
-    if (this.run.mapStyle === 'open' && !this.needsStarterKit) {
+    // Without a map there is no travel map: the world is walked.
+    if (this.run.mapStyle === 'open' || !this.run.hasMap) {
       this.enterOpenWorld(this.notice);
       return;
     }
@@ -207,12 +206,18 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     return Math.floor(Math.random() * 0xffffffff) >>> 0;
   }
 
+  /** A fresh traveller wakes inside Kerusai with five silver, no map, and work at the Lodge. */
   private beginFreshRun(): void {
     this.run = createRun(this.freshSeed(), this.buildParty(this.pendingConfig));
-    this.run.gold = START_GOLD;
-    this.needsStarterKit = true;
-    this.notice = 'You set out from the Capitol with 20g, two health potions and a mana potion.';
     saveRun(this.run);
+    const town = placeById(START_PLACE)!;
+    this.scene.stop('LocaleHud');
+    this.scene.start('Locale', {
+      run: this.run,
+      locale: town.locale ?? town.id,
+      starter: true,
+      notice: `Day 1 in ${town.name}. ${moneyLabel(this.run.gold)} to your name, a torch, three potions and no map. The keeper of the Lodge has work.`,
+    } satisfies LocaleEntry);
   }
 
   /** Standing offer when an old run is found: pick it up, or set it down. */
@@ -234,7 +239,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       this.add.text(
         GAME_WIDTH / 2,
         266,
-        `${where}  /  ${saved.gold}g  /  Level ${saved.level}  /  Day ${saved.day}`,
+        `${where}  /  ${moneyLabel(saved.gold)}  /  Level ${saved.level}  /  Day ${saved.day}`,
         { fontFamily: MENU_FONT.control, fontSize: '16px', color: MENU_HEX.bone }
       ).setOrigin(0.5)
     );
@@ -246,7 +251,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
           this.scene.start('Locale', { run: saved, locale: saved.locale.id, notice: 'Where you left off.' } satisfies LocaleEntry);
           return;
         }
-        if (saved.mapStyle === 'open') {
+        if (saved.mapStyle === 'open' || !saved.hasMap) {
           this.enterOpenWorld('Where you left off.');
           return;
         }
@@ -257,7 +262,6 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         root.destroy();
         this.focus.clear();
         this.beginFreshRun();
-        this.openOverworld();
       }],
       ['Back', 'Return to the main menu', () => this.scene.start('Menu')],
     ];
@@ -274,7 +278,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     });
   }
 
-  /** A fresh traveller: the chosen build, standing in the Capitol with a starter kit. */
+  /** A fresh traveller: the chosen build, with a torch and a few potions. */
   private buildParty(config?: MatchConfig): ReturnType<typeof capturePartySnapshot> {
     const seat = config?.seats?.[0];
     const mage = new Mage({
@@ -301,12 +305,12 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const bountyNote = finished.length ? ` Bounty ready: ${finished.join(', ')}.` : '';
 
     if (result.outcome === 'lost') {
-      const toll = halfGold(run.gold * DEFEAT_TOLL);
-      run.gold = halfGold(run.gold - toll);
-      const town = placeById(run.lastTown) ?? placeById('capitol')!;
+      const toll = silverDown(run.gold * DEFEAT_TOLL);
+      run.gold = money(run.gold - toll);
+      const town = placeById(run.lastTown) ?? placeById(START_PLACE)!;
       run.pos = { x: town.x, y: town.y };
       run.locale = null;
-      this.notice = `You were carried back to ${town.name}.${toll > 0 ? ` ${toll}g went missing on the way.` : ''}`;
+      this.notice = `You were carried back to ${town.name}.${toll > 0 ? ` ${moneyLabel(toll)} went missing on the way.` : ''}`;
       saveRun(run);
       this.scene.start('Locale', { run, locale: town.locale ?? town.id, notice: this.notice } satisfies LocaleEntry);
       return true;
@@ -314,16 +318,21 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
 
     let note = '';
     if (result.outcome === 'fled' && result.robbery) {
-      const toll = halfGold(run.gold * ROBBERY_TOLL);
-      run.gold = halfGold(run.gold - toll);
-      if (toll > 0) note = ` The bandits took ${toll}g as you ran.`;
+      const toll = silverDown(run.gold * ROBBERY_TOLL);
+      run.gold = money(run.gold - toll);
+      if (toll > 0) note = ` The bandits took ${moneyLabel(toll)} as you ran.`;
     }
     if (result.outcome === 'won' && result.tag) run.groupsBeaten[result.tag] = run.day;
+    const quest = result.outcome === 'won' ? questFightWon(run, result.tag) : null;
+    const questNote = quest ? ` ${quest}` : '';
 
     const back = result.outcome === 'fled' ? result.fleeTo ?? result.returnTo : result.returnTo;
+    const dungeon = result.dungeon ? DUNGEONS[result.dungeon].name : null;
+    const won = dungeon ? `Out of ${dungeon}.${bountyNote}` : `The way is clear.${bountyNote}${questNote}`;
+    const fled = dungeon ? `You fled ${dungeon}.${note}` : `You broke away.${note}`;
     if (back) {
       saveRun(run);
-      const line = result.outcome === 'won' ? `The way is clear.${bountyNote}` : `You broke away.${note}`;
+      const line = result.outcome === 'won' ? won : fled;
       this.scene.start('Locale', {
         run,
         locale: back.id,
@@ -334,7 +343,9 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       return true;
     }
 
-    this.notice = result.outcome === 'fled' ? `You broke away and caught your breath.${note}` : `The road is clear again.${bountyNote}`;
+    this.notice = dungeon
+      ? result.outcome === 'fled' ? fled : won
+      : result.outcome === 'fled' ? `You broke away and caught your breath.${note}` : `The road is clear again.${bountyNote}${questNote}`;
     saveRun(run);
     return false;
   }
@@ -355,6 +366,33 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         label,
       },
     } satisfies MatchConfig);
+  }
+
+  /** A dungeon on this tile: say what lies inside, then dive if the party means it. */
+  private async enterDungeon(placeId: string): Promise<void> {
+    const place = placeById(placeId);
+    const hud = this.hud;
+    if (!place?.dungeon || !hud || this.busy) return;
+    const dungeon = place.dungeon;
+    const def = DUNGEONS[dungeon];
+    this.busy = true;
+    const choice = await hud.choose(def.name.toUpperCase(), def.warning, [
+      { id: 'enter', label: 'Go in', detail: dungeon === 'mines' ? 'Into the tunnels.' : 'Depth 1.' },
+      { id: 'stay', label: 'Not yet', detail: 'Stay outside.' },
+    ], 'stay');
+    if (choice !== 'enter') {
+      this.busy = false;
+      this.refresh();
+      return;
+    }
+    if (!this.run.visited.includes(place.id)) this.run.visited.push(place.id);
+    saveRun(this.run);
+    playSound('ui.confirm');
+    this.cameras.main.fadeOut(240, 0, 0, 0);
+    this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
+      this.scene.stop('LocaleHud');
+      this.scene.start('Game', { mode: 'exploration', loadouts: [[], []], exploration: dungeonCombat(this.run, dungeon) } satisfies MatchConfig);
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -388,43 +426,9 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.refresh();
     if (this.notice) hud.toast(this.notice, 4200);
     void (async () => {
-      if (this.needsStarterKit) {
-        await this.chooseMapStyle();
-        await this.chooseStarterWeapon();
-        if (this.run.mapStyle === 'open') {
-          this.enterOpenWorld(this.notice);
-          return;
-        }
-      }
       if (await hud.levelUps(this.run)) saveRun(this.run);
       this.refresh();
     })();
-  }
-
-  /** A new run asks how the world should be crossed; the pause menu can change it later. */
-  private async chooseMapStyle(): Promise<void> {
-    if (!this.hud) return;
-    const style = await this.hud.choose<'travel' | 'open'>('HOW DO YOU TRAVEL?', 'You can switch at any time from the pause menu.', [
-      { id: 'travel', label: 'Travel map', detail: 'Click a destination and choose how to travel: Sprint, Sneak, Explore or Fast travel.' },
-      { id: 'open', label: 'Open world', detail: 'Walk the whole world on foot, like the forests and the wilds.' },
-    ]);
-    this.run.mapStyle = style;
-    saveRun(this.run);
-  }
-
-  private async chooseStarterWeapon(): Promise<void> {
-    if (!this.hud) return;
-    this.needsStarterKit = false;
-    const pick = await this.hud.choose<ItemId>('CHOOSE A WEAPON', 'Every traveller leaves the Capitol armed.',
-      STARTER_WEAPONS.map(({ id, extra }) => {
-        const def = getItem(id);
-        return { id, label: def.name, detail: `${def.blurb}${extra ? ` Comes with ${extra}.` : ''}` };
-      }));
-    withParty(this.run, (leader) => {
-      grantToMage(leader, pick);
-      if (pick === 'huntingBow') leader.arrows += 15;
-    });
-    saveRun(this.run);
   }
 
   private tileCenter(cell: Cell): { x: number; y: number } {
@@ -544,11 +548,6 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.hud?.setWorldPanel(this.worldPanel());
   }
 
-  /** Whether the whole party wears something that keeps the desert sun off. */
-  private heatProof(): boolean {
-    return partyHeatProof(partyOf(this.run));
-  }
-
   private worldPanel(): WorldPanel {
     const { run, world } = this;
     const place = placeAt(run.pos.x, run.pos.y);
@@ -557,16 +556,15 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (place) {
       actions.push({
         id: 'enter',
-        label: place.locale ? `Enter ${place.name}` : `${place.name}: ${place.note ?? 'closed'}`,
-        enabled: !this.busy && !!place.locale,
+        label: place.locale || place.dungeon ? `Enter ${place.name}` : `${place.name}: ${place.note ?? 'closed'}`,
+        enabled: !this.busy && !!(place.locale || place.dungeon),
         tone: 'primary',
       });
     }
     const route = this.route;
     if (route) {
       const end = route[route.length - 1];
-      const heatProof = this.heatProof();
-      const plans = TRAVEL_ORDER.map((mode) => planTrip(world, run, route, mode, { heatProof }));
+      const plans = TRAVEL_ORDER.map((mode) => planTrip(world, run, route, mode));
       lines.push(`To ${describeTile(world, end.x, end.y)}`);
       lines.push(`${route.length} tiles, ${Math.round(plans[0].known * 100)}% of the way explored`);
       if (plans[0].storm) lines.push('A sandstorm hides the desert: the way counts as unknown.');
@@ -593,9 +591,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private modeLabel(plan: TripPlan): string {
     const rule = TRAVEL_MODES[plan.mode];
     if (!plan.allowed) return `${rule.label}  (${plan.reason ?? 'not possible'})`;
-    const heat = plan.heat >= 1 ? `  /  heat -${Math.round(plan.heat)} HP` : '';
-    if (plan.mode === 'fast') return `${rule.label}  ${durationLabel(plan.hours)}  /  one roll, danger ${dangerWord(plan.fights)}${heat}`;
-    return `${rule.label}  ${durationLabel(plan.hours)}  /  danger ${dangerWord(plan.fights)}  /  finds ${findsWord(plan.finds)}${heat}`;
+    if (plan.mode === 'fast') return `${rule.label}  ${durationLabel(plan.hours)}  /  one roll, danger ${dangerWord(plan.fights)}`;
+    return `${rule.label}  ${durationLabel(plan.hours)}  /  danger ${dangerWord(plan.fights)}  /  finds ${findsWord(plan.finds)}`;
   }
 
   private onPanelAction(id: string): void {
@@ -624,7 +621,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private async travel(mode: TravelMode): Promise<void> {
     const route = this.route;
     if (!route || this.busy || !this.hud) return;
-    const plan = planTrip(this.world, this.run, route, mode, { heatProof: this.heatProof() });
+    const plan = planTrip(this.world, this.run, route, mode);
     if (!plan.allowed) {
       this.hud.toast(plan.reason ?? 'You cannot go that way.', 2200);
       return;
@@ -640,12 +637,6 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.token?.play(MAGE_RUN);
     const reveal = TRAVEL_MODES[mode].reveal;
     let next = 0;
-    let heat = 0;
-    let burned = 0;
-    const burn = (): void => {
-      if (burned > 0) this.hud?.toast(`The desert sun takes ${burned} HP.`, 2200);
-      burned = 0;
-    };
     for (let index = 0; index < plan.steps.length; index++) {
       const step = plan.steps[index];
       await this.stepToken(step.cell, Phaser.Math.Clamp(step.hours * 260, 50, 280));
@@ -654,24 +645,17 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       if (reveal > 0 && exploreAlong(this.run, [step.cell], step.storm ? 0 : reveal)) {
         this.view?.setExplored(unpackExplored(this.run.explored));
       }
-      heat += step.heat;
-      if (heat >= 1) {
-        burned += applyHeat(this.run, heat);
-        heat -= Math.floor(heat);
-      }
       if (days) this.hud?.toast(`Day ${this.run.day} dawns.`, 1800);
       this.refresh();
       const stop = stops[next];
       if (stop && stop.index === index) {
         next += 1;
         this.token?.play(MAGE_IDLE);
-        burn();
         if ((await this.handleStop(stop)) === 'fight') return;
         this.token?.play(MAGE_RUN);
       }
     }
     this.token?.play(MAGE_IDLE);
-    burn();
     this.arrive();
   }
 
@@ -746,11 +730,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     }
     this.busy = true;
     this.run.steps += 1;
-    const burned = this.heatProof()
-      ? 0
-      : applyHeat(this.run, heatFor(this.world, this.run, this.run.pos.x, this.run.pos.y, SEARCH_HOURS, absoluteHour(this.run)));
     advanceHours(this.run, SEARCH_HOURS);
-    if (burned > 0) hud.toast(`The desert sun takes ${burned} HP while you search.`, 2200);
     if (exploreAlong(this.run, [this.run.pos], 2)) this.view?.setExplored(unpackExplored(this.run.explored));
     const { outcome, zone, depth } = rollSearch(this.world, this.run);
     saveRun(this.run);
@@ -776,6 +756,10 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (this.busy || this.hud?.modalOpen) return;
     const place = placeAt(this.run.pos.x, this.run.pos.y);
     if (!place) return;
+    if (place.dungeon) {
+      void this.enterDungeon(place.id);
+      return;
+    }
     if (!place.locale || !resolveLocale(this.run, place.locale)) {
       this.hud?.toast(place.note ?? `${place.name} cannot be entered yet.`, 2400);
       return;
