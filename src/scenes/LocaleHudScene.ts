@@ -7,7 +7,7 @@ import { playSound } from '../audio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../config/constants';
 import { SceneInput } from '../engine/SceneInput';
 import { bountyProgress } from '../pve/exploration/bounties';
-import { clockLabel } from '../pve/exploration/clock';
+import { dayNews } from '../pve/exploration/calendar';
 import { moneyLabel, partyOf } from '../pve/exploration/economy';
 import { questLines } from '../pve/exploration/quest';
 import type { ExplorationRun } from '../pve/exploration/run';
@@ -16,9 +16,12 @@ import { xpToNext } from '../pve/progression';
 import { CabinetChip, MenuFocusGroup } from '../ui/cabinet/controls';
 import { MENU_COLOR, MENU_FONT, MENU_HEX } from '../ui/cabinet/theme';
 import { ChoiceMenuView } from '../ui/combat/CombatMenus';
+import { playDayCard, type DayCard } from '../ui/pve/DayAnnouncement';
 import { resolvePendingLevels } from '../ui/pve/LevelUpFlow';
 import { PackView } from '../ui/pve/PackView';
 import { ShopView } from '../ui/pve/ShopView';
+import { SightingCard, type SightingCardModel } from '../ui/pve/SightingCard';
+import { TimeWheel } from '../ui/pve/TimeWheel';
 
 export interface HudOwner {
   onHudReady(hud: LocaleHudScene): void;
@@ -57,6 +60,12 @@ export class LocaleHudScene extends Phaser.Scene {
   private worldPanel?: Phaser.GameObjects.Container;
   private worldFocus = new MenuFocusGroup();
   private worldModel: WorldPanel | null = null;
+  private wheel?: TimeWheel;
+  /** The day the HUD last showed; a later one gets its card. */
+  private shownDay = 0;
+  /** A day that turned while a window was open, announced once it closes. */
+  private pendingCard: DayCard | null = null;
+  private cardPlaying: Promise<void> | null = null;
 
   constructor() {
     super('LocaleHud');
@@ -71,6 +80,9 @@ export class LocaleHudScene extends Phaser.Scene {
     this.worldPanel = undefined;
     this.worldModel = null;
     this.worldFocus = new MenuFocusGroup();
+    this.shownDay = 0;
+    this.pendingCard = null;
+    this.cardPlaying = null;
     const panelKey = (run: () => void) => (): void => {
       if (this.worldPanel && !this.modalOpen) run();
     };
@@ -96,7 +108,7 @@ export class LocaleHudScene extends Phaser.Scene {
       align: 'right',
       backgroundColor: '#080907cc',
       padding: { x: 10, y: 6 },
-      wordWrap: { width: 520 },
+      wordWrap: { width: 470 },
     }).setOrigin(1, 0);
     this.hintText = this.add.text(16, GAME_HEIGHT - 12, 'WASD / arrows or click: walk     E: talk     I: pack     Esc: menu', {
       fontFamily: MENU_FONT.control,
@@ -129,13 +141,21 @@ export class LocaleHudScene extends Phaser.Scene {
       align: 'center',
       wordWrap: { width: 760 },
     }).setOrigin(0.5, 0).setVisible(false);
+    this.wheel = new TimeWheel(this, GAME_WIDTH / 2);
     data.owner.onHudReady(this);
+  }
+
+  update(_time: number, delta: number): void {
+    this.wheel?.update(delta);
   }
 
   refresh(run: ExplorationRun, place: string, extra = ''): void {
     const leader = partyOf(run)[0];
     this.title?.setText(place.toUpperCase());
-    this.line?.setText(`${clockLabel(run)}   ${moneyLabel(run.gold)}   Level ${run.level}  (${run.xp}/${xpToNext(run.level)} XP)${extra ? `   ${extra}` : ''}`);
+    this.line?.setText(`${moneyLabel(run.gold)}   Level ${run.level}  (${run.xp}/${xpToNext(run.level)} XP)${extra ? `   ${extra}` : ''}`);
+    this.wheel?.setTime(run.day, run.hour);
+    if (this.shownDay && run.day > this.shownDay) this.announceDay({ day: run.day, hour: run.hour, news: dayNews(run) });
+    this.shownDay = run.day;
     const g = this.bars;
     if (g && leader) {
       g.clear();
@@ -260,8 +280,41 @@ export class LocaleHudScene extends Phaser.Scene {
       this.time.delayedCall(0, () => open((value) => {
         this.modal = Math.max(0, this.modal - 1);
         playSound('ui.close');
+        if (!this.modalOpen && this.pendingCard) {
+          const card = this.pendingCard;
+          this.pendingCard = null;
+          this.announceDay(card);
+        }
         resolve(value);
       }));
+    });
+  }
+
+  /** The day has turned: play its card, or keep it until the open window closes. */
+  private announceDay(card: DayCard): void {
+    if (this.modalOpen) {
+      this.pendingCard = card;
+      return;
+    }
+    const playing = playDayCard(this, card, () => this.wheel?.pulse()).then(() => {
+      if (this.cardPlaying === playing) this.cardPlaying = null;
+    });
+    this.cardPlaying = playing;
+  }
+
+  /** Resolves once no day card is on screen. */
+  dayShown(): Promise<void> {
+    return this.cardPlaying ?? Promise.resolve();
+  }
+
+  /** Offer something spotted off the way. True when the party goes to it. */
+  sighting(model: SightingCardModel): Promise<boolean> {
+    return this.hold<boolean>((done) => {
+      this.worldPanel?.setVisible(false);
+      new SightingCard(this, model, (go) => {
+        this.worldPanel?.setVisible(true);
+        done(go);
+      });
     });
   }
 

@@ -1,18 +1,28 @@
 import Phaser from 'phaser';
 import { playMusic, playSound } from '../audio';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from '../config/constants';
-import type { MatchConfig } from '../config/MatchConfig';
+import type { ExplorationOpening, MatchConfig } from '../config/MatchConfig';
 import type { ItemId } from '../core/Items';
 import { Mage } from '../core/Mage';
 import { recordKills } from '../pve/exploration/bounties';
-import { advanceHours, durationLabel, isNight } from '../pve/exploration/clock';
-import { isSandstorm, stormHoursLeft } from '../pve/exploration/desert';
+import { advanceHours, clockTime, durationLabel, spanLabel } from '../pve/exploration/clock';
+import { absoluteHour, isSandstorm, stormHoursLeft } from '../pve/exploration/desert';
 import { dungeonCombat, DUNGEONS } from '../pve/exploration/dungeons';
 import { grantToMage, money, moneyLabel } from '../pve/exploration/economy';
-import type { EncounterKind, EncounterSpawn, EncounterZone } from '../pve/exploration/encounters';
-import { pickEvent } from '../pve/exploration/events';
+import { describeSpawns, rollEncounter, type EncounterKind, type EncounterSpawn, type EncounterZone } from '../pve/exploration/encounters';
+import { pickEvent, ROAD_EVENTS, type RoadEvent } from '../pve/exploration/events';
 import { isExplored, unpackExplored } from '../pve/exploration/explored';
-import { rollFind } from '../pve/exploration/finds';
+import { gatherHerbs, rollCache, rollFind } from '../pve/exploration/finds';
+import {
+  emptyRoad,
+  LEG_TILES,
+  rollBeat,
+  stopsAlong,
+  walkStep,
+  type Beat,
+  type Sighting,
+  type SightingKind,
+} from '../pve/exploration/journey';
 import { resolveLocale } from '../pve/exploration/locales';
 import { OPEN_WORLD_ID, openWorldCell } from '../pve/exploration/openWorld';
 import { capturePartySnapshot } from '../pve/exploration/party';
@@ -33,6 +43,7 @@ import {
   TRAVEL_ORDER,
   type TravelMode,
   type TripPlan,
+  type TripStep,
   type TripStop,
 } from '../pve/exploration/travel';
 import {
@@ -44,6 +55,7 @@ import {
   REGIONS,
   regionAt,
   START_PLACE,
+  terrainAt,
   type DungeonId,
   type RegionId,
   type WorldMap,
@@ -51,6 +63,9 @@ import {
 import { CabinetButton, MenuFocusGroup } from '../ui/cabinet/controls';
 import { SceneInput } from '../engine/SceneInput';
 import { MENU_FONT, MENU_HEX } from '../ui/cabinet/theme';
+import { darkness } from '../visuals/daylight';
+import { TravelFx } from '../visuals/TravelFx';
+import { createCreatureAnims, preloadCreatureSprites } from '../world/creatureSprite';
 import { preloadLocaleAssets } from '../world/localeRender';
 import { createMageAnims, MAGE_FIRST_FRAME, MAGE_IDLE, MAGE_RUN, preloadMageFrames } from '../world/mageSprite';
 import { OverworldView, OW_CELL, OW_SCALE } from '../world/overworldRender';
@@ -90,9 +105,30 @@ export interface ExplorationCombatResult {
 const DEFEAT_TOLL = 0.2;
 const ROBBERY_TOLL = 0.25;
 const DRAG_SLOP = 8;
+/** Real milliseconds a tile takes per hour it costs, and the bounds either side. */
+const STEP_MS_PER_HOUR = 1250;
+const STEP_MS = { min: 270, max: 700 };
+const FAST_STEP_MS = { perHour: 420, min: 90, max: 200 };
+/** How quickly the light over the map catches up with the clock. */
+const LIGHT_FOLLOW_MS = 170;
 
 /** A share of the purse, rounded down to the silver. */
 const silverDown = (value: number): number => Math.floor(value * 10 + 1e-6) / 10;
+
+/** A trip under way: where it is bound, how it is walked and what is still ahead. */
+interface Trip {
+  dest: Cell;
+  mode: TravelMode;
+  left: number;
+  tiles: number;
+}
+
+const SIGHTING_GO: Record<SightingKind, string> = {
+  herbs: 'Gather it',
+  pack: 'Attack first',
+  cache: 'Search it',
+  event: 'Go and see',
+};
 
 /**
  * The overworld. Owns the run, draws the world map, plans and walks trips, and
@@ -109,12 +145,15 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private pendingConfig?: MatchConfig;
   private view?: OverworldView;
   private token?: Phaser.GameObjects.Sprite;
-  private routeGfx?: Phaser.GameObjects.Graphics;
+  private fx?: TravelFx;
   private hud?: LocaleHudScene;
   private busy = false;
   private route: Cell[] | null = null;
+  private trip: Trip | null = null;
   private drag: { x: number; y: number; moved: boolean } | null = null;
   private overview = false;
+  /** The hour the map is lit for, trailing the clock so the light eases along. */
+  private lightHour = -1;
 
   constructor() {
     super('Exploration');
@@ -123,6 +162,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   preload(): void {
     preloadLocaleAssets(this);
     preloadMageFrames(this);
+    preloadCreatureSprites(this);
   }
 
   create(entry: ExplorationEntry): void {
@@ -134,9 +174,12 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.hud = undefined;
     this.view = undefined;
     this.token = undefined;
+    this.fx = undefined;
     this.route = null;
+    this.trip = null;
     this.drag = null;
     this.overview = false;
+    this.lightHour = -1;
     this.focus.clear();
     this.keys?.destroy();
     this.keys = new SceneInput(this);
@@ -162,11 +205,14 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       this.input.off(Phaser.Input.Events.POINTER_MOVE);
       this.input.off(Phaser.Input.Events.POINTER_UP);
       this.input.off(Phaser.Input.Events.POINTER_WHEEL);
+      this.fx?.destroy();
+      this.fx = undefined;
       this.view?.destroy();
       this.view = undefined;
       this.scene.stop('LocaleHud');
     });
     createMageAnims(this);
+    createCreatureAnims(this);
 
     if (entry.result) {
       this.run = entry.result.run;
@@ -350,7 +396,14 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     return false;
   }
 
-  private startCombat(encounter: EncounterKind, zone: EncounterZone, depth: number, spawns?: EncounterSpawn[], label?: string): void {
+  private startCombat(
+    encounter: EncounterKind,
+    zone: EncounterZone,
+    depth: number,
+    spawns?: EncounterSpawn[],
+    label?: string,
+    opening?: ExplorationOpening,
+  ): void {
     saveRun(this.run);
     this.scene.stop('LocaleHud');
     this.scene.start('Game', {
@@ -364,6 +417,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         zone,
         spawns,
         label,
+        opening,
       },
     } satisfies MatchConfig);
   }
@@ -407,10 +461,12 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const view = new OverworldView(this, this.world);
     this.view = view;
     view.setExplored(unpackExplored(this.run.explored));
-    this.routeGfx = this.add.graphics().setDepth(21);
     const at = this.tileCenter(this.run.pos);
     this.token = this.add.sprite(at.x, at.y, MAGE_FIRST_FRAME).setOrigin(0.5, 0.85).setScale(OW_SCALE + 0.5).setDepth(22);
     this.token.play(MAGE_IDLE);
+    this.fx?.destroy();
+    this.fx = new TravelFx(this, this.token);
+    this.lightHour = -1;
     const cam = this.cameras.main;
     cam.setBounds(0, 0, view.width, view.height);
     cam.setZoom(1);
@@ -433,6 +489,18 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
 
   private tileCenter(cell: Cell): { x: number; y: number } {
     return { x: (cell.x + 0.5) * OW_CELL, y: (cell.y + 0.5) * OW_CELL };
+  }
+
+  /** Ease the light over the map after the clock, and keep the torch on the party. */
+  update(time: number, delta: number): void {
+    const view = this.view;
+    if (!view || !this.run) return;
+    const target = absoluteHour(this.run);
+    if (this.lightHour < 0 || target < this.lightHour || target - this.lightHour > 48) this.lightHour = target;
+    else this.lightHour += (target - this.lightHour) * (1 - Math.exp(-delta / LIGHT_FOLLOW_MS));
+    const hour = this.lightHour % 24;
+    view.setDaylight(hour);
+    this.fx?.update(time, darkness(hour));
   }
 
   private bindMapInput(): void {
@@ -510,26 +578,23 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
 
   private clearRoute(): void {
     this.route = null;
-    this.routeGfx?.clear();
+    this.fx?.clearRoute();
     this.refresh();
   }
 
+  /** The planned route, with a diamond where each stop on the way will fall. */
   private drawRoute(): void {
-    const g = this.routeGfx;
-    if (!g) return;
-    g.clear();
     const route = this.route;
-    if (!route) return;
+    if (!route) {
+      this.fx?.clearRoute();
+      return;
+    }
+    this.drawCells(route, stopsAlong(this.run, route.length));
+  }
+
+  private drawCells(cells: readonly Cell[], stops: readonly number[]): void {
     const mask = unpackExplored(this.run.explored);
-    route.forEach((cell, index) => {
-      const at = this.tileCenter(cell);
-      const known = isExplored(mask, cell.x, cell.y);
-      g.fillStyle(0x16100a, 0.8).fillCircle(at.x, at.y, index === route.length - 1 ? 0 : 5);
-      g.fillStyle(known ? 0xf3e2b0 : 0xe08a3c, 1).fillCircle(at.x, at.y, index === route.length - 1 ? 0 : 3);
-    });
-    const end = this.tileCenter(route[route.length - 1]);
-    g.lineStyle(4, 0x16100a, 0.8).strokeCircle(end.x, end.y, 13);
-    g.lineStyle(2, 0xffe08a, 1).strokeCircle(end.x, end.y, 13);
+    this.fx?.drawRoute(cells, stops, (cell) => this.tileCenter(cell), (cell) => isExplored(mask, cell.x, cell.y));
   }
 
   private hereTitle(): string {
@@ -537,19 +602,25 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   }
 
   private refresh(): void {
+    this.refreshClock();
+    this.hud?.setWorldPanel(this.worldPanel());
+  }
+
+  /** The HUD and the weather only; cheap enough for every step of a trip. */
+  private refreshClock(): void {
     const { run } = this;
     const region: RegionId = regionAt(this.world, run.pos.x, run.pos.y);
     const storm = isSandstorm(run);
     const weather = storm ? `Sandstorm over the desert (${Math.ceil(stormHoursLeft(run))} h)` : '';
     const subtitle = [placeAt(run.pos.x, run.pos.y) ? REGIONS[region].name : '', weather].filter(Boolean).join('  ·  ');
     this.hud?.refresh(run, this.hereTitle(), subtitle);
-    this.view?.setNight(isNight(run.hour));
     this.view?.setStorm(storm);
-    this.hud?.setWorldPanel(this.worldPanel());
   }
 
   private worldPanel(): WorldPanel {
     const { run, world } = this;
+    const trip = this.trip;
+    if (trip) return this.tripPanel(trip);
     const place = placeAt(run.pos.x, run.pos.y);
     const lines: string[] = [];
     const actions: WorldPanel['actions'] = [];
@@ -565,8 +636,10 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (route) {
       const end = route[route.length - 1];
       const plans = TRAVEL_ORDER.map((mode) => planTrip(world, run, route, mode));
+      const stops = stopsAlong(run, route.length).length;
       lines.push(`To ${describeTile(world, end.x, end.y)}`);
-      lines.push(`${route.length} tiles, ${Math.round(plans[0].known * 100)}% of the way explored`);
+      lines.push(`${route.length} tiles, ${stops} stop${stops === 1 ? '' : 's'} on the way, ${Math.round(plans[0].known * 100)}% explored`);
+      lines.push(`Leaving now at a sprint: in by ${this.arrivalLabel(plans[0].hours)}.`);
       if (plans[0].storm) lines.push('A sandstorm hides the desert: the way counts as unknown.');
       plans.forEach((plan) => actions.push({ id: `mode:${plan.mode}`, label: this.modeLabel(plan), enabled: !this.busy && plan.allowed }));
       actions.push({ id: 'clear', label: 'Clear route', enabled: !this.busy });
@@ -593,6 +666,29 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (!plan.allowed) return `${rule.label}  (${plan.reason ?? 'not possible'})`;
     if (plan.mode === 'fast') return `${rule.label}  ${durationLabel(plan.hours)}  /  one roll, danger ${dangerWord(plan.fights)}`;
     return `${rule.label}  ${durationLabel(plan.hours)}  /  danger ${dangerWord(plan.fights)}  /  finds ${findsWord(plan.finds)}`;
+  }
+
+  /** The panel on the road: where to, when the next stop falls and when the party gets in. */
+  private tripPanel(trip: Trip): WorldPanel {
+    const { run, world } = this;
+    const lines = [`To ${describeTile(world, trip.dest.x, trip.dest.y)}  ·  ${TRAVEL_MODES[trip.mode].label}`];
+    if (trip.mode === 'fast') {
+      lines.push('A road you know: no stops on the way.');
+    } else {
+      const next = Math.max(1, LEG_TILES - run.road.tiles);
+      lines.push(next >= trip.tiles
+        ? 'No more stops before you arrive.'
+        : `Next stop in ${next} tile${next === 1 ? '' : 's'}, then one every ${LEG_TILES}.`);
+    }
+    lines.push(`About ${spanLabel(trip.left)} to go, in by ${this.arrivalLabel(trip.left)}.`);
+    return { title: 'ON THE ROAD', lines, actions: [], onAction: () => undefined };
+  }
+
+  /** "18:45", or "day 4, 02:15" when the trip runs past midnight. */
+  private arrivalLabel(hours: number): string {
+    const arrival = this.run.hour + hours;
+    const day = this.run.day + Math.floor(arrival / 24);
+    return `${day > this.run.day ? `day ${day}, ` : ''}${clockTime(arrival % 24)}`;
   }
 
   private onPanelAction(id: string): void {
@@ -628,76 +724,272 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     }
     this.busy = true;
     this.run.steps += 1;
-    const stops = rollTrip(this.run, plan);
+    const stops = mode === 'fast' ? rollTrip(this.run, plan) : [];
     saveRun(this.run);
     this.route = null;
-    this.routeGfx?.clear();
-    this.refresh();
+    this.trip = { dest: route[route.length - 1], mode, left: plan.hours, tiles: plan.steps.length };
     this.followParty();
-    this.token?.play(MAGE_RUN);
-    const reveal = TRAVEL_MODES[mode].reveal;
-    let next = 0;
-    for (let index = 0; index < plan.steps.length; index++) {
-      const step = plan.steps[index];
-      await this.stepToken(step.cell, Phaser.Math.Clamp(step.hours * 260, 50, 280));
-      this.run.pos = { x: step.cell.x, y: step.cell.y };
-      const days = advanceHours(this.run, step.hours);
-      if (reveal > 0 && exploreAlong(this.run, [step.cell], step.storm ? 0 : reveal)) {
-        this.view?.setExplored(unpackExplored(this.run.explored));
-      }
-      if (days) this.hud?.toast(`Day ${this.run.day} dawns.`, 1800);
-      this.refresh();
-      const stop = stops[next];
-      if (stop && stop.index === index) {
-        next += 1;
-        this.token?.play(MAGE_IDLE);
-        if ((await this.handleStop(stop)) === 'fight') return;
-        this.token?.play(MAGE_RUN);
-      }
-    }
-    this.token?.play(MAGE_IDLE);
+    if ((await this.walk(plan, stops)) === 'fight') return;
+    this.trip = null;
     this.arrive();
+  }
+
+  /** Real time a tile takes: slow enough to watch the day go by, brisker on a road you know. */
+  private stepMs(step: TripStep, fast: boolean): number {
+    return fast
+      ? Phaser.Math.Clamp(step.hours * FAST_STEP_MS.perHour, FAST_STEP_MS.min, FAST_STEP_MS.max)
+      : Phaser.Math.Clamp(step.hours * STEP_MS_PER_HOUR, STEP_MS.min, STEP_MS.max);
+  }
+
+  private walking(on: boolean): void {
+    const token = this.token;
+    if (!token) return;
+    token.play(on ? MAGE_RUN : MAGE_IDLE, true);
+    token.anims.timeScale = on ? 0.72 : 1;
+  }
+
+  /** What is left of the trip, with the stops still to come. */
+  private drawAhead(plan: TripPlan, from: number): void {
+    const cells = plan.steps.slice(from).map((step) => step.cell);
+    this.drawCells(cells, this.trip?.mode === 'fast' ? [] : stopsAlong(this.run, cells.length));
+  }
+
+  /** Walk a trip tile by tile with a stop at the end of every leg. 'fight' once the scene has moved on. */
+  private async walk(first: TripPlan, stops: readonly TripStop[]): Promise<'fight' | 'done'> {
+    const trip = this.trip;
+    if (!trip) return 'done';
+    const fast = trip.mode === 'fast';
+    let plan = first;
+    let index = 0;
+    let nextStop = 0;
+    this.drawAhead(plan, 0);
+    this.refresh();
+    this.walking(true);
+    while (index < plan.steps.length) {
+      const step = plan.steps[index];
+      await this.advance(step, trip.mode);
+      trip.left = plan.steps.slice(index + 1).reduce((sum, next) => sum + next.hours, 0);
+      trip.tiles = plan.steps.length - index - 1;
+      const due = !fast && walkStep(this.run, step);
+      this.drawAhead(plan, index + 1);
+      this.hud?.setWorldPanel(this.worldPanel());
+      const stop = fast ? stops[nextStop] : undefined;
+      // A stop falling on the arrival still happens, except inside a town's walls.
+      const home = index === plan.steps.length - 1 && placeAt(step.cell.x, step.cell.y)?.kind === 'city';
+      if (stop && stop.index === index) {
+        nextStop += 1;
+        this.walking(false);
+        if ((await this.handleStop(stop)) === 'fight') return 'fight';
+        this.walking(true);
+      } else if (due && !home) {
+        this.walking(false);
+        const beat = rollBeat(this.world, this.run, step, trip.mode, plan.steps.slice(index + 1).map((next) => next.cell));
+        saveRun(this.run);
+        const result = await this.playBeat(beat, plan, index);
+        if (result === 'fight') return 'fight';
+        if (result === 'moved') {
+          const onward = findRoute(this.world, this.run, trip.dest);
+          if (!onward || onward.length === 0) break;
+          plan = planTrip(this.world, this.run, onward, trip.mode);
+          trip.left = plan.hours;
+          trip.tiles = plan.steps.length;
+          index = 0;
+          this.drawAhead(plan, 0);
+          this.refresh();
+          this.walking(true);
+          continue;
+        }
+        this.refresh();
+        this.walking(true);
+      }
+      index += 1;
+    }
+    this.walking(false);
+    return 'done';
+  }
+
+  /** One tile of walking: the party moves on, the clock turns, the ground is mapped. */
+  private async advance(step: TripStep, mode: TravelMode): Promise<void> {
+    const token = this.token;
+    if (token) this.fx?.step({ x: token.x, y: token.y }, this.tileCenter(step.cell), terrainAt(this.world, step.cell.x, step.cell.y));
+    await this.stepToken(step.cell, this.stepMs(step, mode === 'fast'));
+    this.run.pos = { x: step.cell.x, y: step.cell.y };
+    const days = advanceHours(this.run, step.hours);
+    const reveal = TRAVEL_MODES[mode].reveal;
+    if (reveal > 0 && exploreAlong(this.run, [step.cell], step.storm ? 0 : reveal)) {
+      this.view?.setExplored(unpackExplored(this.run.explored));
+    }
+    this.refreshClock();
+    if (days) {
+      this.walking(false);
+      await this.hud?.dayShown();
+      this.walking(true);
+    }
+  }
+
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => this.time.delayedCall(ms, () => resolve()));
+  }
+
+  /** A stop on the way. 'moved' when the party walked off to something and the way on must be found again. */
+  private async playBeat(beat: Beat, plan: TripPlan, index: number): Promise<'fight' | 'moved' | 'done'> {
+    const fx = this.fx;
+    if (!this.hud || !fx) return 'done';
+    switch (beat.kind) {
+      case 'rest':
+        await fx.rest();
+        return 'done';
+      case 'loot':
+        await this.find(rollFind(this.run, beat.zone, beat.depth, stepDice(this.run, this.run.steps * 7 + 5)));
+        return 'done';
+      case 'event':
+        await fx.cue('?', '#cdb2f2');
+        return (await this.runEvent(beat.zone, beat.depth, stepDice(this.run, this.run.steps * 7 + 6))) === 'fight' ? 'fight' : 'done';
+      case 'fight':
+        await this.ambush(beat.encounter, beat.zone, beat.depth);
+        return 'fight';
+      case 'sighting':
+        return this.sightingBeat(beat.sighting, plan, index);
+    }
+  }
+
+  /** A find: sparks round the party and what it was. */
+  private async find(message: string): Promise<void> {
+    const hud = this.hud;
+    if (!hud) return;
+    this.fx?.sparkle();
+    playSound('ui.confirm');
+    hud.toast(message, 3000);
+    saveRun(this.run);
+    this.refresh();
+    if (this.run.pendingLevels > 0 && (await hud.levelUps(this.run))) saveRun(this.run);
+    await this.pause(650);
+  }
+
+  /** Trouble on the road: the foe steps into view, then the fight begins. */
+  private async ambush(encounter: EncounterKind, zone: EncounterZone, depth: number): Promise<void> {
+    const foes = rollEncounter(zone, encounter, depth, stepDice(this.run, this.run.steps * 7 + 4));
+    this.hud?.toast(encounter === 'robbery' ? 'Ambushed on the road!' : `${describeSpawns(foes)} on the road!`, 1800);
+    saveRun(this.run);
+    await this.fx?.alarm(foes[0]);
+    this.startCombat(encounter, zone, depth, foes);
+  }
+
+  /** Swing the camera so the party and what they spotted both sit above the card. */
+  private frameBoth(spot: { x: number; y: number }): Promise<void> {
+    const token = this.token;
+    if (!token || this.overview) return Promise.resolve();
+    const cam = this.cameras.main;
+    cam.stopFollow();
+    const x = (token.x + spot.x) / 2;
+    const y = (token.y + spot.y) / 2 + 80 / cam.zoom;
+    return new Promise((resolve) => {
+      cam.pan(x, y, 520, 'Sine.easeInOut', true, (_cam: Phaser.Cameras.Scene2D.Camera, progress: number) => {
+        if (progress >= 1) resolve();
+      });
+    });
+  }
+
+  /** Something spotted off the way: mark it, say what it is, and walk over if the party means to. */
+  private async sightingBeat(sighting: Sighting, plan: TripPlan, index: number): Promise<'fight' | 'moved' | 'done'> {
+    const hud = this.hud;
+    const fx = this.fx;
+    const trip = this.trip;
+    const there = findRoute(this.world, this.run, sighting.cell);
+    if (!hud || !fx || !trip || !there || there.length === 0) {
+      await fx?.rest();
+      return 'done';
+    }
+    // A pack is met from the next tile over, not stood upon.
+    const path = sighting.kind === 'pack' && there.length > 1 ? there.slice(0, -1) : there;
+    const toSpot = planTrip(this.world, this.run, path, trip.mode);
+    const onward = findRoute(this.world, this.run, trip.dest, sighting.cell);
+    const after = onward ? planTrip(this.world, this.run, onward, trip.mode, sighting.cell).hours : 0;
+    const ahead = plan.steps.slice(index + 1).reduce((sum, step) => sum + step.hours, 0);
+    const extra = Math.max(0, toSpot.hours + after - ahead);
+    const beacon = fx.mark(sighting.kind, this.tileCenter(sighting.cell), sighting.spawns?.[0]);
+    playSound('travel.notice');
+    await this.frameBoth(this.tileCenter(sighting.cell));
+    const go = await hud.sighting({
+      kind: sighting.kind,
+      title: sighting.title,
+      bearing: sighting.bearing,
+      text: sighting.text,
+      go: `${SIGHTING_GO[sighting.kind]}   +${spanLabel(extra)}`,
+      pass: 'Keep going',
+    });
+    this.followParty();
+    if (!go) {
+      beacon.destroy();
+      return 'done';
+    }
+    this.walking(true);
+    for (let i = 0; i < toSpot.steps.length; i++) {
+      this.drawCells(path.slice(i), []);
+      const step = toSpot.steps[i];
+      await this.advance(step, trip.mode);
+      walkStep(this.run, step);
+    }
+    this.fx?.clearRoute();
+    this.walking(false);
+    return this.visit(sighting, beacon);
+  }
+
+  /** At what was spotted: gather it, search it, see to it, or fall on it. */
+  private async visit(sighting: Sighting, beacon: { destroy(): void }): Promise<'fight' | 'moved'> {
+    const dice = stepDice(this.run, this.run.steps * 7 + 3);
+    if (sighting.kind === 'pack') {
+      this.hud?.toast('You fall on them before they see you.', 1800);
+      saveRun(this.run);
+      await this.fx?.cue('!', '#ffd070');
+      this.startCombat('monsters', sighting.zone, sighting.depth, sighting.spawns, 'You fall on them before they see you.', { kind: 'weapon' });
+      return 'fight';
+    }
+    beacon.destroy();
+    if (sighting.kind === 'event') {
+      const event = ROAD_EVENTS.find((candidate) => candidate.id === sighting.eventId);
+      return (await this.runEvent(sighting.zone, sighting.depth, dice, event)) === 'fight' ? 'fight' : 'moved';
+    }
+    const message = sighting.kind === 'cache'
+      ? rollCache(this.run, sighting.zone, sighting.depth, dice, sighting.site ?? 'The ruin')
+      : sighting.herb ? gatherHerbs(this.run, sighting.herb, dice) : 'Nothing grows there after all.';
+    await this.find(message);
+    return 'moved';
   }
 
   /** Mark where the trip ended and give the controls back. */
   private arrive(): void {
     const place = placeAt(this.run.pos.x, this.run.pos.y);
     if (place && !this.run.visited.includes(place.id)) this.run.visited.push(place.id);
+    // Inside the walls the road starts over.
+    if (place?.kind === 'city') this.run.road = emptyRoad();
     saveRun(this.run);
     this.busy = false;
+    this.fx?.clearRoute();
     if (place) this.hud?.toast(`You reach ${place.name}.`, 2000);
     this.refresh();
   }
 
-  /** Something on the way. Returns 'fight' when the scene has moved on to a fight. */
+  /** Something on the way on a known road, or turned up by a search. 'fight' when the scene has moved on. */
   private async handleStop(stop: TripStop): Promise<'fight' | 'done'> {
     const hud = this.hud;
     if (!hud) return 'done';
     if (stop.kind === 'robbery' || stop.kind === 'monsters') {
-      hud.toast(stop.kind === 'robbery' ? 'Ambushed on the road!' : 'Something blocks the way.', 1600);
-      this.cameras.main.shake(200, 0.004);
-      saveRun(this.run);
-      this.time.delayedCall(650, () => this.startCombat(stop.kind as EncounterKind, stop.zone, stop.depth));
+      await this.ambush(stop.kind, stop.zone, stop.depth);
       return 'fight';
     }
     if (stop.kind === 'loot') {
-      const message = rollFind(this.run, stop.zone, stop.depth, stepDice(this.run, this.run.steps * 7 + 5 + stop.index));
-      playSound('ui.confirm');
-      hud.toast(message, 3000);
-      saveRun(this.run);
-      this.refresh();
-      if (this.run.pendingLevels > 0 && (await hud.levelUps(this.run))) saveRun(this.run);
-      await new Promise<void>((resolve) => this.time.delayedCall(450, () => resolve()));
+      await this.find(rollFind(this.run, stop.zone, stop.depth, stepDice(this.run, this.run.steps * 7 + 5 + stop.index)));
       return 'done';
     }
     return this.runEvent(stop.zone, stop.depth, stepDice(this.run, this.run.steps * 7 + 6 + stop.index));
   }
 
   /** A roadside happening with a choice; the trip's own dice decide it. */
-  private async runEvent(zone: EncounterZone, depth: number, dice: ReturnType<typeof stepDice>): Promise<'fight' | 'done'> {
+  private async runEvent(zone: EncounterZone, depth: number, dice: ReturnType<typeof stepDice>, chosen?: RoadEvent): Promise<'fight' | 'done'> {
     const hud = this.hud;
     if (!hud) return 'done';
-    const event = pickEvent(zone, dice);
+    const event = chosen ?? pickEvent(zone, dice);
     const ctx = { run: this.run, zone, depth, dice };
     const choice = await hud.choose(event.title, event.text, event.choices.map((c, i) => ({
       id: String(i),
@@ -735,13 +1027,12 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const { outcome, zone, depth } = rollSearch(this.world, this.run);
     saveRun(this.run);
     this.refresh();
+    await hud.dayShown();
     const dice = stepDice(this.run, this.run.steps * 7 + 4);
     if (outcome === 'robbery' || outcome === 'monsters') {
       if ((await this.handleStop({ index: 0, kind: outcome, zone, depth })) === 'fight') return;
     } else if (outcome === 'loot') {
-      playSound('ui.confirm');
-      hud.toast(rollFind(this.run, zone, depth, dice), 3200);
-      if (await hud.levelUps(this.run)) saveRun(this.run);
+      await this.find(rollFind(this.run, zone, depth, dice));
     } else if (outcome === 'event') {
       if ((await this.runEvent(zone, depth, dice)) === 'fight') return;
     } else {

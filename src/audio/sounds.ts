@@ -265,4 +265,50 @@ export const RECIPES = {
     k.tone({ type: 'triangle', freq: 392, dur: 0.16, gain: 0.1, reverb: 0.3 });
     k.tone({ type: 'triangle', freq: 588, start: 0.09, dur: 0.24, gain: 0.09, reverb: 0.35 });
   },
+
+  // ---- Travel ----
+  'day.dawn': (k: SynthKit) => {
+    // A warm chord swells out of silence; as the new number lands a low boom and a bell ring over it.
+    for (const [freq, gain] of [[130.8, 0.1], [196, 0.08], [261.6, 0.075], [329.6, 0.055], [392, 0.045]] as const) {
+      k.tone({ type: 'sine', freq, dur: 3.3, gain, attack: 1.15, reverb: 0.55 });
+      k.tone({ type: 'triangle', freq: freq * 1.004, dur: 3, gain: gain * 0.35, attack: 1.25, reverb: 0.6 });
+    }
+    k.noise({ dur: 0.85, gain: 0.06, filter: 'bandpass', freq: 500, freqTo: 4200, q: 0.8, attack: 0.7, reverb: 0.5 });
+    k.tone({ type: 'sine', freq: 65.4, freqTo: 58, start: 1.26, dur: 1.5, gain: 0.34, reverb: 0.4 });
+    k.noise({ kind: 'brown', start: 1.26, dur: 0.6, gain: 0.16, filter: 'lowpass', freq: 420, reverb: 0.4 });
+    k.tone({ type: 'sine', freq: 1046.5, start: 1.28, dur: 2.3, gain: 0.085, reverb: 0.7 });
+    k.tone({ type: 'sine', freq: 1568, start: 1.28, dur: 1.7, gain: 0.045, reverb: 0.7 });
+    k.tone({ type: 'sine', freq: 2093, start: 1.34, dur: 1.2, gain: 0.025, reverb: 0.75 });
+    k.tone({ type: 'triangle', freq: 523.3, start: 1.28, dur: 2.4, gain: 0.06, reverb: 0.6 });
+  },
+  'day.night': (k: SynthKit) => {
+    // The same rise in a colder voice: open fifths, a deep toll and a glassy shimmer.
+    for (const [freq, gain] of [[110, 0.1], [164.8, 0.08], [220, 0.065], [246.9, 0.035], [329.6, 0.045]] as const) {
+      k.tone({ type: 'sine', freq, dur: 3.3, gain, attack: 1.15, reverb: 0.65 });
+    }
+    k.noise({ dur: 0.85, gain: 0.045, filter: 'highpass', freq: 3200, attack: 0.6, reverb: 0.6, flicker: { rate: 9, depth: 0.5 } });
+    k.tone({ type: 'sine', freq: 55, freqTo: 50, start: 1.26, dur: 1.7, gain: 0.34, reverb: 0.45 });
+    k.noise({ kind: 'brown', start: 1.26, dur: 0.5, gain: 0.12, filter: 'lowpass', freq: 320, reverb: 0.45 });
+    k.tone({ type: 'sine', freq: 880, start: 1.28, dur: 2.5, gain: 0.075, reverb: 0.75 });
+    k.tone({ type: 'sine', freq: 1318.5, start: 1.32, dur: 2, gain: 0.045, reverb: 0.75 });
+    k.tone({ type: 'sine', freq: 1760, start: 1.4, dur: 1.6, gain: 0.025, reverb: 0.8 });
+  },
+  'travel.notice': (k: SynthKit) => {
+    k.tone({ type: 'triangle', freq: 988, dur: 0.14, gain: 0.1, reverb: 0.35 });
+    k.tone({ type: 'triangle', freq: 1319, start: 0.1, dur: 0.32, gain: 0.1, reverb: 0.45 });
+    k.tone({ type: 'sine', freq: 2637, start: 0.1, dur: 0.26, gain: 0.03, reverb: 0.5 });
+  },
+  'travel.rest': (k: SynthKit) => {
+    // Kindling catching: a soft crackle over a low, warm hum.
+    k.noise({ kind: 'brown', dur: 0.8, gain: 0.15, filter: 'lowpass', freq: 1400, freqTo: 600, attack: 0.08, flicker: { rate: 20, depth: 0.7 }, reverb: 0.15 });
+    k.noise({ start: 0.1, dur: 0.6, gain: 0.045, filter: 'highpass', freq: 3000, flicker: { rate: 26, depth: 0.9 } });
+    k.tone({ type: 'sine', freq: 196, dur: 0.9, gain: 0.05, attack: 0.25, reverb: 0.3 });
+  },
+  'travel.ambush': (k: SynthKit) => {
+    // A stinger: one hard hit under two low saws sliding down against each other.
+    k.noise({ dur: 0.06, gain: 0.4, filter: 'lowpass', freq: 1800, attack: 0.001 });
+    k.tone({ type: 'sawtooth', freq: 220, freqTo: 146, dur: 0.55, gain: 0.08, attack: 0.01, reverb: 0.35 });
+    k.tone({ type: 'sawtooth', freq: 233, freqTo: 155, dur: 0.55, gain: 0.07, attack: 0.01, reverb: 0.35 });
+    k.tone({ type: 'sine', freq: 98, freqTo: 49, dur: 0.5, gain: 0.35 });
+  },
 } satisfies Record<string, (kit: SynthKit) => void>;

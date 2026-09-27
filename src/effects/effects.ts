@@ -9,7 +9,7 @@
 //  and call it from your spells — nothing else needs to change.
 // =============================================================================
 
-import type { DamageInstance, DamageClass, DamageType } from '../core/Damage';
+import type { DamageInstance, DamageType } from '../core/Damage';
 import type { Dice } from '../core/Dice';
 import type { Desecration, DesecrationField, GameState } from '../core/GameState';
 import type { Mage } from '../core/Mage';
@@ -25,13 +25,6 @@ import {
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import { FIELD, RANGE_UNIT, SCARAB, VEIL } from '../config/constants';
 import { Dev } from '../config/dev';
-
-/**
- * The "base" physical damage types a physically-immune (incorporeal) creature
- * ignores. Elemental/exotic physical-class damage (shadow, corrosive, fire,
- * ...) still lands — immunity is to plain blows only, not all health hits.
- */
-const BASE_PHYSICAL_TYPES = new Set<DamageType>(['pierce', 'shatter', 'slashing', 'generic']);
 
 export type CombatFeedbackKind =
   | 'damage'
@@ -370,23 +363,6 @@ export function dealDamage(
     return 0;
   }
 
-  // Swamprun creature class-immunities. Mindless things ignore mental (sanity)
-  // damage; incorporeal things ignore physical damage except radiant 'light'.
-  if (target.sanityImmune && damage.damageClass === 'sanity') {
-    ctx.log(`${target.name} is immune to sanity damage.`);
-    ctx.vfx?.combatFeedback?.(target, { kind: 'immune', label: 'MINDLESS' });
-    return 0;
-  }
-  if (target.physicalImmune && BASE_PHYSICAL_TYPES.has(damage.type)) {
-    ctx.log(`${target.name} is immune to physical damage.`);
-    ctx.vfx?.combatFeedback?.(target, {
-      kind: 'immune',
-      damageType: damage.type,
-      label: 'INCORPOREAL',
-    });
-    return 0;
-  }
-
   // Veil dodge: only targeted (non-area) attacks can be slipped. Area effects
   // always connect. True damage never misses.
   if (canMiss && !isAoe && !isTrue && !Dev.autoSuccess) {
@@ -410,7 +386,7 @@ export function dealDamage(
   }
 
   // A Mind Dodge ward absorbs the next instance of sanity damage.
-  if (damage.damageClass === 'sanity' && target.consumeWard('mind')) {
+  if (damage.type === 'sanity' && target.consumeWard('mind')) {
     ctx.log(`${target.name}'s Mind Dodge negates the sanity damage.`);
     ctx.vfx?.combatFeedback?.(target, { kind: 'blocked', label: 'MIND WARD' });
     return 0;
@@ -425,7 +401,7 @@ export function dealDamage(
     ctx.game.swornRepetitionStacks(target);
   let feedbackLabel: string | undefined;
 
-  const globalHexcraftBonus = ctx.game.hexcraftDamageBonus(damage.type, damage.damageClass);
+  const globalHexcraftBonus = ctx.game.hexcraftDamageBonus(damage.type);
   if (globalHexcraftBonus > 0) {
     amount += globalHexcraftBonus;
     ctx.log(`Mind Shadow deepens the attack (+${globalHexcraftBonus}).`);
@@ -436,7 +412,7 @@ export function dealDamage(
   // strike is fully armour-penetrating (Greatshield sword form).
   if (!opts.ignoreArmor && !isTrue) {
     const beforeArmor = amount;
-    amount = target.reduceIncoming(amount, damage.type, damage.damageClass);
+    amount = target.reduceIncoming(amount, damage.type);
     if (amount < beforeArmor) feedbackLabel = amount > 0 ? 'ARMOUR' : 'ARMOURED';
   }
 
@@ -461,14 +437,14 @@ export function dealDamage(
   }
 
   // An Aluminium Hat shrugs off any minor psychic jab below its threshold.
-  if (damage.damageClass === 'sanity' && amount > 0 && amount < target.sanityWardBelow()) {
+  if (damage.type === 'sanity' && amount > 0 && amount < target.sanityWardBelow()) {
     ctx.log(`${target.name}'s Aluminium Hat negates the sanity damage.`);
     amount = 0;
     feedbackLabel = 'FOIL WARD';
   }
 
   // A shield raised as a reaction blunts the next physical blow (one-shot).
-  if (amount > 0 && damage.damageClass === 'physical' && target.blockPending && !isTrue) {
+  if (amount > 0 && damage.type !== 'sanity' && target.blockPending && !isTrue) {
     const block = target.blockReduction();
     target.blockPending = false;
     if (block > 0) {
@@ -517,17 +493,15 @@ export function dealDamage(
   }
 
   const floorVital = target.unkillable ? 1 : 0;
-  if (damage.damageClass === 'sanity') {
+  if (damage.type === 'sanity') {
     target.sanity = Math.max(floorVital, target.sanity - amount);
   } else {
     target.hp = Math.max(floorVital, target.hp - amount);
   }
-  ctx.log(
-    `${target.name} takes ${amount} ${damage.type} ${damage.damageClass} damage.`
-  );
+  ctx.log(`${target.name} takes ${amount} ${damage.type} damage.`);
   if (amount > 0) {
     ctx.vfx?.combatFeedback?.(target, {
-      kind: damage.damageClass === 'sanity' ? 'sanityDamage' : 'damage',
+      kind: damage.type === 'sanity' ? 'sanityDamage' : 'damage',
       amount,
       damageType: damage.type,
       label: feedbackLabel ?? opts.cause,
@@ -560,7 +534,7 @@ export function dealDamage(
 
   // Lich "Link": HP damage dealt to a linked victim is mirrored back to the
   // owning lich as healing (it profits from the party wounding its thralls).
-  if (amount > 0 && damage.damageClass !== 'sanity' && target.drainLinkTo) {
+  if (amount > 0 && damage.type !== 'sanity' && target.drainLinkTo) {
     const lich = target.drainLinkTo;
     if (lich !== target && lich.alive && lich.hp < lich.maxHp) {
       const before = lich.hp;
@@ -577,7 +551,7 @@ export function dealDamage(
   // instead. Sanity is also topped up so a mental "kill" can't slip past.
   if (
     target.reviveAtHalfAvailable &&
-    (target.hp <= 0 || (!target.sanityImmune && target.sanity <= 0)) &&
+    (target.hp <= 0 || (!target.isImmuneTo('sanity') && target.sanity <= 0)) &&
     !target.unkillable
   ) {
     target.reviveAtHalfAvailable = false;
@@ -628,7 +602,7 @@ export function dealDamage(
     if (!opts.noImpactFx) {
       ctx.vfx?.spellEffect?.(target, damage.type === 'corrosive' ? 'corrosive' : 'generic');
     }
-    breakVeilOnStruck(ctx, target, damage.damageClass, amount);
+    breakVeilOnStruck(ctx, target, damage.type, amount);
     if (canMiss) breakVeilOnStrike(ctx, ctx.caster, amount);
     ctx.game.resolveVeilCorrodePierce(ctx.caster, target, veilCorrodePiercePower);
     // A Channeling Ring converts pain into mana.
@@ -638,7 +612,7 @@ export function dealDamage(
       ctx.log(`${target.name}'s Channeling Ring grants ${manaBack} mana.`);
     }
     // Gaze Timez Bracelet: dealing or taking mental (mill) damage grants 1d3 mana.
-    if (damage.damageClass === 'sanity') {
+    if (damage.type === 'sanity') {
       tryMillMana(ctx.caster, ctx);
       tryMillMana(target, ctx);
     }
@@ -653,7 +627,7 @@ export function dealDamage(
     }
     // Blood Charm: spells you cast heal you for a slice of the HP damage dealt.
     if (
-      damage.damageClass !== 'sanity' &&
+      damage.type !== 'sanity' &&
       ctx.caster.spellcastActive &&
       target.team !== ctx.caster.team &&
       ctx.caster.spellLifestealPct() > 0 &&
@@ -695,12 +669,12 @@ function veilDodgeChance(mode: 'full' | 'partial', units: number): number {
 function breakVeilOnStruck(
   ctx: EffectContext,
   target: Mage,
-  damageClass: DamageClass,
+  type: DamageType,
   amount: number
 ): void {
   const inv = target.getInvisibility();
   if (!inv) return;
-  const isMill = damageClass === 'sanity';
+  const isMill = type === 'sanity';
   const breaks =
     inv.mode === 'partial'
       ? true // any landed damage shatters a half veil
@@ -1272,14 +1246,7 @@ export function areaDamage(
     .magesInRadius(at, radius, ctx.caster)
     .filter((m) => m.team !== ctx.caster.team || ctx.game.isFoeBlind(ctx.caster));
   for (const m of hits) dealDamage(ctx, m, { ...damage }, { ...opts, aoe: true });
-  ctx.game.damageScarabsInRadius(
-    at,
-    radius,
-    ctx.caster.team,
-    damage.amount,
-    damage.type,
-    damage.damageClass === 'sanity'
-  );
+  ctx.game.damageScarabsInRadius(at, radius, ctx.caster.team, damage.amount, damage.type);
   return hits;
 }
 
@@ -1382,7 +1349,6 @@ export function applyAuraDot(
     radius: number;
     damageSpec: string;
     type: DamageType;
-    damageClass?: DamageClass;
   }
 ): void {
   if (ctx.game.isUnreachable(target)) return;
@@ -1401,7 +1367,6 @@ export function applyAuraDot(
       radius: critScale(ctx, opts.radius),
       damageSpec: opts.damageSpec,
       type: opts.type,
-      damageClass: opts.damageClass ?? 'physical',
     },
     false
   );
@@ -1627,7 +1592,7 @@ export function twistStrike(ctx: EffectContext, target: Mage): void {
   target.twistStampSeq = seq;
   if (consecutive) {
     const amount = rollDice(ctx, '2d6', 'Twist (consecutive)');
-    dealDamage(ctx, target, { amount, type: 'shatter', damageClass: 'physical' });
+    dealDamage(ctx, target, { amount, type: 'shatter' });
   } else {
     applyStun(ctx, target, { duration: 2, type: 'main' });
     ctx.log(`${target.name} loses its next main action.`);

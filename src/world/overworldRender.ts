@@ -1,7 +1,7 @@
 // The world map painted with the town tiles: ground by terrain and region,
 // roads and water autotiled, woods, peaks and marsh read from the terrain grid,
-// a small model of every place, a shade over ground not yet walked, and a
-// night tint. Presentation only: nothing here touches the run's rolls.
+// a small model of every place, a shade over ground not yet walked, and the
+// light of the hour. Presentation only: nothing here touches the run's rolls.
 
 import Phaser from 'phaser';
 import { buildingPixels, type BuildingSpec } from './buildings';
@@ -22,6 +22,7 @@ import {
 import { bufferTexture, specKey } from './localeRender';
 import { PixelBuffer } from './pixels';
 import { bridgePixels, cliffPixels, propPixels, PROPS, type PropKind } from './props';
+import { mapShade } from '../visuals/daylight';
 import { PLACES, regionAt, terrainAt, terrainFill, type Place, type RegionId, type Terrain, type WorldMap } from '../pve/exploration/world';
 
 export const OW_SCALE = 2;
@@ -93,8 +94,10 @@ export class OverworldView {
     }
   }
 
-  setNight(night: boolean): void {
-    this.night.setVisible(night);
+  /** Lay the light of the hour over the map: warm at dawn and dusk, deep blue at night. */
+  setDaylight(hour: number): void {
+    const { color, alpha } = mapShade(hour);
+    this.night.setFillStyle(color, alpha).setVisible(alpha > 0.004);
   }
 
   /** Blowing sand over the whole desert: what was mapped there cannot be seen. */

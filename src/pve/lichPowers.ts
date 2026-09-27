@@ -41,7 +41,7 @@ function lichCurseDot(ctx: EffectContext, target: Mage | null = ctx.target): voi
   applyDot(ctx, target, {
     name: 'Curse',
     duration: 4,
-    damage: dmg(2, 'shadow', 'physical'),
+    damage: dmg(2, 'shadow'),
     damageSpec: '1d3',
   });
 }
@@ -63,7 +63,7 @@ const LICH_DRAIN: Spell = {
   manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
-    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Drain'), 'corrosive', 'physical'));
+    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Drain'), 'corrosive'));
   },
 };
 
@@ -99,8 +99,8 @@ const LICH_VOID: Spell = {
   visual: { preset: 'burst', color: 0x1a0b2e, size: 18, speed: 1.2 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(5, 'shadow', 'physical'), { canMiss: false, trueDamage: true });
-    dealDamage(ctx, ctx.target, dmg(3, 'shadow', 'sanity'), { canMiss: false, trueDamage: true });
+    dealDamage(ctx, ctx.target, dmg(5, 'shadow'), { canMiss: false, trueDamage: true });
+    dealDamage(ctx, ctx.target, dmg(3, 'sanity'), { canMiss: false, trueDamage: true });
   },
 };
 
@@ -148,11 +148,11 @@ const LICH_DRAIN_VOID: Spell = {
   cast(ctx) {
     if (!ctx.target) return;
     // Void, but bigger — and every point torn from the body heals the Lich.
-    drainDamage(ctx, ctx.target, dmg(8, 'shadow', 'physical'), {
+    drainDamage(ctx, ctx.target, dmg(8, 'shadow'), {
       canMiss: false,
       trueDamage: true,
     });
-    dealDamage(ctx, ctx.target, dmg(4, 'shadow', 'sanity'), { canMiss: false, trueDamage: true });
+    dealDamage(ctx, ctx.target, dmg(4, 'sanity'), { canMiss: false, trueDamage: true });
   },
 };
 
@@ -184,7 +184,7 @@ const LICH_CURSE_VOID: Spell = {
       name: 'Unraveling',
       key: 'dot:unraveling',
       duration: 3,
-      damage: dmg(5, 'shadow', 'physical'),
+      damage: dmg(5, 'shadow'),
       damageSpec: '3d3',
     });
   },
@@ -215,7 +215,7 @@ const LICH_ANNIHILATION: Spell = {
     const foes = ctx.game.livingEnemiesOf(ctx.caster);
     let leech = 0;
     for (const foe of foes) {
-      const dealt = dealDamage(ctx, foe, dmg(7, 'shadow', 'physical'), {
+      const dealt = dealDamage(ctx, foe, dmg(7, 'shadow'), {
         canMiss: false,
         aoe: true,
         trueDamage: true,
@@ -226,7 +226,7 @@ const LICH_ANNIHILATION: Spell = {
         ctx.vfx?.spellEffect?.(foe, 'corrosive');
         ctx.vfx?.drainParticles?.(foe.pos, ctx.caster.pos);
       }
-      dealDamage(ctx, foe, dmg(4, 'shadow', 'sanity'), { canMiss: false, aoe: true, trueDamage: true });
+      dealDamage(ctx, foe, dmg(4, 'sanity'), { canMiss: false, aoe: true, trueDamage: true });
       applyDebuff(ctx, foe, {
         name: 'Doomed',
         key: 'debuff:void-curse',

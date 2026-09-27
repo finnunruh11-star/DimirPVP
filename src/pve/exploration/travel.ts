@@ -95,12 +95,12 @@ export interface TripStop {
 
 const tileKnown = (mask: Uint8Array, cell: Cell): boolean => isExplored(mask, cell.x, cell.y);
 
-/** Cheapest route from the party to `to`; unexplored ground counts as slower. */
-export function findRoute(world: WorldMap, run: ExplorationRun, to: Cell): Cell[] | null {
+/** Cheapest route from `from` (the party, by default) to `to`; unexplored ground counts as slower. */
+export function findRoute(world: WorldMap, run: ExplorationRun, to: Cell, from: Cell = run.pos): Cell[] | null {
   const mask = unpackExplored(run.explored);
   const cost = (x: number, y: number): number =>
     TERRAIN[terrainAt(world, x, y)].time * (isExplored(mask, x, y) ? 1 : UNEXPLORED_TIME);
-  return findWeightedPath(world.w, world.h, cost, run.pos, to, world.w * world.h * 2, MIN_TERRAIN_TIME);
+  return findWeightedPath(world.w, world.h, cost, from, to, world.w * world.h * 2, MIN_TERRAIN_TIME);
 }
 
 /** Risk of trouble on one tile before the travel mode and the hour are applied. */
@@ -115,11 +115,12 @@ export function planTrip(
   run: ExplorationRun,
   route: readonly Cell[],
   mode: TravelMode,
+  from: Cell = run.pos,
 ): TripPlan {
   const rule = TRAVEL_MODES[mode];
   const mask = unpackExplored(run.explored);
   const steps: TripStep[] = [];
-  let prev: Cell = run.pos;
+  let prev: Cell = from;
   let clock = run.hour;
   let elapsed = 0;
   for (const cell of route) {

@@ -39,14 +39,14 @@ const tests: [name: string, run: () => Promise<void>][] = [
       drainParticles: (from, to) => drains.push(`${from.x}->${to.x}`),
     } satisfies VfxSink;
 
-    dealDamage(game.effectContext(caster, target, null), target, dmg(3, 'corrosive', 'physical'), {
+    dealDamage(game.effectContext(caster, target, null), target, dmg(3, 'corrosive'), {
       canMiss: false,
     });
     equal(effects, ['corrosive'], 'Corrosive impact');
 
     effects.length = 0;
     caster.hp = 50;
-    drainDamage(game.effectContext(caster, target, null), target, dmg(4, 'shadow', 'physical'), {
+    drainDamage(game.effectContext(caster, target, null), target, dmg(4, 'shadow'), {
       canMiss: false,
     });
     equal(effects, ['corrosive'], 'Drain impact');
@@ -88,7 +88,7 @@ const tests: [name: string, run: () => Promise<void>][] = [
     applyDot(game.effectContext(source, target, null), target, {
       name: 'Test DoT',
       duration: 2,
-      damage: dmg(3, 'shadow', 'physical'),
+      damage: dmg(3, 'shadow'),
     });
 
     game.beginTurn();
@@ -233,7 +233,7 @@ const tests: [name: string, run: () => Promise<void>][] = [
     } satisfies VfxSink;
     const at = { x: 510, y: 200 };
 
-    areaDamage(game.effectContext(caster, null, at), at, 100, dmg(4, 'shatter', 'physical'), {
+    areaDamage(game.effectContext(caster, null, at), at, 100, dmg(4, 'shatter'), {
       canMiss: false,
     });
 

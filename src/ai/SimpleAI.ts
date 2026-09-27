@@ -458,7 +458,7 @@ export class SimpleAI {
       (mage) => !this.game.isUntargetable(mage, this.self)
     );
     if (foes.length === 0) return null;
-    const vitality = (m: Mage): number => m.hp + (m.sanityImmune ? 0 : m.sanity);
+    const vitality = (m: Mage): number => m.hp + (m.isImmuneTo('sanity') ? 0 : m.sanity);
     let best = foes[0];
     let bestScore = vitality(best);
     let bestDist = dist(this.self.pos, best.pos);
@@ -532,7 +532,7 @@ export class SimpleAI {
     );
     // A Void play kills if it empties a pool (5/8 true HP, or 3 true sanity).
     const voidLethal =
-      target.hp <= 8 || (!target.sanityImmune && target.sanity <= 3);
+      target.hp <= 8 || (!target.isImmuneTo('sanity') && target.sanity <= 3);
     const foesInVoidRange = foes.filter(
       (f) => dist(this.self.pos, f.pos) <= LICH_SPELL_RANGE
     ).length;

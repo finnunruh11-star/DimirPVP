@@ -51,6 +51,29 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(specter.statuses, [], 'Rejected Specter debuff');
   }],
 
+  ['ethereal enemies ignore shadow; only the mindless ignore sanity', () => {
+    const caster = new Mage({ name: 'Caster', isAI: false, team: 1, position: { x: 0, y: 0 }, loadout: [] });
+    const cases = [
+      ['wisp', 0, 2],
+      ['specter', 0, 2],
+      ['ghast', 0, 2],
+      ['lich', 0, 2],
+      ['reaper', 0, 0],
+      ['zombie', 4, 0],
+    ] as const;
+    const foes = cases.map(([kind], i) => {
+      const foe = new Mage({ name: kind, isAI: true, team: 2, position: { x: 100 + i * 60, y: 0 }, loadout: [] });
+      applyEnemyTraits(foe, kind, new Dice(3));
+      return foe;
+    });
+    const game = new GameState([caster, ...foes], 7);
+    cases.forEach(([kind, shadowTaken, sanityTaken], i) => {
+      const ctx = game.effectContext(caster, foes[i], null);
+      equal(dealDamage(ctx, foes[i], dmg(4, 'shadow'), { canMiss: false }), shadowTaken, `${kind} shadow`);
+      equal(dealDamage(ctx, foes[i], dmg(2, 'sanity'), { canMiss: false }), sanityTaken, `${kind} sanity`);
+    });
+  }],
+
   ['maps every perfect dodge shape to a free bonus-action window', () => {
     const threeOfKind = analyzeDodge([4, 4, 4]);
     const twoPairs = analyzeDodge([1, 1, 5, 5]);
@@ -360,7 +383,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     assert(game.isPhasedOut(victim), 'The victim phases out');
 
     const ctx = game.effectContext(caster, victim, null);
-    equal(dealDamage(ctx, victim, { amount: 50, type: 'shadow', damageClass: 'physical' }), 0, 'Damage is voided');
+    equal(dealDamage(ctx, victim, { amount: 50, type: 'shadow' }), 0, 'Damage is voided');
     equal(victim.hp, victim.maxHp, 'It takes nothing');
     applyStun(ctx, victim, { duration: 3, type: 'full' });
     applyDebuff(ctx, victim, { name: 'Test', duration: 3, mods: { moveRange: -2 } });
@@ -400,7 +423,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     applyDot(game.effectContext(foe, walker, null), walker, {
       name: 'Test Rot',
       duration: 4,
-      damage: { amount: 5, type: 'corrosive', damageClass: 'physical' },
+      damage: { amount: 5, type: 'corrosive' },
     });
     const dissolve = getSpell(['shadow', 'veil', 'corrode']);
     assert(dissolve, 'Expected Shadow Veil Corrode to be registered.');
@@ -454,7 +477,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     dealDamage(game.effectContext(caster, first, null), first, {
       amount: 10,
       type: 'pierce',
-      damageClass: 'physical',
     });
     equal(second.sanity, 195, 'The thread echoes half as mill');
     equal(bystander.sanity, 200, 'An unthreaded body feels nothing');
@@ -536,7 +558,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     dealDamage(game.effectContext(holder, zombie, null), zombie, {
       amount: 9,
       type: 'shadow',
-      damageClass: 'physical',
     });
     equal(game.isUntargetable(holder, zombie), true, 'Cutting someone down does not reveal it');
 
@@ -752,11 +773,11 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
 
     // A heavy pierce hit always extends, but never past the three-turn ceiling.
     wound.duration = 1;
-    dealDamage(game.effectContext(caster, foe, null), foe, { amount: 9, type: 'pierce', damageClass: 'physical' }, { canMiss: false });
+    dealDamage(game.effectContext(caster, foe, null), foe, { amount: 9, type: 'pierce' }, { canMiss: false });
     equal(wound.duration, 2, 'A hit of 6 or more always buys one turn');
-    dealDamage(game.effectContext(caster, foe, null), foe, { amount: 9, type: 'pierce', damageClass: 'physical' }, { canMiss: false });
+    dealDamage(game.effectContext(caster, foe, null), foe, { amount: 9, type: 'pierce' }, { canMiss: false });
     equal(wound.duration, 3, 'It climbs to the ceiling');
-    dealDamage(game.effectContext(caster, foe, null), foe, { amount: 9, type: 'pierce', damageClass: 'physical' }, { canMiss: false });
+    dealDamage(game.effectContext(caster, foe, null), foe, { amount: 9, type: 'pierce' }, { canMiss: false });
     equal(wound.duration, 3, 'The ceiling holds at three turns');
   }],
 
@@ -1034,7 +1055,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(storm.duration, 3, 'It holds for three turns');
 
     game.spellRollThisCast = 0;
-    dealDamage(game.effectContext(caster, conduit, null), conduit, { amount: 10, type: 'pierce', damageClass: 'physical' }, { canMiss: false });
+    dealDamage(game.effectContext(caster, conduit, null), conduit, { amount: 10, type: 'pierce' }, { canMiss: false });
     assert(neighbour.hp < 500, 'The wound arcs onward to whoever stands nearby');
   }],
 

@@ -5,7 +5,7 @@
 import type { Dice } from '../core/Dice';
 import type { ItemId } from '../core/Items';
 import type { Mage } from '../core/Mage';
-import type { DamageType, DamageClass } from '../core/Damage';
+import type { DamageType } from '../core/Damage';
 import { RANGE_UNIT } from '../config/constants';
 
 export type EnemyKind =
@@ -60,23 +60,18 @@ export interface EnemyDef {
   unlockDepth: number;
   /** Max-HP dice spec, rolled once at spawn (a flat number is allowed). */
   hpSpec: string;
-  /** Sanity pool. Mindless creatures set this high and rely on `sanityImmune`. */
+  /** Sanity pool. Mindless creatures set this high and are immune to 'sanity'. */
   sanity: number;
   /** Movement range in abstract range-units ("cm"), independent of Dexterity. */
   moveUnits: number;
   /** Intrinsic melee strike. */
   meleeSpec: string;
   meleeType: DamageType;
-  meleeClass: DamageClass;
   /** Reach (px) of the melee; bulky bodies need extra to strike past their hull. */
   meleeReach?: number;
   immuneTypes?: DamageType[];
   resistTypes?: DamageType[];
   weakTypes?: DamageType[];
-  /** Mindless: sanity-class damage is voided. */
-  sanityImmune?: boolean;
-  /** Incorporeal: physical-class damage is voided (except 'light'). */
-  physicalImmune?: boolean;
   /** Larger collision body (px) — bulky creatures block passage. */
   bodyRadius?: number;
   /** Wisp gimmick: chance each of its turns to spawn a copy of itself. */
@@ -99,9 +94,11 @@ export interface EnemyDef {
   scale?: number;
 }
 
-// Mindless things keep a huge sanity pool purely as a safety net; `sanityImmune`
-// already voids all mental damage, so it never actually drops.
+// Mindless things are immune to 'sanity'; the huge pool is only a safety net.
 const MINDLESS_SANITY = 999;
+
+// Ethereal bodies: ordinary blows and shadow pass straight through them.
+const ETHEREAL: DamageType[] = ['pierce', 'shatter', 'slashing', 'generic', 'shadow'];
 
 // Every swamp dweller resists heat and is weak to light, so a heat hit (half
 // heat, half light) settles at ×1.25 against the whole roster.
@@ -117,10 +114,9 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     moveUnits: 3,
     meleeSpec: '2',
     meleeType: 'shatter',
-    meleeClass: 'physical',
     weakTypes: ['light', 'shatter'],
     resistTypes: ['heat'],
-    sanityImmune: true,
+    immuneTypes: ['sanity'],
     tint: 0x6f9a52,
   },
   // Elite undead: faster, tougher, shrugs off blades and points.
@@ -134,10 +130,9 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     moveUnits: 4,
     meleeSpec: '1d6',
     meleeType: 'shatter',
-    meleeClass: 'physical',
     weakTypes: ['light', 'shatter'],
     resistTypes: ['pierce', 'slashing', 'heat'],
-    sanityImmune: true,
+    immuneTypes: ['sanity'],
     tint: 0xd6cfae,
   },
   // Flickering mote: fragile and incorporeal, but multiplies if ignored.
@@ -151,10 +146,9 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     moveUnits: 3,
     meleeSpec: '2',
     meleeType: 'shadow',
-    meleeClass: 'physical',
     weakTypes: ['light'],
     resistTypes: ['heat'],
-    physicalImmune: true,
+    immuneTypes: ETHEREAL,
     duplicateChance: 0.5,
     tint: 0x9fe0ff,
     scale: 0.7,
@@ -169,11 +163,10 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     sanity: 10,
     moveUnits: 10,
     meleeSpec: '1d6',
-    meleeType: 'shadow',
-    meleeClass: 'sanity',
+    meleeType: 'sanity',
     weakTypes: ['light'],
     resistTypes: ['heat'],
-    physicalImmune: true,
+    immuneTypes: ETHEREAL,
     debuffImmune: true,
     tint: 0xb7a8ff,
   },
@@ -188,11 +181,10 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     moveUnits: 5,
     meleeSpec: '2d6',
     meleeType: 'shatter',
-    meleeClass: 'physical',
     meleeReach: 108,
     weakTypes: ['shatter', 'light'],
     resistTypes: ['pierce', 'slashing', 'heat'],
-    sanityImmune: true,
+    immuneTypes: ['sanity'],
     bodyRadius: 58,
     tint: 0x8f8f97,
     scale: 1.6,
@@ -214,7 +206,6 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     // to it, preferring its death-words — but it can pick off a distant foe.
     meleeSpec: '1d3',
     meleeType: 'shadow',
-    meleeClass: 'physical',
     meleeReach: 450, // 10cm (10 × RANGE_UNIT)
     // "Physical except shatter" immunity is spelled out as the base physical
     // types minus shatter, plus shadow. Shatter is only resisted; light hurts.
@@ -230,8 +221,9 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
   },
   // Ghast: an elite shadow-caster on par with (or above) the Defender. It never
   // wants to be near you — it marks the ground for a delayed shadow burst and
-  // shoves anyone who closes in, then flees. Immune to raw physical damage types
-  // (corrosive and shadow still bite) and to every debuff; weak to light.
+  // shoves anyone who closes in, then flees. Ethereal: immune to raw physical
+  // damage types and shadow (corrosive still bites), and to every debuff; weak
+  // to light.
   ghast: {
     kind: 'ghast',
     name: 'Ghast',
@@ -243,9 +235,8 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     // A weak fallback bite; its real threats are the mark and the shove.
     meleeSpec: '1d3',
     meleeType: 'shadow',
-    meleeClass: 'physical',
     meleeReach: 360, // 8cm — the shove reach
-    immuneTypes: ['pierce', 'slashing', 'shatter', 'generic'],
+    immuneTypes: ETHEREAL,
     resistTypes: ['heat'],
     weakTypes: ['light'],
     debuffImmune: true,
@@ -270,12 +261,10 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     moveUnits: 6,
     meleeSpec: '0', // the mark deals no damage
     meleeType: 'shadow',
-    meleeClass: 'physical',
     meleeReach: 180, // 4cm mark range
-    immuneTypes: ['pierce', 'slashing', 'shatter', 'generic', 'shadow'],
+    immuneTypes: [...ETHEREAL, 'sanity'],
     resistTypes: ['heat'],
     weakTypes: ['light'],
-    sanityImmune: true,
     debuffImmune: true,
     boss: true,
     reaperKind: true,
@@ -294,7 +283,6 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     moveUnits: 5,
     meleeSpec: '2d6+2',
     meleeType: 'slashing',
-    meleeClass: 'physical',
     resistTypes: ['pierce', 'slashing', 'heat'],
     weakTypes: ['light'],
     bodyRadius: 48,
@@ -311,7 +299,6 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     moveUnits: 9,
     meleeSpec: '1d8',
     meleeType: 'slashing',
-    meleeClass: 'physical',
     weakTypes: ['light'],
     resistTypes: ['heat'],
     tint: 0xd86b35,
@@ -327,7 +314,6 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     moveUnits: 7,
     meleeSpec: '2d6',
     meleeType: 'shadow',
-    meleeClass: 'physical',
     weakTypes: ['light'],
     resistTypes: ['heat'],
     tint: 0x7b2337,
@@ -343,7 +329,6 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     moveUnits: 12,
     meleeSpec: '2d10',
     meleeType: 'pierce',
-    meleeClass: 'physical',
     meleeReach: 5 * RANGE_UNIT,
     // Armoured against ordinary steel and its own darkness; blunt force still tells.
     resistTypes: ['pierce', 'slashing', 'generic', 'shadow', 'heat'],
@@ -363,11 +348,10 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     moveUnits: 3,
     meleeSpec: '1d4',
     meleeType: 'corrosive',
-    meleeClass: 'physical',
     meleeReach: 10 * RANGE_UNIT,
     weakTypes: ['light', 'shatter'],
     resistTypes: ['heat'],
-    sanityImmune: true,
+    immuneTypes: ['sanity'],
     tint: 0x87ad35,
   },
 };
@@ -382,13 +366,11 @@ export function applyEnemyTraits(m: Mage, kind: EnemyKind, rng: Dice): void {
   m.maxSanity = def.sanity;
   m.sanity = def.sanity;
   m.intrinsicMoveUnits = def.moveUnits;
-  m.intrinsicMelee = { spec: def.meleeSpec, type: def.meleeType, damageClass: def.meleeClass };
+  m.intrinsicMelee = { spec: def.meleeSpec, type: def.meleeType };
   if (def.meleeReach != null) m.intrinsicMeleeReach = def.meleeReach;
   m.intrinsicImmuneTypes = [...(def.immuneTypes ?? [])];
   m.intrinsicResistTypes = [...(def.resistTypes ?? [])];
   m.intrinsicWeakTypes = [...(def.weakTypes ?? [])];
-  m.sanityImmune = !!def.sanityImmune;
-  m.physicalImmune = !!def.physicalImmune;
   m.debuffImmune = !!def.debuffImmune;
   m.isBoss = !!def.boss;
   m.reviveAtHalfAvailable = !!def.reviveAtHalf;

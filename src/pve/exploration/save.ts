@@ -8,7 +8,7 @@ import { START_HOUR } from './clock';
 import { isPackedExplored, packExplored, revealTiles, unpackExplored, widenExplored } from './explored';
 import { gateArrival, OPEN_WORLD_ID, worldTileCell } from './openWorld';
 import { QUEST_JOBS, QUEST_OVER } from './quest';
-import { EXPLORATION_VERSION, type ActiveBounty, type ExplorationRun, type LocaleState, type MapStyle, type QuestState } from './run';
+import { EXPLORATION_VERSION, type ActiveBounty, type ExplorationRun, type LocaleState, type MapStyle, type QuestState, type RoadState } from './run';
 import { createWorld, DESERT_COLUMNS, isPassable, placeById, PLACES, START_PLACE, WORLD_H, WORLD_W } from './world';
 
 const STORAGE_KEY = 'dimir.exploration.v1';
@@ -155,10 +155,17 @@ export function parseRun(raw: string): ExplorationRun | null {
       mapStyle,
       hasMap,
       quest: version < 5 ? { job: QUEST_OVER, taken: false, progress: 0, opens: 1 } : parseQuest(parsed.quest),
+      road: parseRoad(parsed.road),
     };
   } catch {
     return null;
   }
+}
+
+function parseRoad(value: unknown): RoadState {
+  const road = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const hazard = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? Math.min(20, Math.max(0, v)) : 0);
+  return { tiles: clamp(road.tiles, 0, 64, 0), danger: hazard(road.danger), luck: hazard(road.luck) };
 }
 
 function parseLocale(locale: Record<string, unknown> | null | undefined, version: number, mapStyle: MapStyle): LocaleState | null {

@@ -26,7 +26,7 @@ import type { MageClass } from './Classes';
 import { DEFAULT_MAGE_CLASS } from './Classes';
 import type { DieResult, StatKey } from './Stats';
 import { STAT_ORDER } from './Stats';
-import type { DamageType, DamageClass } from './Damage';
+import type { DamageType } from './Damage';
 import type { ItemId, WeaponMod, ShieldMod } from './Items';
 import { getItem, carryCapacity, SLOT_CAPS } from './Items';
 import type {
@@ -263,16 +263,12 @@ export class Mage {
   expeditionCompanion?: 'dwarf' | 'elf' | 'human';
   expeditionPermanent = false;
   companionHealCharges = 0;
-  /** Damage types this creature is intrinsically immune to (×0). */
+  /** Damage types this creature is intrinsically immune to (×0). Mindless = 'sanity'. */
   intrinsicImmuneTypes: DamageType[] = [];
   /** Damage types this creature intrinsically resists (×0.5 each). */
   intrinsicResistTypes: DamageType[] = [];
   /** Damage types this creature is intrinsically weak to (×2 each). */
   intrinsicWeakTypes: DamageType[] = [];
-  /** Mindless: sanity-class (mental) damage is voided entirely. */
-  sanityImmune = false;
-  /** Incorporeal: physical-class damage is voided entirely, except 'light'. */
-  physicalImmune = false;
   /** Fixed movement range in abstract range-units (overrides Dex-based move). */
   intrinsicMoveUnits?: number;
   /** Larger collision body (px) so bulky creatures block passage. */
@@ -281,7 +277,6 @@ export class Mage {
   intrinsicMelee?: {
     spec: string;
     type: DamageType;
-    damageClass: DamageClass;
     /** Optional rider applied to the victim after a successful intrinsic hit. */
     onHit?: (ctx: import('../effects/effects').EffectContext, target: Mage) => void;
     /** A charge: +1 damage per this many px run this turn before the strike, up to `chargeMax`. */
@@ -299,7 +294,6 @@ export class Mage {
     radius: number;
     damageSpec: string;
     type: DamageType;
-    damageClass: DamageClass;
   };
   /** Spawned mid-combat (e.g. a wisp split): skip its first upcoming turn. */
   justSpawned = false;
@@ -380,7 +374,6 @@ export class Mage {
     arcDegrees: number;
     spec: string;
     type: DamageType;
-    damageClass: DamageClass;
   };
   /** Index (in game.mages) of the host this unit rides; riders are AoE-only targets. */
   attachedToIndex?: number;
@@ -1680,8 +1673,8 @@ export class Mage {
   }
 
   /** Reduce an incoming hit by worn armour (physical / magic / mental split). */
-  reduceIncoming(amount: number, type: DamageType, damageClass: DamageClass): number {
-    if (damageClass === 'sanity') {
+  reduceIncoming(amount: number, type: DamageType): number {
+    if (type === 'sanity') {
       // Mental damage: armour does nothing; only mind-warding gear helps.
       return Math.max(0, amount - this.mentalReduce());
     }
@@ -1724,6 +1717,14 @@ export class Mage {
       return 0.5 * this.rawResistMultiplier('heat') + 0.5 * this.rawResistMultiplier('light');
     }
     return this.rawResistMultiplier(type);
+  }
+
+  /** Immune to `type`, innately or through worn gear. */
+  isImmuneTo(type: DamageType): boolean {
+    return (
+      this.intrinsicImmuneTypes.includes(type) ||
+      this.equippedItems().some((id) => !!getItem(id).resist?.immune?.includes(type))
+    );
   }
 
   private rawResistMultiplier(type: DamageType): number {

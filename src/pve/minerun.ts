@@ -2,7 +2,7 @@
 // salvage. Runtime actions live separately so this module stays Phaser-free.
 
 import { RANGE_UNIT } from '../config/constants';
-import type { DamageClass, DamageType } from '../core/Damage';
+import type { DamageType } from '../core/Damage';
 import type { Dice } from '../core/Dice';
 import { getItem, type ItemId } from '../core/Items';
 import type { Mage } from '../core/Mage';
@@ -47,7 +47,6 @@ interface MineStats {
 interface MineMelee {
   spec: string;
   type: DamageType;
-  damageClass: DamageClass;
   reach?: number;
 }
 
@@ -142,7 +141,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 2,
     stats: { strength: 8, dex: 0, int: 0 },
     statGrowth: { strength: 2, dex: 0, int: 0 },
-    melee: { spec: '2d6', type: 'shatter', damageClass: 'physical', reach: 112 },
+    melee: { spec: '2d6', type: 'shatter', reach: 112 },
     bodyRadius: 52,
     tint: 0x77746d,
     scale: 1.62,
@@ -157,7 +156,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 5,
     stats: { strength: 3, dex: 3, int: 4 },
     statGrowth: { strength: 3, dex: 3, int: 2 },
-    melee: { spec: '1d4', type: 'heat', damageClass: 'physical' },
+    melee: { spec: '1d4', type: 'heat' },
     resistTypes: [...FIRE_RESIST],
     weakTypes: [...FIRE_WEAK],
     tint: 0xd4a24f,
@@ -173,7 +172,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 5,
     stats: { strength: 5, dex: 5, int: 6 },
     statGrowth: { strength: 3, dex: 3, int: 2 },
-    melee: { spec: '1d6', type: 'heat', damageClass: 'physical' },
+    melee: { spec: '1d6', type: 'heat' },
     resistTypes: [...FIRE_RESIST],
     weakTypes: [...FIRE_WEAK],
     bodyRadius: 34,
@@ -205,7 +204,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 6,
     stats: { strength: 7, dex: 4, int: 2 },
     statGrowth: { strength: 2, dex: 3, int: 6 },
-    melee: { spec: '3d8', type: 'shadow', damageClass: 'physical' },
+    melee: { spec: '3d8', type: 'shadow' },
     tint: 0x19172a,
     scale: 1.06,
     unlock: 5,
@@ -219,7 +218,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 6,
     stats: { strength: 2, dex: 6, int: 2 },
     statGrowth: { strength: 4, dex: 2, int: 6 },
-    melee: { spec: '1d4', type: 'pierce', damageClass: 'physical' },
+    melee: { spec: '1d4', type: 'pierce' },
     airborne: true,
     bodyRadius: 16,
     tint: 0x7f7898,
@@ -280,7 +279,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 5,
     stats: { strength: 1, dex: 5, int: 1 },
     statGrowth: { strength: 0, dex: 3, int: 0 },
-    melee: { spec: '1d4', type: 'pierce', damageClass: 'physical', reach: 225 },
+    melee: { spec: '1d4', type: 'pierce', reach: 225 },
     tint: 0x6f8a55,
     scale: 0.92,
     unlock: 2,
@@ -308,7 +307,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 9,
     stats: { strength: 3, dex: 7, int: 1 },
     statGrowth: { strength: 3, dex: 2, int: 0 },
-    melee: { spec: '1d6', type: 'corrosive', damageClass: 'physical' },
+    melee: { spec: '1d6', type: 'corrosive' },
     resistTypes: ['heat'],
     weakTypes: ['cold'],
     tint: 0xc8a66a,
@@ -324,7 +323,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 7,
     stats: { strength: 8, dex: 2, int: 0 },
     statGrowth: { strength: 2, dex: 0, int: 0 },
-    melee: { spec: '3d8', type: 'pierce', damageClass: 'physical', reach: 140 },
+    melee: { spec: '3d8', type: 'pierce', reach: 140 },
     resistTypes: ['heat', 'slashing'],
     weakTypes: ['cold', 'water'],
     bodyRadius: 58,
@@ -342,7 +341,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 8,
     stats: { strength: 1, dex: 6, int: 0 },
     statGrowth: { strength: 6, dex: 3, int: 0 },
-    melee: { spec: '1d3', type: 'pierce', damageClass: 'physical' },
+    melee: { spec: '1d3', type: 'pierce' },
     bodyRadius: 12,
     tint: 0xc9b08a,
     scale: 0.5,
@@ -357,7 +356,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 4,
     stats: { strength: 1, dex: 1, int: 0 },
     statGrowth: { strength: 0, dex: 0, int: 0 },
-    melee: { spec: '1d3', type: 'corrosive', damageClass: 'physical' },
+    melee: { spec: '1d3', type: 'corrosive' },
     bodyRadius: 14,
     tint: 0x6fd35a,
     scale: 0.55,
@@ -373,7 +372,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 12,
     stats: { strength: 6, dex: 3, int: 0 },
     statGrowth: { strength: 3, dex: 4, int: 0 },
-    melee: { spec: '1d6', type: 'pierce', damageClass: 'physical' },
+    melee: { spec: '1d6', type: 'pierce' },
     charge: { per: 2, max: 6 },
     bodyRadius: 28,
     tint: 0x7a5238,
@@ -389,7 +388,7 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     moveUnits: 10,
     stats: { strength: 3, dex: 6, int: 1 },
     statGrowth: { strength: 3, dex: 3, int: 0 },
-    melee: { spec: '1d6', type: 'pierce', damageClass: 'physical' },
+    melee: { spec: '1d6', type: 'pierce' },
     bodyRadius: 18,
     tint: 0x8a8f96,
     scale: 0.75,
@@ -406,7 +405,7 @@ const SENTINEL_PROFILES: Record<SentinelRole, Partial<MineEnemyDef>> = {
     moveUnits: 4,
     stats: { strength: 6, dex: 2, int: 2 },
     statGrowth: { strength: 2, dex: 6, int: 4 },
-    melee: { spec: '1d6', type: 'shatter', damageClass: 'physical' },
+    melee: { spec: '1d6', type: 'shatter' },
     bodyRadius: 32,
   },
   healer: {
@@ -415,7 +414,7 @@ const SENTINEL_PROFILES: Record<SentinelRole, Partial<MineEnemyDef>> = {
     moveUnits: 5,
     stats: { strength: 2, dex: 3, int: 6 },
     statGrowth: { strength: 6, dex: 4, int: 2 },
-    melee: { spec: '1d4', type: 'heat', damageClass: 'physical' },
+    melee: { spec: '1d4', type: 'heat' },
   },
   dps: {
     hpSpec: '2d6+6',
@@ -423,7 +422,7 @@ const SENTINEL_PROFILES: Record<SentinelRole, Partial<MineEnemyDef>> = {
     moveUnits: 6,
     stats: { strength: 2, dex: 5, int: 5 },
     statGrowth: { strength: 6, dex: 3, int: 2 },
-    melee: { spec: '1d4', type: 'heat', damageClass: 'physical' },
+    melee: { spec: '1d4', type: 'heat' },
   },
 };
 
@@ -565,7 +564,6 @@ export function applyMineEnemyTraits(mage: Mage, spawn: MineSpawnSpec, rng: Dice
     ? {
         spec: power > 0 ? `${def.melee.spec}+${power}` : def.melee.spec,
         type: def.melee.type,
-        damageClass: def.melee.damageClass,
         onHit: magma
           ? (ctx, target) => ctx.game.applySentinelFireStacks(target, 1, ctx.caster)
           : undefined,

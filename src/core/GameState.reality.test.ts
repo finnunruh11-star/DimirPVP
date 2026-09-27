@@ -98,7 +98,7 @@ const tests: [name: string, run: () => Promise<void>][] = [
     const wallEnemy = mage('Wall Enemy', 2, pivot.x + 150, pivot.y);
     const safeEnemy = mage('Safe Enemy', 2, pivot.x + 60, pivot.y);
     const borderAlly = mage('Border Ally', 1, FIELD.x + 40, pivot.y);
-    borderEnemy.physicalImmune = true;
+    borderEnemy.intrinsicImmuneTypes.push('pierce', 'shatter', 'slashing', 'generic');
     wallEnemy.intrinsicImmuneTypes.push('shatter', 'generic');
     const game = new GameState([caster, borderEnemy, wallEnemy, safeEnemy, borderAlly], 41);
     game.addBarrier(

@@ -6,7 +6,7 @@ import { applyMindLightningStack, mindLightningBoltTarget, mindLightningDamage }
 import type { EffectContext, VfxSink, SubTargeter } from '../effects/effects';
 import { dealDamage, drainDamage, heal, applyDot, applyStackingDot, applyDebuff, applyForget, applyInvisibility, applyStun, dash, rollDice, teleport } from '../effects/effects';
 import { dmg } from './Damage';
-import type { DamageType, DamageClass, DamageInstance } from './Damage';
+import type { DamageType, DamageInstance } from './Damage';
 import type { ItemId, ItemDef } from './Items';
 import { getItem, isRangedWeapon, SLOT_CAPS } from './Items';
 import { dist, segmentCircleFirstIntersection, stepTowards, type Vec2 } from './utils';
@@ -113,7 +113,6 @@ export interface GlobalEscalation {
   stages: string[];
   index: number;
   type: DamageType;
-  damageClass: DamageClass;
   potency: number;
 }
 
@@ -731,7 +730,7 @@ export class GameState {
         applyDot(ctx, target, {
           name: 'Grave Rot',
           duration: 3,
-          damage: dmg(2, 'shadow', 'physical'),
+          damage: dmg(2, 'shadow'),
           damageSpec: '1d3',
         });
       }
@@ -782,7 +781,7 @@ export class GameState {
     }
     for (const f of foes) {
       const ctx = this.effectContext(ghast, f, null);
-      dealDamage(ctx, f, dmg(rollDice(ctx, '2d3', 'Ghast Mark'), 'shadow', 'physical'), {
+      dealDamage(ctx, f, dmg(rollDice(ctx, '2d3', 'Ghast Mark'), 'shadow'), {
         aoe: true,
         canMiss: false,
       });
@@ -792,7 +791,7 @@ export class GameState {
   /** Ghast shove: 1d3 shadow damage and knock the target 1d6 range-units away. */
   ghastShove(ghast: Mage, target: Mage): void {
     const ctx = this.effectContext(ghast, target, null);
-    dealDamage(ctx, target, dmg(rollDice(ctx, '1d3', 'Ghast Shove'), 'shadow', 'physical'), {
+    dealDamage(ctx, target, dmg(rollDice(ctx, '1d3', 'Ghast Shove'), 'shadow'), {
       canMiss: false,
     });
     if (!target.alive) return;
@@ -944,7 +943,7 @@ export class GameState {
       for (const foe of foes) {
         if (dist(knight.pos, foe.pos) > 5 * RANGE_UNIT) continue;
         const amount = this.rng.roll('1d10').total;
-        dealDamage(this.effectContext(knight, foe, null), foe, dmg(amount, 'typeless', 'physical'), {
+        dealDamage(this.effectContext(knight, foe, null), foe, dmg(amount, 'typeless'), {
           canMiss: false,
           aoe: true,
           trueDamage: true,
@@ -966,7 +965,7 @@ export class GameState {
         applyDot(this.effectContext(knight, foe, null), foe, {
           name: 'Death Acid',
           duration: 3,
-          damage: dmg(1, 'corrosive', 'physical'),
+          damage: dmg(1, 'corrosive'),
           damageSpec: '1d4',
         });
       }
@@ -975,7 +974,7 @@ export class GameState {
       for (const foe of foes) {
         if (dist(knight.pos, foe.pos) > 10 * RANGE_UNIT) continue;
         const amount = this.rng.roll('1d6').total;
-        dealDamage(this.effectContext(knight, foe, null), foe, dmg(amount, 'shadow', 'sanity'), {
+        dealDamage(this.effectContext(knight, foe, null), foe, dmg(amount, 'sanity'), {
           canMiss: false,
           aoe: true,
         });
@@ -985,7 +984,7 @@ export class GameState {
       for (const foe of foes) {
         if (dist(knight.pos, foe.pos) > 10 * RANGE_UNIT) continue;
         const amount = this.rng.roll('1d6').total;
-        dealDamage(this.effectContext(knight, foe, null), foe, dmg(amount, 'corrosive', 'physical'), {
+        dealDamage(this.effectContext(knight, foe, null), foe, dmg(amount, 'corrosive'), {
           canMiss: false,
           aoe: true,
         });
@@ -1152,7 +1151,7 @@ export class GameState {
     // Curse Corrode enchant: the wielder rots 1d3 each turn it keeps the weapon.
     if (m.weaponEnchant === 'curseCorrode' && m.alive) {
       const ctx = this.effectContext(m, m, null);
-      dealDamage(ctx, m, dmg(this.rng.roll('1d3').total, 'corrosive', 'physical'), { canMiss: false });
+      dealDamage(ctx, m, dmg(this.rng.roll('1d3').total, 'corrosive'), { canMiss: false });
     }
     // Conjured Veil bow: re-cloak its holder at the start of each of their turns.
     const bowId = m.hands.find((id) => getItem(id).conjuredVeilBow);
@@ -1240,7 +1239,7 @@ export class GameState {
         dealDamage(
           ctx,
           mage,
-          dmg(rollDice(ctx, '2d6', 'Twist Reality collision'), 'typeless', 'physical'),
+          dmg(rollDice(ctx, '2d6', 'Twist Reality collision'), 'typeless'),
           { canMiss: false }
         );
         this.log(`${mage.name} is crushed against the edge of reality!`);
@@ -1282,11 +1281,11 @@ export class GameState {
         this.notifyMageRelocation(target, origin, turn.dest, true, turn.path);
         if (!target.alive) continue;
         const ctx = this.effectContext(owner, target, target.pos);
-        dealDamage(ctx, target, dmg(this.rng.roll('1d3').total, 'shatter', 'physical'), {
+        dealDamage(ctx, target, dmg(this.rng.roll('1d3').total, 'shatter'), {
           canMiss: false,
         });
         if (turn.wallSlam && target.alive) {
-          dealDamage(ctx, target, dmg(this.rng.roll('2d6').total, 'shatter', 'physical'), {
+          dealDamage(ctx, target, dmg(this.rng.roll('2d6').total, 'shatter'), {
             canMiss: false,
           });
           this.log(`${target.name} is slammed into a wall by ${rune.name}!`);
@@ -1364,7 +1363,7 @@ export class GameState {
         applyForget(ctx, bearer, { count: 1, duration: 2 });
         this.log(`${bearer.name} is inside the anchoring shadow and forgets a word.`);
       } else {
-        dealDamage(ctx, bearer, dmg(this.rng.roll('1d4').total, 'shadow', 'sanity'), {
+        dealDamage(ctx, bearer, dmg(this.rng.roll('1d4').total, 'sanity'), {
           canMiss: false,
         });
         this.log(`${bearer.name} is outside the anchoring shadow.`);
@@ -1389,7 +1388,7 @@ export class GameState {
       this.log(`${owner.name}'s hook pulls ${bearer.name} in.`);
       this.forceMove(owner, bearer, toOwner);
       if (!bearer.alive) return;
-      dealDamage(ctx, bearer, dmg(this.rng.roll(hook.damageSpec).total, 'pierce', 'physical'), {
+      dealDamage(ctx, bearer, dmg(this.rng.roll(hook.damageSpec).total, 'pierce'), {
         canMiss: false,
       });
       if (!bearer.alive) return;
@@ -1433,7 +1432,7 @@ export class GameState {
         dealDamage(
           this.effectContext(walker, victim, victim.pos),
           victim,
-          dmg(this.rng.roll(phase.passThroughSpec).total, 'corrosive', 'physical'),
+          dmg(this.rng.roll(phase.passThroughSpec).total, 'corrosive'),
           { canMiss: false }
         );
         this.log(`${walker.name} drifts through ${victim.name} and it dissolves.`);
@@ -1464,7 +1463,7 @@ export class GameState {
     for (const victim of this.mages) {
       if (!victim.alive || victim.team === phase.ownerTeam) continue;
       if (dist(victim.pos, bearer.pos) > radius + victim.bodyRadius()) continue;
-      dealDamage(this.effectContext(owner, victim, bearer.pos), victim, dmg(amount, 'shadow', 'physical'), {
+      dealDamage(this.effectContext(owner, victim, bearer.pos), victim, dmg(amount, 'shadow'), {
         canMiss: false,
         aoe: true,
       });
@@ -1495,10 +1494,10 @@ export class GameState {
       if ((pool.feedMeals ?? 0) >= FEEDING_DARK_MEALS_PER_ROUND) continue;
       const ctx = this.effectContext(owner, prey, prey.pos);
       applyStun(ctx, prey, { duration: 1, type: 'movement' });
-      dealDamage(ctx, prey, dmg(this.rng.roll('1d3').total, 'shadow', 'physical'), { canMiss: false });
+      dealDamage(ctx, prey, dmg(this.rng.roll('1d3').total, 'shadow'), { canMiss: false });
       const stacks = pool.feedStacks ?? 0;
       if (stacks > 0 && prey.alive) {
-        dealDamage(ctx, prey, dmg(this.rng.roll(`${stacks}d3`).total, 'corrosive', 'physical'), {
+        dealDamage(ctx, prey, dmg(this.rng.roll(`${stacks}d3`).total, 'corrosive'), {
           canMiss: false,
         });
       }
@@ -1531,12 +1530,12 @@ export class GameState {
       );
       if (!inside) continue;
       const ctx = this.effectContext(owner, prey, prey.pos);
-      dealDamage(ctx, prey, dmg(this.rng.roll('1d3').total, 'shadow', 'sanity'), {
+      dealDamage(ctx, prey, dmg(this.rng.roll('1d3').total, 'sanity'), {
         canMiss: false,
         noImpactFx: true,
       });
       if (!prey.alive) return;
-      dealDamage(ctx, prey, dmg(this.rng.roll('1d6').total, 'corrosive', 'physical'), {
+      dealDamage(ctx, prey, dmg(this.rng.roll('1d6').total, 'corrosive'), {
         canMiss: false,
       });
       if (!prey.alive) return;
@@ -1614,7 +1613,7 @@ export class GameState {
       dealDamage(
         this.effectContext(owner, m, m.pos),
         m,
-        dmg(this.rng.roll(spec).total, zone.damageType, 'physical'),
+        dmg(this.rng.roll(spec).total, zone.damageType),
         { canMiss: false, aoe: true }
       );
       this.log(`${m.name} is caught in ${zone.name}.`);
@@ -1707,7 +1706,7 @@ export class GameState {
       dealt += dealDamage(
         this.effectContext(owner, m, m.pos),
         m,
-        dmg(this.rng.roll(tick.spec).total, tick.type, 'physical'),
+        dmg(this.rng.roll(tick.spec).total, tick.type),
         { canMiss: false, aoe: true, noImpactFx: true }
       );
     }
@@ -1765,7 +1764,7 @@ export class GameState {
         applyStackingDot(this.effectContext(owner, m, m.pos), m, {
           name: 'Plague Rot',
           key: 'dot:plague-rot',
-          damage: dmg(0, 'corrosive', 'physical'),
+          damage: dmg(0, 'corrosive'),
           perStackSpec: field.rot.spec,
           maxStacks: field.rot.maxStacks,
           refreshDuration: 2,
@@ -1890,7 +1889,7 @@ export class GameState {
     for (const seal of seals) {
       const owner = this.mages[seal.ownerIndex] ?? bearer;
       const ctx = this.effectContext(owner, bearer, bearer.pos);
-      dealDamage(ctx, bearer, dmg(this.rng.roll(seal.damageSpec).total, 'shadow', 'physical'), {
+      dealDamage(ctx, bearer, dmg(this.rng.roll(seal.damageSpec).total, 'shadow'), {
         canMiss: false,
       });
       if (!bearer.alive) return;
@@ -1917,7 +1916,7 @@ export class GameState {
         dealDamage(
           this.effectContext(owner, bearer, anchor),
           bearer,
-          dmg(this.rng.roll(`${dice}d6`).total, 'shatter', 'physical'),
+          dmg(this.rng.roll(`${dice}d6`).total, 'shatter'),
           { canMiss: false }
         );
         this.log(`${bearer.name} is torn back to the spike (${dice}d6).`);
@@ -1950,7 +1949,7 @@ export class GameState {
     try {
       for (const other of nearby) {
         void this.vfxSink?.lightningBolt?.(struck.pos, other.pos);
-        dealDamage(this.effectContext(owner, other, null), other, dmg(share, 'heat', 'physical'), {
+        dealDamage(this.effectContext(owner, other, null), other, dmg(share, 'heat'), {
           canMiss: false,
         });
       }
@@ -1974,7 +1973,7 @@ export class GameState {
       const target = this.mages[targetIndex];
       if (!target?.alive) continue;
       void this.vfxSink?.lightningBolt?.(bearer.pos, target.pos);
-      dealDamage(ctx, target, dmg(storm.damage, 'heat', 'physical'), {
+      dealDamage(ctx, target, dmg(storm.damage, 'heat'), {
         canMiss: false,
       });
     }
@@ -2017,7 +2016,7 @@ export class GameState {
       const backlash = Math.max(1, Math.ceil(veil.power / 8)) * (veil.critical ? 2 : 1);
       applyMindLightningStack(conductor);
       void this.vfxSink?.lightningBolt?.(conductor.pos, bearer.pos);
-      dealDamage(arcContext, bearer, dmg(backlash, 'heat', 'sanity'), {
+      dealDamage(arcContext, bearer, dmg(backlash, 'sanity'), {
         canMiss: false,
         bypassFaraday: true,
       });
@@ -2031,7 +2030,7 @@ export class GameState {
     const stacks = applyMindLightningStack(conductor);
     const discharge = mindLightningDamage(prevented, stacks) * (veil.critical ? 2 : 1);
     void this.vfxSink?.lightningBolt?.(bearer.pos, conductor.pos);
-    dealDamage(arcContext, conductor, dmg(discharge, 'heat', 'sanity'), {
+    dealDamage(arcContext, conductor, dmg(discharge, 'sanity'), {
       canMiss: false,
       bypassFaraday: true,
     });
@@ -2065,7 +2064,7 @@ export class GameState {
         dealDamage(
           this.effectContext(m, victim, victim.pos),
           victim,
-          dmg(echo.amount, 'pierce', 'physical'),
+          dmg(echo.amount, 'pierce'),
           { canMiss: false }
         );
         this.log(`${m.name}'s oath repeats ${echo.amount} pierce on ${victim.name}.`);
@@ -2103,7 +2102,7 @@ export class GameState {
     dealDamage(
       this.effectContext(owner, bearer, bearer.pos),
       bearer,
-      dmg(this.rng.roll(shade.damageSpec).total, 'shadow', 'physical'),
+      dmg(this.rng.roll(shade.damageSpec).total, 'shadow'),
       { canMiss: false, noImpactFx: true }
     );
   }
@@ -2134,7 +2133,7 @@ export class GameState {
     let total = this.rng.roll(fuse.baseSpec).total;
     for (let i = 0; i < fuse.ticks; i++) total += this.rng.roll(fuse.growthSpec).total;
     this.log(`${bearer.name}'s fuse blows for ${total} after ${fuse.ticks} charges.`);
-    dealDamage(this.effectContext(owner, bearer, null), bearer, dmg(total, 'shadow', 'sanity'), {
+    dealDamage(this.effectContext(owner, bearer, null), bearer, dmg(total, 'sanity'), {
       canMiss: false,
     });
   }
@@ -2171,7 +2170,7 @@ export class GameState {
       const owner = this.mages[sworn.ownerIndex] ?? bearer;
       const total = this.rng.roll(`${sworn.stacks}${sworn.perStackSpec}`).total;
       this.log(`${bearer.name} fails to repeat. Sworn Repetition deals ${total}.`);
-      dealDamage(this.effectContext(owner, bearer, null), bearer, dmg(total, 'shadow', 'sanity'), {
+      dealDamage(this.effectContext(owner, bearer, null), bearer, dmg(total, 'sanity'), {
         canMiss: false,
       });
       return;
@@ -2214,7 +2213,7 @@ export class GameState {
           | ThreadMarkStatus
           | undefined;
         if (!theirs || theirs.ownerTeam !== mark.ownerTeam) continue;
-        dealDamage(this.effectContext(source, other, null), other, dmg(echo, 'shadow', 'sanity'), {
+        dealDamage(this.effectContext(source, other, null), other, dmg(echo, 'sanity'), {
           canMiss: false,
           noImpactFx: true,
         });
@@ -2235,7 +2234,7 @@ export class GameState {
     dealDamage(
       this.effectContext(owner, reactor, null),
       reactor,
-      dmg(this.rng.roll(needle.damageSpec).total, 'shadow', 'sanity'),
+      dmg(this.rng.roll(needle.damageSpec).total, 'sanity'),
       { canMiss: false }
     );
   }
@@ -2261,7 +2260,7 @@ export class GameState {
     dealDamage(
       this.effectContext(owner, bearer, null),
       bearer,
-      dmg(this.rng.roll(blind.damageSpec).total, 'shadow', 'sanity'),
+      dmg(this.rng.roll(blind.damageSpec).total, 'sanity'),
       { canMiss: false, noImpactFx: true }
     );
   }
@@ -2442,7 +2441,7 @@ export class GameState {
         if (!m.alive) continue;
         const amount = Math.round(this.rng.roll(spec).total * e.potency);
         const ctx = this.effectContext(m, m, null);
-        dealDamage(ctx, m, dmg(amount, e.type, e.damageClass), { canMiss: false, aoe: true });
+        dealDamage(ctx, m, dmg(amount, e.type), { canMiss: false, aoe: true });
       }
       e.index += 1;
     }
@@ -2479,7 +2478,7 @@ export class GameState {
       const caster = this.mages.find((mage) => mage.alive && mage.team === domain.owner);
       if (!caster) continue;
       const ctx = this.effectContext(caster, mover, mover.pos);
-      dealDamage(ctx, mover, dmg(this.rng.roll('1d4').total, 'pierce', 'physical'), {
+      dealDamage(ctx, mover, dmg(this.rng.roll('1d4').total, 'pierce'), {
         canMiss: false,
       });
       if (mover.alive) applyStun(ctx, mover, { duration: 1, type: 'movement' });
@@ -2490,7 +2489,7 @@ export class GameState {
       const owner = this.mages[orb.ownerIndex];
       if (!owner?.alive) continue;
       const ctx = this.effectContext(owner, mover, mover.pos);
-      dealDamage(ctx, mover, dmg(this.rng.roll('1d3').total, 'typeless', 'physical'), {
+      dealDamage(ctx, mover, dmg(this.rng.roll('1d3').total, 'typeless'), {
         canMiss: false,
         trueDamage: true,
       });
@@ -2561,9 +2560,9 @@ export class GameState {
     return this.hexcraftGlobals.some((effect) => effect.kind === kind && effect.roundsLeft > 0);
   }
 
-  /** Mind Shadow adds one global amplification, even when damage is both shadow and mill. */
-  hexcraftDamageBonus(type: DamageType, damageClass: DamageClass): number {
-    return this.hasHexcraftGlobal('mindShadow') && (type === 'shadow' || damageClass === 'sanity')
+  /** Mind Shadow adds one global amplification to shadow and sanity damage. */
+  hexcraftDamageBonus(type: DamageType): number {
+    return this.hasHexcraftGlobal('mindShadow') && (type === 'shadow' || type === 'sanity')
       ? 2
       : 0;
   }
@@ -2688,11 +2687,11 @@ export class GameState {
   resolveVeilCorrodePierce(attacker: Mage, target: Mage, power: number): void {
     if (power <= 0 || !target.alive) return;
     const ctx = this.effectContext(attacker, target, target.pos);
-    dealDamage(ctx, target, dmg(this.rng.roll(`1d${power}`).total, 'corrosive', 'physical'), {
+    dealDamage(ctx, target, dmg(this.rng.roll(`1d${power}`).total, 'corrosive'), {
       canMiss: false,
     });
     if (target.alive) {
-      dealDamage(ctx, target, dmg(this.rng.roll(`1d${power}`).total, 'pierce', 'physical'), {
+      dealDamage(ctx, target, dmg(this.rng.roll(`1d${power}`).total, 'pierce'), {
         canMiss: false,
       });
     }
@@ -2936,9 +2935,9 @@ export class GameState {
       const ctx = this.effectContext(owner, m, null);
       const amount = this.rng.roll(t.damageSpec).total;
       if (t.lifesteal && owner !== m) {
-        drainDamage(ctx, m, dmg(amount, 'corrosive', 'physical'), { canMiss: false });
+        drainDamage(ctx, m, dmg(amount, 'corrosive'), { canMiss: false });
       } else {
-        dealDamage(ctx, m, dmg(amount, 'corrosive', 'physical'), {
+        dealDamage(ctx, m, dmg(amount, 'corrosive'), {
           canMiss: false,
           noImpactFx: true,
         });
@@ -3079,7 +3078,7 @@ export class GameState {
           s.y = tgt.y;
           const ctx = this.effectContext(owner, tgt, null);
           const amount = this.rng.roll(SCARAB.attackSpec).total;
-          const dealt = dealDamage(ctx, tgt, dmg(amount, 'corrosive', 'physical'), { canMiss: false });
+          const dealt = dealDamage(ctx, tgt, dmg(amount, 'corrosive'), { canMiss: false });
           this.log(`A scarab bites ${tgt.name} for ${amount}.`);
           if (dealt > 0 && s.hp < s.maxHp) {
             s.hp = s.maxHp;
@@ -3154,7 +3153,6 @@ export class GameState {
     attackerTeam: number,
     amount: number,
     damageType: DamageType,
-    sanity: boolean
   ): void {
     if (amount <= 0 || this.scarabs.length === 0) return;
     const targets = this.scarabs.filter(
@@ -3169,7 +3167,7 @@ export class GameState {
       return;
     }
     for (const s of targets) {
-      if (sanity) s.sanity = Math.max(0, s.sanity - amount);
+      if (damageType === 'sanity') s.sanity = Math.max(0, s.sanity - amount);
       else s.hp = Math.max(0, s.hp - amount);
     }
     const before = this.scarabs.length;
@@ -3263,7 +3261,7 @@ export class GameState {
         if (dist(victim.pos, m.pos) > s.radius) continue;
         const ctx = this.effectContext(m, victim, null);
         const amount = this.rng.roll(s.damageSpec).total;
-        const dealt = dealDamage(ctx, victim, dmg(amount, s.type, s.damageClass), {
+        const dealt = dealDamage(ctx, victim, dmg(amount, s.type), {
           canMiss: false,
           noImpactFx: true,
         });
@@ -3299,7 +3297,7 @@ export class GameState {
         if (dist(victim.pos, summon.pos) > aura.radius) continue;
         const ctx = this.effectContext(summon, victim, null);
         const amount = this.rng.roll(aura.damageSpec).total;
-        const dealt = dealDamage(ctx, victim, dmg(amount, aura.type, aura.damageClass), {
+        const dealt = dealDamage(ctx, victim, dmg(amount, aura.type), {
           canMiss: false,
           noImpactFx: true,
         });
@@ -3374,7 +3372,7 @@ export class GameState {
     const im = remnant.intrinsicMelee;
     if (!im) return;
     const ctx = this.effectContext(remnant, prey, null);
-    dealDamage(ctx, prey, dmg(this.rng.roll(im.spec).total, im.type, im.damageClass), {});
+    dealDamage(ctx, prey, dmg(this.rng.roll(im.spec).total, im.type), {});
     if (prey.alive) im.onHit?.(ctx, prey);
     this.log(`${remnant.name} lurches at ${prey.name} unbidden.`);
   }
@@ -3387,7 +3385,7 @@ export class GameState {
     const stuck = spike.attachedToIndex != null ? this.mages[spike.attachedToIndex] : null;
     if (stuck && stuck.alive && stuck.team !== owner.team) {
       const ctx = this.effectContext(spike, stuck, null);
-      dealDamage(ctx, stuck, dmg(this.rng.roll('1d4').total, 'corrosive', 'physical'), {
+      dealDamage(ctx, stuck, dmg(this.rng.roll('1d4').total, 'corrosive'), {
         canMiss: false,
         noImpactFx: true,
       });
@@ -3408,7 +3406,7 @@ export class GameState {
       return;
     }
     const ctx = this.effectContext(spike, prey, null);
-    dealDamage(ctx, prey, dmg(this.rng.roll('1d6').total, 'pierce', 'physical'), { canMiss: false });
+    dealDamage(ctx, prey, dmg(this.rng.roll('1d6').total, 'pierce'), { canMiss: false });
     this.log(`${spike.name} hurls itself into ${prey.name}.`);
     if (prey.alive) {
       spike.attachedToIndex = this.mages.indexOf(prey);
@@ -3437,7 +3435,7 @@ export class GameState {
       name: 'Orzhov Mark',
       key: 'dot:orzhov-mark',
       duration: 3,
-      damage: dmg(1, 'corrosive', 'physical'),
+      damage: dmg(1, 'corrosive'),
       damageSpec: '1d6',
     });
   }
@@ -3458,7 +3456,7 @@ export class GameState {
     const fed = spitling.attachedToIndex != null ? this.mages[spitling.attachedToIndex] : null;
     if (!drained?.alive || !fed?.alive || drained === owner) return;
     const ctx = this.effectContext(suckling, drained, null);
-    const bite = dealDamage(ctx, drained, dmg(this.rng.roll('2d6').total, 'corrosive', 'physical'), {
+    const bite = dealDamage(ctx, drained, dmg(this.rng.roll('2d6').total, 'corrosive'), {
       canMiss: false,
     });
     if (bite <= 0) return;
@@ -3491,7 +3489,7 @@ export class GameState {
           key: 'dot:remnant-rot',
           name: 'Remnant Rot',
           duration: 2,
-          damage: dmg(1, 'corrosive', 'physical'),
+          damage: dmg(1, 'corrosive'),
         });
         applyDebuff(hitCtx, victim, {
           name: 'Sundered Mending',
@@ -3649,7 +3647,7 @@ export class GameState {
       dealDamage(
         this.effectContext(source, target, null),
         target,
-        dmg(amount, 'typeless', 'physical'),
+        dmg(amount, 'typeless'),
         { canMiss: false, aoe: true, trueDamage: true, noImpactFx: true }
       );
     }
@@ -3718,7 +3716,7 @@ export class GameState {
         dealDamage(
           this.effectContext(spear, mover, null),
           mover,
-          dmg(amount, watch.type, watch.damageClass),
+          dmg(amount, watch.type),
           { canMiss: false }
         );
         this.log(`${spear.name} strikes ${mover.name} as they cross its reach.`);
@@ -3855,7 +3853,7 @@ export class GameState {
       const dealt = dealDamage(
         this.effectContext(owner, m, null),
         m,
-        dmg(this.rng.roll('3d3').total, 'corrosive', 'physical'),
+        dmg(this.rng.roll('3d3').total, 'corrosive'),
         { canMiss: false, aoe: true, noImpactFx: true }
       );
       if (dealt > 0) this.vfxSink?.spellEffect?.(m, 'corrosive');
@@ -3889,7 +3887,7 @@ export class GameState {
     if (!m.isLightWeak()) return;
     const ctx = this.effectContext(m, m, null);
     const amount = this.rng.roll('1d3').total;
-    const dealt = dealDamage(ctx, m, dmg(amount, 'light', 'physical'), {
+    const dealt = dealDamage(ctx, m, dmg(amount, 'light'), {
       canMiss: false,
       noImpactFx: true,
     });
@@ -3908,7 +3906,7 @@ export class GameState {
     const highFire = fire.stacks >= 4;
     const spec = highFire ? '1d6' : '1d3';
     this.log(`${m.name}'s Fire flares at ${fire.stacks} stacks.`);
-    dealDamage(ctx, m, dmg(this.rng.roll(spec).total, 'heat', 'physical'), {
+    dealDamage(ctx, m, dmg(this.rng.roll(spec).total, 'heat'), {
       canMiss: false,
       noImpactFx: true,
     });
@@ -3952,7 +3950,7 @@ export class GameState {
       if (fire.stacks <= 6) continue;
       this.log(`${target.name}'s Fire overflows!`);
       const ctx = this.effectContext(owner, target, null);
-      dealDamage(ctx, target, dmg(this.rng.roll('1d10').total, 'heat', 'physical'), {
+      dealDamage(ctx, target, dmg(this.rng.roll('1d10').total, 'heat'), {
         canMiss: false,
       });
       fire.stacks = 5;
@@ -3980,7 +3978,7 @@ export class GameState {
     dealDamage(
       this.effectContext(owner, m, null),
       m,
-      dmg(this.rng.roll(spec).total, 'heat', 'physical'),
+      dmg(this.rng.roll(spec).total, 'heat'),
       { canMiss: false, noImpactFx: true }
     );
     if (highFire) {
@@ -4028,7 +4026,7 @@ export class GameState {
       dealDamage(
         this.effectContext(owner, target, null),
         target,
-        dmg(this.rng.roll('3d6').total, 'heat', 'physical'),
+        dmg(this.rng.roll('3d6').total, 'heat'),
         { canMiss: false }
       );
       for (const other of this.mages) {
@@ -4036,7 +4034,7 @@ export class GameState {
         dealDamage(
           this.effectContext(owner, other, null),
           other,
-          dmg(this.rng.roll('2d6').total, 'heat', 'physical'),
+          dmg(this.rng.roll('2d6').total, 'heat'),
           { canMiss: false, aoe: true }
         );
       }
@@ -4055,7 +4053,7 @@ export class GameState {
     const rolled = this.rng.roll(highFlare ? '1d6' : '1d3').total;
     const amount = Math.max(1, Math.ceil(rolled / 2));
     this.log(`${m.name}'s Blueflare pulses at ${flare.stacks} stacks.`);
-    dealDamage(this.effectContext(owner, m, null), m, dmg(amount, 'heat', 'sanity'), {
+    dealDamage(this.effectContext(owner, m, null), m, dmg(amount, 'sanity'), {
       canMiss: false,
       noImpactFx: true,
     });
@@ -4100,7 +4098,7 @@ export class GameState {
       if (flare.stacks <= 6) continue;
       const amount = Math.max(1, Math.ceil(this.rng.roll('1d10').total / 2));
       this.log(`${target.name}'s Blueflare overflows!`);
-      dealDamage(this.effectContext(owner, target, null), target, dmg(amount, 'heat', 'sanity'), {
+      dealDamage(this.effectContext(owner, target, null), target, dmg(amount, 'sanity'), {
         canMiss: false,
       });
       flare.stacks = 5;
@@ -4154,7 +4152,7 @@ export class GameState {
     const hpLoss = this.rng.roll(`${rend.stacks}d3`).total;
     target.hp = Math.max(target.unkillable ? 1 : 0, target.hp - hpLoss);
     let millLoss = 0;
-    if (!target.sanityImmune) {
+    if (!target.isImmuneTo('sanity')) {
       millLoss = this.rng.roll(`${rend.stacks}d3`).total;
       target.sanity = Math.max(target.unkillable ? 1 : 0, target.sanity - millLoss);
     }
@@ -4425,7 +4423,7 @@ export class GameState {
         (status) => status.kind === 'soulRend' || status.name === 'REAP' || status.name === 'Soul Chain'
       );
       const lowHp = target.hp < 15 || target.hp < target.maxHp * 0.34;
-      const lowMill = !target.sanityImmune && (target.sanity < 8 || target.sanity < target.maxSanity * 0.34);
+      const lowMill = !target.isImmuneTo('sanity') && (target.sanity < 8 || target.sanity < target.maxSanity * 0.34);
       if (!marked || (!lowHp && !lowMill)) continue;
       target.edgelordCapturedBy = bearer;
       captured.push(target);
@@ -4474,7 +4472,7 @@ export class GameState {
     for (const captive of captives) {
       const wasAlive = captive.vitalsAlive;
       captive.hp = Math.max(captive.unkillable ? 1 : 0, captive.hp - 10);
-      if (!captive.sanityImmune) {
+      if (!captive.isImmuneTo('sanity')) {
         captive.sanity = Math.max(captive.unkillable ? 1 : 0, captive.sanity - 5);
       }
       this.log(`${captive.name} suffers 10 true damage and 5 true mill inside the lantern.`);
@@ -4508,7 +4506,7 @@ export class GameState {
       (mage) => mage.alive && dist(mage.pos, source.pos) <= EDGELORD_DARK_LIGHT_RADIUS
     );
     for (const target of targets) {
-      dealDamage(this.effectContext(source, target, null), target, dmg(2, 'shadow', 'physical'), {
+      dealDamage(this.effectContext(source, target, null), target, dmg(2, 'shadow'), {
         canMiss: false,
         aoe: true,
         noImpactFx: true,
@@ -4531,20 +4529,20 @@ export class GameState {
     const targets = this.magesInRadius(point, 5 * RANGE_UNIT);
     for (const target of targets) {
       const ctx = this.effectContext(bearer, target, point);
-      dealDamage(ctx, target, dmg(Math.ceil(impact * 0.51), 'shadow', 'physical'), {
+      dealDamage(ctx, target, dmg(Math.ceil(impact * 0.51), 'shadow'), {
         canMiss: false,
         aoe: true,
         noImpactFx: true,
       });
       if (target.alive) {
-        dealDamage(ctx, target, dmg(Math.floor(impact * 0.49), 'shatter', 'physical'), {
+        dealDamage(ctx, target, dmg(Math.floor(impact * 0.49), 'shatter'), {
           canMiss: false,
           aoe: true,
           noImpactFx: true,
         });
       }
       if (target.alive) {
-        dealDamage(ctx, target, dmg(mill, 'shadow', 'sanity'), {
+        dealDamage(ctx, target, dmg(mill, 'sanity'), {
           canMiss: false,
           aoe: true,
           noImpactFx: true,
@@ -4588,8 +4586,8 @@ export class GameState {
           ? Math.max(0, this.rng.roll(s.bonusNoDamageSpec).total)
           : 0;
       const total =
-        amount + bonus + this.hexcraftDamageBonus(s.damage.type, s.damage.damageClass);
-      if (s.damage.damageClass === 'sanity') m.sanity = Math.max(0, m.sanity - total);
+        amount + bonus + this.hexcraftDamageBonus(s.damage.type);
+      if (s.damage.type === 'sanity') m.sanity = Math.max(0, m.sanity - total);
       else m.hp = Math.max(0, m.hp - total);
       // Order Curse Drain: the curse's author drinks the damage as healing.
       if (s.lifestealToIndex !== undefined && total > 0) {
@@ -4604,7 +4602,7 @@ export class GameState {
         this.vfxSink?.hit?.(m);
         // Several afflictions can tick at once, so each number names its cause.
         this.vfxSink?.combatFeedback?.(m, {
-          kind: s.damage.damageClass === 'sanity' ? 'sanityDamage' : 'damage',
+          kind: s.damage.type === 'sanity' ? 'sanityDamage' : 'damage',
           amount: total,
           damageType: s.damage.type,
           label: s.name,
@@ -4630,8 +4628,8 @@ export class GameState {
           if (dist(victim.pos, m.pos) > s.splash.radius) continue;
           const splash =
             this.rng.roll(s.splash.damageSpec).total +
-            this.hexcraftDamageBonus(s.splash.damage.type, s.splash.damage.damageClass);
-          if (s.splash.damage.damageClass === 'sanity') {
+            this.hexcraftDamageBonus(s.splash.damage.type);
+          if (s.splash.damage.type === 'sanity') {
             victim.sanity = Math.max(0, victim.sanity - splash);
           } else {
             victim.hp = Math.max(0, victim.hp - splash);
@@ -4831,7 +4829,7 @@ export class GameState {
     dealDamage(
       this.effectContext(source, target, null),
       target,
-      dmg(this.rng.roll('2d6').total, 'shatter', 'physical'),
+      dmg(this.rng.roll('2d6').total, 'shatter'),
       { canMiss: false }
     );
     return true;
@@ -5001,7 +4999,7 @@ export class GameState {
     const bashDmg = Math.max(1, Math.round(bashRoll * bashMult) + bashFlat);
     this.log(`${basher.name} smashes back with the shield!`);
     const back = this.effectContext(basher, attacker, null);
-    dealDamage(back, attacker, dmg(bashDmg, 'shatter', 'physical'), { canMiss: false });
+    dealDamage(back, attacker, dmg(bashDmg, 'shatter'), { canMiss: false });
     return true;
   }
 
@@ -5016,7 +5014,7 @@ export class GameState {
     const amount = this.rng.roll(spec.rollSpec).total;
     this.log(`${source.name} hurls ${def.name} at ${target.name}.`);
     const ctx = this.effectContext(source, target, null);
-    dealDamage(ctx, target, dmg(amount, 'pierce', 'physical'), { canMiss: false });
+    dealDamage(ctx, target, dmg(amount, 'pierce'), { canMiss: false });
   }
 
   /** Mantle of Eldritch Truth: resolve the chosen Eldritch action. */
@@ -5026,7 +5024,7 @@ export class GameState {
         if (!target || !target.alive) return;
         this.log(`${source.name} unleashes eldritch truth upon ${target.name}!`);
         const ctx = this.effectContext(source, target, null);
-        dealDamage(ctx, target, dmg(10, 'shatter', 'physical'), { canMiss: false, trueDamage: true });
+        dealDamage(ctx, target, dmg(10, 'shatter'), { canMiss: false, trueDamage: true });
         break;
       }
       case 'defend': {
@@ -5058,26 +5056,26 @@ export class GameState {
       const mill = this.rng.roll('1d10').total;
       this.log(`Roaring thunder ravages ${m.name} (${fire} fire, ${mill} mill).`);
       this.vfxSink?.boom?.(m.pos);
-      dealDamage(self, m, dmg(fire, 'heat', 'physical'), { canMiss: false });
-      dealDamage(self, m, dmg(mill, 'shatter', 'sanity'), { canMiss: false });
+      dealDamage(self, m, dmg(fire, 'heat'), { canMiss: false });
+      dealDamage(self, m, dmg(mill, 'sanity'), { canMiss: false });
       const blast = 10 * RANGE_UNIT;
       for (const other of this.mages) {
         if (other === m || !other.alive) continue;
         if (dist(other.pos, m.pos) > blast) continue;
         const ctx = this.effectContext(m, other, null);
         const light = this.rng.roll('1d6').total;
-        dealDamage(ctx, other, dmg(light, 'light', 'physical'), { canMiss: false });
+        dealDamage(ctx, other, dmg(light, 'light'), { canMiss: false });
       }
     } else if (s >= 12) {
       const fire = this.rng.roll('1d6').total;
       const mill = this.rng.roll('1d3').total;
       this.log(`${m.name} smoulders under the blessing (${fire} fire, ${mill} mill).`);
-      dealDamage(self, m, dmg(fire, 'heat', 'physical'), { canMiss: false });
-      dealDamage(self, m, dmg(mill, 'shatter', 'sanity'), { canMiss: false });
+      dealDamage(self, m, dmg(fire, 'heat'), { canMiss: false });
+      dealDamage(self, m, dmg(mill, 'sanity'), { canMiss: false });
     } else {
       const fire = this.rng.roll('1d3').total;
       this.log(`${m.name} glows with roaring thunder (${fire} fire).`);
-      dealDamage(self, m, dmg(fire, 'heat', 'physical'), { canMiss: false });
+      dealDamage(self, m, dmg(fire, 'heat'), { canMiss: false });
     }
     this.checkThunderDeath(m);
   }
@@ -5093,8 +5091,8 @@ export class GameState {
       const ctx = this.effectContext(m, other, null);
       const fire = this.rng.roll('1d20').total;
       const blaze = this.rng.roll('1d20').total;
-      dealDamage(ctx, other, dmg(fire, 'heat', 'physical'), { canMiss: false });
-      dealDamage(ctx, other, dmg(blaze, 'heat', 'physical'), { canMiss: false });
+      dealDamage(ctx, other, dmg(fire, 'heat'), { canMiss: false });
+      dealDamage(ctx, other, dmg(blaze, 'heat'), { canMiss: false });
     }
     m.thunderStacks = 0;
     m.hp = 0;
@@ -5109,7 +5107,7 @@ export class GameState {
     const self = this.effectContext(source, source, null);
     const bite = this.rng.roll('1d6').total;
     this.log(`${source.name} charges Thunder. Spends ${cost} mana and takes ${bite} true damage.`);
-    dealDamage(self, source, dmg(bite, 'heat', 'physical'), { canMiss: false, trueDamage: true });
+    dealDamage(self, source, dmg(bite, 'heat'), { canMiss: false, trueDamage: true });
     if (!source.alive) return;
     const gained = this.rng.roll('1d4').total;
     source.addThunderStacks(gained);
@@ -5222,7 +5220,7 @@ export class GameState {
     if (total <= 0) return;
     const ctx = this.effectContext(source, target, null);
     // Dealt as a single armour-ignoring heat bolt for clarity.
-    dealDamage(ctx, target, dmg(total, 'heat', 'physical'), { canMiss: false, ignoreArmor: true });
+    dealDamage(ctx, target, dmg(total, 'heat'), { canMiss: false, ignoreArmor: true });
     this.log(`Lightning strikes ${target.name} for ${total} (${Math.round(pct * 100)}%).`);
   }
 
@@ -5464,13 +5462,13 @@ export class GameState {
     const pierce = Math.floor(total / 2);
     const shadow = total - pierce;
     const ctx = this.effectContext(source, target, null);
-    let dealt = dealDamage(ctx, target, dmg(pierce, 'pierce', 'physical'), {
+    let dealt = dealDamage(ctx, target, dmg(pierce, 'pierce'), {
       canMiss: false,
       triggersFaraday: true,
       noImpactFx: true,
     });
     if (target.alive) {
-      dealt += dealDamage(ctx, target, dmg(shadow, 'shadow', 'physical'), {
+      dealt += dealDamage(ctx, target, dmg(shadow, 'shadow'), {
         canMiss: false,
         triggersFaraday: true,
         noImpactFx: true,
@@ -5480,7 +5478,7 @@ export class GameState {
       for (const enemy of this.livingEnemiesOf(source)) {
         if (dist(source.pos, enemy.pos) > 5 * RANGE_UNIT) continue;
         const aura = this.rng.roll('1d6').total;
-        dealDamage(this.effectContext(source, enemy, null), enemy, dmg(aura, 'corrosive', 'physical'), {
+        dealDamage(this.effectContext(source, enemy, null), enemy, dmg(aura, 'corrosive'), {
           canMiss: false,
           aoe: true,
           noImpactFx: true,
@@ -5717,9 +5715,9 @@ export class GameState {
         const ctx = this.effectContext(m, m, null);
         // 67% blunt shatter, otherwise a resist-ignoring magical crush.
         if (this.rng.chance(0.67)) {
-          dealDamage(ctx, m, dmg(total, 'shatter', 'physical'), { canMiss: false, aoe: true, noImpactFx: true });
+          dealDamage(ctx, m, dmg(total, 'shatter'), { canMiss: false, aoe: true, noImpactFx: true });
         } else {
-          dealDamage(ctx, m, dmg(total, 'corrosive', 'physical'), {
+          dealDamage(ctx, m, dmg(total, 'corrosive'), {
             canMiss: false,
             aoe: true,
             ignoreResist: true,
@@ -5850,10 +5848,10 @@ export class GameState {
     const shatterDamage = Math.ceil(storedDamage / 2);
     const shadowDamage = storedDamage - shatterDamage;
     if (shatterDamage > 0) {
-      dealDamage(ctx, target, dmg(shatterDamage, 'shatter', 'physical'), { canMiss: false });
+      dealDamage(ctx, target, dmg(shatterDamage, 'shatter'), { canMiss: false });
     }
     if (shadowDamage > 0) {
-      dealDamage(ctx, target, dmg(shadowDamage, 'shadow', 'physical'), { canMiss: false });
+      dealDamage(ctx, target, dmg(shadowDamage, 'shadow'), { canMiss: false });
     }
     const shadow = this.addShadow(target.pos, source.team);
     shadow.radius += nonDamageCount * RANGE_UNIT;
@@ -6048,7 +6046,7 @@ export class GameState {
     }
     for (const t of targets) {
       const ctx = this.effectContext(source, t, null);
-      dealDamage(ctx, t, dmg(perHit, type, 'physical'), {
+      dealDamage(ctx, t, dmg(perHit, type), {
         ignoreResist: !!w?.ignoreResist,
         ignoreArmor: !!w?.ignoreArmor,
       });
@@ -6204,8 +6202,8 @@ export class GameState {
           }
           if (source.acidZombieKind) {
             const amount = game.rng.roll('1d4').total;
-            const dealt = dealDamage(ictx, target, dmg(amount, 'corrosive', 'physical'), {});
-            dealDamage(ictx, source, dmg(amount, 'corrosive', 'physical'), {
+            const dealt = dealDamage(ictx, target, dmg(amount, 'corrosive'), {});
+            dealDamage(ictx, source, dmg(amount, 'corrosive'), {
               canMiss: false,
               noImpactFx: true,
             });
@@ -6213,7 +6211,7 @@ export class GameState {
               applyDot(ictx, target, {
                 name: 'Acid Rot',
                 duration: 3,
-                damage: dmg(1, 'corrosive', 'physical'),
+                damage: dmg(1, 'corrosive'),
                 damageSpec: '1d3',
               });
             }
@@ -6224,7 +6222,7 @@ export class GameState {
             source.beastDemonBlood -= spent;
             game.log(`${source.name} spits ${spent} stored blood at ${target.name}.`);
             if (spent > 0) {
-              dealDamage(ictx, target, dmg(spent, 'corrosive', 'physical'), {});
+              dealDamage(ictx, target, dmg(spent, 'corrosive'), {});
             }
             return;
           }
@@ -6258,7 +6256,7 @@ export class GameState {
           }
           let dealt = 0;
           if (amount > 0) {
-            dealt = dealDamage(ictx, target, dmg(amount, im.type, im.damageClass), {});
+            dealt = dealDamage(ictx, target, dmg(amount, im.type), {});
           }
           if (source.beastDemonKind && dealt > 0) {
             source.beastDemonBlood += dealt;
@@ -6367,13 +6365,9 @@ export class GameState {
           source.rageBonus = 0;
         }
         // ---- Objects-class weapon enchants / sabotage / conjured gear -------
-        let dmgClass: DamageClass = w?.damageClass ?? 'physical';
         const enchant = source.weaponEnchant;
-        if (enchant === 'mindShadow') {
-          // Mind Shadow enchant (converter): the blow now mills — shadow-typed sanity damage.
-          type = 'shadow';
-          dmgClass = 'sanity';
-        }
+        // Mind Shadow enchant (converter): the blow now deals sanity damage.
+        if (enchant === 'mindShadow') type = 'sanity';
         const wid = activeId;
         // Bind Curse sabotage: a bound weapon hits for half (the kept half rounds up).
         if (wid && source.sabotagedItems.has(wid)) amount = Math.ceil(amount / 2);
@@ -6391,16 +6385,16 @@ export class GameState {
           game.log(`${source.name} is revealed by their attack.`);
         }
         let dealt = 0;
-        if (amount > 0 && source.expeditionCompanion === 'elf' && w?.usesArrows) {
+        if (amount > 0 && source.expeditionCompanion === 'elf' && w?.usesArrows && type !== 'sanity') {
           const pierceAmount = Math.ceil(amount / 2);
           const fireAmount = Math.floor(amount / 2);
-          dealt += dealDamage(ctx, target, dmg(pierceAmount, 'pierce', dmgClass), {
+          dealt += dealDamage(ctx, target, dmg(pierceAmount, 'pierce'), {
             ignoreResist: !!w.ignoreResist,
             ignoreArmor: !!w.ignoreArmor,
             noImpactFx: true,
           });
           if (fireAmount > 0) {
-            dealt += dealDamage(ctx, target, dmg(fireAmount, 'heat', dmgClass), {
+            dealt += dealDamage(ctx, target, dmg(fireAmount, 'heat'), {
               ignoreResist: !!w.ignoreResist,
               ignoreArmor: !!w.ignoreArmor,
               noImpactFx: true,
@@ -6409,7 +6403,7 @@ export class GameState {
           if (dealt > 0 && target.alive) game.applyFireStacks(target, 1, source);
           game.log(`${source.name}'s burning arrow splits ${pierceAmount} pierce / ${fireAmount} fire.`);
         } else if (amount > 0) {
-          dealt = dealDamage(ctx, target, dmg(amount, type, dmgClass), {
+          dealt = dealDamage(ctx, target, dmg(amount, type), {
             ignoreResist: !!w?.ignoreResist,
             ignoreArmor: !!w?.ignoreArmor,
             noImpactFx: true,
@@ -6419,7 +6413,7 @@ export class GameState {
           source.redFirstWeaponAttackUsed = true;
           if (dealt > 0 && source.profile.redPrimaryTier && target.alive) {
             const bonus = game.rng.roll('1d3').total;
-            dealDamage(ctx, target, dmg(bonus, type, dmgClass), {
+            dealDamage(ctx, target, dmg(bonus, type), {
               canMiss: false,
               ignoreResist: !!w.ignoreResist,
               ignoreArmor: !!w.ignoreArmor,
@@ -6452,7 +6446,7 @@ export class GameState {
           dealDamage(
             game.effectContext(source, arcTarget, null),
             arcTarget,
-            dmg(arcDamage, 'heat', 'sanity'),
+            dmg(arcDamage, 'sanity'),
             { canMiss: false }
           );
           source.lightningMindCharges = Math.max(0, source.lightningMindCharges - 1);
@@ -6471,9 +6465,9 @@ export class GameState {
           const fireEcho = Math.max(1, Math.round(dealt * 0.5));
           const mentalEcho = Math.max(1, Math.round(dealt * 0.25));
           game.log(`${source.name}'s weapon releases a Lightning Echo.`);
-          dealDamage(ctx, target, dmg(fireEcho, 'heat', 'physical'), { canMiss: false });
+          dealDamage(ctx, target, dmg(fireEcho, 'heat'), { canMiss: false });
           const stacks = applyMindLightningStack(target);
-          dealDamage(ctx, target, dmg(mindLightningDamage(mentalEcho, stacks), 'heat', 'sanity'), {
+          dealDamage(ctx, target, dmg(mindLightningDamage(mentalEcho, stacks), 'sanity'), {
             canMiss: false,
           });
           if (target.alive) game.applyBlueflareStacks(target, 1, source);
@@ -6486,7 +6480,7 @@ export class GameState {
               dealDamage(
                 game.effectContext(source, echoTarget, null),
                 echoTarget,
-                dmg(fireEcho + Math.floor(source.lightningEchoPower / 8), 'heat', 'physical'),
+                dmg(fireEcho + Math.floor(source.lightningEchoPower / 8), 'heat'),
                 { canMiss: false }
               );
             }
@@ -6497,7 +6491,7 @@ export class GameState {
           applyDot(ctx, target, {
             name: 'Corrosion',
             duration: 3,
-            damage: dmg(2, 'corrosive', 'physical'),
+            damage: dmg(2, 'corrosive'),
             damageSpec: '1d3',
           });
         }
@@ -6508,7 +6502,7 @@ export class GameState {
             applyDot(ctx, target, {
               name: 'Tolling Wound',
               duration: game.shadowAt(target.pos) ? 9 : 6,
-              damage: dmg(0, 'shadow', 'physical'),
+              damage: dmg(0, 'shadow'),
               damageSpec: '1d3',
             });
           }
@@ -6525,7 +6519,7 @@ export class GameState {
           const searLightWeak = (foe: Mage): void => {
             if (foe.alive && foe.isLightWeak()) {
               const lctx = game.effectContext(source, foe, null);
-              dealDamage(lctx, foe, dmg(5, 'light', 'physical'), { canMiss: false, trueDamage: true });
+              dealDamage(lctx, foe, dmg(5, 'light'), { canMiss: false, trueDamage: true });
               game.log(`${source.name}'s light source burns ${foe.name} for 5 true damage.`);
             }
           };
@@ -6539,7 +6533,7 @@ export class GameState {
           for (const foe of swept) {
             if (amount > 0) {
               const sctx = game.effectContext(source, foe, null);
-              dealDamage(sctx, foe, dmg(amount, 'generic', 'physical'), { noImpactFx: true });
+              dealDamage(sctx, foe, dmg(amount, 'generic'), { noImpactFx: true });
             }
             searLightWeak(foe);
           }
@@ -6570,7 +6564,7 @@ export class GameState {
         const thorns = target.thornsTotal();
         if (thorns > 0 && dealt > 0 && source.alive) {
           const back = game.effectContext(target, source, null);
-          dealDamage(back, source, dmg(thorns, 'pierce', 'physical'), { canMiss: false });
+          dealDamage(back, source, dmg(thorns, 'pierce'), { canMiss: false });
         }
         // War Hammer: a solid blow hurls the target backwards.
         if (w?.knockbackUnits && !missed && target.alive) {

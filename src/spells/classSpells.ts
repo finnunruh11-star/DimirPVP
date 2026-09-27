@@ -120,7 +120,7 @@ registerClassSpell({
       noCastSprite: true,
       description:
         'Enchant your held weapon: for the rest of the fight its strikes deal ' +
-        'shadow-typed "mill" (sanity) damage instead of their normal damage.',
+        'sanity damage instead of their normal damage.',
       visual: { preset: 'conjure', color: 0x9b7bff, size: 22, speed: 1 },
       cast(ctx) {
         ctx.caster.weaponEnchant = 'mindShadow';
@@ -197,8 +197,8 @@ registerClassSpellVariants({
       noCastSprite: true,
       manualCastVisual: true,
       description:
-        'Raise a Neural Leech within range 6. Its bite deals 1d3 corrosive sanity ' +
-        'damage and inflicts Neural Rot for 3 turns: 1 corrosive sanity damage each ' +
+        'Raise a Neural Leech within range 6. Its bite deals 1d3 sanity ' +
+        'damage and inflicts Neural Rot for 3 turns: 1 sanity damage each ' +
         'turn and no reactions while the rot remains. HP 5; obeys Command.',
       visual: { preset: 'conjure', color: 0xb7dd77, size: 24, speed: 1 },
       cast(ctx) {

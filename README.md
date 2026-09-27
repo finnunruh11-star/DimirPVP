@@ -185,7 +185,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     const amount = rollDice(ctx, '1d8+2');
-    dealDamage(ctx, ctx.target, dmg(amount, 'shadow', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'shadow')); // 'sanity' type hits the sanity pool
   },
 });
 ```

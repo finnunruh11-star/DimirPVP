@@ -7,7 +7,7 @@
 //
 //  KEYWORD MAPPING (the design doc's words -> this engine):
 //    blunt -> 'shatter'      dark -> 'shadow'        piercing -> 'pierce'
-//    mill  -> the sanity pool (immunity via `sanityImmune`)
+//    mill  -> the 'sanity' damage type (mindless = immune to 'sanity')
 //    purification -> 'cleansing'
 //    movement-impairing -> slowStunImmune / slowStunResist
 //    displacement / misplacement -> displacementImmune / displacementWeak
@@ -54,11 +54,10 @@ function sandsoldier(m: Mage, dropsOnDeath: number): Mage {
   m.sandBorn = true;
   m.sandStrider = true;
   m.sandDropOnDeath = dropsOnDeath;
-  m.sanityImmune = true;
   m.controlImmune = true;
   m.slowStunResist = true;
   m.displacementWeak = true;
-  m.intrinsicImmuneTypes = ['heat', 'cold', 'light'];
+  m.intrinsicImmuneTypes = ['heat', 'cold', 'light', 'sanity'];
   m.intrinsicResistTypes = ['malforming', 'shadow'];
   m.intrinsicWeakTypes = ['shatter', 'water'];
   return m;
@@ -71,7 +70,7 @@ function sandsoldier(m: Mage, dropsOnDeath: number): Mage {
 export function makeSandPriest(opts: SummonOpts): Mage {
   const m = sandsoldier(unit(opts, 'Sandsoldier-Priest', 5, 15), 1);
   m.intrinsicMoveUnits = 3;
-  m.intrinsicMelee = { spec: '1d3', type: 'healing', damageClass: 'physical' };
+  m.intrinsicMelee = { spec: '1d3', type: 'healing' };
   m.intrinsicMeleeReach = R(10);
   m.sandUpkeepEvery = 2;
   return m;
@@ -84,7 +83,7 @@ export function makeSandPriest(opts: SummonOpts): Mage {
 export function makeSandSpear(opts: SummonOpts): Mage {
   const m = sandsoldier(unit(opts, 'Sandsoldier-Spear', 20, 10), 2);
   m.intrinsicMoveUnits = 5;
-  m.intrinsicMelee = { spec: '1d6', type: 'pierce', damageClass: 'physical' };
+  m.intrinsicMelee = { spec: '1d6', type: 'pierce' };
   m.intrinsicMeleeReach = R(6);
   m.intrinsicResistTypes = ['pierce', 'malforming', 'shadow'];
   m.opportunityStrike = {
@@ -92,7 +91,6 @@ export function makeSandSpear(opts: SummonOpts): Mage {
     arcDegrees: 180,
     spec: '1d6',
     type: 'pierce',
-    damageClass: 'physical',
   };
   return m;
 }
@@ -113,7 +111,6 @@ export function makeDesertblight(opts: SummonOpts): Mage {
     radius: R(5),
     damageSpec: '2d3',
     type: 'corrosive',
-    damageClass: 'physical',
   };
   return m;
 }
@@ -125,7 +122,7 @@ export function makeDesertblight(opts: SummonOpts): Mage {
 export function makeSpectralBallista(opts: SummonOpts): Mage {
   const m = unit(opts, 'Spectral Ballista', 4, 8);
   m.intrinsicMoveUnits = 3;
-  m.intrinsicMelee = { spec: '1d6', type: 'pierce', damageClass: 'physical' };
+  m.intrinsicMelee = { spec: '1d6', type: 'pierce' };
   m.intrinsicMeleeReach = R(25);
   m.intrinsicMeleeMin = R(15);
   m.attackCooldownRounds = 2;
@@ -143,7 +140,7 @@ export function makeRemnant(opts: SummonOpts & { corpse: Mage }): Mage {
   const bonusPierce = Math.ceil(Math.max(0, corpse.statStrength) / 4);
   const m = unit(opts, 'Remnant', 2 + Math.floor(corpse.maxHp / 2), Math.max(1, corpse.maxSanity));
   m.intrinsicMoveUnits = 2 + (corpse.intrinsicMoveUnits ?? 1 + corpse.statDex);
-  m.intrinsicMelee = { spec: `${1 + bonusPierce}`, type: 'pierce', damageClass: 'physical' };
+  m.intrinsicMelee = { spec: `${1 + bonusPierce}`, type: 'pierce' };
   m.intrinsicMeleeReach = MELEE_RANGE;
   m.controlImmune = true;
   m.intrinsicResistTypes = ['pierce', 'cold'];
@@ -159,7 +156,7 @@ export function makeSilencingSpike(opts: SummonOpts): Mage {
   const m = unit(opts, 'Silencing Spike', 10, 10);
   m.cannotAttack = false;
   m.intrinsicMoveUnits = 0;
-  m.intrinsicMelee = { spec: '1d6', type: 'pierce', damageClass: 'physical' };
+  m.intrinsicMelee = { spec: '1d6', type: 'pierce' };
   m.intrinsicMeleeReach = R(10);
   m.debuffImmune = true;
   m.displacementImmune = true;
@@ -188,7 +185,7 @@ export function makeOrzhovSandpriest(opts: SummonOpts): Mage {
   const m = sandsoldier(unit(opts, 'Orzhov-Sandpriest', 20, 25), 0);
   m.intrinsicMoveUnits = 5;
   m.cannotAttack = true;
-  m.intrinsicImmuneTypes = ['heat', 'cold'];
+  m.intrinsicImmuneTypes = ['heat', 'cold', 'sanity'];
   m.intrinsicResistTypes = ['pierce', 'malforming', 'shadow'];
   m.intrinsicWeakTypes = ['shatter', 'light'];
   return m;
@@ -198,7 +195,7 @@ export function makeOrzhovSandpriest(opts: SummonOpts): Mage {
 export function makeSandCadett(opts: SummonOpts): Mage {
   const m = sandsoldier(unit(opts, 'Sandsoldier-Cadett', 10, 6), 1);
   m.intrinsicMoveUnits = 5;
-  m.intrinsicMelee = { spec: '1d6', type: 'slashing', damageClass: 'physical' };
+  m.intrinsicMelee = { spec: '1d6', type: 'slashing' };
   m.intrinsicMeleeReach = R(2);
   m.intrinsicResistTypes = ['slashing', 'malforming', 'shadow'];
   m.intrinsicWeakTypes = ['water'];
@@ -213,7 +210,7 @@ export function makeSandCadett(opts: SummonOpts): Mage {
 function parasite(opts: SummonOpts, name: string): Mage {
   const m = unit(opts, name, 25, 10);
   m.intrinsicMoveUnits = 5;
-  m.intrinsicMelee = { spec: '5', type: 'pierce', damageClass: 'physical' };
+  m.intrinsicMelee = { spec: '5', type: 'pierce' };
   m.intrinsicMeleeReach = R(1);
   m.controlImmune = true;
   m.intrinsicResistTypes = ['shadow', 'heat'];

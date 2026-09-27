@@ -6,6 +6,7 @@ import { MENU_COLOR, MENU_FONT, MENU_HEX } from '../ui/cabinet/theme';
 import { px } from '../ui/cabinet/textScale';
 
 export const DAMAGE_COLORS: Record<DamageType, number> = {
+  sanity: 0xd184c5,
   pierce: 0xd9d5c7,
   shatter: 0xe4c06a,
   shadow: 0x9b7ac4,
@@ -159,7 +160,7 @@ export class CombatFeedbackLayer {
   private colorFor(feedback: CombatFeedback): number {
     if (feedback.kind === 'heal') return 0x72bd91;
     if (feedback.kind === 'sanityHeal') return 0xb68bc5;
-    if (feedback.kind === 'sanityDamage') return 0xd184c5;
+    if (feedback.kind === 'sanityDamage') return DAMAGE_COLORS.sanity;
     if (feedback.kind === 'immune') return 0xb5b0a4;
     if (feedback.kind === 'miss') return 0x8da89d;
     if (feedback.kind === 'blocked') return MENU_COLOR.brassLight;

@@ -1,8 +1,9 @@
-// Damage model. Two classes (where the damage is applied) and several types
-// (the flavour / future resistance hooks).
+// Damage model. Every hit has one type, and the type alone decides the pool:
+// 'sanity' (mental / mill) drains sanity, every other type drains HP.
 
-export type DamageClass = 'physical' | 'sanity';
 export type DamageType =
+  // Mental damage. Its own type — never "shadow sanity", just sanity.
+  | 'sanity'
   | 'pierce'
   | 'shatter'
   | 'shadow'
@@ -25,13 +26,8 @@ export type DamageType =
 export interface DamageInstance {
   amount: number;
   type: DamageType;
-  damageClass: DamageClass;
 }
 
-export function dmg(
-  amount: number,
-  type: DamageType,
-  damageClass: DamageClass = 'physical'
-): DamageInstance {
-  return { amount, type, damageClass };
+export function dmg(amount: number, type: DamageType): DamageInstance {
+  return { amount, type };
 }

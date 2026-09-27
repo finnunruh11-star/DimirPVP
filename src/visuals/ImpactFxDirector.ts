@@ -43,6 +43,18 @@ interface Recipe {
  * landed and which way it came from.
  */
 const DAMAGE_RECIPES: Record<DamageType, Recipe> = {
+  sanity: {
+    hero: 'impact-shards',
+    heroSize: 108,
+    scatter: {
+      count: 15, speed: 165, lifespan: 620, shape: 'mote', size: 17,
+      gravityY: -80, spread: 12, drag: 0.75, stagger: 0.05,
+    },
+    secondary: {
+      count: 5, speed: 70, lifespan: 860, shape: 'smoke', size: 60,
+      alpha: 0.3, gravityY: -40, drag: 0.85,
+    },
+  },
   pierce: {
     hero: 'impact-spray',
     heroOmni: 'impact-star',
@@ -186,7 +198,6 @@ const DIRECTIONAL_TYPES = new Set<DamageType>(['pierce', 'slashing', 'shatter'])
 /** Types that leave chips on the ground behind the combatants. */
 const DEBRIS_TYPES = new Set<DamageType>(['shatter', 'pierce', 'slashing']);
 
-const SANITY_COLOR = 0xd184c5;
 const WARD_COLOR = 0xc9a961;
 const MISS_COLOR = 0x8da89d;
 
@@ -466,7 +477,7 @@ export class ImpactFxDirector {
   private damageTypeFor(feedback: CombatFeedback): DamageType {
     if (feedback.kind === 'heal') return 'healing';
     if (feedback.kind === 'sanityHeal') return 'cleansing';
-    if (feedback.kind === 'sanityDamage') return 'shadow';
+    if (feedback.kind === 'sanityDamage') return 'sanity';
     return feedback.damageType ?? 'generic';
   }
 
@@ -479,7 +490,7 @@ export class ImpactFxDirector {
   private colorFor(feedback: CombatFeedback): number {
     if (feedback.kind === 'heal') return DAMAGE_COLORS.healing;
     if (feedback.kind === 'sanityHeal') return DAMAGE_COLORS.cleansing;
-    if (feedback.kind === 'sanityDamage') return SANITY_COLOR;
+    if (feedback.kind === 'sanityDamage') return DAMAGE_COLORS.sanity;
     if (feedback.kind === 'immune' || feedback.kind === 'blocked') return WARD_COLOR;
     if (feedback.kind === 'miss') return MISS_COLOR;
     return DAMAGE_COLORS[feedback.damageType ?? 'generic'];

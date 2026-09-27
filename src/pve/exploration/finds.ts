@@ -8,7 +8,7 @@ import { grantToMage, withParty } from './economy';
 import type { ExplorationRun } from './run';
 import type { RegionId } from './world';
 
-const HERBS: Record<RegionId, ItemId[]> = {
+export const HERBS: Record<RegionId, ItemId[]> = {
   capitol: ['herbMoonleaf'],
   forest: ['herbMoonleaf', 'herbBogcap'],
   red: ['herbEmberroot'],
@@ -49,4 +49,25 @@ export function rollFind(run: ExplorationRun, zone: RegionId, depth: number, dic
     for (let i = 0; i < count; i++) grantToMage(leader, id);
   });
   return `${where}: ${count > 1 ? `${count}x ` : ''}${getItem(id).name}.`;
+}
+
+function grant(run: ExplorationRun, id: ItemId, count: number): string {
+  withParty(run, (leader) => {
+    for (let i = 0; i < count; i++) grantToMage(leader, id);
+  });
+  return `${count > 1 ? `${count}x ` : ''}${getItem(id).name}`;
+}
+
+/** Pick a patch clean: two to four of the herb. */
+export function gatherHerbs(run: ExplorationRun, herb: ItemId, dice: Dice): string {
+  return `Gathered ${grant(run, herb, 1 + dice.die(3))}.`;
+}
+
+/** Search a ruin off the way: supplies, stones or lost kit, never herbs or coin. */
+export function rollCache(run: ExplorationRun, zone: RegionId, depth: number, dice: Dice, where: string): string {
+  const roll = dice.float();
+  const pool = roll < 0.4 ? SUPPLIES : roll < 0.82 || depth < 2 ? GEMS[zone] : LOST_KIT;
+  const id = dice.pick(pool);
+  const count = id === 'arrow' ? 4 + dice.die(4) : pool === SUPPLIES && dice.float() < 0.35 ? 2 : 1;
+  return `${where}: ${grant(run, id, count)}.`;
 }

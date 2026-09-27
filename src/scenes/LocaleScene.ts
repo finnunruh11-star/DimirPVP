@@ -1414,7 +1414,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
 
   /** Midnight on the road: yesterday's packs move on and today's take their places. */
   private newDay(): void {
-    this.hud?.toast(`Day ${this.run.day} dawns.`, 1800);
+    // The HUD announces the day itself as soon as it sees the clock turn.
+    this.refreshHud();
     const fresh = resolveLocale(this.run, this.place.def.id);
     if (!fresh) return;
     this.clearMindView();

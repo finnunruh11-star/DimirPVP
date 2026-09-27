@@ -65,7 +65,7 @@ const bane: ColorAbility = {
     const p = potencyOf(ctx);
     const amount = Math.round(rollDice(ctx, '1d3', 'Bane') * p);
     if (ctx.target) {
-      dealDamage(ctx, ctx.target, dmg(amount, 'shadow', 'physical'), { canMiss: false });
+      dealDamage(ctx, ctx.target, dmg(amount, 'shadow'), { canMiss: false });
       applyDebuff(ctx, ctx.target, {
         name: 'Marked',
         key: 'debuff:marked',
@@ -77,7 +77,7 @@ const bane: ColorAbility = {
     // pulse applied centrally after resolution (see GameState.resolve); other
     // casters take the shadow recoil as normal.
     if (!ctx.caster.profile.whiteSecondaryTier) {
-      dealDamage(ctx, ctx.caster, dmg(amount, 'shadow', 'physical'), { canMiss: false, aoe: true });
+      dealDamage(ctx, ctx.caster, dmg(amount, 'shadow'), { canMiss: false, aoe: true });
     }
     payBlackSecondaryLife(ctx);
   },
@@ -101,7 +101,6 @@ const necrosis: ColorAbility = {
       name: 'Necrosis',
       stages: ['1d3', '3d3', '2d10'],
       type: 'shadow',
-      damageClass: 'physical',
       potency: potencyOf(ctx),
     });
     payBlackSecondaryLife(ctx);
@@ -180,8 +179,8 @@ const whiteBane: ColorAbility = {
     if (!ctx.target) return;
     const already = ctx.target.statuses.some((s) => s.key === 'debuff:marked');
     const amount = rollDice(ctx, already ? '3d3' : '1d3', 'Bane');
-    dealDamage(ctx, ctx.target, dmg(amount, 'shadow', 'physical'), { canMiss: false });
-    dealDamage(ctx, ctx.caster, dmg(amount, 'shadow', 'physical'), { canMiss: false, aoe: true });
+    dealDamage(ctx, ctx.target, dmg(amount, 'shadow'), { canMiss: false });
+    dealDamage(ctx, ctx.caster, dmg(amount, 'shadow'), { canMiss: false, aoe: true });
     // Non-stacking mark (shares the "Marked" key, so re-baning never stacks).
     applyDebuff(ctx, ctx.target, {
       name: 'Marked',
@@ -237,14 +236,12 @@ const deathRealm: ColorAbility = {
       name: 'Hunger of Hadar (cold)',
       stages: ['1d3', '1d3'],
       type: 'shatter',
-      damageClass: 'physical',
       potency: 1,
     });
     ctx.game.addGlobalEscalation({
       name: 'Hunger of Hadar (dark)',
       stages: ['1d3', '1d3'],
       type: 'shadow',
-      damageClass: 'physical',
       potency: 1,
     });
   },
@@ -271,7 +268,7 @@ const lightningBolt: ColorAbility = {
     if (!ctx.target) return;
     let amount = rollDice(ctx, '2d6', 'Lightning Bolt');
     if (amount < 6) amount += rollDice(ctx, '1d6', 'Lightning Bolt surge');
-    dealDamage(ctx, ctx.target, dmg(amount, 'typeless', 'physical'), {
+    dealDamage(ctx, ctx.target, dmg(amount, 'typeless'), {
       canMiss: false,
       trueDamage: true,
     });

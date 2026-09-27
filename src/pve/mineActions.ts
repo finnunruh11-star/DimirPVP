@@ -1,5 +1,5 @@
 import { MELEE_RANGE, RANGE_UNIT } from '../config/constants';
-import { dmg, type DamageClass, type DamageType } from '../core/Damage';
+import { dmg, type DamageType } from '../core/Damage';
 import type { GameState } from '../core/GameState';
 import type { Mage } from '../core/Mage';
 import type { StackItem } from '../core/Stack';
@@ -109,13 +109,12 @@ function rolledDamage(
   spec: string,
   bonus: number,
   type: DamageType,
-  damageClass: DamageClass,
   label: string,
   opts: { canMiss?: boolean; aoe?: boolean; trueDamage?: boolean } = {}
 ): number {
   const ctx = game.effectContext(source, target, null);
   const amount = rollDice(ctx, spec, label) + bonus;
-  return dealDamage(ctx, target, dmg(amount, type, damageClass), opts);
+  return dealDamage(ctx, target, dmg(amount, type), opts);
 }
 
 const ACTIONS: Record<MineActionId, MineActionDef> = {
@@ -136,7 +135,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
         game.log(`${source.name} lands short and remains intact.`);
         return;
       }
-      rolledDamage(game, source, target, '1d4', 0, 'shatter', 'physical', 'Rockling impact');
+      rolledDamage(game, source, target, '1d4', 0, 'shatter', 'Rockling impact');
       game.vfxSink?.shatterBurst?.(target.pos, 78, source.pos);
       game.defeatMage(source, source, `${source.name} breaks apart on impact.`);
     },
@@ -160,7 +159,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
         game.log(`${source.name} lands short.`);
         return;
       }
-      rolledDamage(game, source, target, '1d4', 1 + power(source), 'shatter', 'physical', 'Rabbit charge');
+      rolledDamage(game, source, target, '1d4', 1 + power(source), 'shatter', 'Rabbit charge');
       game.vfxSink?.shatterBurst?.(target.pos, 48, source.pos);
     },
   },
@@ -179,7 +178,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       const spec = level(source) >= 6 ? '1d4' : '1d3';
       for (const target of game.magesInRadius(source.pos, radius, source)) {
         if (target.team === source.team) continue;
-        rolledDamage(game, source, target, spec, 0, 'shadow', 'sanity', 'Cavern Shriek', {
+        rolledDamage(game, source, target, spec, 0, 'sanity', 'Cavern Shriek', {
           canMiss: false,
           aoe: true,
         });
@@ -243,7 +242,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
         : destination;
       game.leapMove(source, stop);
       if (hit?.alive) {
-        rolledDamage(game, source, hit, '2d6+2', power(source), 'shatter', 'physical', 'Stone Roll');
+        rolledDamage(game, source, hit, '2d6+2', power(source), 'shatter', 'Stone Roll');
       }
     },
   },
@@ -265,7 +264,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       if (source.mine) source.mine.stones = 0;
       game.log(`${source.name} hurls ${stones} stones; ${hits} find their mark.`);
       for (let hit = 0; hit < hits && target.alive; hit++) {
-        rolledDamage(game, source, target, '1d6', 0, 'shatter', 'physical', 'Stone hit');
+        rolledDamage(game, source, target, '1d6', 0, 'shatter', 'Stone hit');
       }
     },
   },
@@ -283,7 +282,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       const ctx = game.effectContext(source, target, null);
       const first = rollDice(ctx, '2d6', 'Mine Lightning');
       const bonus = first < 6 ? rollDice(ctx, '1d6', 'Lightning surge') : 0;
-      dealDamage(ctx, target, dmg(first + bonus, 'typeless', 'physical'), {
+      dealDamage(ctx, target, dmg(first + bonus, 'typeless'), {
         canMiss: false,
         trueDamage: true,
       });
@@ -300,7 +299,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
     isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 2.5 * RANGE_UNIT),
     resolve: (game, source, choice) => {
       const target = choice.target!;
-      rolledDamage(game, source, target, '1d8', power(source), 'shatter', 'physical', 'Shield Slam');
+      rolledDamage(game, source, target, '1d8', power(source), 'shatter', 'Shield Slam');
       if (target.alive) applyStun(game.effectContext(source, target, null), target, { duration: 2, type: 'main' });
     },
   },
@@ -317,7 +316,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       const primary = choice.target!;
       const targets = game.magesInRadius(primary.pos, 2 * RANGE_UNIT).filter((target) => target.team !== source.team);
       for (const target of targets) {
-        rolledDamage(game, source, target, '2d6', power(source), 'shatter', 'physical', 'Magma Crash', {
+        rolledDamage(game, source, target, '2d6', power(source), 'shatter', 'Magma Crash', {
           canMiss: false,
           aoe: target !== primary,
         });
@@ -389,7 +388,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
     resolve: (game, source, choice) => {
       const target = choice.target!;
       const magma = mineKind(source) === 'magma-sentinel';
-      rolledDamage(game, source, target, magma ? '2d6' : '1d6', power(source), 'heat', 'physical', 'Fire Bolt');
+      rolledDamage(game, source, target, magma ? '2d6' : '1d6', power(source), 'heat', 'Fire Bolt');
       if (magma && target.alive) game.applySentinelFireStacks(target, 1, source);
     },
   },
@@ -403,7 +402,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
     isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 15 * RANGE_UNIT),
     resolve: (game, source, choice) => {
       const target = choice.target!;
-      const dealt = rolledDamage(game, source, target, '2d6', power(source), 'heat', 'physical', 'Fire Lance');
+      const dealt = rolledDamage(game, source, target, '2d6', power(source), 'heat', 'Fire Lance');
       if (level(source) < 6 || dealt <= 0) return;
       const second = game.livingEnemiesOf(source)
         .filter((candidate) => candidate !== target && dist(candidate.pos, target.pos) <= 3 * RANGE_UNIT)
@@ -412,7 +411,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
         dealDamage(
           game.effectContext(source, second, null),
           second,
-          dmg(Math.max(1, Math.floor(dealt / 2)), 'heat', 'physical'),
+          dmg(Math.max(1, Math.floor(dealt / 2)), 'heat'),
           { canMiss: false }
         );
       }
@@ -428,7 +427,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
     isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 15 * RANGE_UNIT),
     resolve: (game, source, choice) => {
       const target = choice.target!;
-      rolledDamage(game, source, target, '3d6', power(source), 'heat', 'physical', 'Magma Lance');
+      rolledDamage(game, source, target, '3d6', power(source), 'heat', 'Magma Lance');
       if (target.alive) game.applySentinelFireStacks(target, level(source) >= 6 ? 2 : 1, source);
     },
   },
@@ -445,7 +444,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       const targets = game.magesInRadius(choice.target!.pos, 2 * RANGE_UNIT)
         .filter((target) => target.team !== source.team);
       for (const target of targets) {
-        rolledDamage(game, source, target, '2d6', power(source), 'heat', 'physical', 'Eruption', {
+        rolledDamage(game, source, target, '2d6', power(source), 'heat', 'Eruption', {
           canMiss: false,
           aoe: true,
         });
@@ -463,7 +462,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
     available: (source) => mineKind(source) === 'red-dragonborn' || mineKind(source) === 'black-dragonborn',
     isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 2.5 * RANGE_UNIT),
     resolve: (game, source, choice) => {
-      rolledDamage(game, source, choice.target!, '2d8', power(source), 'pierce', 'physical', 'Dragon Bite');
+      rolledDamage(game, source, choice.target!, '2d8', power(source), 'pierce', 'Dragon Bite');
     },
   },
   'red-breath': {
@@ -480,7 +479,7 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       const targets = game.magesInCone(source.pos, choice.target!.pos, 15 * RANGE_UNIT, degrees, source)
         .filter((target) => target.team !== source.team);
       for (const target of targets) {
-        rolledDamage(game, source, target, '3d6', 0, 'heat', 'physical', 'Red Breath', {
+        rolledDamage(game, source, target, '3d6', 0, 'heat', 'Red Breath', {
           canMiss: false,
           aoe: true,
         });

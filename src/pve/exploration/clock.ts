@@ -17,6 +17,11 @@ export function isNight(hour: number): boolean {
   return hour >= DUSK || hour < DAWN;
 }
 
+/** Hours until night falls or day breaks, whichever comes next. */
+export function hoursToTurn(hour: number): number {
+  return isNight(hour) ? (DAWN - hour + 24) % 24 : DUSK - hour;
+}
+
 /** Move the clock on. Returns how many midnights passed. */
 export function advanceHours(clock: Clock, hours: number): number {
   const total = clock.hour + Math.max(0, hours);
@@ -51,4 +56,13 @@ export function durationLabel(hours: number): string {
   const days = Math.floor(rounded / 24);
   const rest = Math.round(rounded - days * 24);
   return `${days} day${days > 1 ? 's' : ''}${rest ? ` ${rest} h` : ''}`;
+}
+
+/** "45 min", "2 h" or "1 h 15 min", to the quarter hour and never under one. */
+export function spanLabel(hours: number): string {
+  const minutes = Math.max(15, Math.round(hours * 4) * 15);
+  if (minutes < 60) return `${minutes} min`;
+  const whole = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${whole} h ${rest} min` : `${whole} h`;
 }

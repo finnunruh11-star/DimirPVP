@@ -49,6 +49,15 @@ export interface LocaleState {
   y: number;
 }
 
+/** The walk since the last stop on the travel map (see journey.ts). */
+export interface RoadState {
+  tiles: number;
+  /** Summed hazard of those tiles: a fight comes with chance 1 - e^-danger. */
+  danger: number;
+  /** The same for finds. */
+  luck: number;
+}
+
 export interface ExplorationRun {
   version: number;
   seed: number;
@@ -92,6 +101,7 @@ export interface ExplorationRun {
   /** Bought a map of the realm: the travel map is open. */
   hasMap: boolean;
   quest: QuestState;
+  road: RoadState;
 }
 
 export function createRun(seed: number, party: Scenario): ExplorationRun {
@@ -124,6 +134,7 @@ export function createRun(seed: number, party: Scenario): ExplorationRun {
     mapStyle: 'open',
     hasMap: false,
     quest: { job: 0, taken: false, progress: 0, opens: 1 },
+    road: { tiles: 0, danger: 0, luck: 0 },
   };
 }
 

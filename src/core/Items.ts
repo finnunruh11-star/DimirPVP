@@ -8,7 +8,7 @@
 //  with Strength) and tweak the basic attack, defence, spellcasting or vitals.
 // =============================================================================
 
-import type { DamageClass, DamageType } from './Damage';
+import type { DamageType } from './Damage';
 import {
   BASE_CARRY_KG,
   MELEE_RANGE,
@@ -250,8 +250,6 @@ export interface WeaponMod {
   /** Bows consume one arrow per shot and can't fire without ammo. */
   usesArrows?: boolean;
   damageType: DamageType;
-  /** Vital pool damaged by the strike (default physical HP; sanity = mill). */
-  damageClass?: DamageClass;
   /** Chance (0..1) to deal double damage (silver shortsword). */
   critChance?: number;
   /** A single-use weapon that rolls this spec then is consumed (crossbow). */
@@ -613,14 +611,13 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 0,
     blurb:
-      'Dex attack, shadow sanity. In shadow (1 mana/turn): immunity to all targeting, unbreakable. Weapon Action (8 mana): teleport to any shadow. Unpaid mana costs 1 random permanent stat point each.',
+      'Dex attack, sanity. In shadow (1 mana/turn): immunity to all targeting, unbreakable. Weapon Action (8 mana): teleport to any shadow. Unpaid mana costs 1 random permanent stat point each.',
     weaponAbility: 'shadowDaggerTeleport',
     shadowDagger: { teleportManaCost: 8, stealthManaPerRound: 1 },
     weapon: {
       rangePx: MELEE_RANGE,
       kind: 'dex',
-      damageType: 'shadow',
-      damageClass: 'sanity',
+      damageType: 'sanity',
     },
   },
   {
@@ -1252,7 +1249,7 @@ export const ITEM_DEFS: ItemDef[] = [
     blurb:
       'Cursed. Permanently binding. Weak to light. Bonus action: toggle active or dormant.\n' +
       'ACTIVE (4 mana): 15cm dark light that counts as your shadow. On activation: 3 Soul Rend to all in range, including you. Move through walls. Reveals all stealth except Shadow Veil. On weapon attack: pull all units 6cm in, then 2 shadow to all in the light, including you.\n' +
-      'DORMANT: -33% move. Full turn: throw within (Strength)cm for a 5cm blast, 1d20 shadow/shatter + 1d10 shadow sanity. Can hit you.\n' +
+      'DORMANT: -33% move. Full turn: throw within (Strength)cm for a 5cm blast, 1d20 shadow/shatter + 1d10 sanity. Can hit you.\n' +
       'On deactivate: pull all units 6cm in, then capture units in 6cm with Soul Rend below 15 HP, 8 sanity or 34%.\n' +
       'Captives: 2 mana per turn, 10 true HP + 5 true sanity each. Unpaid: you die.\n' +
       'Soul Rend: 1d3 true HP + 1d3 true sanity per stack per turn, then -1 stack.',

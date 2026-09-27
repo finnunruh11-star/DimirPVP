@@ -99,8 +99,6 @@ const BOOL_FLAGS = [
   'unkillable',
   'trainingPassive',
   'isSummon',
-  'sanityImmune',
-  'physicalImmune',
   'cannotAttack',
   'debuffImmune',
   'isBoss',
@@ -171,8 +169,8 @@ export interface ScenarioEntity {
     bodyRadius?: number;
     meleeReach?: number;
     meleeMin?: number;
-    melee?: { spec: string; type: string; damageClass: string };
-    damageAura?: { radius: number; damageSpec: string; type: string; damageClass: string };
+    melee?: { spec: string; type: string };
+    damageAura?: { radius: number; damageSpec: string; type: string };
   };
   summon?: {
     kind?: string;
@@ -328,7 +326,6 @@ function captureEntity(m: Mage, index: Map<Mage, number>): ScenarioEntity {
         ? {
           spec: m.intrinsicMelee.spec,
           type: m.intrinsicMelee.type,
-          damageClass: m.intrinsicMelee.damageClass,
         }
         : undefined,
       damageAura: m.intrinsicDamageAura ? { ...m.intrinsicDamageAura } : undefined,
@@ -423,6 +420,24 @@ function damageTypes(value: unknown): string[] {
   return list(value).filter((t): t is string => typeof t === 'string');
 }
 
+/** Pre-'sanity'-type files stored a mental hit as a type plus `damageClass: 'sanity'`. */
+function legacyDamageType(raw: Record<string, unknown>): string {
+  return raw.damageClass === 'sanity' ? 'sanity' : str(raw.type, 'generic');
+}
+
+/** Rewrite every nested old-style damage record in a copied status. */
+function migrateDamageClass(node: unknown): void {
+  if (Array.isArray(node)) {
+    node.forEach(migrateDamageClass);
+    return;
+  }
+  if (!isRecord(node)) return;
+  Object.values(node).forEach(migrateDamageClass);
+  if (!('damageClass' in node)) return;
+  if (node.damageClass === 'sanity') node.type = 'sanity';
+  delete node.damageClass;
+}
+
 /** Statuses are plain data; keep only well-formed entries and deep-copy them. */
 function statuses(value: unknown): Status[] {
   const out: Status[] = [];
@@ -432,6 +447,7 @@ function statuses(value: unknown): Status[] {
     if (typeof raw.name !== 'string' || typeof raw.duration !== 'number') continue;
     const copy = JSON.parse(JSON.stringify(raw)) as Record<string, unknown>;
     for (const key of UNSAFE_KEYS) delete copy[key];
+    migrateDamageClass(copy);
     out.push(copy as unknown as Status);
   }
   return out;
@@ -500,6 +516,12 @@ function parseEntity(raw: unknown): ScenarioEntity {
   for (const key of BOOL_FLAGS) {
     if (typeof rawBools[key] === 'boolean') bools[key] = rawBools[key];
   }
+  // Older files stored mindless / incorporeal as flags instead of immune types.
+  const immune = new Set(damageTypes(intrinsic.immune));
+  if (rawBools.sanityImmune === true) immune.add('sanity');
+  if (rawBools.physicalImmune === true) {
+    for (const type of ['pierce', 'shatter', 'slashing', 'generic']) immune.add(type);
+  }
 
   const maxHp = int(vitals.maxHp, 12, 1, BIG);
   const maxMana = int(vitals.maxMana, 24, 0, BIG);
@@ -567,7 +589,7 @@ function parseEntity(raw: unknown): ScenarioEntity {
       }
       : undefined,
     intrinsic: {
-      immune: damageTypes(intrinsic.immune),
+      immune: [...immune],
       resist: damageTypes(intrinsic.resist),
       weak: damageTypes(intrinsic.weak),
       moveUnits: typeof intrinsic.moveUnits === 'number' ? num(intrinsic.moveUnits, 0, 0, 999) : undefined,
@@ -579,16 +601,14 @@ function parseEntity(raw: unknown): ScenarioEntity {
       melee: melee
         ? {
           spec: str(melee.spec, '1d3'),
-          type: str(melee.type, 'generic'),
-          damageClass: str(melee.damageClass, 'physical'),
+          type: legacyDamageType(melee),
         }
         : undefined,
       damageAura: aura
         ? {
           radius: num(aura.radius, 0, 0, 9999),
           damageSpec: str(aura.damageSpec, '1d3'),
-          type: str(aura.type, 'generic'),
-          damageClass: str(aura.damageClass, 'physical'),
+          type: legacyDamageType(aura),
         }
         : undefined,
     },
@@ -770,7 +790,7 @@ function buildMage(e: ScenarioEntity, rng: Dice): Mage {
     // Overwrite the numbers in place so a rebuilt creature keeps its on-hit rider.
     const melee = e.intrinsic.melee as unknown as NonNullable<Mage['intrinsicMelee']>;
     m.intrinsicMelee = m.intrinsicMelee
-      ? { ...m.intrinsicMelee, spec: melee.spec, type: melee.type, damageClass: melee.damageClass }
+      ? { ...m.intrinsicMelee, spec: melee.spec, type: melee.type }
       : melee;
   } else {
     m.intrinsicMelee = undefined;

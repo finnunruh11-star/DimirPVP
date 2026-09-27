@@ -1883,7 +1883,7 @@ export class GameScene extends Phaser.Scene {
             key: 'tutorial-bleed',
             name: 'Practice Wound',
             duration: 6,
-            damage: { amount: 0, type: 'slashing', damageClass: 'physical' },
+            damage: { amount: 0, type: 'slashing' },
             damageSpec: '1d3',
           },
           false
@@ -10085,7 +10085,7 @@ export class GameScene extends Phaser.Scene {
         .rectangle(0, y, 4, 21, targetable ? MENU_COLOR.verdigris : MENU_COLOR.disabled, 1)
         .setOrigin(0, 0);
       const vitals =
-        !m.sanityImmune && m.maxSanity > 0
+        !m.isImmuneTo('sanity') && m.maxSanity > 0
           ? `${m.hp}/${m.maxHp} HP · ${m.sanity} SAN`
           : `${m.hp}/${m.maxHp} HP`;
       const txt = this.add
@@ -15936,8 +15936,6 @@ export class GameScene extends Phaser.Scene {
     ];
 
     const defences: string[] = [];
-    if (m.physicalImmune) defences.push('Immune to physical');
-    if (m.sanityImmune) defences.push('Immune to mind');
     if (m.debuffImmune) defences.push('Immune to debuffs');
     if (m.controlImmune) defences.push('Immune to control');
     if (m.displacementImmune) defences.push('Cannot be moved');

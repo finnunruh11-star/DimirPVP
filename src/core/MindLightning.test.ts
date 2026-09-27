@@ -175,7 +175,7 @@ faradayGame.rng.roll = () => ({ total: 2, rolls: [2], modifier: 0 });
 const firstHit = dealDamage(
   faradayGame.effectContext(attacker, bearer, null),
   bearer,
-  dmg(10, 'shatter', 'physical')
+  dmg(10, 'shatter')
 );
 assert.equal(firstHit, 5);
 assert.equal(bearer.hp, 95);
@@ -184,7 +184,7 @@ assert.equal(conductor.sanity, 90, 'Retaliation uses the newly added stack.');
 const secondHit = dealDamage(
   faradayGame.effectContext(attacker, bearer, null),
   bearer,
-  dmg(10, 'shatter', 'physical')
+  dmg(10, 'shatter')
 );
 assert.equal(secondHit, 5, 'Faraday has no per-proc charge limit.');
 assert.equal(veil.duration, 2, 'Faraday procs do not consume duration.');
@@ -203,7 +203,7 @@ failedGame.rng.roll = () => ({ total: 1, rolls: [1], modifier: 0 });
 const failedHit = dealDamage(
   failedGame.effectContext(attacker, failedBearer, null),
   failedBearer,
-  dmg(10, 'shatter', 'physical')
+  dmg(10, 'shatter')
 );
 assert.equal(failedHit, 10);
 assert.equal(failedBearer.hp, 90, 'A grounding failure leaves the original hit intact.');

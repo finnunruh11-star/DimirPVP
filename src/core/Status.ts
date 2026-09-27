@@ -280,7 +280,6 @@ export interface AuraDotStatus extends BaseStatus {
   radius: number;
   damageSpec: string;
   type: DamageInstance['type'];
-  damageClass: DamageInstance['damageClass'];
 }
 
 /** A mental compulsion placed by the Mind word. */

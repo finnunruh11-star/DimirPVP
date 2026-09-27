@@ -90,7 +90,6 @@ export function makeGhostSummon(opts: {
   // `alive` (hp > 0 && sanity > 0) never trips on the mind axis.
   g.maxSanity = 999;
   g.sanity = 999;
-  g.sanityImmune = true;
 
   g.statStrength = str;
   g.statDex = dex;
@@ -100,9 +99,9 @@ export function makeGhostSummon(opts: {
   g.statsAssigned = true;
 
   // Mundane blows pass through it; magical physical damage still connects.
-  g.intrinsicImmuneTypes = ['pierce', 'shatter', 'slashing', 'generic'];
+  g.intrinsicImmuneTypes = ['pierce', 'shatter', 'slashing', 'generic', 'sanity'];
   g.intrinsicWeakTypes = ['light'];
-  g.intrinsicMelee = { spec: '1d4', type: 'shadow', damageClass: 'sanity' };
+  g.intrinsicMelee = { spec: '1d4', type: 'sanity' };
 
   return g;
 }
@@ -128,7 +127,6 @@ export function makeCorrosionSentry(opts: {
     radius: R(3),
     damageSpec: '1d3',
     type: 'corrosive',
-    damageClass: 'physical',
   };
   return unit;
 }
@@ -148,7 +146,7 @@ export function makeBinderSummon(opts: {
   const { unit } = baseSummon({ ...opts, suffix: 'Binder' });
   unit.maxHp = 6;
   unit.hp = 6;
-  unit.intrinsicMelee = { spec: '1d3', type: 'shadow', damageClass: 'physical' };
+  unit.intrinsicMelee = { spec: '1d3', type: 'shadow' };
   unit.intrinsicMeleeReach = R(10);
   return unit;
 }
@@ -169,7 +167,7 @@ export function makeArcherSummon(opts: {
   const { unit } = baseSummon({ ...opts, suffix: 'Corroding Archer' });
   unit.maxHp = 6;
   unit.hp = 6;
-  unit.intrinsicMelee = { spec: '1d4', type: 'corrosive', damageClass: 'physical' };
+  unit.intrinsicMelee = { spec: '1d4', type: 'corrosive' };
   unit.intrinsicMeleeReach = R(15);
   unit.intrinsicMeleeMin = R(10);
   return unit;
@@ -190,7 +188,7 @@ export function makeNeuralLeech(opts: {
   unit.maxHp = 5;
   unit.hp = 5;
   unit.intrinsicMoveUnits = 7;
-  unit.intrinsicMelee = { spec: '1d3', type: 'corrosive', damageClass: 'sanity' };
+  unit.intrinsicMelee = { spec: '1d3', type: 'sanity' };
   unit.intrinsicMeleeReach = MELEE_RANGE;
   return unit;
 }
@@ -211,7 +209,7 @@ export function makeThoughtLeech(opts: {
   unit.maxHp = 5;
   unit.hp = 5;
   unit.intrinsicMoveUnits = 8;
-  unit.intrinsicMelee = { spec: '1d3', type: 'shadow', damageClass: 'sanity' };
+  unit.intrinsicMelee = { spec: '1d3', type: 'sanity' };
   unit.intrinsicMeleeReach = MELEE_RANGE;
   return unit;
 }

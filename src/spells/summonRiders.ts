@@ -28,7 +28,7 @@ const RIDERS: Record<string, (self: Mage) => SummonOnHit> = {
     applyDot(ctx, victim, {
       name: 'Neural Rot',
       duration: 3,
-      damage: dmg(1, 'corrosive', 'sanity'),
+      damage: dmg(1, 'sanity'),
     });
     applyControl(ctx, victim, { name: 'Reaction Eaten', mode: 'expose', duration: 3 });
   },

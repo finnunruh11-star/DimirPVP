@@ -255,7 +255,7 @@ registerSpell({
       ctx.targetPoint,
       R(5),
       CONE_DEGREES,
-      dmg(amount, 'shatter', 'physical'),
+      dmg(amount, 'shatter'),
       { strictRange: true }
     );
   },
@@ -273,7 +273,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     const amount = rollDice(ctx, '1d6', 'Pierce');
-    dealDamage(ctx, ctx.target, dmg(amount, 'pierce', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'pierce'));
   },
 });
 
@@ -344,13 +344,13 @@ registerSpell({
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const amount = rollDice(ctx, '1d6', 'Corrode');
-    const hits = areaDamage(ctx, ctx.targetPoint, R(1.6), dmg(amount, 'corrosive', 'physical'));
+    const hits = areaDamage(ctx, ctx.targetPoint, R(1.6), dmg(amount, 'corrosive'));
     for (const m of hits) {
       if (ctx.rng.chance(0.33)) {
         applyDot(ctx, m, {
           name: 'Corrosion',
           duration: 2,
-          damage: dmg(1, 'corrosive', 'physical'),
+          damage: dmg(1, 'corrosive'),
         });
       }
       if (ctx.rng.chance(0.2)) {
@@ -378,7 +378,7 @@ registerSpell({
     applyDot(ctx, ctx.target, {
       name: 'Curse',
       duration: 4,
-      damage: dmg(2, 'shadow', 'physical'),
+      damage: dmg(2, 'shadow'),
       damageSpec: '1d3',
     });
   },
@@ -401,7 +401,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     const amount = rollDice(ctx, '1d6', 'Shatter Mind');
-    dealDamage(ctx, ctx.target, dmg(amount, 'shadow', 'sanity'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'sanity'));
     if (ctx.rng.chance(0.5)) applyStun(ctx, ctx.target, { duration: 2, type: 'full' });
   },
 });
@@ -434,7 +434,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     const amount = rollDice(ctx, '1d8', 'Mind Corrode');
-    dealDamage(ctx, ctx.target, dmg(amount, 'corrosive', 'sanity'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'sanity'));
     if (ctx.rng.chance(0.75)) applyStun(ctx, ctx.target, { duration: 2, type: 'full' });
   },
 });
@@ -485,8 +485,8 @@ registerSpell({
     dash(ctx, ctx.caster, { toPoint: ctx.targetPoint, distance: R(10) });
     const foe = enemyNear(ctx, ctx.caster.pos, 90);
     if (foe) {
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Mind Pierce'), 'pierce', 'physical'));
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d4', 'Mind Pierce'), 'shadow', 'sanity'));
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Mind Pierce'), 'pierce'));
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d4', 'Mind Pierce'), 'sanity'));
     }
   },
 });
@@ -503,7 +503,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     const amount = rollDice(ctx, '2d6', 'Shadow Bind');
-    dealDamage(ctx, ctx.target, dmg(amount, 'shadow', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'shadow'));
     applyStun(ctx, ctx.target, { duration: 4, type: 'movement' });
   },
 });
@@ -541,7 +541,6 @@ registerSpell({
       radius: R(2),
       damageSpec: '1d6',
       type: 'shadow',
-      damageClass: 'physical',
     });
   },
 });
@@ -566,8 +565,8 @@ registerSpell({
       ctx.log(`${ctx.caster.name} has no shadow to strike from — the blade finds nothing.`);
       return;
     }
-    dealDamage(ctx, tgt, dmg(rollDice(ctx, '1d6', 'Shadow Pierce'), 'shadow', 'physical'));
-    dealDamage(ctx, tgt, dmg(rollDice(ctx, '1d6', 'Shadow Pierce'), 'pierce', 'physical'));
+    dealDamage(ctx, tgt, dmg(rollDice(ctx, '1d6', 'Shadow Pierce'), 'shadow'));
+    dealDamage(ctx, tgt, dmg(rollDice(ctx, '1d6', 'Shadow Pierce'), 'pierce'));
   },
 });
 
@@ -605,7 +604,7 @@ registerSpell({
   cast(ctx) {
     if (ctx.targetPoint) dash(ctx, ctx.caster, { toPoint: ctx.targetPoint, distance: R(10) });
     const foe = enemyNear(ctx, ctx.caster.pos, 90);
-    if (foe) dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Veil Pierce'), 'pierce', 'physical'));
+    if (foe) dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Veil Pierce'), 'pierce'));
     applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
   },
 });
@@ -630,7 +629,7 @@ registerSpell({
     applyDot(ctx, ctx.target, {
       name: 'Curse Pierce',
       duration: 4,
-      damage: dmg(0, 'pierce', 'physical'),
+      damage: dmg(0, 'pierce'),
       damageSpec: '3d3',
       band: { min: R(7), max: R(13) },
     });
@@ -654,7 +653,7 @@ registerSpell({
       ctx,
       ctx.targetPoint,
       R(3),
-      dmg(rollDice(ctx, '1d6', 'Shatter Shadow'), 'shadow', 'physical'),
+      dmg(rollDice(ctx, '1d6', 'Shatter Shadow'), 'shadow'),
       { canMiss: false }
     );
     for (const m of hits) applyStun(ctx, m, { duration: 3, type: 'movement' });
@@ -674,7 +673,7 @@ registerSpell({
   visual: { preset: 'beam', color: 0xff9bd0, size: 7, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d3', 'Shatter Bind'), 'shatter', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d3', 'Shatter Bind'), 'shatter'));
     applyStun(ctx, ctx.target, { duration: 2, type: 'full' });
     applyStun(ctx, ctx.target, { duration: 4, type: 'movement' });
   },
@@ -692,8 +691,8 @@ registerSpell({
   visual: { preset: 'projectile', color: 0xc6e08a, size: 11, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Shatter Corrode'), 'shatter', 'physical'));
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Shatter Corrode'), 'corrosive', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Shatter Corrode'), 'shatter'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Shatter Corrode'), 'corrosive'));
     if (ctx.rng.chance(0.25)) applyStun(ctx, ctx.target, { duration: 2, type: 'full' });
     else applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
   },
@@ -714,7 +713,7 @@ registerSpell({
       m.isInvisible() || m.statuses.some((s) => s.kind === 'shadowVeil');
     const veiled = ctx.game.mages.filter((m) => m !== ctx.caster && m.alive && isVeiled(m));
     for (const m of veiled) {
-      dealDamage(ctx, m, dmg(rollDice(ctx, '1d6', 'Shatter Veil'), 'shatter', 'physical'), {
+      dealDamage(ctx, m, dmg(rollDice(ctx, '1d6', 'Shatter Veil'), 'shatter'), {
         canMiss: false,
       });
       applyStun(ctx, m, { duration: 2, type: 'full' });
@@ -739,7 +738,7 @@ registerSpell({
     applyDot(ctx, ctx.target, {
       name: 'Shatter Curse',
       duration: 4,
-      damage: dmg(0, 'shatter', 'physical'),
+      damage: dmg(0, 'shatter'),
       damageSpec: '1d6',
       stunChance: 0.25,
       stunType: 'full',
@@ -765,7 +764,7 @@ registerSpell({
       ctx,
       ctx.targetPoint,
       R(5),
-      dmg(rollDice(ctx, '1d6', 'Shatter Pierce'), 'shatter', 'physical'),
+      dmg(rollDice(ctx, '1d6', 'Shatter Pierce'), 'shatter'),
       { canMiss: false }
     );
     for (const m of outer) {
@@ -780,7 +779,7 @@ registerSpell({
       ctx,
       ctx.targetPoint,
       R(1),
-      dmg(rollDice(ctx, '2d6', 'Shatter Pierce'), 'pierce', 'physical'),
+      dmg(rollDice(ctx, '2d6', 'Shatter Pierce'), 'pierce'),
       { canMiss: false }
     );
     for (const m of inner) applyStun(ctx, m, { duration: 3, type: 'movement' });
@@ -803,8 +802,8 @@ registerSpell({
   visual: { preset: 'projectile', color: 0xa8d88a, size: 11, speed: 1.4 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Shadow Corrode'), 'corrosive', 'physical'));
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Shadow Corrode'), 'shadow', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Shadow Corrode'), 'corrosive'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Shadow Corrode'), 'shadow'));
   },
 });
 
@@ -823,12 +822,12 @@ registerSpell({
   visual: { preset: 'projectile', color: 0x9be870, size: 11, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Bind Corrode'), 'corrosive', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Bind Corrode'), 'corrosive'));
     applyStun(ctx, ctx.target, { duration: 2, type: 'movement' });
     applyDot(ctx, ctx.target, {
       name: 'Corrosion',
       duration: 3,
-      damage: dmg(1, 'corrosive', 'physical'),
+      damage: dmg(1, 'corrosive'),
       damageSpec: '1d3',
     });
   },
@@ -854,7 +853,7 @@ registerSpell({
       ctx,
       ctx.caster.pos,
       R(2),
-      dmg(rollDice(ctx, '1d6', 'Veil Corrode'), 'corrosive', 'physical')
+      dmg(rollDice(ctx, '1d6', 'Veil Corrode'), 'corrosive')
     );
     for (const m of hits) {
       applyDebuff(ctx, m, {
@@ -881,7 +880,7 @@ registerSpell({
     applyDot(ctx, ctx.target, {
       name: 'Veil Curse',
       duration: 4,
-      damage: dmg(2, 'shadow', 'physical'),
+      damage: dmg(2, 'shadow'),
       damageSpec: '1d3',
     });
     applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
@@ -900,12 +899,12 @@ registerSpell({
   visual: { preset: 'projectile', color: 0xc6f08a, size: 9, speed: 1.6 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Pierce Corrode'), 'pierce', 'physical'));
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Pierce Corrode'), 'corrosive', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Pierce Corrode'), 'pierce'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Pierce Corrode'), 'corrosive'));
     applyDot(ctx, ctx.target, {
       name: 'Corrosion',
       duration: 2,
-      damage: dmg(1, 'corrosive', 'physical'),
+      damage: dmg(1, 'corrosive'),
       damageSpec: '1d3',
     });
     applyDebuff(ctx, ctx.target, {
@@ -964,8 +963,8 @@ registerSpell({
           })
         : enemyNear(ctx, ctx.caster.pos, R(5));
       if (foe) {
-        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Mind Pierce'), 'shadow', 'sanity'));
-        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Mind Pierce'), 'pierce', 'physical'));
+        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Mind Pierce'), 'sanity'));
+        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Mind Pierce'), 'pierce'));
         // Show the strike land (dice + hit animation) before the next d6 roll.
         await ctx.resolveImpacts?.();
       }
@@ -1040,7 +1039,7 @@ registerSpell({
   visual: { preset: 'beam', color: 0x66ffd1, size: 6, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '3d3', 'Mind Twist'), 'shadow', 'sanity'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '3d3', 'Mind Twist'), 'sanity'));
     applyForget(ctx, ctx.target, { count: 2, duration: 3 });
   },
 });
@@ -1081,7 +1080,7 @@ registerSpell({
     dealDamage(
       ctx,
       ctx.target,
-      dmg(rollDice(ctx, '2d6', 'Mind Shatter Twist'), 'shadow', 'sanity')
+      dmg(rollDice(ctx, '2d6', 'Mind Shatter Twist'), 'sanity')
     );
     applyStun(ctx, ctx.target, { duration: 2, type: 'full' });
     applyForget(ctx, ctx.target, { count: 2, duration: 3 });
@@ -1102,7 +1101,7 @@ registerSpell({
   visual: { preset: 'beam', color: 0xd078c8, size: 10, speed: 1.2 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '4d3', 'Mind Twist Reality'), 'shadow', 'sanity'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '4d3', 'Mind Twist Reality'), 'sanity'));
     applyForget(ctx, ctx.target, { count: 3, duration: 4 });
   },
 });
@@ -1126,7 +1125,7 @@ registerSpell({
       ctx,
       ctx.target.pos,
       R(2),
-      dmg(rollDice(ctx, '3d6', 'Shatter Twist Reality'), 'shatter', 'physical')
+      dmg(rollDice(ctx, '3d6', 'Shatter Twist Reality'), 'shatter')
     );
     for (const hit of hits) {
       if (hit === ctx.target) applyStun(ctx, hit, { duration: 2, type: 'full' });
@@ -1187,7 +1186,7 @@ registerSpell({
       toward,
       wedge.range,
       (wedge.halfAngle * 360) / Math.PI,
-      dmg(rollDice(ctx, '2d6', 'Reality Shatter'), 'shatter', 'physical')
+      dmg(rollDice(ctx, '2d6', 'Reality Shatter'), 'shatter')
     );
   },
 });
@@ -1211,7 +1210,7 @@ registerSpell({
         dealDamage(
           ctx,
           enemy,
-          dmg(amount, 'shadow', 'sanity'),
+          dmg(amount, 'sanity'),
           { aoe: true }
         );
       }
@@ -1282,7 +1281,7 @@ registerSpell({
     if (!ctx.target) return;
     ctx.game.applyReap(ctx.target, rollDice(ctx, '1d4', 'Death Corrode — Reap'), ctx.caster);
     if (!ctx.target.alive) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Death Corrode'), 'corrosive', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Death Corrode'), 'corrosive'));
   },
 });
 
@@ -1304,7 +1303,7 @@ registerSpell({
     drainDamage(
       ctx,
       ctx.target,
-      dmg(rollDice(ctx, '1d6', 'Death Drain'), 'corrosive', 'physical')
+      dmg(rollDice(ctx, '1d6', 'Death Drain'), 'corrosive')
     );
   },
 });
@@ -1373,7 +1372,7 @@ registerSpell({
       .magesInRadius(ctx.targetPoint, R(2), ctx.caster)
       .filter((mage) => mage.team !== ctx.caster.team);
     for (const foe of foes) {
-      drainDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Corrode Drain'), 'corrosive', 'physical'), {
+      drainDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Corrode Drain'), 'corrosive'), {
         aoe: true,
       });
       if (ctx.rng.chance(0.25)) {
@@ -1400,12 +1399,12 @@ registerSpell({
   visual: { preset: 'projectile', color: 0x6f9b68, size: 12, speed: 1.1 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Umbral Rot'), 'corrosive', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Umbral Rot'), 'corrosive'));
     applyDot(ctx, ctx.target, {
       name: 'Umbral Rot',
       key: 'dot:umbral-rot',
       duration: 5,
-      damage: dmg(0, 'shadow', 'physical'),
+      damage: dmg(0, 'shadow'),
       damageSpec: '1d6',
     });
     applyDebuff(ctx, ctx.target, {
@@ -1433,7 +1432,7 @@ registerSpell({
       name: 'Rotting Verdict',
       key: 'dot:rotting-verdict',
       duration: 4,
-      damage: dmg(0, 'corrosive', 'physical'),
+      damage: dmg(0, 'corrosive'),
       damageSpec: '1d6',
       reapPerTick: 2,
     });
@@ -1458,9 +1457,9 @@ registerSpell({
     drainDamage(
       ctx,
       ctx.target,
-      dmg(rollDice(ctx, '2d6', 'Umbral Dissolution'), 'corrosive', 'physical')
+      dmg(rollDice(ctx, '2d6', 'Umbral Dissolution'), 'corrosive')
     );
-    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Umbral Dissolution'), 'shadow', 'physical'));
+    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Umbral Dissolution'), 'shadow'));
     applyDebuff(ctx, ctx.target, {
       name: 'Dissolved',
       duration: 2,
@@ -1490,7 +1489,7 @@ registerSpell({
       const shadowed = pools.some(
         (pool) => Math.hypot(pool.x - foe.x, pool.y - foe.y) <= pool.radius
       );
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Umbral Guillotine'), 'corrosive', 'physical'), {
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Umbral Guillotine'), 'corrosive'), {
         aoe: true,
       });
       if (!foe.alive) continue;
@@ -1522,7 +1521,7 @@ registerSpell({
       drainDamage(
         ctx,
         ctx.target,
-        dmg(rollDice(ctx, '2d6', 'Rotfeast'), 'corrosive', 'physical')
+        dmg(rollDice(ctx, '2d6', 'Rotfeast'), 'corrosive')
       );
       if (!ctx.target.alive) break;
       ctx.game.applyReap(ctx.target, rollDice(ctx, '1d4', 'Rotfeast — Reap'), ctx.caster);
@@ -1548,7 +1547,7 @@ registerSpell({
       name: 'Umbral Hunger',
       key: 'dot:umbral-hunger',
       duration: 5,
-      damage: dmg(0, 'shadow', 'physical'),
+      damage: dmg(0, 'shadow'),
       damageSpec: '2d4',
       lifestealToIndex: ctx.game.mages.indexOf(ctx.caster),
     });
@@ -1578,7 +1577,7 @@ registerSpell({
       name: "Reaper's Tithe",
       key: 'dot:reapers-tithe',
       duration: 5,
-      damage: dmg(0, 'shadow', 'physical'),
+      damage: dmg(0, 'shadow'),
       damageSpec: '1d4',
       reapPerTick: 1,
       reapTransferRadius: R(10),
@@ -1602,7 +1601,7 @@ registerSpell({
       name: 'Grave Tithe',
       key: 'dot:grave-tithe',
       duration: 5,
-      damage: dmg(0, 'corrosive', 'physical'),
+      damage: dmg(0, 'corrosive'),
       damageSpec: '1d6',
       lifestealToIndex: ctx.game.mages.indexOf(ctx.caster),
       reapOnOwnerHealIndex: ctx.game.mages.indexOf(ctx.caster),
@@ -1634,7 +1633,7 @@ registerSpell({
         drainDamage(
           ctx,
           foe,
-          dmg(rollDice(ctx, '2d6', "Reaper's Shard"), 'corrosive', 'physical')
+          dmg(rollDice(ctx, '2d6', "Reaper's Shard"), 'corrosive')
         );
       } else {
         ctx.vfx?.spellEffect?.(foe, 'corrosive');
@@ -1989,9 +1988,9 @@ registerSpell({
     const power = lightningPower(ctx);
     const gamble = lightningGamble(ctx);
     const amount = rollDice(ctx, '1d6', 'Lightning') + Math.floor(power / 6);
-    dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'heat'));
     if (gamble === 'overload' && ctx.caster.alive) {
-      dealDamage(ctx, ctx.caster, dmg(amount, 'heat', 'physical'), { canMiss: false });
+      dealDamage(ctx, ctx.caster, dmg(amount, 'heat'), { canMiss: false });
     }
     // Grounding into yourself is what overload is for, so the fork only ever
     // leaps to fresh enemy bodies and dies out once none are left in reach.
@@ -2007,7 +2006,7 @@ registerSpell({
       if (candidates.length === 0) break;
       const next = ctx.rng.pick(candidates);
       await ctx.vfx?.lightningBolt?.(from.pos, next.pos);
-      dealDamage(ctx, next, dmg(amount, 'heat', 'physical'), { canMiss: false });
+      dealDamage(ctx, next, dmg(amount, 'heat'), { canMiss: false });
       struck.add(next);
       from = next;
       reach /= 2;
@@ -2063,9 +2062,9 @@ registerSpell({
       const target = ctx.game.mages[targetIndex];
       if (!target?.alive) continue;
       await ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
-      dealDamage(ctx, target, dmg(damage, 'heat', 'physical'), { canMiss: false });
+      dealDamage(ctx, target, dmg(damage, 'heat'), { canMiss: false });
     }
-    dealDamage(ctx, ctx.caster, dmg(recoil, 'heat', 'physical'), { canMiss: false });
+    dealDamage(ctx, ctx.caster, dmg(recoil, 'heat'), { canMiss: false });
     addOrExtendStatus(
       ctx.caster.statuses,
       {
@@ -2158,7 +2157,7 @@ registerSpell({
         ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos)
       );
       const base = rollDice(ctx, '1d3', `Lightning Mind Storm damage ${bolt}`, target);
-      dealDamage(ctx, target, dmg(mindLightningDamage(base, target.lightningMindStacks), 'heat', 'sanity'), {
+      dealDamage(ctx, target, dmg(mindLightningDamage(base, target.lightningMindStacks), 'sanity'), {
         canMiss: false,
       });
       await ctx.resolveImpacts?.();
@@ -2205,7 +2204,7 @@ registerSpell({
     if (ctx.crit) {
       for (const target of ctx.game.mages.filter((mage) => mage.alive)) {
         await ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
-        dealDamage(ctx, target, dmg(rollDice(ctx, '20d6', 'Fire Lightning overload'), 'heat', 'physical'), {
+        dealDamage(ctx, target, dmg(rollDice(ctx, '20d6', 'Fire Lightning overload'), 'heat'), {
           canMiss: false,
         });
         if (target.alive) applyFireStacks(ctx, target, 20);
@@ -2223,7 +2222,7 @@ registerSpell({
       if (overload) current = ctx.caster;
       await ctx.vfx?.lightningBolt?.(from, current.pos);
       const amount = rollDice(ctx, '1d6', 'Fire Lightning arc') + Math.floor(power / 6);
-      dealDamage(ctx, current, dmg(amount, 'heat', 'physical'), { canMiss: false });
+      dealDamage(ctx, current, dmg(amount, 'heat'), { canMiss: false });
       if (current.alive) applyFireStacks(ctx, current, 1 + Math.floor(power / 10));
       visited.add(current);
       if (overload || !ctx.caster.alive) break;
@@ -2237,7 +2236,7 @@ registerSpell({
       if (gamble === 'surge' && candidates.length > 0) {
         const fork = ctx.rng.pick(candidates);
         await ctx.vfx?.lightningBolt?.(current.pos, fork.pos);
-        dealDamage(ctx, fork, dmg(amount, 'heat', 'physical'), { canMiss: false });
+        dealDamage(ctx, fork, dmg(amount, 'heat'), { canMiss: false });
         if (fork.alive) applyFireStacks(ctx, fork, 1 + Math.floor(power / 10));
         visited.add(fork);
       }
@@ -2330,7 +2329,7 @@ registerSpell({
       dealDamage(
         ctx,
         target,
-        dmg(rollDice(ctx, ctx.crit ? '20d3' : '1d3', 'Lightning Veil'), 'heat', 'physical'),
+        dmg(rollDice(ctx, ctx.crit ? '20d3' : '1d3', 'Lightning Veil'), 'heat'),
         { canMiss: false }
       );
       if (target.alive) {
@@ -2352,7 +2351,7 @@ registerSpell({
       dealDamage(
         ctx,
         target,
-        dmg(rollDice(ctx, ctx.crit ? '20d3' : '1d3', 'Lightning Veil repeat'), 'heat', 'physical'),
+        dmg(rollDice(ctx, ctx.crit ? '20d3' : '1d3', 'Lightning Veil repeat'), 'heat'),
         { canMiss: false }
       );
       if (target.alive) {
@@ -2388,7 +2387,7 @@ registerSpell({
       dash(ctx, ctx.caster, { toPoint: target.pos, distance: R(7) });
       const explosion = rollDice(ctx, '2d4', 'Fire Pierce explosion');
       for (const entity of ctx.game.magesInRadius(target.pos, R(2))) {
-        dealDamage(ctx, entity, dmg(explosion, 'heat', 'physical'), {
+        dealDamage(ctx, entity, dmg(explosion, 'heat'), {
           canMiss: false,
           aoe: true,
         });
@@ -2397,7 +2396,7 @@ registerSpell({
       return;
     }
     dash(ctx, ctx.caster, { toPoint: target.pos, distance: R(units) });
-    dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Fire Pierce'), 'heat', 'physical'), {
+    dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Fire Pierce'), 'heat'), {
       canMiss: false,
     });
   },
@@ -2428,7 +2427,7 @@ registerSpell({
       if (candidates.length === 0) break;
       if (ctx.rng.chance(1 / Math.max(1, power))) {
         ctx.log(`${ctx.caster.name}'s Lightning Pierce misfires!`);
-        dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, ctx.crit ? '4d4' : '2d4', 'Lightning misfire'), 'heat', 'physical'), {
+        dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, ctx.crit ? '4d4' : '2d4', 'Lightning misfire'), 'heat'), {
           canMiss: false,
         });
         break;
@@ -2438,7 +2437,7 @@ registerSpell({
       const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
       blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
       await bolt;
-      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Pierce') + Math.floor(power / 8), 'heat', 'physical'), {
+      dealDamage(ctx, target, dmg(rollDice(ctx, '2d6', 'Lightning Pierce') + Math.floor(power / 8), 'heat'), {
         canMiss: false,
       });
       range /= 2;
@@ -2462,9 +2461,9 @@ registerSpell({
     const gamble = lightningGamble(ctx);
     const bonus = Math.floor(power / 6);
     const physicalAmount = rollDice(ctx, '1d6', 'Fire Lightning Mind') + bonus;
-    dealDamage(ctx, ctx.target, dmg(physicalAmount, 'heat', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(physicalAmount, 'heat'));
     if (gamble === 'overload' && ctx.caster.alive) {
-      dealDamage(ctx, ctx.caster, dmg(physicalAmount, 'heat', 'physical'), { canMiss: false });
+      dealDamage(ctx, ctx.caster, dmg(physicalAmount, 'heat'), { canMiss: false });
     }
     if (!ctx.target.alive) return;
     const sanityAmount = rollDice(ctx, '1d6', 'Fire Lightning Mind sanity') + bonus;
@@ -2472,7 +2471,7 @@ registerSpell({
     dealDamage(
       ctx,
       ctx.target,
-      dmg(mindLightningDamage(sanityAmount, stacks), 'heat', 'sanity')
+      dmg(mindLightningDamage(sanityAmount, stacks), 'sanity')
     );
     if (ctx.target.alive) {
       applyBlueflareStacks(ctx, ctx.target, Math.min(4, 2 + Math.floor(power / 12)));
@@ -2489,7 +2488,7 @@ registerSpell({
         const arcTarget = ctx.rng.pick(candidates);
         ctx.vfx?.lightningBolt?.(ctx.target.pos, arcTarget.pos);
         const arcStacks = applyMindLightningStack(arcTarget);
-        dealDamage(ctx, arcTarget, dmg(mindLightningDamage(sanityAmount, arcStacks), 'heat', 'sanity'), {
+        dealDamage(ctx, arcTarget, dmg(mindLightningDamage(sanityAmount, arcStacks), 'sanity'), {
           canMiss: false,
         });
       }
@@ -2524,8 +2523,7 @@ registerSpell({
             ctx.crit
               ? rollDice(ctx, '20d6', 'Fire Lightning Veil catastrophe')
               : rollDice(ctx, '2d6', 'Fire Lightning Veil') + Math.floor(power / 4),
-            'heat',
-            'physical'
+            'heat'
           ),
           { canMiss: false, aoe: true }
         );
@@ -2558,14 +2556,14 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     dash(ctx, ctx.caster, { toPoint: ctx.target.pos, distance: R(10) });
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Mind Pierce'), 'heat', 'physical'), {
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Mind Pierce'), 'heat'), {
       canMiss: false,
     });
     if (!ctx.target.alive) return;
     dealDamage(
       ctx,
       ctx.target,
-      dmg(rollDice(ctx, '1d6', 'Fire Mind Pierce sanity'), 'heat', 'sanity'),
+      dmg(rollDice(ctx, '1d6', 'Fire Mind Pierce sanity'), 'sanity'),
       { canMiss: false }
     );
     if (ctx.target.alive) applyBlueflareStacks(ctx, ctx.target, 2);
@@ -2604,7 +2602,7 @@ registerSpell({
     const blast = rollDice(ctx, '4d6', 'Fire Veil Pierce breach');
     for (const target of ctx.game.magesInRadius(ctx.caster.pos, R(3), ctx.caster)) {
       if (target.team === ctx.caster.team) continue;
-      dealDamage(ctx, target, dmg(blast, 'heat', 'physical'), { canMiss: false, aoe: true });
+      dealDamage(ctx, target, dmg(blast, 'heat'), { canMiss: false, aoe: true });
       if (target.alive) applyFireStacks(ctx, target, 4);
     }
     applyInvisibility(ctx, ctx.caster, { duration: 3, mode: 'full' });
@@ -2700,7 +2698,7 @@ registerSpell({
         ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos)
       );
       const base = rollDice(ctx, '1d3', `Lightning Mind Pierce damage ${boltIndex}`, target);
-      dealDamage(ctx, target, dmg(mindLightningDamage(base, target.lightningMindStacks), 'heat', 'sanity'), {
+      dealDamage(ctx, target, dmg(mindLightningDamage(base, target.lightningMindStacks), 'sanity'), {
         canMiss: false,
       });
       await ctx.resolveImpacts?.();
@@ -2774,7 +2772,7 @@ registerSpell({
       const rolled = repeat
         ? rollDice(ctx, '2d3', 'Lightning Veil Pierce repeat')
         : rollDice(ctx, '2d6', 'Lightning Veil Pierce');
-      dealDamage(ctx, target, dmg(rolled + Math.floor(power / 8), 'heat', 'physical'), {
+      dealDamage(ctx, target, dmg(rolled + Math.floor(power / 8), 'heat'), {
         canMiss: false,
       });
       previous = target;
@@ -2866,14 +2864,14 @@ registerSpell({
         for (const entity of ctx.game.mages) {
           if (entity === ctx.caster || !entity.alive || !segmentHitsMage(segment, entity)) continue;
           ctx.vfx?.lightningImpact?.(entity.pos, RED_TRAIL_COLOR);
-          dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail', entity) + Math.floor(power / 5), 'heat', 'physical'), {
+          dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail', entity) + Math.floor(power / 5), 'heat'), {
             canMiss: false,
           });
         }
         if (collision) {
           ctx.log(`${ctx.caster.name} crosses the red trail and the spell collapses!`);
           await ctx.vfx?.lightningCrash?.(segment.to, RED_TRAIL_COLOR);
-          dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '4d6', 'Red trail collision', ctx.caster) + Math.floor(power / 5), 'heat', 'physical'), {
+          dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, '4d6', 'Red trail collision', ctx.caster) + Math.floor(power / 5), 'heat'), {
             canMiss: false,
           });
           break;
@@ -2908,7 +2906,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const amount = rollDice(ctx, '1d6', 'Fire Shatter');
-    const hits = coneDamage(ctx, ctx.targetPoint, R(5), CONE_DEGREES, dmg(amount, 'shatter', 'physical'));
+    const hits = coneDamage(ctx, ctx.targetPoint, R(5), CONE_DEGREES, dmg(amount, 'shatter'));
     for (const h of hits) applyFireStacks(ctx, h, 1);
   },
 });
@@ -2927,7 +2925,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const amount = rollDice(ctx, '1d6', 'Fire Corrode');
-    const hits = areaDamage(ctx, ctx.targetPoint, R(1.6), dmg(amount, 'corrosive', 'physical'));
+    const hits = areaDamage(ctx, ctx.targetPoint, R(1.6), dmg(amount, 'corrosive'));
     for (const m of hits) applyFireStacks(ctx, m, 1);
   },
 });
@@ -2946,7 +2944,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.targetPoint) return;
     const amount = rollDice(ctx, '1d6', 'Fire Shadow');
-    const hits = areaDamage(ctx, ctx.targetPoint, R(2), dmg(amount, 'heat', 'physical'), { canMiss: false });
+    const hits = areaDamage(ctx, ctx.targetPoint, R(2), dmg(amount, 'heat'), { canMiss: false });
     for (const m of hits) applyFireStacks(ctx, m, 1);
     placeShadow(ctx, ctx.targetPoint, 5);
   },
@@ -2967,7 +2965,7 @@ registerSpell({
     applyDot(ctx, ctx.target, {
       name: 'Fire Curse',
       duration: 4,
-      damage: dmg(2, 'heat', 'physical'),
+      damage: dmg(2, 'heat'),
       damageSpec: '1d3',
     });
     applyFireStacks(ctx, ctx.target, 2);
@@ -2986,7 +2984,7 @@ registerSpell({
   visual: { preset: 'projectile', color: 0xff5a36, size: 11, speed: 1.4 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Bind'), 'heat', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Bind'), 'heat'));
     if (!ctx.target.alive) return;
     applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
     applyFireStacks(ctx, ctx.target, 2);
@@ -3011,11 +3009,11 @@ registerSpell({
       .magesInRadius(ctx.target.pos, lightningRange(ctx, power / 2), ctx.target)
       .filter((m) => m !== ctx.caster)
       .slice(0, Math.floor(power / 5));
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Lightning Shatter'), 'shatter', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Lightning Shatter'), 'shatter'));
     if (!backfired && ctx.target.alive) applyStun(ctx, ctx.target, { duration: 2, type: 'full' });
     for (const body of splash) {
       if (!body.alive) continue;
-      dealDamage(ctx, body, dmg(rollDice(ctx, '1d3', 'Lightning Shatter'), 'shatter', 'physical'), {
+      dealDamage(ctx, body, dmg(rollDice(ctx, '1d3', 'Lightning Shatter'), 'shatter'), {
         canMiss: false,
         aoe: true,
       });
@@ -3041,7 +3039,7 @@ registerSpell({
   async cast(ctx) {
     if (!ctx.target) return;
     const power = lightningRoll(ctx);
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Lightning Corrode'), 'corrosive', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Lightning Corrode'), 'corrosive'));
     const indexOf = (m: Mage) => ctx.game.mages.indexOf(m);
     // Deterministic, so both peers of an online match derive the same field.
     const groupId = ctx.game.turnSeq * 64 + indexOf(ctx.caster);
@@ -3084,7 +3082,7 @@ registerSpell({
       const bite = rollDice(ctx, '1d3', 'Lightning Corrode wave');
       for (const arc of arcs) {
         if (!arc.to.alive) continue;
-        dealDamage(ctx, arc.to, dmg(bite, 'corrosive', 'physical'), { canMiss: false, aoe: true });
+        dealDamage(ctx, arc.to, dmg(bite, 'corrosive'), { canMiss: false, aoe: true });
       }
       frontier = [...new Set(arcs.map((arc) => arc.to))].filter((m) => m.alive);
       units /= 2;
@@ -3114,16 +3112,16 @@ registerSpell({
       await ctx.vfx?.lightningBolt?.(from, current.pos);
       const roll = rollDice(ctx, '2d6', 'Lightning Shadow');
       const dark = Math.ceil(roll / 2);
-      dealDamage(ctx, current, dmg(dark, 'shadow', 'physical'), { canMiss: false });
+      dealDamage(ctx, current, dmg(dark, 'shadow'), { canMiss: false });
       if (current.alive) {
-        dealDamage(ctx, current, dmg(roll - dark, 'heat', 'physical'), { canMiss: false });
+        dealDamage(ctx, current, dmg(roll - dark, 'heat'), { canMiss: false });
       }
       // Every pool already laid feeds the storm one more die.
       if (laid > 0 && current.alive) {
         dealDamage(
           ctx,
           current,
-          dmg(rollDice(ctx, `${laid}d6`, 'Lightning Shadow — gathered dark'), 'shadow', 'physical'),
+          dmg(rollDice(ctx, `${laid}d6`, 'Lightning Shadow — gathered dark'), 'shadow'),
           { canMiss: false }
         );
       }
@@ -3185,7 +3183,7 @@ registerSpell({
     const struck = new Set<Mage>();
     while (current && units >= 1) {
       await ctx.vfx?.lightningBolt?.(from, current.pos);
-      dealDamage(ctx, current, dmg(rollDice(ctx, '1d6', 'Lightning Bind'), 'heat', 'physical'), {
+      dealDamage(ctx, current, dmg(rollDice(ctx, '1d6', 'Lightning Bind'), 'heat'), {
         canMiss: false,
       });
       if (current.alive) applyStun(ctx, current, { duration: 3, type: 'movement' });
@@ -3225,7 +3223,7 @@ registerSpell({
     if (!ctx.target) return;
     const power = lightningPower(ctx);
     const amount = rollDice(ctx, '1d6', 'Fire Lightning Bind') + Math.floor(power / 5);
-    dealDamage(ctx, ctx.target, dmg(amount, 'heat', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(amount, 'heat'));
     if (!ctx.target.alive) return;
     applyFireStacks(ctx, ctx.target, Math.min(3, 1 + Math.floor(power / 10)));
     applyStun(ctx, ctx.target, { duration: Math.min(6, 3 + Math.floor(power / 10)), type: 'movement' });
@@ -3291,7 +3289,7 @@ registerSpell({
       const bolt = ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos);
       blinkstep(ctx, ctx.caster, { toPoint: target.pos, distance: range });
       await bolt;
-      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Lightning Bind Pierce'), 'pierce', 'physical'), {
+      dealDamage(ctx, target, dmg(rollDice(ctx, '1d6', 'Lightning Bind Pierce'), 'pierce'), {
         canMiss: false,
       });
       if (target.alive) applyStun(ctx, target, { duration: 2, type: 'movement' });
@@ -3335,7 +3333,7 @@ registerSpell({
     ctx.vfx?.lightningBolt?.(from, to);
     let pierced = 0;
     for (const body of speared) {
-      dealDamage(ctx, body, dmg(rollDice(ctx, spec, 'Lightning Shatter Pierce'), 'pierce', 'physical'), {
+      dealDamage(ctx, body, dmg(rollDice(ctx, spec, 'Lightning Shatter Pierce'), 'pierce'), {
         canMiss: false,
         aoe: true,
       });
@@ -3344,7 +3342,7 @@ registerSpell({
       if (rollDice(ctx, '1d6', 'Lightning Shatter Pierce — instability') > pierced) continue;
       ctx.log(`The charge blows out inside ${ctx.caster.name} after ${pierced} bodies.`);
       blinkstep(ctx, ctx.caster, { toPoint: body.pos, distance: lightningRange(ctx, power) });
-      dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, spec, 'Lightning Shatter Pierce — blowout'), 'pierce', 'physical'), {
+      dealDamage(ctx, ctx.caster, dmg(rollDice(ctx, spec, 'Lightning Shatter Pierce — blowout'), 'pierce'), {
         canMiss: false,
       });
       if (ctx.caster.alive) applyStun(ctx, ctx.caster, { duration: 2, type: 'full' });
@@ -3385,7 +3383,7 @@ registerSpell({
       for (const body of ctx.game.mages) {
         if (body === ctx.caster || !body.alive) continue;
         if (pointSegmentDistance(body.pos, leg) > body.bodyRadius()) continue;
-        dealDamage(ctx, body, dmg(grazed, 'shadow', 'physical'), { canMiss: false, aoe: true });
+        dealDamage(ctx, body, dmg(grazed, 'shadow'), { canMiss: false, aoe: true });
       }
       blinkstep(ctx, ctx.caster, { toPoint: to, distance: Math.hypot(to.x - at.x, to.y - at.y) + 1 });
       at = { ...ctx.caster.pos };
@@ -3428,7 +3426,7 @@ registerSpell({
       dealDamage(
         ctx,
         ctx.caster,
-        dmg(rollDice(ctx, `${grazed}d3`, 'Lightning Shadow Pierce — whiplash'), 'shadow', 'physical'),
+        dmg(rollDice(ctx, `${grazed}d3`, 'Lightning Shadow Pierce — whiplash'), 'shadow'),
         { canMiss: false }
       );
     }
@@ -3466,7 +3464,7 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     dash(ctx, ctx.caster, { toPoint: ctx.target.pos, distance: R(10) });
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Bind Pierce'), 'heat', 'physical'), {
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Fire Bind Pierce'), 'heat'), {
       canMiss: false,
     });
     if (!ctx.target.alive) return;
@@ -3519,7 +3517,7 @@ registerSpell({
           })
         : enemyNear(ctx, ctx.caster.pos, R(5));
       if (foe) {
-        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Bind Pierce'), 'pierce', 'physical'));
+        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Veil Bind Pierce'), 'pierce'));
         if (foe.alive) applyStun(ctx, foe, { duration: 1, type: 'movement' });
         // Show the strike land (dice + hit animation) before the next d6 roll.
         await ctx.resolveImpacts?.();
@@ -3542,7 +3540,7 @@ registerSpell({
   manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
-    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Drain'), 'corrosive', 'physical'));
+    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Drain'), 'corrosive'));
   },
 });
 
@@ -3577,8 +3575,8 @@ registerSpell({
   manualCastVisual: true,
   cast(ctx) {
     if (!ctx.target) return;
-    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Shadow Drain'), 'corrosive', 'physical'));
-    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Shadow Drain'), 'shadow', 'physical'));
+    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Shadow Drain'), 'corrosive'));
+    drainDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Shadow Drain'), 'shadow'));
   },
 });
 
@@ -3657,7 +3655,7 @@ registerSpell({
         dealDamage(
           ctx,
           caught,
-          dmg(rollDice(ctx, `${moved}d3`, 'Sand drift', caught), 'corrosive', 'physical')
+          dmg(rollDice(ctx, `${moved}d3`, 'Sand drift', caught), 'corrosive')
         );
       }
       return;
@@ -3668,7 +3666,7 @@ registerSpell({
       placeSand(ctx, at, 3);
       return;
     }
-    dealDamage(ctx, victim, dmg(rollDice(ctx, '1d3', 'Sand', victim), 'corrosive', 'physical'));
+    dealDamage(ctx, victim, dmg(rollDice(ctx, '1d3', 'Sand', victim), 'corrosive'));
     placeSand(ctx, victim.pos, 2);
   },
 });
@@ -4088,8 +4086,8 @@ registerSpell({
       dash(ctx, ctx.caster, { toPoint: foe.pos, distance: R(7) });
       await ctx.reactionWindow?.('Umbral Lance — dash', ctx.caster.pos);
       if (!ctx.caster.alive) return;
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Umbral Lance'), 'shadow', 'physical'));
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Umbral Lance'), 'shadow', 'sanity'));
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Umbral Lance'), 'shadow'));
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Umbral Lance'), 'sanity'));
       await ctx.resolveImpacts?.();
       if (!ctx.caster.alive) return;
 
@@ -4130,11 +4128,11 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     const foe = ctx.target;
-    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Skullpierce'), 'pierce', 'physical'));
-    dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Skullpierce'), 'shadow', 'sanity'));
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Skullpierce'), 'pierce'));
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Skullpierce'), 'sanity'));
     if (foe.alive && (foe.hp <= foe.maxHp * 0.25 || foe.sanity <= foe.maxSanity * 0.25)) {
       ctx.log(`${foe.name} is broken open — the lance finds the crack.`);
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '3d6', 'Skullpierce — execute'), 'pierce', 'physical'), {
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '3d6', 'Skullpierce — execute'), 'pierce'), {
         trueDamage: true,
         canMiss: false,
       });
@@ -4163,7 +4161,7 @@ registerSpell({
       ctx,
       ctx.caster.pos,
       R(4),
-      dmg(rollDice(ctx, '1d6', 'Null Pulse'), 'shatter', 'physical'),
+      dmg(rollDice(ctx, '1d6', 'Null Pulse'), 'shatter'),
       { canMiss: false }
     );
     for (const m of ctx.game.mages) dispelVeil(ctx, m);
@@ -4190,8 +4188,8 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     const foe = ctx.target;
-    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d4', 'Mind Fracture'), 'shatter', 'physical'));
-    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d4', 'Mind Fracture'), 'shadow', 'sanity'));
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d4', 'Mind Fracture'), 'shatter'));
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d4', 'Mind Fracture'), 'sanity'));
     applyStun(ctx, foe, { duration: 3, type: 'movement' });
     if (foe.alive && foe.sanity <= foe.maxSanity * 0.25) {
       ctx.log(`${foe.name}'s mind shatters — the surge carries ${ctx.caster.name} forward.`);
@@ -4220,7 +4218,7 @@ registerSpell({
     const pools = ctx.game.shadowsOf(ctx.caster.team);
     if (pools.length === 0) {
       ctx.log(`${ctx.caster.name} finds no shadow to strike from — the fang bites shallow.`);
-      dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Venomfang'), 'corrosive', 'physical'));
+      dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Venomfang'), 'corrosive'));
       return;
     }
     let best = pools[0];
@@ -4232,8 +4230,8 @@ registerSpell({
         best = s;
     }
     blinkstep(ctx, ctx.caster, { toPoint: { x: best.x, y: best.y }, distance: 99999 });
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Venomfang'), 'corrosive', 'physical'));
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Venomfang'), 'shadow', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Venomfang'), 'corrosive'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Venomfang'), 'shadow'));
   },
 });
 
@@ -4260,14 +4258,14 @@ registerSpell({
       ctx.targetPoint,
       R(6),
       CONE_DEGREES,
-      dmg(rollDice(ctx, '1d6', 'Dreambreaker'), 'shatter', 'physical')
+      dmg(rollDice(ctx, '1d6', 'Dreambreaker'), 'shatter')
     );
     for (const m of hits) {
       if (m.isInvisible() || m.statuses.some((s) => s.kind === 'shadowVeil')) {
         dealDamage(
           ctx,
           m,
-          dmg(rollDice(ctx, '1d6', 'Dreambreaker — nightmare'), 'shatter', 'physical'),
+          dmg(rollDice(ctx, '1d6', 'Dreambreaker — nightmare'), 'shatter'),
           { canMiss: false }
         );
         dispelVeil(ctx, m);
@@ -4275,7 +4273,7 @@ registerSpell({
       applyDot(ctx, m, {
         name: 'Nightmare',
         duration: 3,
-        damage: dmg(2, 'shadow', 'sanity'),
+        damage: dmg(2, 'sanity'),
         damageSpec: '1d3',
       });
     }
@@ -4308,7 +4306,7 @@ registerSpell({
       applyDot(ctx, m, {
         name: 'Grasping Dark',
         duration: 4,
-        damage: dmg(2, 'shadow', 'physical'),
+        damage: dmg(2, 'shadow'),
         damageSpec: '1d3',
       });
     }
@@ -4336,7 +4334,7 @@ registerSpell({
     applyStun(ctx, ctx.target, { duration: 4, type: 'movement' });
     applyStackingDot(ctx, ctx.target, {
       name: 'Rotting Shackles',
-      damage: dmg(1, 'corrosive', 'physical'),
+      damage: dmg(1, 'corrosive'),
       perStackSpec: '1d2',
       maxStacks: 4,
       refreshDuration: 3,
@@ -4431,7 +4429,7 @@ registerSpell({
       ctx,
       centre,
       radius,
-      dmg(rollDice(ctx, '2d6', 'Sealing Cage'), 'shatter', 'physical'),
+      dmg(rollDice(ctx, '2d6', 'Sealing Cage'), 'shatter'),
       { canMiss: false }
     );
     // Regular polygon of wall segments; each is over-long so the corners overlap.
@@ -4589,7 +4587,7 @@ registerSpell({
         if (threaded.has(foe)) continue;
         if (pointSegmentDistance(foe.pos, { from, to: ctx.caster.pos }) > foe.bodyRadius() + THREAD_CLIP) continue;
         threaded.add(foe);
-        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Threaded Run'), 'shadow', 'sanity'), {
+        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d3', 'Threaded Run'), 'sanity'), {
           canMiss: false,
         });
         if (!foe.alive) continue;
@@ -4728,11 +4726,11 @@ registerSpell({
       }
       ctx.game.shadows = ctx.game.shadows.filter((shadow) => shadow !== pool);
       spent += 1;
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Shadow spike'), 'pierce', 'physical'), {
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Shadow spike'), 'pierce'), {
         canMiss: false,
       });
       if (foe.alive) {
-        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Shadow spike'), 'shatter', 'physical'), {
+        dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Shadow spike'), 'shatter'), {
           canMiss: false,
         });
       }
@@ -4768,7 +4766,7 @@ registerSpell({
     dealDamage(
       ctx,
       ctx.target,
-      dmg(rollDice(ctx, sweet ? '3d6' : '2d6', 'Walking Wound'), 'pierce', 'physical')
+      dmg(rollDice(ctx, sweet ? '3d6' : '2d6', 'Walking Wound'), 'pierce')
     );
     if (!ctx.target.alive) return;
     const duration = sweet ? 5 : units > 8 ? 2 : 3;
@@ -4881,7 +4879,7 @@ registerSpell({
   visual: { preset: 'projectile', color: 0xff7bb0, size: 10, speed: 1.9 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Remembering Needle'), 'shadow', 'sanity'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Remembering Needle'), 'sanity'));
     if (!ctx.target.alive) return;
     addOrExtendStatus(
       ctx.target.statuses,
@@ -4925,11 +4923,11 @@ registerSpell({
       ctx,
       ctx.targetPoint,
       SHADOW_RADIUS,
-      dmg(shatter, 'shatter', 'physical'),
+      dmg(shatter, 'shatter'),
       { canMiss: false }
     )) {
       if (!foe.alive) continue;
-      dealDamage(ctx, foe, dmg(mill, 'shadow', 'sanity'), { canMiss: false, aoe: true });
+      dealDamage(ctx, foe, dmg(mill, 'sanity'), { canMiss: false, aoe: true });
       if (foe.alive) applyStun(ctx, foe, { duration: 1, type: 'full' });
     }
   },
@@ -4955,9 +4953,9 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     const split = rollDice(ctx, '1d20', 'Divided Rot');
-    const rot = dealDamage(ctx, ctx.target, dmg(split, 'corrosive', 'physical'));
+    const rot = dealDamage(ctx, ctx.target, dmg(split, 'corrosive'));
     if (!ctx.target.alive) return;
-    const mill = dealDamage(ctx, ctx.target, dmg(20 - split, 'shadow', 'sanity'));
+    const mill = dealDamage(ctx, ctx.target, dmg(20 - split, 'sanity'));
     if (!ctx.target.alive) return;
     if (rot >= 6) {
       applyDebuff(ctx, ctx.target, {
@@ -5024,11 +5022,11 @@ registerSpell({
   targeting: 'enemy',
   dc: 13,
   description:
-    'Root one enemy for 3 turns and deal 1d6 corrosive sanity (range 10). While the shackle holds, everything it declares is eaten: a weapon strike makes it forget how to attack, and a spell makes it forget every word that spell used, for 3 turns each.',
+    'Root one enemy for 3 turns and deal 1d6 sanity (range 10). While the shackle holds, everything it declares is eaten: a weapon strike makes it forget how to attack, and a spell makes it forget every word that spell used, for 3 turns each.',
   visual: { preset: 'beam', color: 0xc6f08a, size: 7, speed: 1 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Memory Shackle'), 'corrosive', 'sanity'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Memory Shackle'), 'sanity'));
     if (!ctx.target.alive) return;
     applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
     addOrExtendStatus(
@@ -5081,7 +5079,7 @@ registerSpell({
     await stepIntoShadow('Shadow Veil Pierce — step into a shadow (Esc to stay)');
     const foe = enemyNear(ctx, ctx.caster.pos, R(5));
     if (foe) {
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '3d6', 'Shadow Veil Pierce'), 'pierce', 'physical'));
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '3d6', 'Shadow Veil Pierce'), 'pierce'));
       await ctx.resolveImpacts?.();
     } else {
       ctx.log(`${ctx.caster.name} finds nobody within reach of the blade.`);
@@ -5121,18 +5119,18 @@ registerSpell({
       ctx,
       ctx.targetPoint,
       R(3),
-      dmg(rollDice(ctx, '1d6', 'Blightburst'), 'shatter', 'physical'),
+      dmg(rollDice(ctx, '1d6', 'Blightburst'), 'shatter'),
       { canMiss: false }
     );
     for (const m of hits) {
-      dealDamage(ctx, m, dmg(rollDice(ctx, '1d6', 'Blightburst'), 'corrosive', 'physical'), {
+      dealDamage(ctx, m, dmg(rollDice(ctx, '1d6', 'Blightburst'), 'corrosive'), {
         aoe: true,
         canMiss: false,
       });
       if (ctx.rng.chance(0.25)) applyStun(ctx, m, { duration: 2, type: 'full' });
       applyStackingDot(ctx, m, {
         name: 'Blight',
-        damage: dmg(1, 'corrosive', 'physical'),
+        damage: dmg(1, 'corrosive'),
         perStackSpec: '1d3',
         maxStacks: 3,
         refreshDuration: 99,
@@ -5161,7 +5159,7 @@ registerSpell({
   visual: { preset: 'beam', color: 0x8ad1ff, size: 9, speed: 1.1 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Shadow Veil Bind'), 'shadow', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Shadow Veil Bind'), 'shadow'));
     if (!ctx.target.alive) return;
     applySeal(ctx, ctx.target, { duration: 3, damageSpec: '1d3', executeAmount: 2 });
   },
@@ -5184,8 +5182,8 @@ registerSpell({
   visual: { preset: 'conjure', color: 0xc6e08a, size: 30, speed: 1.3 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Calcifying Strike'), 'shatter', 'physical'));
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Calcifying Strike'), 'corrosive', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Calcifying Strike'), 'shatter'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Calcifying Strike'), 'corrosive'));
     applyStun(ctx, ctx.target, { duration: 2, type: 'full' });
     applyStun(ctx, ctx.target, { duration: 3, type: 'movement' });
     applyDebuff(ctx, ctx.target, {
@@ -5219,14 +5217,14 @@ registerSpell({
       name: 'Mind Plague',
       key: 'dot:mindPlague:sanity',
       duration: 4,
-      damage: dmg(2, 'shadow', 'sanity'),
+      damage: dmg(2, 'sanity'),
       damageSpec: '1d3',
     });
     applyDot(ctx, ctx.target, {
       name: 'Corrosive Plague',
       key: 'dot:mindPlague:corrode',
       duration: 4,
-      damage: dmg(1, 'corrosive', 'physical'),
+      damage: dmg(1, 'corrosive'),
       damageSpec: '1d3',
     });
   },
@@ -5249,11 +5247,11 @@ registerSpell({
   visual: { preset: 'projectile', color: 0xffd08a, size: 9, speed: 1.7 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Harrowing Lance'), 'pierce', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Harrowing Lance'), 'pierce'));
     applyDot(ctx, ctx.target, {
       name: 'Harrowing Lance',
       duration: 3,
-      damage: dmg(0, 'shatter', 'physical'),
+      damage: dmg(0, 'shatter'),
       damageSpec: '1d6',
       stunChance: 0.33,
       stunType: 'full',
@@ -5323,9 +5321,9 @@ registerSpell({
     const focus = ctx.target;
     const roll = rollDice(ctx, '2d10', 'Shadow Shatter Corrode');
     const corrosive = Math.ceil(roll / 2);
-    dealDamage(ctx, focus, dmg(corrosive, 'corrosive', 'physical'));
+    dealDamage(ctx, focus, dmg(corrosive, 'corrosive'));
     if (focus.alive) {
-      dealDamage(ctx, focus, dmg(roll - corrosive, 'shadow', 'physical'), { canMiss: false });
+      dealDamage(ctx, focus, dmg(roll - corrosive, 'shadow'), { canMiss: false });
     }
     if (focus.alive) applyStun(ctx, focus, { duration: 2, type: 'full' });
     // Black does not check sides: the shockwave catches every other body.
@@ -5336,7 +5334,7 @@ registerSpell({
         dealDamage(
           ctx,
           bystander,
-          dmg(rollDice(ctx, '1d3', `Shadow Shatter Corrode — ${type}`), type, 'physical'),
+          dmg(rollDice(ctx, '1d3', `Shadow Shatter Corrode — ${type}`), type),
           { canMiss: false, aoe: true }
         );
       }
@@ -5399,7 +5397,7 @@ registerSpell({
       name: 'Silent Plague',
       key: 'dot:silent-plague',
       duration: 4,
-      damage: dmg(0, 'corrosive', 'physical'),
+      damage: dmg(0, 'corrosive'),
       damageSpec: '1d6',
       spreadRadius: R(4),
       spreadVeils: true,
@@ -5425,13 +5423,13 @@ registerSpell({
   visual: { preset: 'projectile', color: 0x9aa86a, size: 10, speed: 1.6 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Corrode Curse Pierce'), 'pierce', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Corrode Curse Pierce'), 'pierce'));
     if (!ctx.target.alive) return;
     applyDot(ctx, ctx.target, {
       name: 'Suppurating Wound',
       key: 'dot:suppurating-wound',
       duration: 3,
-      damage: dmg(0, 'corrosive', 'physical'),
+      damage: dmg(0, 'corrosive'),
       escalateSpecs: ['1d6', '1d8', '1d10'],
       extendOnPierce: { minAmount: 6, chanceBelow: 0.5, maxDuration: 3 },
     });
@@ -5458,7 +5456,7 @@ registerSpell({
     if (!ctx.target) return;
     const foe = ctx.target;
     const wasVeiled = ctx.game.isVeiled(foe);
-    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Veil Shatter Pierce'), 'pierce', 'physical'), {
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Veil Shatter Pierce'), 'pierce'), {
       canMiss: false,
     });
     if (!wasVeiled) {
@@ -5466,7 +5464,7 @@ registerSpell({
       return;
     }
     if (foe.alive) {
-      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d12', 'Veil Shatter Pierce — unveiling'), 'shatter', 'physical'), {
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '1d12', 'Veil Shatter Pierce — unveiling'), 'shatter'), {
         canMiss: false,
       });
     }
@@ -5491,7 +5489,7 @@ registerSpell({
   visual: { preset: 'projectile', color: 0xffc98a, size: 10, speed: 1.8 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Bind Shatter Pierce'), 'pierce', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Bind Shatter Pierce'), 'pierce'));
     if (!ctx.target.alive) return;
     applyAnchorSpike(ctx, ctx.target, { duration: 4, pxPerDie: R(2), maxDice: 4 });
   },
@@ -5515,12 +5513,12 @@ registerSpell({
   cast(ctx) {
     if (!ctx.target) return;
     const foe = ctx.target;
-    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Shatter Corrode Pierce'), 'shatter', 'physical'), {
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Shatter Corrode Pierce'), 'shatter'), {
       trueDamage: true,
       canMiss: false,
     });
     if (!foe.alive) return;
-    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Shatter Corrode Pierce'), 'pierce', 'physical'), {
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Shatter Corrode Pierce'), 'pierce'), {
       trueDamage: true,
       canMiss: false,
     });
@@ -5553,7 +5551,7 @@ registerSpell({
     });
     // The oath is sworn before the shot, so this hit already echoes.
     applyPierceEcho(ctx, ctx.caster, 4);
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Bind Curse Pierce'), 'pierce', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Bind Curse Pierce'), 'pierce'));
   },
 });
 
@@ -5574,13 +5572,13 @@ registerSpell({
   visual: { preset: 'projectile', color: 0xa8c86f, size: 9, speed: 1.7 },
   cast(ctx) {
     if (!ctx.target) return;
-    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Mind Corrode Pierce'), 'pierce', 'physical'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '1d6', 'Mind Corrode Pierce'), 'pierce'));
     if (!ctx.target.alive) return;
     applyDot(ctx, ctx.target, {
       name: 'Neural Virus',
       key: 'dot:neural-virus',
       duration: 4,
-      damage: dmg(0, 'corrosive', 'sanity'),
+      damage: dmg(0, 'sanity'),
       escalateSpecs: ['1d4', '1d6', '1d8', '1d10'],
       forgetPerTick: 1,
       jumpOnMindBreakRadius: R(4),
