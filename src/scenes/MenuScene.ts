@@ -20,7 +20,7 @@ export class MenuScene extends Phaser.Scene {
     preloadMenuArt(this);
   }
 
-  create(): void {
+  create(data?: { notice?: string }): void {
     this.destroyExperience();
     this.cameras.main.setBackgroundColor(COLORS.bg);
     playMusic('menu');
@@ -32,6 +32,7 @@ export class MenuScene extends Phaser.Scene {
       (scenario) => this.launchMemory(scenario),
       (config) => this.launch(config)
     );
+    if (data?.notice) this.experience.setStatus(data.notice);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.destroyExperience, this);
   }
 

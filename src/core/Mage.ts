@@ -301,6 +301,18 @@ export class Mage {
   debuffImmune = false;
   /** Boss creature marker (unique, tougher, special death rules). */
   isBoss = false;
+  /** A bloodmoon boss's art, worn over whatever stands in for it. */
+  bossArt?: string;
+  /** Multiplies every hit this mage deals (a boss facing a bigger party). */
+  damageScale = 1;
+  /** An object on the field, not a creature: it never takes a turn (an Artifact of Denial). */
+  inert = false;
+  /** Baral's own count: turns ended, whether his first wound has struck, and his hp mark. */
+  baral?: { turns: number; wounded: boolean; hpMark: number };
+  /** An Artifact of Denial's charges, and how many arm it. */
+  denial?: { charges: number; threshold: number };
+  /** A drake's own turns left before it falls apart. */
+  drakeTurns?: number;
 
   // ---- Life-class summons ----------------------------------------------------
   // A summon is a real mage (so it reuses movement, items, melee, rendering and
@@ -395,6 +407,8 @@ export class Mage {
   reaperDeletedBy?: Mage;
   /** Exiled inside this bearer mage's Edgelord Lantern. */
   edgelordCapturedBy?: Mage;
+  /** Slipped away from an Adventure fight while the rest of the party fights on. */
+  withdrawn = false;
 
   /** Item ids permanently disabled for this mage by a Needle of Serenity. */
   bannedItemIds = new Set<ItemId>();
@@ -526,7 +540,7 @@ export class Mage {
   }
 
   get alive(): boolean {
-    if (this.reaperDeletedBy || this.edgelordCapturedBy) return false;
+    if (this.reaperDeletedBy || this.edgelordCapturedBy || this.withdrawn) return false;
     return this.vitalsAlive;
   }
 
@@ -804,6 +818,27 @@ export class Mage {
     this.deathsAngelFlightTurns = 0;
   }
 
+  /**
+   * Restore `share` of max HP, mana, sanity and each word's max charges, rounded
+   * up. Returns what actually came back (vitals never pass their maxima).
+   */
+  restoreShare(share: number): { hp: number; mana: number; sanity: number; charges: number } {
+    const part = (max: number): number => Math.ceil(max * share);
+    const before = { hp: this.hp, mana: this.mana, sanity: this.sanity };
+    this.hp = Math.min(this.maxHp, this.hp + part(this.maxHp));
+    this.gainMana(part(this.maxMana));
+    if (this.maxSanity > 0) this.sanity = Math.min(this.maxSanity, this.sanity + part(this.maxSanity));
+    let charges = 0;
+    for (const w of this.loadout) {
+      const max = this.maxWordCharges(w);
+      const cur = this.charges[w] ?? 0;
+      const next = Math.max(cur, Math.min(max, cur + part(max)));
+      charges += next - cur;
+      this.charges[w] = next;
+    }
+    return { hp: this.hp - before.hp, mana: this.mana - before.mana, sanity: this.sanity - before.sanity, charges };
+  }
+
   // ---- Statuses -------------------------------------------------------------
 
   getStatus<T extends Status>(kind: T['kind']): T | undefined {
@@ -857,6 +892,22 @@ export class Mage {
   moveRange(): number {
     // Dev cheat: reach anywhere on the field.
     if (Dev.infiniteMove) return Math.hypot(FIELD.w, FIELD.h);
+    const px = this.unslowedMovePx();
+    const slowed = px + this.modifier('moveRange');
+    // Gaze Timez Bracelet: slow debuffs can never cut movement below the cap
+    // (roots / movement-stuns bypass this entirely — they aren't slows).
+    const cap = this.slowCap();
+    const floor = cap < 1 ? Math.round(px * (1 - cap)) : 0;
+    const encumbrance = this.carryEncumbranceMultiplier();
+    return Math.round(Math.max(floor, Math.max(0, slowed)) * encumbrance);
+  }
+
+  /** Movement before slows and hastes: what a percentage slow or haste is taken of. */
+  baseMoveRange(): number {
+    return Math.round(this.unslowedMovePx() * this.carryEncumbranceMultiplier());
+  }
+
+  private unslowedMovePx(): number {
     // Swamprun creatures move a fixed number of range-units, independent of Dex.
     const base =
       this.intrinsicMoveUnits != null
@@ -867,13 +918,7 @@ export class Mage {
     if (this.hasEdgelordLantern() && !this.edgelordLanternActive) px = Math.round(px * 0.67);
     if (this.profile.redPrimaryTier) px += RANGE_UNIT;
     if (this.hasMomentumBoots()) px += this.momentumStacks * RANGE_UNIT;
-    const slowed = px + this.modifier('moveRange');
-    // Gaze Timez Bracelet: slow debuffs can never cut movement below the cap
-    // (roots / movement-stuns bypass this entirely — they aren't slows).
-    const cap = this.slowCap();
-    const floor = cap < 1 ? Math.round(px * (1 - cap)) : 0;
-    const encumbrance = this.carryEncumbranceMultiplier();
-    return Math.round(Math.max(floor, Math.max(0, slowed)) * encumbrance);
+    return px;
   }
 
   // ---- Character stats ------------------------------------------------------

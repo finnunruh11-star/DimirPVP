@@ -3,7 +3,7 @@
 // bounties read the bag at hand-in; deliveries are claimed at the destination.
 
 import { getItem, type ItemId } from '../../core/Items';
-import { addXp } from '../progression';
+import { addRunXp, partyXpScale } from './coop';
 import { creatureName, creaturePower } from './encounters';
 import { money, moneyLabel, runDice, withParty, partyOf, type ShopResult } from './economy';
 import type { ActiveBounty, ExplorationRun } from './run';
@@ -131,11 +131,10 @@ export function recordKills(run: ExplorationRun, kills: readonly string[]): stri
   return done;
 }
 
-/** How far along a bounty is, reading the bag for gather bounties. */
+/** How far along a bounty is, reading every bag for gather bounties. */
 export function bountyProgress(run: ExplorationRun, bounty: ActiveBounty): number {
   if (bounty.kind !== 'gather') return bounty.progress;
-  const leader = partyOf(run)[0];
-  const have = leader ? leader.bag.filter((id) => id === bounty.target).length : 0;
+  const have = partyOf(run).reduce((sum, mage) => sum + mage.bag.filter((id) => id === bounty.target).length, 0);
   return Math.min(bounty.count, have);
 }
 
@@ -148,16 +147,24 @@ export function claimBounty(run: ExplorationRun, town: string, id: string): Shop
   const bounty = run.bounties.find((entry) => entry.id === id);
   if (!bounty || !canClaim(run, town, bounty)) return { ok: false, message: 'Not finished yet.', levels: 0 };
   if (bounty.kind === 'gather') {
-    withParty(run, (leader) => {
-      for (let n = 0; n < bounty.count; n++) leader.bag.splice(leader.bag.indexOf(bounty.target as ItemId), 1);
+    withParty(run, (_leader, party) => {
+      let owed = bounty.count;
+      for (const mage of party) {
+        for (let i = mage.bag.length - 1; i >= 0 && owed > 0; i--) {
+          if (mage.bag[i] !== bounty.target) continue;
+          mage.bag.splice(i, 1);
+          owed -= 1;
+        }
+      }
     });
   }
   run.bounties.splice(run.bounties.indexOf(bounty), 1);
   run.gold = money(run.gold + bounty.rewardGold);
-  const levels = addXp(run, bounty.rewardXp);
+  const xp = Math.round(bounty.rewardXp * partyXpScale(run));
+  const levels = addRunXp(run, xp);
   return {
     ok: true,
-    message: `${bounty.label}: +${moneyLabel(bounty.rewardGold)}, +${bounty.rewardXp} XP.${levels ? ` Level ${run.level}!` : ''}`,
+    message: `${bounty.label}: +${moneyLabel(bounty.rewardGold)}, +${xp} XP.${levels ? ` Level ${run.level}!` : ''}`,
     levels,
   };
 }

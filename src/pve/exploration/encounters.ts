@@ -194,6 +194,16 @@ export function rollEncounter(
   return out;
 }
 
+/** Extra foes for a bigger party: `share` of a road encounter's budget and bodies, never another elite. */
+export function rollReinforcements(zone: EncounterZone, kind: EncounterKind, depth: number, rng: Dice, share: number): EncounterSpawn[] {
+  if (share <= 0) return [];
+  const roster = ZONE_ROSTERS[zone];
+  const pool = kind === 'robbery' ? roster.robbery : roster.monsters;
+  const budget = Math.round(encounterBudget(depth) * share);
+  const cap = Math.max(1, Math.round(encounterCap(depth) * share));
+  return fillEncounter(pool, depth, budget, cap, rng, true);
+}
+
 /** One wave of the forest dive: the forest's beasts, more of them and more at once than on the road. */
 export function rollForestWave(depth: number, rng: Dice, partySize = 1): EncounterSpawn[] {
   const pool = ZONE_ROSTERS.forest.monsters;

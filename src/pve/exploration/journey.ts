@@ -1,6 +1,6 @@
 // The travel map walked in legs. Every LEG_TILES tiles the party stops for a
 // beat: a fight, a find, a roadside event, something sighted off the way, or a
-// short rest. Danger and luck build up tile by tile and carry over between
+// break. Danger and luck build up tile by tile and carry over between
 // trips, so a string of short hops meets the same road as one long walk. Pure
 // and seeded.
 
@@ -147,7 +147,7 @@ export function findSighting(world: WorldMap, step: TripStep, ahead: readonly Ce
   const kind = pickKind(zone, terrainAt(world, cell.x, cell.y), nearTown(cell.x, cell.y), step.night, dice);
   if (kind === 'pack') {
     const spawns = rollEncounter(zone, 'monsters', depth, dice);
-    return { ...base, kind, spawns, title: describeSpawns(spawns).toUpperCase(), text: 'They have not seen you: you would strike first.' };
+    return { ...base, kind, spawns, title: describeSpawns(spawns).toUpperCase(), text: 'Resting where they stand. Sneak up while they sleep and strike first.' };
   }
   if (kind === 'cache') {
     const site = dice.pick(CACHE_SITES[zone]);
@@ -162,7 +162,7 @@ export function findSighting(world: WorldMap, step: TripStep, ahead: readonly Ce
   }
   const herb = dice.pick(HERBS[zone]);
   const name = getItem(herb).name;
-  return { ...base, kind: 'herbs', herb, title: name.toUpperCase(), text: `${name} grows there: gather two to four.` };
+  return { ...base, kind: 'herbs', herb, title: name.toUpperCase(), text: `A field of ${name} grows there, ripe for picking.` };
 }
 
 function pickKind(zone: RegionId, terrain: Terrain, safe: boolean, night: boolean, dice: Dice): SightingKind {

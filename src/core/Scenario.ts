@@ -399,7 +399,7 @@ function numberRecord(value: unknown): Record<string, number> {
 }
 
 function words(value: unknown): WordId[] {
-  return list(value).filter((w): w is WordId => typeof w === 'string' && w in WORDS);
+  return list(value).filter((w): w is WordId => typeof w === 'string' && Object.prototype.hasOwnProperty.call(WORDS, w));
 }
 
 function items(value: unknown): ItemId[] {
@@ -737,7 +737,7 @@ function buildMage(e: ScenarioEntity, rng: Dice): Mage {
   // Re-run the creature builders first: they restore the parts of a monster kit
   // that JSON cannot carry, such as an intrinsic strike's on-hit rider.
   const kind = e.creature?.kind;
-  if (kind && kind in ENEMY_DEFS) applyEnemyTraits(m, kind as EnemyKind, rng);
+  if (kind && Object.prototype.hasOwnProperty.call(ENEMY_DEFS, kind)) applyEnemyTraits(m, kind as EnemyKind, rng);
   const mine = e.creature?.mine;
   if (mine && isMineEnemyKind(mine.kind)) {
     applyMineEnemyTraits(m, { kind: mine.kind, level: mine.level, role: mine.role }, rng);

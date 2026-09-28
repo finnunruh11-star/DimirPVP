@@ -5,8 +5,9 @@ import { isModifierWord, type WordId } from '../core/Words';
 /** A rack never holds more base words than this; later word levels replace one. */
 export const MAX_BASE_WORDS = 5;
 
-export function xpToNext(level: number): number {
-  return Math.ceil(10 * Math.pow(1.7, Math.max(1, level) - 1));
+/** XP from `level` to the next; `scale` stretches the curve for a bigger party. */
+export function xpToNext(level: number, scale = 1): number {
+  return Math.ceil(10 * Math.pow(1.7, Math.max(1, level) - 1) * Math.max(1, scale));
 }
 
 export interface LevelReward {
@@ -31,11 +32,11 @@ export interface LevelTrack {
 }
 
 /** Add XP and roll over any levels it completes. Returns the number of levels gained. */
-export function addXp(track: LevelTrack, amount: number): number {
+export function addXp(track: LevelTrack, amount: number, scale = 1): number {
   track.xp += Math.max(0, Math.floor(amount));
   let gained = 0;
-  while (track.xp >= xpToNext(track.level)) {
-    track.xp -= xpToNext(track.level);
+  while (track.xp >= xpToNext(track.level, scale)) {
+    track.xp -= xpToNext(track.level, scale);
     track.level += 1;
     track.pendingLevels += 1;
     gained += 1;

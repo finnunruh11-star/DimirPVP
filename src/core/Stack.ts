@@ -57,6 +57,8 @@ export interface StackItem {
    * such as an end-of-turn window or a blink step.
    */
   noPhysicalReaction?: boolean;
+  /** A synthetic trigger that only opens a reaction window (ending a turn, a blink): not an action itself. */
+  windowTrigger?: boolean;
   /** Modifier words attached to this cast (Subtle / Delay / Channel). */
   modifiers?: WordId[];
   /** A silent cast: nobody may react to it at all. */

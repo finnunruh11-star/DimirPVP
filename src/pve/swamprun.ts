@@ -6,7 +6,7 @@ import type { Dice } from '../core/Dice';
 import type { ItemId } from '../core/Items';
 import type { Mage } from '../core/Mage';
 import type { DamageType } from '../core/Damage';
-import { RANGE_UNIT } from '../config/constants';
+import { MELEE_RANGE, RANGE_UNIT } from '../config/constants';
 
 export type EnemyKind =
   | 'zombie'
@@ -21,7 +21,13 @@ export type EnemyKind =
   | 'beastDemon'
   | 'oni'
   | 'deathknightSpear'
-  | 'acidZombie';
+  | 'acidZombie'
+  | 'goblinChief'
+  | 'goblinRaider'
+  | 'goblinShaman'
+  | 'baral'
+  | 'denialArtifact'
+  | 'baralDrake';
 
 export type SwamprunCurse = 'madness' | 'decay' | 'sloth' | 'feeding';
 export const RAID_BOSS_KINDS = ['lich', 'reaper', 'deathknightSpear'] as const;
@@ -92,6 +98,12 @@ export interface EnemyDef {
   tint: number;
   /** Sprite scale multiplier applied on top of the base mage size. */
   scale?: number;
+  /** Never strikes at all; it has other things to do (a goblin shaman). */
+  pacifist?: boolean;
+  /** An object on the field, not a creature: it never takes a turn (an Artifact of Denial). */
+  inert?: boolean;
+  /** How to name more than one, where adding an s will not do. */
+  plural?: string;
 }
 
 // Mindless things are immune to 'sanity'; the huge pool is only a safety net.
@@ -354,6 +366,93 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     immuneTypes: ['sanity'],
     tint: 0x87ad35,
   },
+  // The first bloodmoon's goblin band. No resistances, weaknesses or immunities.
+  goblinChief: {
+    kind: 'goblinChief',
+    name: 'Hrrrk Snazzlegob',
+    power: 12,
+    unlockDepth: 100_000,
+    hpSpec: '15',
+    sanity: 10,
+    moveUnits: 8,
+    meleeSpec: '5',
+    meleeType: 'slashing',
+    meleeReach: MELEE_RANGE + 2 * RANGE_UNIT,
+    boss: true,
+    tint: 0x7faf42,
+  },
+  goblinRaider: {
+    kind: 'goblinRaider',
+    name: 'Goblin Raider',
+    power: 3,
+    unlockDepth: 100_000,
+    hpSpec: '5',
+    sanity: 5,
+    moveUnits: 5,
+    meleeSpec: '1d4',
+    meleeType: 'shatter',
+    tint: 0x7faf42,
+  },
+  goblinShaman: {
+    kind: 'goblinShaman',
+    name: 'Goblin Shaman',
+    power: 3,
+    unlockDepth: 100_000,
+    hpSpec: '3',
+    sanity: 7,
+    moveUnits: 3,
+    meleeSpec: '0',
+    meleeType: 'generic',
+    pacifist: true,
+    tint: 0x7faf42,
+  },
+  // The second bloodmoon's artificer and what he brings. Baral himself has no
+  // resistances, weaknesses or immunities.
+  baral: {
+    kind: 'baral',
+    name: 'Baral',
+    power: 20,
+    unlockDepth: 100_000,
+    hpSpec: '20',
+    sanity: 20,
+    moveUnits: 15,
+    meleeSpec: '1d2',
+    meleeType: 'sanity',
+    boss: true,
+    tint: 0x4f88d4,
+  },
+  denialArtifact: {
+    kind: 'denialArtifact',
+    name: 'Artifact of Denial',
+    plural: 'Artifacts of Denial',
+    power: 4,
+    unlockDepth: 100_000,
+    hpSpec: '6',
+    sanity: MINDLESS_SANITY,
+    moveUnits: 0,
+    meleeSpec: '0',
+    meleeType: 'generic',
+    immuneTypes: ['sanity'],
+    weakTypes: ['shatter'],
+    resistTypes: ['pierce', 'shadow', 'heat', 'cold', 'light'],
+    pacifist: true,
+    inert: true,
+    tint: 0x7ae8ff,
+  },
+  baralDrake: {
+    kind: 'baralDrake',
+    name: 'Drake',
+    power: 2,
+    unlockDepth: 100_000,
+    hpSpec: '2',
+    sanity: 2,
+    moveUnits: 4,
+    meleeSpec: '1',
+    meleeType: 'sanity',
+    weakTypes: ['slashing', 'shatter'],
+    resistTypes: ['pierce'],
+    tint: 0xcf9738,
+  },
 };
 
 /** Configure an already-constructed team-2 Mage as the given creature kind. */
@@ -387,6 +486,8 @@ export function applyEnemyTraits(m: Mage, kind: EnemyKind, rng: Dice): void {
   m.acidZombieKind = kind === 'acidZombie';
   if (m.beastDemonKind) m.intrinsicMeleeReach = 10 * RANGE_UNIT;
   if (def.bodyRadius != null) m.intrinsicBodyRadius = def.bodyRadius;
+  if (def.pacifist) m.cannotAttack = true;
+  m.inert = !!def.inert;
 }
 
 const STANDARD_KINDS: EnemyKind[] = [

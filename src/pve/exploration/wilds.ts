@@ -9,7 +9,7 @@ import { cellHash } from '../../world/kenney';
 import type { ExitDef, LocaleDef, PropPlacement } from '../../world/locale';
 import { MapBuilder } from '../../world/mapBuilder';
 import { mineEnemyLevel, MINE_ENEMY_DEFS, type MineEnemyKind } from '../minerun';
-import { grantToMage, hashString, withParty } from './economy';
+import { grantToParty, hashString } from './economy';
 import { creatureName, rollEncounter, spawnKindId, type EncounterKind, type EncounterSpawn } from './encounters';
 import type { Landmark, ResolvedLocale, Secret, SecretResult, WildPack } from './locales';
 import type { ExplorationRun } from './run';
@@ -389,7 +389,7 @@ function searchWilds(run: ExplorationRun, secret: Secret): SecretResult {
     };
   }
   const found: string[] = [];
-  for (const item of plan.items ?? []) withParty(run, (leader) => grantToMage(leader, item));
+  for (const item of plan.items ?? []) grantToParty(run, item);
   if (plan.items?.length) found.push(plan.items.length === 1 ? 'a find' : `${plan.items.length} finds`);
   const tail = found.length ? ` (${found.join(', ')})` : '';
   return { message: `${plan.text}${tail}`, revealAll: plan.revealAll };

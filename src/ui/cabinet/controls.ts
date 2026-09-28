@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { playSound, unlockAudio } from '../../audio';
-import { MENU_COLOR, MENU_FONT, MENU_HEX } from './theme';
+import { MENU_COLOR, MENU_FONT, MENU_HEX, MENU_MOTION } from './theme';
+import { isReducedMotion } from './motion';
 
 export interface CabinetButtonOptions {
   width: number;
@@ -115,6 +116,17 @@ export class CabinetButton extends Phaser.GameObjects.Container implements MenuC
     if (this.focused === focused) return;
     this.focused = focused;
     this.redraw();
+    // The focused row leans in: its words slide a touch to the right.
+    const moves: [Phaser.GameObjects.Text, number][] = [
+      [this.labelText, 68 + (focused ? 6 : 0)],
+      [this.detailText, 68 + (focused ? 6 : 0)],
+      [this.arrowText, this.controlWidth - 28 + (focused ? 4 : 0)],
+    ];
+    for (const [text, x] of moves) {
+      this.scene.tweens.killTweensOf(text);
+      if (isReducedMotion()) text.x = x;
+      else this.scene.tweens.add({ targets: text, x, duration: MENU_MOTION.fast, ease: MENU_MOTION.ease });
+    }
     if (focused) this.options.onFocus?.();
   }
 
@@ -266,6 +278,11 @@ export class CabinetChip extends Phaser.GameObjects.Container implements MenuCon
     if (this.focused === focused) return;
     this.focused = focused;
     this.redraw();
+    if (focused && !isReducedMotion()) {
+      this.scene.tweens.killTweensOf(this.labelText);
+      this.labelText.setScale(1.06);
+      this.scene.tweens.add({ targets: this.labelText, scale: 1, duration: MENU_MOTION.base, ease: MENU_MOTION.ease });
+    }
     if (focused) this.options.onFocus?.();
   }
 

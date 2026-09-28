@@ -175,7 +175,8 @@ import {
 import type { StackItem } from '../core/Stack';
 import { barrierContains } from '../core/Barrier';
 import { FLEE_EDGE_LABEL, fleeEdgeAt, type FleeEdge } from '../core/Flee';
-import { capturePartySnapshot } from '../pve/exploration/party';
+import { fightingParty, memberOf, mergeFightParty, partyScale, partyXpScale, syncPendingLevels } from '../pve/exploration/coop';
+import { AdventureSession } from '../net/AdventureSession';
 import { addXp, levelReward, rackIsFull, xpToNext } from '../pve/progression';
 import type { ExplorationEntry } from './ExplorationScene';
 import type { Spell, SpellVisual } from '../spells/Spell';
@@ -202,6 +203,11 @@ import { CombatFeedbackLayer } from '../visuals/CombatFeedbackLayer';
 import { ImpactFxDirector } from '../visuals/ImpactFxDirector';
 import { preloadImpactSheets } from '../visuals/ImpactSheets';
 import { ParticleFx } from '../visuals/ParticleFx';
+import { bossAnimKey, bossSheet, bossSpriteKind, ensureBossSprites } from '../visuals/bosses';
+import { playBossIntro } from '../ui/combat/BossIntro';
+import { BOSSES, BOSS_STAND_IN, bossDamageScales, bossRoster, bossScaling, nextBloodmoonDay, type BossFight, type BossUnit } from '../pve/exploration/bloodmoon';
+import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_RANGE } from '../pve/goblins';
+import { BARAL_MARK, DRAKE_LIFESPAN, denialLabel, denialStartCharges, denialThreshold } from '../pve/baral';
 import {
   createCreatureAnims,
   CREATURE_FRAME_RATIO,
@@ -289,9 +295,11 @@ import {
   type MineEnemyKind,
   type MineSpawnSpec,
 } from '../pve/minerun';
-import { rollEncounter, rollForestWave, describeSpawns } from '../pve/exploration/encounters';
+import { rollEncounter, rollForestWave, rollReinforcements, describeSpawns } from '../pve/exploration/encounters';
+import { clockTime } from '../pve/exploration/clock';
 import { rollDrops } from '../pve/exploration/drops';
 import { DUNGEON_REFIGHT, DUNGEONS } from '../pve/exploration/dungeons';
+import { enterMines, minePassageDice, spendMineHours } from '../pve/exploration/mines';
 import type { DungeonId } from '../pve/exploration/world';
 import { canUseMineAction, commitMineAction, makeMineActionItem } from '../pve/mineActions';
 import {
@@ -626,7 +634,19 @@ type DodgeBonusChoiceCommand = { t: 'dodge-bonus'; optionId: string | null };
 const MAGE_RADIUS = 22;
 const CREATURE_SPRITE_HEIGHT = MAGE_RADIUS * 2.8 * CREATURE_FRAME_RATIO;
 
-const creatureSpriteKind = (mage: Mage): CreatureSpriteKind | null => creatureSpriteFor(mage.enemyKind);
+/** Where each of a boss's units takes the field: the leader front and centre, raiders ahead of it, shamans at the back. */
+function bossSpawnPoint(unit: BossUnit, index: number): Vec2 {
+  const row = (share: number, i: number, count: number): Vec2 => ({
+    x: FIELD.x + FIELD.w * share,
+    y: FIELD.y + (FIELD.h * (i + 1)) / (count + 1),
+  });
+  if (unit.leader) return row(0.72, 0, 1);
+  if (unit.kind === 'goblinShaman') return row(0.9, index, unit.count);
+  return row(0.6 + (index % 2) * 0.04, index, unit.count);
+}
+
+const creatureSpriteKind = (mage: Mage): CreatureSpriteKind | null =>
+  mage.bossArt ? bossSpriteKind(mage.bossArt) : creatureSpriteFor(mage.enemyKind);
 
 const bodyAnimationKey = (mage: Mage, state: BodyAnimState): string => {
   const kind = creatureSpriteKind(mage);
@@ -812,6 +832,7 @@ export class GameScene extends Phaser.Scene {
   /** Shared tools; each entry is one pickaxe's remaining durability out of 10. */
   private minePickaxes: number[] = [];
   private mineChestCursor = 0;
+  private mineCrushed = false;
   private swampPrepMode: SwampPrepMode = 'custom';
   private expedition = false;
   private expeditionGold = new Map<Mage, number>();
@@ -1045,6 +1066,8 @@ export class GameScene extends Phaser.Scene {
   /** Whether this fight can be walked away from, and by which border it was. */
   private fleeAllowed = false;
   private fledEdge: FleeEdge | null = null;
+  /** The last edge a party member slipped over while the others fought on. */
+  private withdrawnEdge: FleeEdge | null = null;
   /** Set when the overworld started this fight; drives the hand-back. */
   private explorationCombat: ExplorationCombat | null = null;
   /** Creature kinds the party felled in this exploration fight, for bounties. */
@@ -1215,6 +1238,7 @@ export class GameScene extends Phaser.Scene {
     this.arrowStruck = null;
     this.fleeAllowed = false;
     this.fledEdge = null;
+    this.withdrawnEdge = null;
     this.explorationKills = [];
     this.explorationWon = false;
     this.dungeon = null;
@@ -1222,6 +1246,7 @@ export class GameScene extends Phaser.Scene {
     this.dungeonRetreating = false;
     this.dungeonRetreatCursor = 0;
     this.dungeonPickaxes = 0;
+    this.mineCrushed = false;
     this.mode = 'idle';
     this.busy = false;
     this.gameEnded = false;
@@ -1340,7 +1365,7 @@ export class GameScene extends Phaser.Scene {
     // The Mines are the Mine Run's maze, whichever way the party came in.
     this.mineRun = config.mode === 'minerun' || this.dungeon === 'mines';
     this.raid = config.mode === 'raid';
-    this.fleeAllowed = !!this.explorationCombat;
+    this.fleeAllowed = !!this.explorationCombat && !this.explorationCombat.boss;
     this.raidBoss = config.raidBoss ?? 'deathknightSpear';
     this.raidTarget = undefined;
     this.raidVictory = false;
@@ -1390,8 +1415,8 @@ export class GameScene extends Phaser.Scene {
 
     // A loaded memory fully describes its roster, so it replaces the drafted
     // seats: every combatant keeps the kit and the spot it was saved on.
-    // An exploration party arrives the same way, carried in by the run.
-    const scenario = config.scenario ?? this.explorationCombat?.run.party ?? null;
+    // An exploration party arrives the same way, carried in by the run; the fallen stay behind.
+    const scenario = config.scenario ?? (this.explorationCombat ? fightingParty(this.explorationCombat.run.party) : null);
     if (scenario) this.spawns = scenario.entities.map((e) => ({ x: e.x, y: e.y }));
 
     const mages = scenario
@@ -1595,8 +1620,18 @@ export class GameScene extends Phaser.Scene {
 
     if (this.net) {
       this.net.onClose = () => this.onOpponentLeft();
-      // Tear the socket down if the player navigates away from the duel.
-      this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.net?.close());
+      if (this.adventureOnline()) {
+        // The session owns the connection; it outlives the fight.
+        this.net.onPeerBye = () => this.onOpponentLeft();
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+          if (!this.net) return;
+          this.net.onPeerBye = undefined;
+          this.net.onClose = undefined;
+        });
+      } else {
+        // Tear the socket down if the player navigates away from the duel.
+        this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.net?.close());
+      }
     }
 
     void this.beginDuel();
@@ -1680,6 +1715,7 @@ export class GameScene extends Phaser.Scene {
           return;
         }
         this.setupExplorationCombat(this.explorationCombat);
+        if (this.explorationCombat.boss) await this.playBloodmoonIntro(this.explorationCombat.boss);
         const opening = this.explorationCombat.opening;
         if (opening && (await this.runOpeningStrike(opening))) return;
         this.startTurn();
@@ -1947,6 +1983,7 @@ export class GameScene extends Phaser.Scene {
     this.syncMageSprites();
     for (const m of this.gs.mages) {
       if (m.mine) this.styleMineEnemySprite(m);
+      else if (m.bossArt) this.styleBossSprite(m);
       else if (m.enemyKind && m.enemyKind in ENEMY_DEFS) {
         this.styleEnemySprite(m, m.enemyKind as EnemyKind);
       }
@@ -1963,10 +2000,21 @@ export class GameScene extends Phaser.Scene {
    */
   private setupExplorationCombat(combat: ExplorationCombat): void {
     this.prepareExplorationParty(combat);
+    if (combat.boss) {
+      this.spawnBloodmoonBoss(combat.boss);
+      this.gs.log(`— The bloodmoon rises. ${BOSSES[combat.boss.id].name} attacks. There is no running from it. —`);
+      this.gs.startNewCombat({ preserveScarabs: true });
+      this.updateWaveHud();
+      this.redraw();
+      return;
+    }
     const kind = combat.encounter === 'robbery' ? 'robbery' : 'monsters';
-    const spawns = combat.spawns?.length
+    const zone = combat.zone ?? 'capitol';
+    const rolled = combat.spawns?.length
       ? combat.spawns
-      : rollEncounter(combat.zone ?? 'capitol', kind, this.swamprunWave, this.gs.rng);
+      : rollEncounter(zone, kind, this.swamprunWave, this.gs.rng);
+    const fighters = this.gs.mages.filter((m) => m.team === 1 && !m.isSummon).length;
+    const spawns = [...rolled, ...rollReinforcements(zone, kind, this.swamprunWave, this.gs.rng, partyScale(fighters) - 1)];
     this.gs.log(
       combat.encounter === 'robbery'
         ? `— Ambush! ${spawns.length} bandit${spawns.length === 1 ? '' : 's'}, and they moved first. —`
@@ -1981,6 +2029,176 @@ export class GameScene extends Phaser.Scene {
     if (combat.encounter === 'robbery') this.giveAmbushersFirstTurn();
     this.updateWaveHud();
     this.redraw();
+  }
+
+  /**
+   * The bloodmoon's boss and whoever comes with it, scaled to the party that faces
+   * it: +75% health per extra fighter, and +30% damage unless the band grows instead.
+   * Unwritten bosses are a zombie in the boss's shape. Returns the leader.
+   */
+  private spawnBloodmoonBoss(fight: BossFight): Mage {
+    const def = BOSSES[fight.id];
+    ensureBossSprites(this, fight.id);
+    const fighters = this.gs.mages.filter((m) => m.team === 1 && !m.isSummon).length;
+    const scale = bossScaling(fighters);
+    this.bossPlayers = fighters;
+    this.bossScale = { health: scale.health, damage: bossDamageScales(fight.id) ? scale.damage : 1 };
+    const roster = bossRoster(fight.id, fighters);
+    let leader: Mage | undefined;
+    for (const unit of roster) {
+      const charges = denialStartCharges(unit.count);
+      for (let index = 0; index < unit.count; index++) {
+        const artifact = unit.kind === 'denialArtifact';
+        const m = this.spawnBossUnit(unit.kind, unit.art, artifact ? this.randomOpenSpot() : bossSpawnPoint(unit, index));
+        if (unit.kind === BOSS_STAND_IN) m.name = def.name;
+        m.isBoss = !!unit.leader;
+        if (unit.kind === 'baral') m.baral = { turns: 0, wounded: false, hpMark: Math.round(BARAL_MARK * scale.health) };
+        if (artifact) {
+          const threshold = denialThreshold(fighters);
+          m.denial = { charges: Math.min(threshold, charges[index]), threshold };
+        }
+        if (unit.leader) leader = m;
+      }
+    }
+    if (fighters > 1) {
+      const damage = this.bossScale.damage;
+      this.gs.log(`${def.name}: ${fighters} fighters, health x${scale.health}${damage !== 1 ? `, damage x${damage}` : ''}.`);
+    }
+    return leader!;
+  }
+
+  /** How many fighters the bloodmoon boss was scaled for, and by how much: whatever it builds mid-fight is scaled the same. */
+  private bossPlayers = 1;
+  private bossScale = { health: 1, damage: 1 };
+
+  /** One of a bloodmoon boss's units takes the field, scaled to the party. */
+  private spawnBossUnit(kind: EnemyKind, art: string, at: Vec2): Mage {
+    ensureBossSprites(this, art);
+    const m = new Mage({ name: ENEMY_DEFS[kind].name, isAI: true, team: 2, position: at, loadout: [] });
+    applyEnemyTraits(m, kind, this.gs.rng);
+    m.bossArt = art;
+    m.maxHp = Math.max(1, Math.round(m.maxHp * this.bossScale.health));
+    m.hp = m.maxHp;
+    m.damageScale = this.bossScale.damage;
+    m.resetDodges();
+    m.resetCombatReactions();
+    this.gs.addMage(m);
+    this.gs.notifyMageRelocation(m, at, at, false);
+    this.ais.set(m, new SimpleAI(this.gs, m));
+    this.swamprunWaveEnemies.push(m);
+    this.syncMageSprites();
+    this.styleBossSprite(m);
+    return m;
+  }
+
+  /** A random spot anywhere on the field, clear of every body where one can be found. */
+  private randomOpenSpot(): Vec2 {
+    const rng = this.gs.rng;
+    let spot: Vec2 = { x: FIELD.x + FIELD.w / 2, y: FIELD.y + FIELD.h / 2 };
+    for (let tries = 0; tries < 24; tries++) {
+      spot = { x: FIELD.x + 60 + rng.float() * (FIELD.w - 120), y: FIELD.y + 40 + rng.float() * (FIELD.h - 80) };
+      if (this.gs.mages.every((m) => !m.alive || dist(m.pos, spot) >= m.bodyRadius() + MAGE_RADIUS * 2)) break;
+    }
+    return spot;
+  }
+
+  /** Baral builds `count` drakes beside him; each lasts three of its own turns. */
+  private async raiseDrakes(baral: Mage, count: number): Promise<void> {
+    const puffs: Promise<void>[] = [];
+    for (let i = 0; i < count; i++) {
+      const a = this.gs.rng.float() * Math.PI * 2;
+      const r = (1.5 + this.gs.rng.float() * 1.5) * RANGE_UNIT;
+      const at = {
+        x: Math.min(FIELD.x + FIELD.w - 24, Math.max(FIELD.x + 24, baral.x + Math.cos(a) * r)),
+        y: Math.min(FIELD.y + FIELD.h - 24, Math.max(FIELD.y + 24, baral.y + Math.sin(a) * r)),
+      };
+      const drake = this.spawnBossUnit('baralDrake', 'baral-drake', at);
+      drake.drakeTurns = DRAKE_LIFESPAN;
+      puffs.push(this.spellVfx.summonPuff(at, MAGE_RADIUS * 2.4));
+    }
+    this.gs.log(`${baral.name} builds ${count === 1 ? 'a drake' : `${count} drakes`}.`);
+    await Promise.all(puffs);
+  }
+
+  /** Drakes Baral called up in the middle of an action (his first wound) join now. */
+  private async raisePendingDrakes(): Promise<void> {
+    const queued = this.gs.pendingDrakes.splice(0);
+    for (const { baral, count } of queued) {
+      if (baral.alive && !this.gs.isOver) await this.raiseDrakes(baral, count);
+    }
+    if (queued.length) this.redraw();
+  }
+
+  /** The end of Baral's turn: every second one another Artifact of Denial, the others drakes. */
+  private async maybeBaralEndStep(): Promise<void> {
+    const baral = this.gs.current;
+    if (this.gs.isOver || !baral.alive || !baral.baral) return;
+    const plan = this.gs.baralEndStep(baral);
+    for (let i = 0; i < plan.artifacts; i++) {
+      const at = this.randomOpenSpot();
+      const artifact = this.spawnBossUnit('denialArtifact', 'denial-artifact', at);
+      artifact.denial = { charges: 0, threshold: denialThreshold(this.bossPlayers) };
+      this.gs.log(`${baral.name} sets down another Artifact of Denial.`);
+      await this.spellVfx.summonPuff(at, MAGE_RADIUS * 2.4);
+    }
+    if (plan.drakes > 0) await this.raiseDrakes(baral, plan.drakes);
+    this.redraw();
+    await this.delay(250);
+  }
+
+  /** An armed artifact says no: a crackle from it to whoever acted. */
+  private async playStifle(artifact: Mage, victim: Mage): Promise<void> {
+    this.startBodyAttack(artifact);
+    playSound('spell.lightning');
+    await this.vfxLightningBolt(artifact.pos, victim.pos, 0x7ae8ff, 1);
+    void this.flushHits();
+    this.redraw();
+    await this.delay(260);
+  }
+
+  private styleBossSprite(m: Mage): void {
+    const rec = this.mageAnims.get(m);
+    if (!rec || !m.bossArt) return;
+    rec.sprite.clearTint();
+    rec.sprite.setScale(bossSheet(m.bossArt).pixel);
+  }
+
+  /** Vs. the boss: the party on one side, the boss on the other, before anyone moves. */
+  private async playBloodmoonIntro(fight: BossFight): Promise<void> {
+    const leader = this.gs.mages.find((m) => m.team === 2 && m.isBoss && !!m.bossArt);
+    const leaderRec = leader ? this.mageAnims.get(leader) : undefined;
+    const party = this.gs.mages
+      .filter((m) => m.team === 1 && !m.isSummon && m.alive)
+      .map((m) => ({ mage: m, rec: this.mageAnims.get(m) }))
+      .filter((entry): entry is { mage: Mage; rec: MageAnim } => !!entry.rec);
+    const fighters = party.length;
+    const scale = bossScaling(fighters);
+    const band = bossRoster(fight.id, fighters);
+    this.mode = 'busy';
+    await playBossIntro(this, {
+      boss: BOSSES[fight.id],
+      cycle: fight.cycle,
+      bossAnim: bossAnimKey(fight.id, 'idle'),
+      bossRoar: bossAnimKey(fight.id, 'attack'),
+      bossSheet: bossSheet(fight.id),
+      arenaBoss: leaderRec && leader?.bossArt
+        ? { sprite: leaderRec.sprite, roar: bossAnimKey(leader.bossArt, 'attack'), idle: bossAnimKey(leader.bossArt, 'idle') }
+        : undefined,
+      roster: band.length > 1 ? band.map((unit) => {
+        const unitDef = ENEMY_DEFS[unit.kind];
+        return unit.count > 1 ? `${unit.count} ${unitDef.plural ?? `${unitDef.name}s`}` : unitDef.name;
+      }).join('   ·   ') : undefined,
+      party: party.map(({ mage, rec }) => ({
+        name: mage.name,
+        texture: rec.sprite.texture.key,
+        anim: rec.sprite.anims.currentAnim?.key,
+        tint: rec.sprite.isTinted ? rec.sprite.tintTopLeft : undefined,
+      })),
+      scaling: fighters > 1
+        ? { players: fighters, health: scale.health, damage: bossDamageScales(fight.id) ? scale.damage : undefined }
+        : undefined,
+      reducedMotion: this.reducedMotion,
+    });
   }
 
   /** A won overworld fight: pay out, train, then hand the run back. */
@@ -2009,6 +2227,9 @@ export class GameScene extends Phaser.Scene {
     const party = this.gs.mages.filter((m) => m.team === 1);
     const formation = this.computeSpawns(party.map(() => 1));
     party.forEach((mage, index) => {
+      // Every fight off the map is a combat of its own: nothing per-combat carries in.
+      mage.resetForNewCombat();
+      mage.resetCombatReactions();
       const at = formation[index];
       if (!at) return;
       mage.x = at.x;
@@ -2046,6 +2267,22 @@ export class GameScene extends Phaser.Scene {
   }
 
   private async promptDungeonChoice(): Promise<'deeper' | 'back'> {
+    // The host leads the dive; everyone else waits for its call.
+    if (this.online && this.localSeat !== 0) {
+      this.gs.log('The host decides: deeper or back.');
+      this.redraw();
+      for (;;) {
+        const message = await this.net!.recv();
+        if (message.k === 'bye') return 'back';
+        if (message.k === 'dungeon-choice') return message.choice === 'deeper' ? 'deeper' : 'back';
+      }
+    }
+    const choice = await this.askDungeonChoice();
+    if (this.online) this.net?.send({ k: 'dungeon-choice', choice });
+    return choice;
+  }
+
+  private askDungeonChoice(): Promise<'deeper' | 'back'> {
     const previousMode = this.mode;
     this.mode = 'shop';
     const name = DUNGEONS[this.dungeon!].name;
@@ -2100,7 +2337,8 @@ export class GameScene extends Phaser.Scene {
    * that blow ended the fight.
    */
   private async runOpeningStrike(opening: ExplorationOpening): Promise<boolean> {
-    const leader = this.gs.mages.find((m) => m.team === 1 && !m.isSummon && m.alive);
+    const party = this.gs.mages.filter((m) => m.team === 1 && !m.isSummon && m.alive);
+    const leader = memberOf(party, opening.by) ?? party[0];
     const target = this.swamprunWaveEnemies.find((m) => m.alive);
     if (!leader || !target) return false;
     const spell = opening.kind === 'spell' ? getSpell(opening.words, leader.mageClass) : undefined;
@@ -2162,7 +2400,9 @@ export class GameScene extends Phaser.Scene {
     this.swamprunWaveEnemies = [];
     this.swamprunWispCopies.clear();
     this.swamprunArrowsOwned.clear();
-    this.mineMaze = createMineMaze(this.gs.rng, { shops: !this.dungeon });
+    this.mineMaze = this.dungeon === 'mines' && this.explorationCombat
+      ? enterMines(this.explorationCombat.run)
+      : createMineMaze(this.gs.rng, { shops: true });
     this.mineExploring = true;
     this.mineInCombat = false;
     this.mineRunEnded = false;
@@ -2177,6 +2417,18 @@ export class GameScene extends Phaser.Scene {
       : 'Mine Run — the party enters a branching tunnel with one worn pickaxe (2 durability).');
     this.updateWaveHud();
     this.redraw();
+    if (this.dungeon === 'mines') {
+      const choice = await this.promptMineChoice('MINE ENTRANCE',
+        'This is a way to the surface. Other exits are rare. Time passes in the tunnels.',
+        'The next bloodmoon reshapes the mine. Anyone still inside when it rises will be crushed.', [
+          { id: 'explore', label: 'Explore the mine' },
+          { id: 'leave', label: 'Leave through entrance' },
+        ]);
+      if (choice === 'leave') {
+        await this.leaveDungeon();
+        return;
+      }
+    }
     await this.runMineExploration();
   }
 
@@ -2204,7 +2456,15 @@ export class GameScene extends Phaser.Scene {
     if (!this.mineMaze || this.mineRunEnded) return;
     this.hideMinePanel();
     this.gs.log(`The party follows the ${MINE_DIRECTION_LABEL[direction].toLowerCase()} tunnel.`);
-    const result = travelMineMaze(this.mineMaze, direction, this.gs.rng);
+    const from = currentMineNode(this.mineMaze);
+    const dice = this.dungeon === 'mines' && this.explorationCombat
+      ? minePassageDice(this.explorationCombat.run, from.id, direction) : this.gs.rng;
+    const result = travelMineMaze(this.mineMaze, direction, dice);
+    if (result.blocked) {
+      this.gs.log('The passage ends in solid stone. The map has been corrected.');
+      return;
+    }
+    if (this.spendMineTime(0.5)) return;
     this.updateWaveHud();
     if (result.trap) await this.resolveMineTrap(result.trap);
     if (this.mineRunEnded || this.opponentLeft) return;
@@ -2215,6 +2475,19 @@ export class GameScene extends Phaser.Scene {
     ) {
       await this.handleMineRoomArrival(result.node, result.node.room);
     }
+  }
+
+  private spendMineTime(hours: number): boolean {
+    if (this.dungeon !== 'mines' || !this.explorationCombat || this.mineRunEnded) return false;
+    if (!spendMineHours(this.explorationCombat.run, hours)) return false;
+    this.mineCrushed = true;
+    this.gs.log('The bloodmoon rises. The mine shifts and crushes everyone inside.');
+    for (const mage of this.gs.mages) {
+      if (mage.team === 1 && !mage.isSummon) mage.hp = 0;
+    }
+    this.explorationCombat.run.mines = null;
+    this.endGame();
+    return true;
   }
 
   /** Resolve one passage's predetermined trap, including light-assisted warning and evasion. */
@@ -2306,6 +2579,7 @@ export class GameScene extends Phaser.Scene {
     }
     if (choice !== 'enter') return;
     room.entered = true;
+    if (this.spendMineTime(0.5)) return;
     await this.resolveMineRoom(node, room);
   }
 
@@ -2403,6 +2677,7 @@ export class GameScene extends Phaser.Scene {
     const remaining = Math.max(0, amount - result.extracted - result.collapsed);
     room.oreAmount = remaining;
     room.resolved = remaining === 0;
+    if (this.spendMineTime(0.5)) return;
     const summary = this.mineOreRollSummary(result);
     this.gs.log(
       `${ore.name} mining: ${result.extracted} extracted, ${result.collapsed} collapsed, ${remaining} left; hauled ${haulText}. Pickaxes: ${this.minePickaxes.join(', ') || 'none'}.`
@@ -2468,6 +2743,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private async startMineRoomCombat(node: MineMazeNode): Promise<void> {
+    if (this.spendMineTime(1)) return;
     this.hideMinePanel();
     this.mineExploring = false;
     this.mineInCombat = true;
@@ -2488,12 +2764,15 @@ export class GameScene extends Phaser.Scene {
     const available = MINE_DIRECTIONS.filter((direction) =>
       Object.prototype.hasOwnProperty.call(node.exits, direction)
     );
-    if (available.length === 0) return null;
+    const canLeave = !!this.dungeon && (node.id === 0 || node.escape === true);
+    if (available.length === 0 && !canLeave) return null;
     const title = node.kind === 'room'
       ? `LEAVE ROOM  //  STEP ${this.mineMaze?.steps ?? 0}`
       : `MINE MAP  //  STEP ${this.mineMaze?.steps ?? 0}`;
     const purse = this.dungeon ? '' : `  •  Party gold: ${this.swamprunGold}g`;
-    const subtitle = `Encounters cleared: ${this.swamprunWave}${purse}  •  Pickaxes: ${this.minePickaxes.length ? this.minePickaxes.join('/') : 'none'}`;
+    const mineTime = this.dungeon === 'mines' && this.explorationCombat
+      ? `  •  Day ${this.explorationCombat.run.day}, ${clockTime(this.explorationCombat.run.hour)}  •  Bloodmoon day ${nextBloodmoonDay(this.explorationCombat.run.day)}` : '';
+    const subtitle = `Encounters cleared: ${this.swamprunWave}${purse}  •  Pickaxes: ${this.minePickaxes.length ? this.minePickaxes.join('/') : 'none'}${mineTime}`;
     this.mode = 'shop';
     if (this.online && this.localSeat !== 0) {
       this.drawMineNavigationPrompt(node, title, `${subtitle}  •  Waiting for the party leader.`, false);
@@ -2501,18 +2780,19 @@ export class GameScene extends Phaser.Scene {
         const message = await this.net!.recv();
         if (message.k === 'bye') return null;
         if (message.k !== 'mine-choice' || typeof message.choice !== 'string') continue;
+        if (canLeave && message.choice === 'leave') return 'leave';
         return available.includes(message.choice as MineDirection)
           ? message.choice as MineDirection
           : available[0];
       }
     }
     this.drawMineNavigationPrompt(node, title, subtitle, true);
-    const canLeave = !!this.dungeon && node.id === 0;
     return new Promise<MineDirection | 'leave'>((resolve) => {
       this.mineChoiceResolve = (choice) => {
         this.mineChoiceResolve = null;
         this.hideMinePanel();
         if (canLeave && choice === 'leave') {
+          if (this.online) this.net?.send({ k: 'mine-choice', choice: 'leave' });
           resolve('leave');
           return;
         }
@@ -2637,11 +2917,11 @@ export class GameScene extends Phaser.Scene {
       onActivate: () => this.toggleInventory(),
     });
     panel.add(inventory);
-    if (interactive && this.dungeon && node.id === 0) {
+    if (interactive && this.dungeon && (node.id === 0 || node.escape)) {
       panel.add(new CabinetChip(this, cx - 510, cy + 222, {
         width: 200,
         height: 40,
-        label: 'Leave the mines',
+        label: node.id === 0 ? 'Leave via entrance' : 'Leave via exit',
         onActivate: () => this.mineChoiceResolve?.('leave'),
       }));
     }
@@ -2851,6 +3131,13 @@ export class GameScene extends Phaser.Scene {
       if (node.id === maze.currentNodeId) {
         graphics.lineStyle(3, MENU_COLOR.brassLight, 1).strokeCircle(point.x, point.y, 12);
       }
+      if (this.dungeon === 'mines' && (node.id === 0 || node.escape)) {
+        graphics.lineStyle(2, MENU_COLOR.verdigris, 1).strokeCircle(point.x, point.y, 17);
+        panel.add(this.add.text(point.x, point.y - 26, 'EXIT', {
+          fontFamily: MENU_FONT.control, fontSize: '11px', fontStyle: 'bold',
+          color: MENU_HEX.verdigris, backgroundColor: '#17110d',
+        }).setOrigin(0.5));
+      }
     }
     panel.add(roomIcons);
 
@@ -3054,6 +3341,8 @@ export class GameScene extends Phaser.Scene {
         status.ownerIndex = remappedOwnerIndex >= 0 ? remappedOwnerIndex : party.indexOf(m);
       }
       m.resetForNewCombat({ preserveLanternState: true });
+      // A dive's depths are separate fights too: colour charges start over.
+      if (this.explorationCombat) m.resetCombatReactions();
       this.swamprunArrowsOwned.set(m, m.arrows);
     }
   }
@@ -3497,7 +3786,11 @@ export class GameScene extends Phaser.Scene {
   }
 
   private expeditionXpToNext(): number {
-    return xpToNext(this.expeditionLevel);
+    return xpToNext(this.expeditionLevel, this.expeditionXpScale());
+  }
+
+  private expeditionXpScale(): number {
+    return this.explorationCombat ? partyXpScale(this.explorationCombat.run) : 1;
   }
 
   private expeditionPlayers(): Mage[] {
@@ -3520,27 +3813,49 @@ export class GameScene extends Phaser.Scene {
 
   private addExpeditionXp(amount: number): void {
     const track = { level: this.expeditionLevel, xp: this.expeditionXp, pendingLevels: this.expeditionPendingLevels };
-    addXp(track, amount);
+    addXp(track, amount, this.expeditionXpScale());
     this.expeditionLevel = track.level;
     this.expeditionXp = track.xp;
     this.expeditionPendingLevels = track.pendingLevels;
   }
 
   private async resolveExpeditionLevelUps(): Promise<void> {
+    if (this.explorationCombat) {
+      await this.resolveExplorationLevelUps(this.explorationCombat.run);
+      return;
+    }
     while (this.expeditionPendingLevels > 0) {
       const resolvedLevel = this.expeditionLevel - this.expeditionPendingLevels + 1;
       this.expeditionPendingLevels -= 1;
-      const reward = levelReward(resolvedLevel);
       const players = this.gs.mages.filter((mage) => mage.team === 1 && !mage.isAI && !mage.expeditionCompanion);
+      for (const player of players) await this.resolveExpeditionLevel(player, resolvedLevel);
+    }
+  }
+
+  /** Every fighter catches up on each level whose rewards it has not chosen yet. */
+  private async resolveExplorationLevelUps(run: ExplorationCombat['run']): Promise<void> {
+    this.expeditionPendingLevels = 0;
+    const players = this.gs.mages.filter((mage) => mage.team === 1 && !mage.isSummon && !mage.isAI);
+    const taken = (player: Mage): number => Math.min(this.expeditionLevel, run.levelsTaken[player.mageClass] ?? 1);
+    for (let level = Math.min(...players.map(taken)) + 1; level <= this.expeditionLevel; level++) {
       for (const player of players) {
-        await this.syncExpeditionPlayerChoice(player, async () => {
-          if (reward.stats > 0) await this.promptExpeditionStats(player, resolvedLevel, reward.stats);
-          if (reward.word) await this.promptExpeditionWord(player, resolvedLevel);
-          await this.promptExpeditionColorIdentity(player);
-        });
-        this.gs.log(`${player.name} reaches level ${resolvedLevel}.`);
+        if (taken(player) >= level) continue;
+        await this.resolveExpeditionLevel(player, level);
+        run.levelsTaken[player.mageClass] = level;
       }
     }
+  }
+
+  private async resolveExpeditionLevel(player: Mage, level: number): Promise<void> {
+    const reward = levelReward(level);
+    // Rolled on every peer, so the shared dice stay in step whoever does the choosing.
+    const offers = reward.word ? this.expeditionWordOffers(player) : [];
+    await this.syncExpeditionPlayerChoice(player, async () => {
+      if (reward.stats > 0) await this.promptExpeditionStats(player, level, reward.stats);
+      if (reward.word) await this.promptExpeditionWord(player, level, offers);
+      await this.promptExpeditionColorIdentity(player);
+    });
+    this.gs.log(`${player.name} reaches level ${level}.`);
   }
 
   private async syncExpeditionPlayerChoice(player: Mage, choose: () => Promise<void>): Promise<void> {
@@ -3555,6 +3870,7 @@ export class GameScene extends Phaser.Scene {
         k: 'exp-player', seat, loadout: player.loadout,
         primary: player.preferredPrimaryColor, secondary: player.preferredSecondaryColor,
         stats: STAT_ORDER.map((key) => key === 'strength' ? player.statStrength : key === 'dex' ? player.statDex : key === 'int' ? player.statInt : key === 'mana' ? player.maxMana : key === 'hp' ? player.maxHp : player.maxLuck),
+        vitals: [player.hp, player.mana, player.luck],
       });
       return;
     }
@@ -3569,8 +3885,14 @@ export class GameScene extends Phaser.Scene {
         player.maxHp = stats[4]; player.hp = player.maxHp;
         player.maxLuck = stats[5]; player.luck = player.maxLuck;
       }
+      const vitals = Array.isArray(msg.vitals) ? msg.vitals.map(Number) : [];
+      if (vitals.length === 3 && vitals.every(Number.isFinite)) {
+        player.hp = Math.max(0, Math.min(player.maxHp, Math.floor(vitals[0])));
+        player.mana = Math.max(0, Math.min(player.maxMana, Math.floor(vitals[1])));
+        player.luck = Math.max(0, Math.min(player.maxLuck, Math.floor(vitals[2])));
+      }
       const loadout = Array.isArray(msg.loadout)
-        ? msg.loadout.filter((word): word is WordId => typeof word === 'string' && word in WORDS)
+        ? msg.loadout.filter((word): word is WordId => typeof word === 'string' && Object.prototype.hasOwnProperty.call(WORDS, word))
         : [];
       const color = (value: unknown): ColorName | null =>
         value === 'black' || value === 'blue' || value === 'white' || value === 'red' ? value : null;
@@ -3609,8 +3931,7 @@ export class GameScene extends Phaser.Scene {
     return offers;
   }
 
-  private promptExpeditionWord(player: Mage, level: number): Promise<void> {
-    const offers = this.expeditionWordOffers(player);
+  private promptExpeditionWord(player: Mage, level: number, offers: readonly WordId[]): Promise<void> {
     if (offers.length === 0) return Promise.resolve();
     const previousMode = this.mode;
     this.mode = 'shop';
@@ -5381,6 +5702,7 @@ export class GameScene extends Phaser.Scene {
     // Turn-start damage (DoT, auras, totems) applies no dice, so play any
     // recoils it queued right away as the HP changes become visible.
     void this.flushHits();
+    await this.raisePendingDrakes();
 
     // Swamprun: a creature's own turn-start DoT tick can empty the board — run
     // the interlude rather than declaring the run over, and skip a creature that
@@ -5570,6 +5892,11 @@ export class GameScene extends Phaser.Scene {
     // A Lich that never moved this turn takes a bonus end-step (rolled effect).
     await this.maybeLichEndStep();
     await this.maybeDeathknightEndStep();
+    await this.maybeBaralEndStep();
+    if (this.gs.wearDrake(this.gs.current)) {
+      this.syncMageSprites();
+      this.redraw();
+    }
   }
 
   /** Who an AI decision is aimed at, when it is aimed at anyone. */
@@ -5593,6 +5920,9 @@ export class GameScene extends Phaser.Scene {
       case 'reaper-mark': return 'marks';
       case 'reaper-channel': return 'begins channelling';
       case 'mine-action': return 'acts';
+      case 'goblin-heal': return 'mends';
+      case 'goblin-hex': return 'hexes';
+      case 'goblin-escape': return 'flees the battle';
       default: return 'acts';
     }
   }
@@ -5815,6 +6145,44 @@ export class GameScene extends Phaser.Scene {
         await this.runStack(makeMineActionItem(this.gs, me, d.choice));
         break;
       }
+      case 'goblin-heal':
+      case 'goblin-hex': {
+        me.spend('main');
+        const mend = d.type === 'goblin-heal';
+        const target = d.target;
+        let landed = false;
+        this.startBodyAttack(me);
+        await this.delay(this.reducedMotion ? 0 : 280);
+        await this.runStack(
+          this.gs.makeActionItem({
+            source: me,
+            target,
+            label: mend ? 'Goblin Mending' : 'Goblin Hex',
+            description: mend
+              ? `${me.name} mends ${target.name}: +${GOBLIN_MEND_HP} HP and +${Math.round(GOBLIN_HASTE * 100)}% move for 2 turns.`
+              : `${me.name} hexes ${target.name}: -${Math.round(GOBLIN_HEX * 100)}% move for 2 turns.`,
+            isStillValid: () => me.alive && target.alive && dist(me.pos, target.pos) <= GOBLIN_RITE_RANGE,
+            resolve: (game) => {
+              landed = true;
+              if (mend) game.goblinMend(me, target);
+              else game.goblinHex(me, target);
+            },
+          })
+        );
+        if (landed) {
+          playSound(mend ? 'spell.heal' : 'spell.psychic');
+          await this.spellVfx.burst(target.pos, mend ? 0x7cf07a : 0xb46cff, 34, 1.1);
+        }
+        break;
+      }
+      case 'goblin-escape': {
+        const at = { x: me.x, y: me.y };
+        this.gs.goblinEscape(me);
+        playSound('move.dash');
+        this.syncMageSprites();
+        await this.spellVfx.summonPuff(at, MAGE_RADIUS * 2.6);
+        break;
+      }
       case 'spell': {
         // A scrambled mage (Mind Curse) casts a random spell instead.
         if (this.gs.controlOf(me)?.mode === 'random') {
@@ -5858,10 +6226,29 @@ export class GameScene extends Phaser.Scene {
   /**
    * Seat that controls `m`. Summons are steered by their owner, so their
    * controller is the owner's seat (a summon has no seat/turn of its own).
+   * An online Adventure party member belongs to the seat that claimed it.
    */
   private controllerSeatOf(m: Mage): number {
-    if (m.isSummon && m.summonOwnerIndex != null) return m.summonOwnerIndex;
-    return this.seatOf(m);
+    const partySeats = this.explorationCombat?.seats;
+    if (m.isSummon && m.summonOwnerIndex != null) {
+      const owner = partySeats ? this.gs.mages[m.summonOwnerIndex] : undefined;
+      return owner && !owner.isSummon ? this.controllerSeatOf(owner) : m.summonOwnerIndex;
+    }
+    const partySeat = partySeats && m.team === 1 && !m.isAI ? partySeats[m.mageClass] : undefined;
+    return partySeat ?? this.seatOf(m);
+  }
+
+  /** The mage this client plays online. In an Adventure fight a fallen player's is absent: show the party's first. */
+  private localMage(): Mage {
+    const seats = this.explorationCombat?.seats;
+    if (!seats) return this.mageBySeat(this.localSeat);
+    const party = this.gs.mages.filter((m) => m.team === 1 && !m.isSummon);
+    return party.find((m) => seats[m.mageClass] === this.localSeat) ?? party[0] ?? this.gs.mages[0];
+  }
+
+  /** This fight is part of an online Adventure: the session, not the fight, owns the connection. */
+  private adventureOnline(): boolean {
+    return !!this.explorationCombat && !!this.net && AdventureSession.current?.net === this.net;
   }
 
   private mageByTeam(team: number): Mage {
@@ -6608,6 +6995,7 @@ export class GameScene extends Phaser.Scene {
   private onOpponentLeft(): void {
     if (this.opponentLeft || this.gs.isOver) return;
     this.opponentLeft = true;
+    const adventure = this.adventureOnline();
     this.mineRunEnded = true;
     this.mineChoiceResolve?.('');
     this.mineChoiceResolve = null;
@@ -6629,6 +7017,22 @@ export class GameScene extends Phaser.Scene {
     }
     this.hideAssignOverlay();
     this.hideShopOverlay();
+    if (adventure) {
+      const reason = 'A player left, so the session ended. The host\'s save keeps the run from before this fight.';
+      this.showEndCard({
+        eyebrow: 'ONLINE ADVENTURE',
+        title: 'CONNECTION LOST',
+        detail: reason,
+        actionLabel: 'RETURN TO MAIN MENU',
+        tone: 'warning',
+        onActivate: () => {
+          AdventureSession.current?.end(reason);
+          this.scene.start('Menu', { notice: reason });
+        },
+      });
+      this.redraw();
+      return;
+    }
     this.showEndCard({
       eyebrow: 'ONLINE SESSION',
       title: 'CONNECTION LOST',
@@ -6716,7 +7120,8 @@ export class GameScene extends Phaser.Scene {
   /**
    * Finish a withdrawal started last turn. The escapee must still be alive and
    * still be against a border — dragged back into the open, the attempt lapses.
-   * Returns true when the fight is over and the caller must stop.
+   * An Adventure party member who leaves while others still stand waits beyond
+   * the edge until the fight ends. Returns true when the caller must stop.
    */
   private releaseFlee(me: Mage): boolean {
     const declared = me.fleeChannel;
@@ -6728,9 +7133,18 @@ export class GameScene extends Phaser.Scene {
       this.redraw();
       return false;
     }
-    this.fledEdge = edge;
     this.gs.log(`${me.name} slips away over the ${FLEE_EDGE_LABEL[edge]} edge.`);
     playSound('move.dash');
+    const othersStand = !!this.explorationCombat &&
+      this.gs.mages.some((m) => m.team === me.team && m !== me && !m.isSummon && m.alive);
+    if (othersStand) {
+      this.withdrawnEdge = edge;
+      me.withdrawn = true;
+      this.redraw();
+      void this.nextTurn();
+      return true;
+    }
+    this.fledEdge = edge;
     this.endGame();
     return true;
   }
@@ -6840,6 +7254,7 @@ export class GameScene extends Phaser.Scene {
       resolve: () => {},
     });
     trigger.noPhysicalReaction = true;
+    trigger.windowTrigger = true;
     if (opts.at) trigger.targetPoint = opts.at;
     // Skip the window entirely when nobody could answer it — keeps play snappy
     // and avoids exchanging empty reaction messages online. Deterministic on
@@ -6992,6 +7407,7 @@ export class GameScene extends Phaser.Scene {
 
       // Resolve the top item now that the reaction window has closed.
       const resolved = await this.resolveTop();
+      await this.raisePendingDrakes();
       const oniTrigger = this.buildOniTurnEndTrigger();
       if (oniTrigger) this.gs.pushStack(oniTrigger);
       // A mage carrying a Shadow Trail leaves a pool of shadow where it walks.
@@ -7027,6 +7443,16 @@ export class GameScene extends Phaser.Scene {
       await this.delay(220);
       return item;
     }
+
+    // Baral's Artifacts of Denial: an armed one stifles a party action outright;
+    // any other party action that gets this far charges them all.
+    const stifler = this.gs.stifleByDenial(item);
+    if (stifler) {
+      if (item.kind === 'spell') this.setCharging(item.source, false);
+      await this.playStifle(stifler, item.source);
+      return item;
+    }
+    this.gs.chargeDenial(item);
 
     // A spell must beat its difficulty: roll 1d20 vs the spell's DC. On a miss
     // the spell fizzles entirely (charges/actions are already spent) and no
@@ -7760,7 +8186,7 @@ export class GameScene extends Phaser.Scene {
    * shared screen always shows the player who is about to act.
    */
   private get viewMage(): Mage {
-    return this.online ? this.mageBySeat(this.localSeat) : this.actor;
+    return this.online ? this.localMage() : this.actor;
   }
 
   /**
@@ -9159,7 +9585,7 @@ export class GameScene extends Phaser.Scene {
 
   /** The local party member whose supplies are inspected during Mine exploration. */
   private mineInventoryMage(): Mage {
-    if (this.online) return this.mageBySeat(this.localSeat);
+    if (this.online) return this.localMage();
     return this.gs.mages.find(
       (mage) => mage.team === 1 && mage.alive && !mage.isAI && !mage.isSummon
     ) ?? this.gs.mages.find(
@@ -15590,8 +16016,9 @@ export class GameScene extends Phaser.Scene {
       ? `WINGS E${m.deathsAngelEnergy}${m.deathsAngelFlightTurns > 0 ? ` · FLY ${m.deathsAngelFlightTurns}` : ''}`
       : '';
     const fleeing = m.fleeChannel ? `WITHDRAWING ${FLEE_EDGE_LABEL[m.fleeChannel].toUpperCase()}` : '';
+    const denial = denialLabel(m);
     t.setText(
-      `${m.name}${mineDetails ? ` · ${mineDetails}` : ''}${lantern ? `\n${lantern}` : ''}${wings ? `\n${wings}` : ''}${fleeing ? `\n${fleeing}` : ''}${statuses ? `\n${statuses}` : ''}`
+      `${m.name}${mineDetails ? ` · ${mineDetails}` : ''}${denial ? `\n${denial}` : ''}${lantern ? `\n${lantern}` : ''}${wings ? `\n${wings}` : ''}${fleeing ? `\n${fleeing}` : ''}${statuses ? `\n${statuses}` : ''}`
     );
     t.setColor(m.hp / Math.max(1, m.maxHp) <= 0.25 ? '#d99286' : MENU_HEX.bone);
     t.setPosition(m.x, m.y + MAGE_RADIUS + 15).setVisible(true);
@@ -16103,14 +16530,15 @@ export class GameScene extends Phaser.Scene {
     if (this.gameEnded) return;
     this.gameEnded = true;
     // A withdrawal is not a defeat: nobody won, the party simply left.
-    if (this.fledEdge) {
+    const escapedOver = this.fledEdge ?? (this.explorationWon ? null : this.withdrawnEdge);
+    if (escapedOver) {
       this.mode = 'over';
       this.busy = false;
       if (this.mineRun) this.closeMineExploration();
       this.showEndCard({
         eyebrow: 'WITHDRAWN',
         title: 'ESCAPED',
-        detail: `The party broke off ${FLEE_EDGE_LABEL[this.fledEdge]}.`,
+        detail: `The party broke off ${FLEE_EDGE_LABEL[escapedOver]}.`,
         actionLabel: 'CONTINUE',
         tone: 'victory',
         onActivate: () => this.returnToMenu(),
@@ -16144,12 +16572,13 @@ export class GameScene extends Phaser.Scene {
       const reached = !dungeon ? ''
         : this.mineRun ? `${this.mineMaze?.steps ?? 0} tunnels walked. `
         : `Deepest depth ${this.dungeonDeepest}. `;
+      const boss = this.explorationCombat.boss ? BOSSES[this.explorationCombat.boss.id] : null;
       this.showEndCard({
-        eyebrow: won ? (dungeon ? 'OUT ALIVE' : 'FIGHT WON') : 'DEFEATED',
-        title: won ? (dungeon ? dungeon.name.toUpperCase() : 'VICTORY') : 'PARTY LOST',
+        eyebrow: this.mineCrushed || boss ? 'BLOODMOON' : won ? (dungeon ? 'OUT ALIVE' : 'FIGHT WON') : 'DEFEATED',
+        title: this.mineCrushed ? 'CRUSHED IN THE MINES' : boss && won ? `${boss.name.toUpperCase()} DEFEATED` : won ? (dungeon ? dungeon.name.toUpperCase() : 'VICTORY') : 'PARTY LOST',
         detail: won
           ? `${reached}${trained}`
-          : 'Carried back to the last town. 20% of your gold is lost.',
+          : this.mineCrushed ? 'The maze shifted as the bloodmoon rose. No one escaped.' : 'The whole party has fallen. The run is over.',
         actionLabel: 'CONTINUE',
         tone: won ? 'victory' : 'defeat',
         onActivate: () => this.returnToMenu(),
@@ -16259,21 +16688,34 @@ export class GameScene extends Phaser.Scene {
     // An overworld fight goes back to the road it interrupted, not the menu.
     const combat = this.explorationCombat;
     if (combat) {
-      const survivors = this.gs.mages.filter((m) => m.team === 1 && m.alive && !m.isSummon);
-      for (const m of survivors) {
+      const fighters = this.gs.mages.filter((m) => m.team === 1 && !m.isSummon);
+      for (const m of fighters) {
+        m.withdrawn = false;
         const owned = this.swamprunArrowsOwned.get(m);
         if (owned != null) m.arrows = owned;
+        // The fight is over: its limits, colour charges and statuses end with it.
+        m.resetForNewCombat();
+        m.resetCombatReactions();
       }
+      const survivors = fighters.filter((m) => m.alive);
       if (this.dungeon === 'mines') this.dropBrokenPickaxes(survivors);
-      if (survivors.length) combat.run.party = capturePartySnapshot(survivors);
+      combat.run.party = mergeFightParty(combat.run.party, fighters);
       combat.run.gold = Math.round((combat.run.gold + this.swamprunGold) * 10) / 10;
       combat.run.level = this.expeditionLevel;
       combat.run.xp = this.expeditionXp;
+      syncPendingLevels(combat.run);
+      // A guest settles nothing: the host's run after the fight is the party's.
+      const session = AdventureSession.current;
+      if (this.adventureOnline() && session && !session.isHost) {
+        this.scene.start('Exploration', { run: combat.run, follow: 'wait' } satisfies ExplorationEntry);
+        return;
+      }
+      const edge = this.fledEdge ?? this.withdrawnEdge;
       this.scene.start('Exploration', {
         result: {
           run: combat.run,
-          outcome: this.fledEdge ? 'fled' : survivors.length ? 'won' : 'lost',
-          edge: this.fledEdge ?? undefined,
+          outcome: this.explorationWon ? 'won' : edge && survivors.length ? 'fled' : survivors.length ? 'won' : 'lost',
+          edge: edge ?? undefined,
           cameFrom: combat.cameFrom,
           kills: [...this.explorationKills],
           returnTo: combat.returnTo,
@@ -16281,6 +16723,8 @@ export class GameScene extends Phaser.Scene {
           tag: combat.tag,
           robbery: combat.encounter === 'robbery',
           dungeon: combat.dungeon,
+          crushed: this.mineCrushed,
+          boss: combat.boss,
         },
       } satisfies ExplorationEntry);
       return;

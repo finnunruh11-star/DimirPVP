@@ -1,13 +1,16 @@
 // The traveller's pack outside a fight: what is worn, what is carried, and the
-// words on the rack. Equip, stow or drop; nothing here costs an action.
+// words on the rack. Equip, stow, drop or hand to a companion; nothing here costs an action.
 
 import Phaser from 'phaser';
 import { playSound } from '../../audio';
+import { MAGE_CLASS_DEFS, type MageClass } from '../../core/Classes';
 import { getItem, type ItemId } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
 import { isModifierWord, WORDS } from '../../core/Words';
 import { SceneInput } from '../../engine/SceneInput';
-import { dropItem, equipItem, moneyLabel, partyOf, unequipItem, type ShopResult } from '../../pve/exploration/economy';
+import { partyXpScale } from '../../pve/exploration/coop';
+import { memberIn, moneyLabel, partyOf } from '../../pve/exploration/economy';
+import type { ExplorationActions, ExplorationIntent } from '../../pve/exploration/intents';
 import type { ExplorationRun } from '../../pve/exploration/run';
 import { xpToNext } from '../../pve/progression';
 import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
@@ -16,20 +19,25 @@ import { itemDetail } from './ShopView';
 
 const PER_PAGE = 8;
 
+type PackMode = 'use' | 'drop' | 'give';
+
 export class PackView extends Phaser.GameObjects.Container {
   private readonly sceneInput: SceneInput;
   private focus = new MenuFocusGroup();
-  private dropping = false;
+  private mode: PackMode = 'use';
+  /** Who a gift goes to. */
+  private giveTo: MageClass | null = null;
   private page = 0;
   private message = '';
   private disposed = false;
+  private working = false;
   private inspectorTitle!: Phaser.GameObjects.Text;
   private inspectorBody!: Phaser.GameObjects.Text;
 
   constructor(
     scene: Phaser.Scene,
     private readonly run: ExplorationRun,
-    private readonly hooks: { changed(): void; close(): void },
+    private readonly hooks: { changed(): void; close(): void; actions: ExplorationActions },
   ) {
     super(scene, 0, 0);
     scene.add.existing(this);
@@ -56,18 +64,31 @@ export class PackView extends Phaser.GameObjects.Container {
     super.destroy(fromScene);
   }
 
-  private apply(result: ShopResult): void {
+  private async apply(intent: ExplorationIntent): Promise<void> {
+    if (this.working) return;
+    this.working = true;
+    const result = await this.hooks.actions.apply(intent);
+    this.working = false;
+    if (this.disposed) return;
     this.message = result.message;
     playSound(result.ok ? 'ui.confirm' : 'ui.deny');
     if (result.ok) this.hooks.changed();
     this.render();
   }
 
+  /** Redraw from the run as it now stands (another player's change landed). */
+  refresh(): void {
+    if (!this.disposed && !this.working) this.render();
+  }
+
   private render(): void {
     this.removeAll(true);
     this.focus = new MenuFocusGroup();
     const { scene, run } = this;
-    const leader = partyOf(run)[0];
+    const leader = memberIn(run, this.hooks.actions.member);
+    const others = partyOf(run).filter((mage) => mage.mageClass !== leader?.mageClass);
+    if (!others.some((mage) => mage.mageClass === this.giveTo)) this.giveTo = others[0]?.mageClass ?? null;
+    if (this.mode === 'give' && !this.giveTo) this.mode = 'use';
     addCabinetBackdrop(scene, this);
     this.add(scene.add.text(58, 42, 'PACK', {
       fontFamily: MENU_FONT.display,
@@ -96,11 +117,19 @@ export class PackView extends Phaser.GameObjects.Container {
     if (leader) this.renderLeader(leader);
 
     const mode = new CabinetChip(scene, 740, 606, {
-      width: 220,
+      width: 106,
       height: 42,
-      label: this.dropping ? 'Stop Dropping' : 'Drop Items...',
-      tone: this.dropping ? 'danger' : 'normal',
-      onActivate: () => { this.dropping = !this.dropping; this.render(); },
+      label: this.mode === 'drop' ? 'Stop' : 'Drop...',
+      tone: this.mode === 'drop' ? 'danger' : 'normal',
+      onActivate: () => { this.mode = this.mode === 'drop' ? 'use' : 'drop'; this.render(); },
+    });
+    const give = new CabinetChip(scene, 854, 606, {
+      width: 106,
+      height: 42,
+      label: this.mode === 'give' ? 'Stop' : 'Give...',
+      tone: this.mode === 'give' ? 'primary' : 'normal',
+      enabled: others.length > 0,
+      onActivate: () => { this.mode = this.mode === 'give' ? 'use' : 'give'; this.render(); },
     });
     const close = new CabinetChip(scene, 980, 606, {
       width: 222,
@@ -109,9 +138,25 @@ export class PackView extends Phaser.GameObjects.Container {
       tone: 'primary',
       onActivate: () => this.hooks.close(),
     });
-    this.add([mode, close]);
+    this.add([mode, give, close]);
     this.focus.add(mode);
+    this.focus.add(give);
     this.focus.add(close);
+    if (this.mode === 'give' && others.length > 1) {
+      const target = others.find((mage) => mage.mageClass === this.giveTo) ?? others[0];
+      const cycle = new CabinetChip(scene, 740, 560, {
+        width: 220,
+        height: 30,
+        label: `To: ${target.name}`,
+        onActivate: () => {
+          const at = others.indexOf(target);
+          this.giveTo = others[(at + 1) % others.length].mageClass;
+          this.render();
+        },
+      });
+      this.add(cycle);
+      this.focus.add(cycle);
+    }
     if (this.message) this.inspect('Latest', this.message);
   }
 
@@ -119,15 +164,16 @@ export class PackView extends Phaser.GameObjects.Container {
     const { scene, run } = this;
     const words = leader.loadout.filter((word) => !isModifierWord(word)).map((word) => WORDS[word].label);
     const modifier = leader.loadout.find(isModifierWord);
+    const who = partyOf(run).length > 1 ? `${leader.name}, ${MAGE_CLASS_DEFS[leader.mageClass].label}  /  ` : '';
     this.add(scene.add.text(60, 82, [
-      `Level ${run.level}  (${run.xp}/${xpToNext(run.level)} XP)  /  ${moneyLabel(run.gold)}  /  ${leader.carriedWeight().toFixed(1)}/${leader.carryCap()}kg`,
+      `${who}Level ${run.level}  (${run.xp}/${xpToNext(run.level, partyXpScale(run))} XP)  /  ${moneyLabel(run.gold)}  /  ${leader.carriedWeight().toFixed(1)}/${leader.carryCap()}kg`,
     ].join(''), { fontFamily: MENU_FONT.body, fontSize: '14px', color: MENU_HEX.boneDim }));
     addSectionRule(scene, this, 58, 116, 1164);
 
     // Left: the mage.
     addRecess(scene, this, 58, 136, 360, 432, MENU_COLOR.woodDeep);
     const sheet = [
-      `Health   ${leader.hp}/${leader.maxHp}`,
+      leader.alive ? `Health   ${leader.hp}/${leader.maxHp}` : 'FALLEN   back at the next inn night',
       `Mana     ${leader.mana}/${leader.maxMana}`,
       `Sanity   ${leader.sanity}/${leader.maxSanity}`,
       `Luck     ${leader.luck}/${leader.maxLuck}`,
@@ -165,18 +211,26 @@ export class PackView extends Phaser.GameObjects.Container {
       entries.push({
         label: `${item.where}: ${def.name}`,
         detail: itemDetail(def),
-        enabled: !this.dropping,
-        run: () => this.apply(unequipItem(run, item.id)),
+        enabled: this.mode === 'use',
+        run: () => void this.apply({ op: 'unequip', item: item.id }),
       });
     }
+    const target = this.giveTo ? partyOf(run).find((mage) => mage.mageClass === this.giveTo) : undefined;
     for (const [id, count] of counts) {
       const def = getItem(id);
       const equippable = def.slot !== 'utility' && leader.canEquipFromBag(id);
+      const action = this.mode === 'drop' ? '  /  drop one'
+        : this.mode === 'give' ? `  /  give one to ${target?.name ?? 'nobody'}`
+        : equippable ? '  /  equip' : '';
       entries.push({
-        label: `${def.name}${count > 1 ? ` x${count}` : ''}${this.dropping ? '  /  drop one' : equippable ? '  /  equip' : ''}`,
+        label: `${def.name}${count > 1 ? ` x${count}` : ''}${action}`,
         detail: itemDetail(def),
-        enabled: this.dropping ? !def.permanentlyBinding : equippable,
-        run: () => this.apply(this.dropping ? dropItem(run, id) : equipItem(run, id)),
+        enabled: this.mode === 'drop' ? !def.permanentlyBinding : this.mode === 'give' ? !!target : equippable,
+        run: () => void this.apply(
+          this.mode === 'drop' ? { op: 'drop', item: id }
+            : this.mode === 'give' && this.giveTo ? { op: 'give', item: id, to: this.giveTo }
+            : { op: 'equip', item: id },
+        ),
       });
     }
     if (leader.arrows > 0) {

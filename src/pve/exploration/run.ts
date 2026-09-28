@@ -1,19 +1,19 @@
 // Exploration run state. No `Math.random` anywhere: every roll derives from the
 // run's seed plus the step that triggered it, so a reload reproduces it exactly.
 
+import type { MageClass } from '../../core/Classes';
 import { Dice } from '../../core/Dice';
 import type { Scenario } from '../../core/Scenario';
+import type { MineMazeState } from '../mineMaze';
 import { START_HOUR } from './clock';
 import { packExplored, revealTiles, unpackExplored } from './explored';
+import type { EncounterSite } from './site';
 import { placeById, START_PLACE } from './world';
 
-export const EXPLORATION_VERSION = 6;
+export const EXPLORATION_VERSION = 7;
 
-/** A fresh run's purse: five silver. */
+/** A fresh run's purse: five silver per traveller. */
 export const START_PURSE = 0.5;
-
-/** How the world is crossed: planned trips on the map, or on foot like the wilds. */
-export type MapStyle = 'travel' | 'open';
 
 export type BountyKind = 'slay' | 'gather' | 'deliver';
 
@@ -58,6 +58,23 @@ export interface RoadState {
   luck: number;
 }
 
+export interface ExplorationMineState {
+  cycle: number;
+  maze: MineMazeState;
+}
+
+/** Out on foot around one spot of the map (see area.ts). */
+export interface AreaState {
+  /** The world tile the party set out from, and comes back to. */
+  tile: { x: number; y: number };
+  /** Hours each member has spent on what they did here. */
+  spent: Partial<Record<MageClass, number>>;
+  /** World tiles either side of `tile` the walk covers; the usual area when absent. */
+  radius?: number;
+  /** Something spotted from the road that the party walked over to (see site.ts). */
+  site?: EncounterSite;
+}
+
 export interface ExplorationRun {
   version: number;
   seed: number;
@@ -69,19 +86,23 @@ export interface ExplorationRun {
   hour: number;
   /** Walked world tiles, packed (see explored.ts). */
   explored: string;
-  /** Tiles already searched, keyed `x,y:day`, so an area yields once a day. */
+  /** Searches made, one `x,y:day` key each; every search of a tile today makes the next harder. */
   searched: string[];
   gold: number;
   /** The party, stored as a one-scene Scenario so it round-trips through JSON. */
   party: Scenario;
+  /** The party is still choosing classes, words and weapons in Kerusai. */
+  creating: boolean;
   /** Secrets uncovered, wilds mapped, bosses felled. */
   flags: string[];
   /** Places the party has reached. */
   visited: string[];
   level: number;
   xp: number;
-  /** Levels earned outside a fight whose rewards are still to be chosen. */
+  /** The most levels any member still has to choose rewards for. */
   pendingLevels: number;
+  /** The level each member has chosen rewards up to; absent means level 1. */
+  levelsTaken: Partial<Record<MageClass, number>>;
   /** Turns over at midnight; shops restock and wild packs return. */
   day: number;
   /** The last town entered; a beaten party wakes up there. */
@@ -96,15 +117,17 @@ export interface ExplorationRun {
   wildsSeen: string[];
   /** Wild enemy groups beaten, with the day they fell. */
   groupsBeaten: Record<string, number>;
-  /** Always 'open' until the party owns a map. */
-  mapStyle: MapStyle;
-  /** Bought a map of the realm: the travel map is open. */
-  hasMap: boolean;
+  /** On foot around a spot of the map; null on the map and inside places. */
+  area: AreaState | null;
   quest: QuestState;
   road: RoadState;
+  /** Exploration Mines alone: the excavated layout until the next bloodmoon. */
+  mines: ExplorationMineState | null;
+  /** Bloodmoons the party has fought through (see bloodmoon.ts). */
+  bloodmoons: number;
 }
 
-export function createRun(seed: number, party: Scenario): ExplorationRun {
+export function createRun(seed: number, party: Scenario, options: { creating?: boolean } = {}): ExplorationRun {
   const start = placeById(START_PLACE)!;
   const explored = unpackExplored('');
   revealTiles(explored, [start], 4);
@@ -116,13 +139,15 @@ export function createRun(seed: number, party: Scenario): ExplorationRun {
     hour: START_HOUR,
     explored: packExplored(explored),
     searched: [],
-    gold: START_PURSE,
+    gold: Math.round(START_PURSE * Math.max(1, party.entities.length) * 10) / 10,
     party,
+    creating: options.creating ?? false,
     flags: [],
     visited: [START_PLACE],
     level: 1,
     xp: 0,
     pendingLevels: 0,
+    levelsTaken: {},
     day: 1,
     lastTown: START_PLACE,
     bounties: [],
@@ -131,10 +156,11 @@ export function createRun(seed: number, party: Scenario): ExplorationRun {
     locale: null,
     wildsSeen: [],
     groupsBeaten: {},
-    mapStyle: 'open',
-    hasMap: false,
+    area: null,
     quest: { job: 0, taken: false, progress: 0, opens: 1 },
     road: { tiles: 0, danger: 0, luck: 0 },
+    mines: null,
+    bloodmoons: 0,
   };
 }
 

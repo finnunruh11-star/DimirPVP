@@ -1,12 +1,12 @@
-// The first days in Kerusai. A new traveller has five silver and no map. The
-// keeper of the Kerusai Lodge has two jobs, a day apart: the dead in the marsh
-// north-east of town, then Bogcap in the small wood past it. Together they pay
-// for a map of the realm, which opens the travel map. Pure: no Phaser.
+// The first days in Kerusai. A new traveller has five silver and a travel map.
+// The keeper of the Kerusai Lodge has two jobs, a day apart: the dead in the marsh
+// north-east of town, then Bogcap in the small wood past it. Both are done on foot:
+// travel close on the map, then set out on foot there. Pure: no Phaser.
 
 import type { Cell } from '../../world/pathfind';
 import { mineEnemyLevel } from '../minerun';
-import { addXp } from '../progression';
-import { grantToMage, money, moneyLabel, withParty, type ShopResult } from './economy';
+import { addRunXp, partyXpScale } from './coop';
+import { grantToParty, money, moneyLabel, roomPrice, type ShopResult } from './economy';
 import type { EncounterSpawn, EncounterZone } from './encounters';
 import type { SecretResult } from './locales';
 import type { ExplorationRun } from './run';
@@ -15,11 +15,10 @@ import { placeById } from './world';
 
 export const QUEST_TOWN = 'kerusai';
 export const QUEST_LODGE = 'kerusai-guild';
-export const MAP_PRICE = 8;
 /** While the quest runs, no roaming pack settles this close to Kerusai (world tiles). */
 export const QUEST_CALM = 8;
 
-export type QuestJobId = 'dead' | 'herbs' | 'map';
+export type QuestJobId = 'dead' | 'herbs';
 
 export interface QuestJob {
   id: QuestJobId;
@@ -48,7 +47,7 @@ export const QUEST_JOBS: readonly QuestJob[] = [
     title: 'The dead of the marsh',
     brief: 'Two zombies have walked out of the marsh north-east of Kerusai. Put them down.',
     goal: 'Put down the zombies in the marsh north-east of Kerusai.',
-    tip: 'Words: number keys pick up to two, R casts. A word attack always opens with a free strike.',
+    tip: 'Travel close on the map, then Explore on foot. Number keys pick up to two words, R casts.',
     need: 1,
     reward: { gold: 4, xp: 4 },
     site: DEAD_SITE,
@@ -59,20 +58,10 @@ export const QUEST_JOBS: readonly QuestJob[] = [
     title: 'Bogcap',
     brief: 'The apothecary wants Bogcap. Three patches grow in the small wood past the marsh. Find them. The Bogcap is yours to keep or sell.',
     goal: 'Find the Bogcap patches in the small wood past the marsh.',
-    tip: 'C: sneak. F: melee ambush, only on foes that have not seen you. E: search a glint.',
+    tip: 'Explore on foot there. C: sneak. F: melee ambush on foes that have not seen you. E: search a glint.',
     need: BOGCAP_SITES.length,
     reward: { gold: 5, xp: 5 },
     site: WOOD_SITE,
-    wait: 0,
-  },
-  {
-    id: 'map',
-    title: 'A map of the realm',
-    brief: `A map of the realm opens the travel map. ${MAP_PRICE}g at any guild.`,
-    goal: `Buy a map of the realm at a guild: ${MAP_PRICE}g.`,
-    tip: 'Sell finds, take a bounty or search the country (G) for the rest.',
-    need: 1,
-    reward: { gold: 0, xp: 0 },
     wait: 0,
   },
 ];
@@ -90,7 +79,7 @@ export function questActive(run: ExplorationRun): boolean {
 /** The job is done and waits to be reported at the Lodge. */
 export function questReady(run: ExplorationRun): boolean {
   const job = questJob(run);
-  return !!job && job.id !== 'map' && run.quest.taken && run.quest.progress >= job.need;
+  return !!job && run.quest.taken && run.quest.progress >= job.need;
 }
 
 /** The job `id` is taken and its work is still out in the world. */
@@ -105,8 +94,6 @@ function nextJob(run: ExplorationRun, wait: number): void {
   quest.taken = false;
   quest.progress = 0;
   quest.opens = run.day + wait;
-  // Buying the map is a job with nothing to take.
-  if (questJob(run)?.id === 'map') quest.taken = true;
 }
 
 export function takeQuestJob(run: ExplorationRun): ShopResult {
@@ -122,29 +109,19 @@ export function reportQuestJob(run: ExplorationRun): ShopResult & { levels: numb
   const job = questJob(run);
   if (!job || !questReady(run)) return { ok: false, message: 'Not done yet.', levels: 0 };
   run.gold = money(run.gold + job.reward.gold);
-  const levels = addXp(run, job.reward.xp);
+  const xp = Math.round(job.reward.xp * partyXpScale(run));
+  const levels = addRunXp(run, xp);
   nextJob(run, job.wait);
   const next = questJob(run);
-  const room = shopById(QUEST_LODGE)?.restPrice;
-  const after = !next ? ''
-    : next.id === 'map' ? ` ${run.gold >= MAP_PRICE ? 'Enough for a map:' : 'A map costs'} ${MAP_PRICE}g at any guild.`
-    : run.quest.opens > run.day ? ` More work on day ${run.quest.opens}.${room ? ` A room here costs ${moneyLabel(room)}.` : ''}`
+  const room = roomPrice(run, shopById(QUEST_LODGE));
+  const after = !next ? ' The Lodge has no more work for you.'
+    : run.quest.opens > run.day ? ` More work on day ${run.quest.opens}.${room ? ` Rooms here cost ${moneyLabel(room)}.` : ''}`
     : '';
   return {
     ok: true,
-    message: `${job.title}: +${job.reward.gold}g, +${job.reward.xp} XP.${levels ? ' Level up!' : ''}${after}`,
+    message: `${job.title}: +${job.reward.gold}g, +${xp} XP.${levels ? ' Level up!' : ''}${after}`,
     levels,
   };
-}
-
-/** A map of the realm, sold at every guild. It ends the quest, whichever job was under way. */
-export function buyMap(run: ExplorationRun): ShopResult {
-  if (run.hasMap) return { ok: false, message: 'You already have a map.' };
-  if (run.gold < MAP_PRICE) return { ok: false, message: `A map costs ${MAP_PRICE}g.` };
-  run.gold = money(run.gold - MAP_PRICE);
-  run.hasMap = true;
-  run.quest = { job: QUEST_OVER, taken: false, progress: 0, opens: run.day };
-  return { ok: true, message: 'Bought a map of the realm. The travel map is open: pause menu, Map.' };
 }
 
 // -----------------------------------------------------------------------------
@@ -199,7 +176,7 @@ export function questCacheSpecs(run: ExplorationRun): QuestCacheSpec[] {
 }
 
 export function searchQuestCache(run: ExplorationRun): SecretResult {
-  withParty(run, (leader) => grantToMage(leader, 'herbBogcap'));
+  grantToParty(run, 'herbBogcap');
   const job = questJob(run);
   if (!job || !questUnderway(run, 'herbs')) return { message: 'Found 1 Bogcap.' };
   run.quest.progress += 1;
@@ -244,7 +221,6 @@ export function questLines(run: ExplorationRun): string[] {
   const quest = run.quest;
   const head = `QUEST  ${job.title}`;
   const lodge = placeById(QUEST_TOWN);
-  if (job.id === 'map') return [head, `${job.goal} You have ${moneyLabel(run.gold)}.`, job.tip];
   if (!quest.taken) {
     if (run.day < quest.opens) return [head, `The Lodge has work again on day ${quest.opens}.`];
     return [head, `See the keeper of the Kerusai Lodge.${heading(run, lodge)}`];

@@ -62,6 +62,8 @@ export const MINE_ROOM_EXTRA_EXIT_CHANCE = 0.25;
 export const MINE_LIGHT_TRAP_SPOT_CHANCE = 0.2;
 export const MINE_TRAP_DODGE_CHANCE = 0.1;
 export const MINE_SPOTTED_TRAP_DODGE_CHANCE = 0.65;
+export const MAX_MINE_NODES = 512;
+export const MINE_SIDE_EXIT_CHANCE = 0.04;
 
 export interface MinePassageTrap {
   damage: MineTrapDamage;
@@ -90,7 +92,7 @@ export interface MineRoomState {
 
 /** First visits and reusable resource rooms stop traversal; searched rooms do not. */
 export function mineRoomNeedsInteraction(room: MineRoomState): boolean {
-  return !room.entered || room.kind === 'shop' || room.kind === 'ore';
+  return !room.entered || room.kind === 'shop' || (room.kind === 'ore' && !room.resolved);
 }
 
 export interface MineMazeNode {
@@ -103,6 +105,8 @@ export interface MineMazeNode {
   /** Predetermined one-shot traps, shared by both directions of a linked passage. */
   traps: Partial<Record<MineDirection, MinePassageTrap>>;
   room?: MineRoomState;
+  /** A rare way to the surface, independent of the entrance at node 0. */
+  escape?: boolean;
 }
 
 export interface MineMazeState {
@@ -120,6 +124,7 @@ export interface MineTravelResult {
   node: MineMazeNode;
   isNew: boolean;
   trap: MineTrapDamage | null;
+  blocked?: boolean;
 }
 
 export interface MineRollRecord {
@@ -245,6 +250,133 @@ export function currentMineNode(maze: MineMazeState): MineMazeNode {
   return maze.nodes[maze.currentNodeId];
 }
 
+/** Decode only the known fields of an Adventure mine save; reject broken graph topology. */
+export function parseMineMaze(value: unknown): MineMazeState | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const entries = raw.nodes && typeof raw.nodes === 'object' ? Object.entries(raw.nodes) : [];
+  if (entries.length < 1 || entries.length > MAX_MINE_NODES) return null;
+  const nodes: MineMazeState['nodes'] = Object.create(null);
+  const coords = new Set<string>();
+  const integer = (number: unknown, min: number, max: number): number | null =>
+    typeof number === 'number' && Number.isInteger(number) && number >= min && number <= max ? number : null;
+  for (const [key, value] of entries) {
+    if (!value || typeof value !== 'object') return null;
+    const node = value as Record<string, unknown>;
+    const id = integer(node.id, 0, MAX_MINE_NODES - 1);
+    const mapX = integer(node.mapX, -MAX_MINE_NODES, MAX_MINE_NODES);
+    const mapY = integer(node.mapY, -MAX_MINE_NODES, MAX_MINE_NODES);
+    if (id === null || String(id) !== key || mapX === null || mapY === null ||
+      (node.kind !== 'room' && node.kind !== 'crossroad') || !node.exits || typeof node.exits !== 'object' ||
+      !node.traps || typeof node.traps !== 'object') return null;
+    const coordinate = `${mapX},${mapY}`;
+    if (coords.has(coordinate)) return null;
+    coords.add(coordinate);
+    const exits: MineMazeNode['exits'] = {};
+    const traps: MineMazeNode['traps'] = {};
+    const rawExits = node.exits as Record<string, unknown>;
+    const rawTraps = node.traps as Record<string, unknown>;
+    if (Object.keys(rawExits).some((direction) => !MINE_DIRECTIONS.includes(direction as MineDirection)) ||
+      Object.keys(rawTraps).some((direction) => !MINE_DIRECTIONS.includes(direction as MineDirection))) return null;
+    for (const direction of MINE_DIRECTIONS) {
+      if (!Object.prototype.hasOwnProperty.call(rawExits, direction)) continue;
+      const to = rawExits[direction];
+      if (to !== null && integer(to, 0, MAX_MINE_NODES - 1) === null) return null;
+      exits[direction] = to as number | null;
+      const trap = rawTraps[direction];
+      if (trap !== undefined) {
+        if (!trap || typeof trap !== 'object' ||
+          !MINE_TRAP_DAMAGE.includes((trap as MinePassageTrap).damage)) return null;
+        traps[direction] = { damage: (trap as MinePassageTrap).damage, triggered: (trap as MinePassageTrap).triggered === true };
+      }
+    }
+    let room: MineRoomState | undefined;
+    if (node.kind === 'room') {
+      const data = node.room;
+      if (!data || typeof data !== 'object') return null;
+      const rawRoom = data as Record<string, unknown>;
+      if (!['empty', 'enemies', 'treasure', 'ore'].includes(String(rawRoom.kind))) return null;
+      const oreKind = rawRoom.oreKind;
+      if (oreKind !== undefined && !Object.prototype.hasOwnProperty.call(MINE_ORE_DEFS, String(oreKind))) return null;
+      const oreAmount = rawRoom.oreAmount === undefined ? undefined : integer(rawRoom.oreAmount, 0, 3);
+      if (oreAmount === null) return null;
+      room = {
+        kind: rawRoom.kind as MineRoomKind, entered: rawRoom.entered === true, resolved: rawRoom.resolved === true,
+        oreKind: oreKind as MineOreKind | undefined, oreAmount,
+      };
+    }
+    nodes[id] = { id, kind: node.kind, mapX, mapY, exits, traps, room, escape: node.escape === true } as MineMazeNode;
+  }
+  if (!nodes[0] || nodes[0].mapX !== 0 || nodes[0].mapY !== 0 || nodes[0].escape ||
+    !Number.isInteger(raw.nextNodeId) || (raw.nextNodeId as number) <= Math.max(...Object.keys(nodes).map(Number)) ||
+    (raw.nextNodeId as number) > MAX_MINE_NODES) return null;
+  const maze: MineMazeState = {
+    nodes, currentNodeId: 0, nextNodeId: raw.nextNodeId as number,
+    steps: integer(raw.steps, 0, 1_000_000) ?? 0, noShops: true,
+  };
+  const reached = new Set<number>([0]);
+  const queue = [0];
+  const diagonals = new Set<string>();
+  for (let head = 0; head < queue.length; head++) {
+    const node = nodes[queue[head]];
+    for (const direction of MINE_DIRECTIONS) {
+      const to = node.exits[direction];
+      if (to == null) continue;
+      const target = nodes[to];
+      const vector = MINE_DIRECTION_VECTOR[direction];
+      const reverse = MINE_OPPOSITE_DIRECTION[direction];
+      if (!target || target.mapX !== node.mapX + vector.x || target.mapY !== node.mapY + vector.y ||
+        target.exits[reverse] !== node.id) return null;
+      if (node.id < to && vector.x && vector.y) {
+        const crossing = `${node.mapX + target.mapX},${node.mapY + target.mapY}`;
+        if (diagonals.has(crossing)) return null;
+        diagonals.add(crossing);
+      }
+      const forwardTrap = node.traps[direction];
+      const backTrap = target.traps[reverse];
+      if (forwardTrap && backTrap && forwardTrap.damage !== backTrap.damage) return null;
+      if (forwardTrap || backTrap) {
+        const shared = { damage: (forwardTrap ?? backTrap)!.damage, triggered: !!(forwardTrap?.triggered || backTrap?.triggered) };
+        node.traps[direction] = shared;
+        target.traps[reverse] = shared;
+      }
+      if (!reached.has(to)) {
+        reached.add(to);
+        queue.push(to);
+      }
+    }
+  }
+  if (reached.size !== entries.length) return null;
+  pruneMineFrontiers(maze);
+  return maze;
+}
+
+/** An unexplored passage may only meet an adjacent free cell or a matching open exit. */
+function canOpenPassage(maze: MineMazeState, from: MineMazeNode, direction: MineDirection): boolean {
+  const vector = MINE_DIRECTION_VECTOR[direction];
+  const x = from.mapX + vector.x;
+  const y = from.mapY + vector.y;
+  const neighbor = Object.values(maze.nodes).find((node) => node.mapX === x && node.mapY === y);
+  if (neighbor && neighbor.exits[MINE_OPPOSITE_DIRECTION[direction]] !== null) return false;
+  if (!vector.x || !vector.y) return true;
+  const left = Object.values(maze.nodes).find((node) => node.mapX === x && node.mapY === from.mapY);
+  const right = Object.values(maze.nodes).find((node) => node.mapX === from.mapX && node.mapY === y);
+  if (!left || !right) return true;
+  return !MINE_DIRECTIONS.some((candidate) => left.exits[candidate] === right.id);
+}
+
+/** Remove frontier doors the growing map has sealed off. Existing passages stay intact. */
+function pruneMineFrontiers(maze: MineMazeState): void {
+  for (const node of Object.values(maze.nodes)) {
+    for (const direction of MINE_DIRECTIONS) {
+      if (node.exits[direction] !== null) continue;
+      if (canOpenPassage(maze, node, direction)) continue;
+      delete node.exits[direction];
+      delete node.traps[direction];
+    }
+  }
+}
+
 /** Travel one tunnel, generating and linking its far node only on first use. */
 export function travelMineMaze(
   maze: MineMazeState,
@@ -257,32 +389,56 @@ export function travelMineMaze(
   }
 
   let destinationId = from.exits[direction];
-  const passageTrap = from.traps[direction];
+  let passageTrap = from.traps[direction];
   let isNew = false;
   if (destinationId == null) {
+    if (!canOpenPassage(maze, from, direction)) {
+      delete from.exits[direction];
+      delete from.traps[direction];
+      return { node: from, isNew: false, trap: null, blocked: true };
+    }
     isNew = true;
+    if (maze.nextNodeId >= MAX_MINE_NODES) {
+      delete from.exits[direction];
+      delete from.traps[direction];
+      return { node: from, isNew: false, trap: null, blocked: true };
+    }
     destinationId = maze.nextNodeId++;
     const reverse = MINE_OPPOSITE_DIRECTION[direction];
     const vector = MINE_DIRECTION_VECTOR[direction];
-    let mapX = from.mapX + vector.x;
-    let mapY = from.mapY + vector.y;
-    const occupied = new Set(
-      Object.values(maze.nodes).map((node) => `${node.mapX},${node.mapY}`)
-    );
-    while (occupied.has(`${mapX},${mapY}`)) {
-      mapX += vector.x;
-      mapY += vector.y;
+    const mapX = from.mapX + vector.x;
+    const mapY = from.mapY + vector.y;
+    const neighbor = Object.values(maze.nodes).find((node) => node.mapX === mapX && node.mapY === mapY);
+    if (neighbor) {
+      from.exits[direction] = neighbor.id;
+      neighbor.exits[reverse] = from.id;
+      passageTrap = passageTrap ?? neighbor.traps[reverse];
+      if (passageTrap) {
+        from.traps[direction] = passageTrap;
+        neighbor.traps[reverse] = passageTrap;
+      }
+      destinationId = neighbor.id;
+      isNew = false;
     }
-    const destination = makeNode(destinationId, rng, mapX, mapY, reverse, passageTrap, !maze.noShops);
-    destination.exits[reverse] = from.id;
-    from.exits[direction] = destinationId;
-    maze.nodes[destinationId] = destination;
+    if (!neighbor) {
+      const destination = makeNode(destinationId, rng, mapX, mapY, reverse, passageTrap, !maze.noShops);
+      if (maze.noShops && destination.kind === 'crossroad' && destinationId >= 10 && rng.chance(MINE_SIDE_EXIT_CHANCE)) {
+        destination.escape = true;
+      }
+      destination.exits[reverse] = from.id;
+      from.exits[direction] = destinationId;
+      maze.nodes[destinationId] = destination;
+    } else {
+      maze.nextNodeId--;
+    }
+    pruneMineFrontiers(maze);
     const frontierRemains = Object.values(maze.nodes).some((node) =>
       Object.values(node.exits).some((exit) => exit == null)
     );
-    if (!frontierRemains) {
-      const extra = shuffledDirections(rng).find(
-        (candidate) => !Object.prototype.hasOwnProperty.call(destination.exits, candidate)
+    if (!frontierRemains && maze.nextNodeId < MAX_MINE_NODES) {
+      const destination = maze.nodes[destinationId];
+      const extra = shuffledDirections(rng).find((candidate) =>
+        !Object.prototype.hasOwnProperty.call(destination.exits, candidate) && canOpenPassage(maze, destination, candidate)
       );
       if (extra) {
         destination.exits[extra] = null;

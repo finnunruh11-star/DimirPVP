@@ -73,6 +73,8 @@ export class MenuModel {
   prepMode: SwampPrepMode = 'custom';
   raidBoss: RaidBossKind = 'deathknightSpear';
   itemSets: ItemSetSelection = { original: true, finns: false, dlc: false };
+  /** Online Adventure host: continue the saved online run rather than start one. */
+  resumeAdventure = false;
 
   private readonly drafts = Array.from({ length: 4 }, makeDraft);
   private readonly unlockedWords = new Set<WordId>();
@@ -86,7 +88,8 @@ export class MenuModel {
     this.mode = mode;
     const capability = this.capability;
     this.role = capability.roles[0];
-    this.seatCount = this.clamp(this.seatCount, this.minimumSeatCount(), capability.seats[1]);
+    this.resumeAdventure = false;
+    this.seatCount = this.clamp(this.seatCount, this.minimumSeatCount(), this.maximumSeatCount());
 
     if (mode === 'ai') this.aiCount = this.seatCount - 1;
     else this.aiCount = 0;
@@ -109,11 +112,13 @@ export class MenuModel {
   setRole(role: SessionRole): boolean {
     if (!(this.capability.roles as readonly SessionRole[]).includes(role)) return false;
     this.role = role;
+    if (role !== 'host') this.resumeAdventure = false;
+    this.seatCount = this.clamp(this.seatCount, this.minimumSeatCount(), this.maximumSeatCount());
     return true;
   }
 
   setSeatCount(value: number): void {
-    const [, maximum] = this.capability.seats;
+    const maximum = this.maximumSeatCount();
     const minimum = this.minimumSeatCount();
     this.seatCount = this.clamp(Math.round(value), minimum, maximum);
     if (this.mode === 'ai') this.aiCount = this.seatCount - 1;
@@ -251,6 +256,7 @@ export class MenuModel {
   }
 
   buildSeatsReady(): boolean {
+    if (!this.capability.usesBuild) return true;
     return this.localDraftSeats().every((seat) => this.loadoutReady(seat));
   }
 
@@ -259,7 +265,7 @@ export class MenuModel {
     if (!this.itemSets.original && !this.itemSets.finns && !this.itemSets.dlc) {
       issues.push('Enable at least one content pack.');
     }
-    for (const seat of this.localDraftSeats()) {
+    for (const seat of this.capability.usesBuild ? this.localDraftSeats() : []) {
       if (!this.loadoutReady(seat)) issues.push(`Player ${seat + 1}'s build is incomplete.`);
     }
     if (this.role === 'host' && this.humanCount() < 2) {
@@ -322,7 +328,8 @@ export class MenuModel {
       };
     }
 
-    for (const seat of this.localDraftSeats()) {
+    const builds = this.capability.usesBuild;
+    for (const seat of builds ? this.localDraftSeats() : []) {
       if (!this.loadoutReady(seat)) throw new Error(`Player ${seat + 1}'s build is incomplete.`);
     }
 
@@ -341,6 +348,10 @@ export class MenuModel {
     const seats: SeatConfig[] = Array.from({ length: this.seatCount }, (_, seat) => {
       const human = humanSeats.has(seat);
       const draft = this.draftFor(seat);
+      // Without a menu build the words and the class are chosen in the world.
+      if (human && !builds) {
+        return { name: this.seatCount > 1 ? `Player ${seat + 1}` : 'Traveller', team: this.teamOf(seat), isAI: false, loadout: [] };
+      }
       return {
         name: human ? `Player ${seat + 1}` : this.seatCount > 2 ? `AI ${seat + 1}` : 'AI',
         team: this.teamOf(seat),
@@ -373,6 +384,11 @@ export class MenuModel {
 
   private maximumAiCount(): number {
     return this.capability.allowAi ? Math.max(0, this.seatCount - 1) : 0;
+  }
+
+  /** A local Adventure has one traveller: the world is walked by one player per device. */
+  private maximumSeatCount(): number {
+    return this.mode === 'exploration' && this.role === 'local' ? 1 : this.capability.seats[1];
   }
 
   private minimumSeatCount(): number {

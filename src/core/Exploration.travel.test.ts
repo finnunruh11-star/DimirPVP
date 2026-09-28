@@ -12,11 +12,9 @@ import { rollFind } from '../pve/exploration/finds';
 import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import {
-  canSearch,
   exploreAlong,
   findRoute,
   planTrip,
-  rollSearch,
   rollTrip,
   TRAVEL_MODES,
 } from '../pve/exploration/travel';
@@ -135,29 +133,6 @@ const tests: [name: string, run: () => void][] = [
       if (rollTrip(run, plan).some((stop) => stop.kind === 'monsters' || stop.kind === 'robbery')) fights += 1;
     }
     assert(fights > 20 && fights < 200, `a long explore usually but not always ends in a fight (${fights}/200)`);
-  }],
-
-  ['lets an area be searched once a day, mostly for loot, never for a fight at the gates', () => {
-    const run = freshRun(5);
-    assert(canSearch(run).allowed, 'a fresh tile can be searched');
-    const counts: Record<string, number> = { loot: 0, event: 0, monsters: 0, robbery: 0, nothing: 0 };
-    run.pos = { x: 62, y: 20 };
-    for (let step = 0; step < 400; step++) {
-      run.steps = step;
-      run.searched = [];
-      counts[rollSearch(world, run).outcome] += 1;
-    }
-    assert(counts.loot > (counts.monsters + counts.robbery) * 2, 'loot outweighs fights');
-    assert(!canSearch(run).allowed, 'searching marks the tile for the day');
-    run.day += 1;
-    assert(canSearch(run).allowed, 'tomorrow it can be searched again');
-    const gates = freshRun(8);
-    for (let step = 0; step < 100; step++) {
-      gates.steps = step;
-      gates.searched = [];
-      const { outcome } = rollSearch(world, gates);
-      assert(outcome !== 'monsters' && outcome !== 'robbery', 'nothing attacks at the town gates');
-    }
   }],
 
   ['marks a walked route explored, wider when exploring', () => {

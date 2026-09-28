@@ -1,118 +1,99 @@
-// Level-ups earned outside a fight (bounties, road events). Same rewards and
-// prompts as the arena: train a stat on odd levels, learn a word on even ones,
-// both on every fifth, then settle the colour identity when counts tie.
+// Level-ups earned outside a fight (bounties, the quest, levels a fallen member
+// missed). Same rewards and prompts as the arena: train a stat on odd levels,
+// learn a word on even ones, both on every fifth, then settle the colour order
+// when counts tie. The prompts only collect a choice; the run takes it through
+// the actions, so a guest's choice is checked by the host.
 
 import type Phaser from 'phaser';
-import { WORD_COLOR, type ColorName } from '../../core/Colors';
-import type { Dice } from '../../core/Dice';
+import type { ColorName } from '../../core/Colors';
 import type { Mage } from '../../core/Mage';
 import { STAT_DEFS, type StatKey } from '../../core/Stats';
-import { isModifierWord, WORD_ORDER, WORDS, type WordId } from '../../core/Words';
-import { runDice } from '../../pve/exploration/economy';
-import { capturePartySnapshot, restoreParty } from '../../pve/exploration/party';
+import { isModifierWord, WORDS, type WordId } from '../../core/Words';
+import { levelsOwed, levelTaken } from '../../pve/exploration/coop';
+import { memberIn, partyOf } from '../../pve/exploration/economy';
+import type { ExplorationActions } from '../../pve/exploration/intents';
+import { colorTies, learnedLoadout, levelWordOffers, type LevelChoice } from '../../pve/exploration/levels';
 import type { ExplorationRun } from '../../pve/exploration/run';
 import { levelReward, rackIsFull } from '../../pve/progression';
 import { ChoiceMenuView, MultiSelectView } from '../combat/CombatMenus';
 
-/** Walk the leader through every level still owed. Returns true when anything changed. */
-export async function resolvePendingLevels(scene: Phaser.Scene, run: ExplorationRun): Promise<boolean> {
-  if (run.pendingLevels <= 0) return false;
-  const party = restoreParty(run.party);
-  const leader = party[0];
-  if (!leader) {
-    run.pendingLevels = 0;
-    return true;
+/** Walk the acting member (or, in solo, everyone) through every level still owed. True when anything changed. */
+export async function resolvePendingLevels(scene: Phaser.Scene, run: ExplorationRun, actions: ExplorationActions): Promise<boolean> {
+  const members = actions.member ? [actions.member] : partyOf(run).map((mage) => mage.mageClass);
+  let changed = false;
+  for (const member of members) {
+    while (levelsOwed(run, member) > 0) {
+      const mage = memberIn(run, member);
+      if (!mage) break;
+      const choice = await promptLevel(scene, run, mage, levelTaken(run, member) + 1);
+      const result = await actions.apply({ op: 'level', choice });
+      if (!result.ok) break;
+      changed = true;
+    }
   }
-  while (run.pendingLevels > 0) {
-    const level = run.level - run.pendingLevels + 1;
-    run.pendingLevels -= 1;
-    const reward = levelReward(level);
-    if (reward.stats > 0) await promptStats(scene, leader, level, reward.stats);
-    if (reward.word) await promptWord(scene, leader, level, runDice(run, `level-word:${level}`));
-    await promptColorIdentity(scene, leader);
-  }
-  run.party = capturePartySnapshot(party);
-  return true;
+  return changed;
 }
 
-function promptStats(scene: Phaser.Scene, player: Mage, level: number, maxStats: number): Promise<void> {
+/** Ask for one level's rewards; nothing is kept until the choice is applied. */
+async function promptLevel(scene: Phaser.Scene, run: ExplorationRun, mage: Mage, level: number): Promise<LevelChoice> {
+  const reward = levelReward(level);
+  const choice: LevelChoice = { level, stats: [] };
+  if (reward.stats > 0) choice.stats = await promptStats(scene, level, reward.stats);
+  let loadout = [...mage.loadout];
+  if (reward.word) {
+    const offers = levelWordOffers(run, mage.mageClass, level, loadout);
+    if (offers.length) {
+      const full = rackIsFull(loadout);
+      choice.word = await promptWord(scene, level, offers, full);
+      if (full) choice.replace = await promptReplacement(scene, loadout, choice.word);
+      loadout = learnedLoadout(loadout, choice.word, choice.replace) ?? loadout;
+    }
+  }
+  const ties = colorTies(loadout);
+  if (ties.primary.length > 1) choice.primary = await chooseColor(scene, 'CHOOSE PRIMARY COLOR', ties.primary);
+  const primary = choice.primary ?? ties.primary[0];
+  const seconds = primary ? ties.secondary(primary) : [];
+  if (seconds.length > 1) choice.secondary = await chooseColor(scene, 'CHOOSE SECONDARY COLOR', seconds);
+  return choice;
+}
+
+function promptStats(scene: Phaser.Scene, level: number, maxStats: number): Promise<StatKey[]> {
   const subtitle = maxStats === 1 ? 'Raise one stat by 1' : `Raise up to ${maxStats} different stats by 1`;
   return new Promise((resolve) => {
     const panel = new MultiSelectView<StatKey>(scene, `LEVEL ${level} / TRAINING`, subtitle,
       STAT_DEFS.map((definition) => ({ id: definition.key, label: definition.name, detail: definition.blurb })),
       maxStats, (selected) => {
-        for (const stat of selected) player.gainStat(stat, 1);
         panel.destroy();
-        resolve();
+        resolve([...selected]);
       });
   });
 }
 
-function wordOffers(player: Mage, dice: Dice): WordId[] {
-  const pool = WORD_ORDER.filter((word) => !player.loadout.includes(word));
-  const offers: WordId[] = [];
-  while (pool.length > 0 && offers.length < 3) {
-    const word = dice.pick(pool);
-    offers.push(word);
-    pool.splice(pool.indexOf(word), 1);
-  }
-  return offers;
-}
-
-function promptWord(scene: Phaser.Scene, player: Mage, level: number, dice: Dice): Promise<void> {
-  const offers = wordOffers(player, dice);
-  if (offers.length === 0) return Promise.resolve();
-  const full = rackIsFull(player.loadout);
+function promptWord(scene: Phaser.Scene, level: number, offers: WordId[], full: boolean): Promise<WordId> {
   return new Promise((resolve) => {
     const panel = new ChoiceMenuView<WordId>(scene, `LEVEL ${level} / NEW WORD`,
       full ? 'Choose a word, then replace one of your five.' : 'Choose one of three words.',
       offers.map((word) => ({ id: word, label: WORDS[word].label, detail: WORDS[word].blurb })),
-      async (word) => {
+      (word) => {
         panel.destroy();
-        if (full) await promptReplacement(scene, player, word);
-        else player.setLoadout([...player.loadout, word]);
-        resolve();
+        resolve(word);
       });
   });
 }
 
-function promptReplacement(scene: Phaser.Scene, player: Mage, gained: WordId): Promise<void> {
+function promptReplacement(scene: Phaser.Scene, loadout: readonly WordId[], gained: WordId): Promise<number> {
   return new Promise((resolve) => {
-    const choices = player.loadout.flatMap((word, index) => isModifierWord(word) ? [] : [{
+    const choices = loadout.flatMap((word, index) => isModifierWord(word) ? [] : [{
       id: String(index),
       label: WORDS[word].label,
       detail: `Replace ${WORDS[word].label} with ${WORDS[gained].label}.`,
     }]);
     const panel = new ChoiceMenuView(scene, `LEARN ${WORDS[gained].label.toUpperCase()}`,
       'Choose a known word to replace.', choices, (indexText) => {
-        const next = [...player.loadout];
-        next[Number(indexText) | 0] = gained;
-        player.setLoadout(next);
         panel.destroy();
-        resolve();
+        resolve(Number(indexText) | 0);
       });
   });
-}
-
-async function promptColorIdentity(scene: Phaser.Scene, player: Mage): Promise<void> {
-  const counts: Record<ColorName, number> = { black: 0, blue: 0, white: 0, red: 0 };
-  for (const word of player.loadout) {
-    const color = WORD_COLOR[word];
-    if (color !== 'none') counts[color] += 1;
-  }
-  const present = (Object.keys(counts) as ColorName[]).filter((color) => counts[color] > 0);
-  if (present.length < 2) {
-    player.setLoadout(player.loadout, null, null);
-    return;
-  }
-  const top = Math.max(...present.map((color) => counts[color]));
-  const firsts = present.filter((color) => counts[color] === top);
-  const primary = firsts.length > 1 ? await chooseColor(scene, 'CHOOSE PRIMARY COLOR', firsts) : firsts[0];
-  const remaining = present.filter((color) => color !== primary);
-  const second = Math.max(...remaining.map((color) => counts[color]));
-  const seconds = remaining.filter((color) => counts[color] === second);
-  const secondary = seconds.length > 1 ? await chooseColor(scene, 'CHOOSE SECONDARY COLOR', seconds) : seconds[0];
-  player.setLoadout(player.loadout, primary, secondary);
 }
 
 function chooseColor(scene: Phaser.Scene, title: string, colors: ColorName[]): Promise<ColorName> {

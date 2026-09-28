@@ -2,10 +2,10 @@ import { Mage } from '../core/Mage';
 import { advanceHours, clockLabel, isNight, sleepUntilMorning } from '../pve/exploration/clock';
 import { moneyLabel } from '../pve/exploration/economy';
 import { isExplored, packExplored, revealTiles, unpackExplored } from '../pve/exploration/explored';
-import { gateArrival, WORLD_SCALE } from '../pve/exploration/openWorld';
+import { cellWorldTile, OPEN_WORLD_ID, WORLD_SCALE, worldTileCell } from '../pve/exploration/openWorld';
 import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
 import { QUEST_OVER } from '../pve/exploration/quest';
-import { createRun, hasFlag, START_PURSE, stepDice, type ExplorationRun } from '../pve/exploration/run';
+import { createRun, EXPLORATION_VERSION, hasFlag, START_PURSE, stepDice, type ExplorationRun } from '../pve/exploration/run';
 import { parseRun } from '../pve/exploration/save';
 import { placeById } from '../pve/exploration/world';
 
@@ -49,13 +49,13 @@ const capitol = placeById('capitol')!;
 const kerusai = placeById('kerusai')!;
 
 const tests: [name: string, run: () => void][] = [
-  ['starts in Kerusai at eight in the morning, with five silver, no map and its streets explored', () => {
+  ['starts in Kerusai at eight in the morning, with five silver and its streets explored', () => {
     const run = freshRun();
     equal(run.pos, { x: kerusai.x, y: kerusai.y }, 'on the Kerusai tile');
     equal([run.day, run.hour], [1, 8], 'day one, eight o\'clock');
     equal([run.gold, run.steps], [START_PURSE, 0], 'five silver and yet to take a step');
     equal(moneyLabel(run.gold), '5s', 'the purse reads five silver');
-    equal([run.hasMap, run.mapStyle, run.lastTown], [false, 'open', 'kerusai'], 'no map, so the world is walked');
+    equal([run.version, run.lastTown, run.area], [EXPLORATION_VERSION, 'kerusai', null], 'nobody is out on foot yet');
     equal([run.quest.job, run.quest.taken], [0, false], 'the first job waits at the Lodge');
     const mask = unpackExplored(run.explored);
     assert(isExplored(mask, kerusai.x + 3, kerusai.y), 'the country round Kerusai is known');
@@ -116,12 +116,28 @@ const tests: [name: string, run: () => void][] = [
     assert(hasFlag(copy, 'hearthfire:visited'), 'flags survive');
     equal(copy.explored, run.explored, 'the explored map survives');
     equal(restoreParty(copy.party)[0].hp, 31, 'the party survives');
-    equal([copy.quest, copy.hasMap, copy.mapStyle], [run.quest, false, 'open'], 'the quest survives, still without a map');
+    equal([copy.quest, copy.area], [run.quest, null], 'the quest survives, and nobody is out on foot');
     const claimed = JSON.parse(JSON.stringify(run)) as Record<string, unknown>;
-    claimed.mapStyle = 'travel';
-    equal(parseRun(JSON.stringify(claimed))?.mapStyle, 'open', 'no travel map without a map');
     claimed.quest = { job: 1, taken: true, progress: 99, opens: -4 };
     equal(parseRun(JSON.stringify(claimed))?.quest, { job: 1, taken: true, progress: 3, opens: 1 }, 'a bent quest is clamped');
+    assert(!parseRun(JSON.stringify({ ...run, version: EXPLORATION_VERSION + 1 })), 'a save from a newer game is refused');
+  }],
+
+  ['keeps the area a party walks on foot, and the time each member spent in it', () => {
+    const run = freshRun(21);
+    const tile = { x: kerusai.x + 1, y: kerusai.y };
+    run.locale = { id: OPEN_WORLD_ID, ...worldTileCell(tile) };
+    run.area = { tile, spent: { objects: 2.5 } };
+    equal(parseRun(JSON.stringify(run))?.area, { tile, spent: { objects: 2.5 } }, 'the area survives a save');
+    const bent = JSON.parse(JSON.stringify(run)) as Record<string, unknown>;
+    bent.area = JSON.parse('{"tile":{"x":-40,"y":"north"},"spent":{"objects":1e6,"life":3,"__proto__":5}}');
+    equal(parseRun(JSON.stringify(bent))?.area, { tile: { x: 0, y: tile.y }, spent: { objects: 240 } }, 'a bent area is clamped to the map and the party');
+    const walking = JSON.parse(JSON.stringify(run)) as Record<string, unknown>;
+    delete walking.area;
+    equal(parseRun(JSON.stringify(walking))?.area, { tile: cellWorldTile(run.locale), spent: {} }, 'a walker without an area sets out from where it stands');
+    const inTown = JSON.parse(JSON.stringify(run)) as Record<string, unknown>;
+    inTown.locale = { id: 'kerusai', x: 5, y: 5 };
+    equal(parseRun(JSON.stringify(inTown))?.area, null, 'in town nobody is out on foot');
   }],
 
   ['upgrades a version 2 save onto the tile map', () => {
@@ -145,19 +161,18 @@ const tests: [name: string, run: () => void][] = [
     equal(copy?.pos, { x: kerusai.x, y: kerusai.y }, 'nobody stands in the middle of the lake');
   }],
 
-  ['lets a version 4 run keep its map and skip the Kerusai quest', () => {
+  ['lets a version 4 run skip the Kerusai quest', () => {
     const old = JSON.parse(JSON.stringify(freshRun(6))) as Record<string, unknown>;
     Object.assign(old, { version: 4, mapStyle: 'open', lastTown: 'capitol' });
-    delete old.hasMap;
     delete old.quest;
     const copy = parseRun(JSON.stringify(old));
     assert(copy, 'the old save loads');
-    equal([copy.hasMap, copy.mapStyle, copy.quest.job], [true, 'open', QUEST_OVER], 'it had the map all along and never saw the quest');
+    equal([copy.quest.job, 'mapStyle' in copy], [QUEST_OVER, false], 'it never saw the quest, and its map setting is gone');
     delete old.lastTown;
     equal(parseRun(JSON.stringify(old))?.lastTown, 'capitol', 'an old run with no town wakes where old runs began');
   }],
 
-  ['moves a version 3 save east of the new desert, map and all', () => {
+  ['moves a version 3 save east of the new desert', () => {
     const run = freshRun(5) as unknown as Record<string, unknown>;
     const oldW = 88;
     const bits = new Uint8Array(oldW * 60);
@@ -170,13 +185,12 @@ const tests: [name: string, run: () => void][] = [
       packed += alphabet[value];
     }
     Object.assign(run, { version: 3, pos: { x: capitol.x - 32, y: capitol.y }, explored: packed, searched: ['10,30:1'] });
-    delete run.mapStyle;
     const copy = parseRun(JSON.stringify(run));
     assert(copy, 'the old save loads');
     equal(copy.pos, { x: capitol.x, y: capitol.y }, 'the party keeps its town');
     const mask = unpackExplored(copy.explored);
     assert(isExplored(mask, 45 + 32, 30) && !isExplored(mask, 45, 30), 'walked tiles move with the land');
-    equal([copy.searched, copy.mapStyle, copy.hasMap], [[], 'travel', true], 'old searches are dropped and the map is planned');
+    equal(copy.searched, [], 'old searches are dropped');
   }],
 
   ['brings a version 5 run into the larger world, out of the old forest, its purse to the silver', () => {
@@ -192,12 +206,12 @@ const tests: [name: string, run: () => void][] = [
       ['world', 82, 46],
       'the party keeps its world tile',
     );
-    const forest = placeById('small-forest')!;
+    equal(walking.area, { tile: { x: 82, y: 46 }, spent: {} }, 'and walks the area round it');
     const glade = parseRun(JSON.stringify(version5({ locale: { id: 'forest:3', x: 5, y: 5 } })));
-    assert(glade?.locale, 'a run inside a glade loads');
-    equal([glade.locale, 'forest' in glade], [{ id: 'world', ...gateArrival(forest) }, false], 'it steps out below the Small Forest gate');
+    assert(glade, 'a run inside a glade loads');
+    equal([glade.locale, glade.area, 'forest' in glade], [null, null, false], 'it is back on the travel map');
     const planned = parseRun(JSON.stringify(version5({ locale: { id: 'forest:2', x: 5, y: 5 }, hasMap: true, mapStyle: 'travel' })));
-    equal(planned?.locale, null, 'on the travel map it stands at the Small Forest');
+    equal([planned?.locale, planned && 'hasMap' in planned], [null, false], 'the old map settings are dropped');
     const rich = parseRun(JSON.stringify(version5({
       gold: 3.7,
       bounties: [{ id: 'b', town: 'capitol', kind: 'slay', target: 'kobold', count: 3, progress: 1, rewardGold: 9, rewardXp: 6, label: 'Slay 3 Kobolds' }],

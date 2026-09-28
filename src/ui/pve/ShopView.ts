@@ -8,46 +8,37 @@ import { GAME_WIDTH } from '../../config/constants';
 import { getItem, RARITY_COLOR, type ItemDef, type ItemId, type Rarity } from '../../core/Items';
 import { SceneInput } from '../../engine/SceneInput';
 import {
-  acceptBounty,
-  abandonBounty,
   bountyBoard,
   bountyProgress,
   canClaim,
-  claimBounty,
   MAX_ACTIVE_BOUNTIES,
 } from '../../pve/exploration/bounties';
 import {
-  buyItem,
-  forge,
+  memberIn,
   moneyLabel,
   partyOf,
   recipesAt,
-  rest,
-  sellItem,
+  roomPrice,
   sellOffers,
   shopStock,
-  type ShopResult,
 } from '../../pve/exploration/economy';
+import type { ExplorationActions, ExplorationIntent } from '../../pve/exploration/intents';
+import { partyXpScale } from '../../pve/exploration/coop';
 import {
-  buyMap,
-  MAP_PRICE,
   QUEST_LODGE,
   questActive,
   questJob,
   questReady,
-  reportQuestJob,
-  takeQuestJob,
 } from '../../pve/exploration/quest';
 import type { ExplorationRun } from '../../pve/exploration/run';
 import type { ShopDef } from '../../pve/exploration/shops';
 import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
 import { addCabinetBackdrop, addRecess, addSectionRule, MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
 
-type Tab = 'quest' | 'map' | 'buy' | 'sell' | 'rest' | 'bounties' | 'forge';
+type Tab = 'quest' | 'buy' | 'sell' | 'rest' | 'bounties' | 'forge';
 
 const TAB_LABEL: Record<Tab, string> = {
   quest: 'Quest',
-  map: 'Map',
   buy: 'Buy',
   sell: 'Sell',
   rest: 'Rest',
@@ -84,6 +75,7 @@ export interface ShopViewHooks {
   /** Keeper portrait texture key (two-frame sheet). */
   portrait?: string;
   townId: string;
+  actions: ExplorationActions;
 }
 
 export function itemDetail(def: ItemDef): string {
@@ -100,6 +92,7 @@ export class ShopView extends Phaser.GameObjects.Container {
   private message = '';
   private armedAbandon: string | null = null;
   private disposed = false;
+  private working = false;
   private inspectorTitle!: Phaser.GameObjects.Text;
   private inspectorBody!: Phaser.GameObjects.Text;
   private header!: Phaser.GameObjects.Text;
@@ -138,13 +131,11 @@ export class ShopView extends Phaser.GameObjects.Container {
     super.destroy(fromScene);
   }
 
-  /** What this counter offers right now: the quest and the map come and go. */
+  /** What this counter offers right now: the quest comes and goes. */
   private openTabs(): Tab[] {
     const { shop, run } = this;
-    const guild = shop.kind === 'guild';
     return [
       ...(shop.id === QUEST_LODGE && questActive(run) ? (['quest'] as const) : []),
-      ...(guild && !run.hasMap ? (['map'] as const) : []),
       ...(shop.stock ? (['buy'] as const) : []),
       ...(shop.buys.length ? (['sell'] as const) : []),
       ...(shop.services.includes('rest') ? (['rest'] as const) : []),
@@ -166,11 +157,30 @@ export class ShopView extends Phaser.GameObjects.Container {
     this.render();
   }
 
-  private apply(result: ShopResult): void {
+  private async apply(intent: ExplorationIntent): Promise<void> {
+    if (this.working) return;
+    this.working = true;
+    const result = await this.hooks.actions.apply(intent);
+    this.working = false;
+    if (this.disposed) return;
     this.message = result.message;
     playSound(result.ok ? 'ui.confirm' : 'ui.deny');
     if (result.ok) this.hooks.changed();
     this.render();
+  }
+
+  /** Redraw from the run as it now stands (another player's change landed). */
+  refresh(): void {
+    if (!this.disposed && !this.working) this.render();
+  }
+
+  private get member() {
+    return this.hooks.actions.member;
+  }
+
+  /** A fixed XP reward as a party of this size is paid it. */
+  private xp(base: number): number {
+    return Math.round(base * partyXpScale(this.run));
   }
 
   private render(): void {
@@ -191,9 +201,10 @@ export class ShopView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.bone,
     });
-    const leader = partyOf(run)[0];
+    const leader = memberIn(run, this.member);
     const carried = leader ? `${leader.carriedWeight().toFixed(1)}/${leader.carryCap()}kg` : '';
-    this.header = scene.add.text(152, 82, `${shop.sign}  /  Day ${run.day}  /  Carrying ${carried}`, {
+    const who = leader && partyOf(run).length > 1 ? `${leader.name}  /  ` : '';
+    this.header = scene.add.text(152, 82, `${shop.sign}  /  Day ${run.day}  /  ${who}Carrying ${carried}`, {
       fontFamily: MENU_FONT.body,
       fontSize: '14px',
       color: MENU_HEX.boneDim,
@@ -248,7 +259,6 @@ export class ShopView extends Phaser.GameObjects.Container {
 
     switch (this.tab) {
       case 'quest': this.renderQuest(); break;
-      case 'map': this.renderMap(); break;
       case 'buy': this.renderBuy(); break;
       case 'sell': this.renderSell(); break;
       case 'rest': this.renderRest(); break;
@@ -325,20 +335,20 @@ export class ShopView extends Phaser.GameObjects.Container {
         label: slot.sold ? `${name}  /  sold out` : `${name}  /  ${moneyLabel(slot.price)}`,
         detail: itemDetail(def),
         enabled: !slot.sold && this.run.gold >= slot.price,
-        run: () => this.apply(buyItem(this.run, this.shop.id, slot.key)),
+        run: () => void this.apply({ op: 'buy', shop: this.shop.id, key: slot.key }),
       };
     }));
   }
 
   private renderSell(): void {
-    const offers = sellOffers(this.run, this.shop);
+    const offers = sellOffers(this.run, this.shop, this.member);
     const entries = offers.map((offer) => {
       const def = getItem(offer.id);
       return {
         label: `${offer.name} x${offer.count}  /  ${moneyLabel(offer.unit)} each`,
         detail: itemDetail(def),
         enabled: true,
-        run: () => this.apply(sellItem(this.run, this.shop.id, offer.id, false)),
+        run: () => void this.apply({ op: 'sell', shop: this.shop.id, item: offer.id }),
       };
     });
     if (offers.length > 1) {
@@ -347,19 +357,10 @@ export class ShopView extends Phaser.GameObjects.Container {
         label: `Sell everything listed  /  ${moneyLabel(Math.round(total * 10) / 10)}`,
         detail: `${offers.reduce((sum, offer) => sum + offer.count, 0)} items this shop will take.`,
         enabled: true,
-        run: () => this.sellAll(offers.map((offer) => offer.id)),
+        run: () => void this.apply({ op: 'sell-all', shop: this.shop.id, items: offers.map((offer) => offer.id) }),
       });
     }
     this.rows(entries);
-  }
-
-  private sellAll(ids: ItemId[]): void {
-    let gold = 0;
-    for (const id of ids) {
-      const before = this.run.gold;
-      if (sellItem(this.run, this.shop.id, id, true).ok) gold += this.run.gold - before;
-    }
-    this.apply({ ok: gold > 0, message: gold > 0 ? `Sold the lot for ${moneyLabel(gold)}.` : 'Nothing sold.' });
   }
 
   /** The Kerusai quest: take the day's job, report it done, or wait for tomorrow's. */
@@ -367,15 +368,15 @@ export class ShopView extends Phaser.GameObjects.Container {
     const run = this.run;
     const job = questJob(run);
     if (!job) return this.rows([]);
-    if (job.id === 'map') return this.renderMap();
     const quest = run.quest;
-    const reward = `Reward ${moneyLabel(job.reward.gold)}, ${job.reward.xp} XP`;
+    const reward = `Reward ${moneyLabel(job.reward.gold)}, ${this.xp(job.reward.xp)} XP`;
     const note = (text: string) => (): void => {
       this.message = text;
       this.render();
     };
     if (!quest.taken && run.day < quest.opens) {
-      const room = this.shop.restPrice != null ? ` A room costs ${moneyLabel(this.shop.restPrice)} (Rest tab).` : '';
+      const price = roomPrice(run, this.shop);
+      const room = price != null ? ` Rooms cost ${moneyLabel(price)} (Rest tab).` : '';
       return this.rows([{
         label: `Next job: day ${quest.opens}`,
         detail: `No more work today.${room}`,
@@ -389,7 +390,7 @@ export class ShopView extends Phaser.GameObjects.Container {
         detail: `${reward}  /  ${job.brief}`,
         inspect: `${job.brief}\n${reward}.`,
         enabled: true,
-        run: () => this.apply(takeQuestJob(run)),
+        run: () => void this.apply({ op: 'quest-take' }),
       }]);
     }
     if (questReady(run)) {
@@ -397,7 +398,7 @@ export class ShopView extends Phaser.GameObjects.Container {
         label: `Report: ${job.title}`,
         detail: reward,
         enabled: true,
-        run: () => this.apply(reportQuestJob(run)),
+        run: () => void this.apply({ op: 'quest-report' }),
       }]);
     }
     this.rows([{
@@ -409,32 +410,29 @@ export class ShopView extends Phaser.GameObjects.Container {
     }]);
   }
 
-  private renderMap(): void {
-    if (this.run.hasMap) return this.rows([]);
-    const ends = questActive(this.run) && questJob(this.run)?.id !== 'map' ? ' Ends the Kerusai quest.' : '';
-    this.rows([{
-      label: `A map of the realm  /  ${MAP_PRICE}g`,
-      detail: `Opens the travel map: plan trips instead of walking them.${ends}`,
-      inspect: `Opens the travel map: plan trips instead of walking them.${ends} You have ${moneyLabel(this.run.gold)}.`,
-      enabled: this.run.gold >= MAP_PRICE,
-      run: () => this.apply(buyMap(this.run)),
-    }]);
-  }
-
   private renderRest(): void {
-    const price = this.shop.restPrice ?? 0;
-    const leader = partyOf(this.run)[0];
+    const price = roomPrice(this.run, this.shop) ?? 0;
+    const party = partyOf(this.run);
+    const fallen = party.filter((mage) => !mage.alive).map((mage) => mage.name);
+    const leader = memberIn(this.run, this.member);
     const vitals = leader
-      ? `Health ${leader.hp}/${leader.maxHp}  /  Mana ${leader.mana}/${leader.maxMana}  /  Sanity ${leader.sanity}/${leader.maxSanity}`
+      ? leader.alive
+        ? `Health ${leader.hp}/${leader.maxHp}  /  Mana ${leader.mana}/${leader.maxMana}  /  Sanity ${leader.sanity}/${leader.maxSanity}`
+        : `${leader.name} has fallen and gets up after a night here.`
       : '';
+    const leads = this.hooks.actions.leads;
+    const rooms = party.length > 1 ? `Rooms for the party (${party.length})` : 'Rent a room for the night';
+    const risen = fallen.length ? ` ${fallen.join(' and ')} get${fallen.length > 1 ? '' : 's'} up with 1 HP, 1 sanity, no mana and no charges.` : '';
     const button = new CabinetButton(this.scene, 290, 250, {
       width: 700,
       height: 110,
-      label: `Rent a room for the night  /  ${moneyLabel(price)}`,
-      detail: `Restores 75% of health, mana, sanity and word charges. Day ${this.run.day + 1} dawns and every shop restocks.`,
+      label: `${rooms}  /  ${moneyLabel(price)}`,
+      detail: leads
+        ? `Restores 75% of health, mana, sanity and word charges. Day ${this.run.day + 1} dawns and every shop restocks.${risen}`
+        : 'The host books the rooms for the party.',
       index: '1',
-      enabled: this.run.gold >= price,
-      onActivate: () => this.apply(rest(this.run, this.shop.id)),
+      enabled: leads && this.run.gold >= price,
+      onActivate: () => void this.apply({ op: 'rest', shop: this.shop.id }),
     });
     const now = this.scene.add.text(640, 400, vitals, {
       fontFamily: MENU_FONT.control,
@@ -455,14 +453,14 @@ export class ShopView extends Phaser.GameObjects.Container {
       const armed = this.armedAbandon === bounty.id;
       entries.push({
         label: claimable ? `Claim: ${bounty.label}` : armed ? `Abandon? ${bounty.label}` : bounty.label,
-        detail: `${progress}/${bounty.count}  /  ${moneyLabel(bounty.rewardGold)}, ${bounty.rewardXp} XP  /  ${where}`,
+        detail: `${progress}/${bounty.count}  /  ${moneyLabel(bounty.rewardGold)}, ${this.xp(bounty.rewardXp)} XP  /  ${where}`,
         enabled: true,
         run: () => {
           if (claimable) {
-            this.apply(claimBounty(this.run, town, bounty.id));
+            void this.apply({ op: 'bounty-claim', town, id: bounty.id });
           } else if (armed) {
             this.armedAbandon = null;
-            this.apply(abandonBounty(this.run, bounty.id));
+            void this.apply({ op: 'bounty-abandon', id: bounty.id });
           } else {
             this.armedAbandon = bounty.id;
             this.message = 'Choose it again to abandon this bounty.';
@@ -474,16 +472,16 @@ export class ShopView extends Phaser.GameObjects.Container {
     for (const offer of bountyBoard(this.run, town)) {
       entries.push({
         label: `Notice: ${offer.label}`,
-        detail: `Reward ${moneyLabel(offer.rewardGold)}, ${offer.rewardXp} XP${offer.kind === 'deliver' ? '  /  the parcel is handed over now' : ''}`,
+        detail: `Reward ${moneyLabel(offer.rewardGold)}, ${this.xp(offer.rewardXp)} XP${offer.kind === 'deliver' ? '  /  the parcel is handed over now' : ''}`,
         enabled: this.run.bounties.length < MAX_ACTIVE_BOUNTIES,
-        run: () => this.apply(acceptBounty(this.run, town, offer.id)),
+        run: () => void this.apply({ op: 'bounty-accept', town, id: offer.id }),
       });
     }
     this.rows(entries);
   }
 
   private renderForge(): void {
-    const recipes = recipesAt(this.run, this.shop);
+    const recipes = recipesAt(this.run, this.shop, this.member);
     this.rows(recipes.map((recipe) => {
       const def = getItem(recipe.output);
       const needs = recipe.inputs.map((input) => `${getItem(input.id).name} ${input.have}/${input.need}`).join(', ');
@@ -493,7 +491,7 @@ export class ShopView extends Phaser.GameObjects.Container {
         inspect: `${needs}\n${itemDetail(def)}`,
         enabled: recipe.ready,
         accent: RARITY_COLOR[def.rarity],
-        run: () => this.apply(forge(this.run, this.shop.id, recipe.id)),
+        run: () => void this.apply({ op: 'forge', shop: this.shop.id, recipe: recipe.id }),
       };
     }));
   }

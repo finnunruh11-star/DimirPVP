@@ -7,6 +7,7 @@ import Phaser from 'phaser';
 import { playSound } from '../../audio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
 import { clockTime } from '../../pve/exploration/clock';
+import type { BloodmoonOmen } from '../../pve/exploration/bloodmoon';
 import { darkness } from '../../visuals/daylight';
 import { ensureGlowTextures, GLOW } from '../../visuals/glowTextures';
 import { ParticleFx } from '../../visuals/ParticleFx';
@@ -17,6 +18,8 @@ export interface DayCard {
   day: number;
   hour: number;
   news: readonly string[];
+  /** How near the next bloodmoon is. On its last day the whole card turns red. */
+  omen?: BloodmoonOmen;
 }
 
 interface Palette {
@@ -44,6 +47,11 @@ const MOONRISE: Palette = {
   top: '#ffffff', bottom: '#9fb4f0', stroke: '#0a1030', shadow: '#5a7cff', label: '#c9d6ff', news: '#dde4f6',
 };
 
+const BLOODRISE: Palette = {
+  glow: 0xff3a24, core: 0xffd2c0, ray: 0xff7a5a, mote: 0xff9a7a, flash: 0xff6a4a, rule: 0xd86a5a,
+  top: '#fff0ea', bottom: '#ff5a3a', stroke: '#2a0404', shadow: '#ff3020', label: '#ffb8a8', news: '#f6ddd6',
+};
+
 const BAR = 66;
 /** When the new number lands, ms into the card; the sound's second hit is timed to it. */
 const IMPACT = 1260;
@@ -65,7 +73,8 @@ export function playDayCard(scene: Phaser.Scene, card: DayCard, onImpact?: () =>
   ensureGlowTextures(scene);
   const still = isReducedMotion();
   const night = darkness(card.hour) > 0.5;
-  const p = night ? MOONRISE : SUNRISE;
+  const lastDay = !!card.omen?.tonight;
+  const p = lastDay ? BLOODRISE : night ? MOONRISE : SUNRISE;
   const W = GAME_WIDTH;
   const H = GAME_HEIGHT;
   const cx = W / 2;
@@ -87,6 +96,7 @@ export function playDayCard(scene: Phaser.Scene, card: DayCard, onImpact?: () =>
   const glow = scene.add.image(cx, horizonY, GLOW.soft).setTint(p.glow).setBlendMode(ADD).setScale(7.5, 2.8).setAlpha(0);
   const rays = scene.add.image(cx, horizonY - 8, GLOW.rays).setTint(p.ray).setBlendMode(ADD).setScale(0.55).setAlpha(0);
   const body = scene.add.image(cx, horizonY + 80, night ? GLOW.moon : GLOW.sun).setScale(1.55).setAlpha(0);
+  if (lastDay) body.setTint(0xff4a30);
   const bodyMask = scene.make.graphics({}, false);
   bodyMask.fillStyle(0xffffff, 1).fillRect(0, 0, W, horizonY);
   masks.push(bodyMask);
@@ -167,9 +177,21 @@ export function playDayCard(scene: Phaser.Scene, card: DayCard, onImpact?: () =>
     shadow: { offsetX: 0, offsetY: 2, color: '#000000', blur: 6, fill: true },
   }).setOrigin(0.5, 0).setLetterSpacing(1).setAlpha(0);
 
+  // The bloodmoon's countdown; on its last day, a warning that will not be missed.
+  const omen = card.omen;
+  const warning = scene.add.text(cx, cy + 128, omen ? (omen.tonight ? 'THE BLOODMOON RISES TONIGHT' : `BLOODMOON IN ${omen.daysLeft} DAYS`) : '', {
+    fontFamily: omen?.tonight ? MENU_FONT.display : MENU_FONT.control,
+    fontSize: omen?.tonight ? '30px' : '16px',
+    fontStyle: 'bold',
+    color: omen?.tonight ? '#ffd6c8' : '#ff9a88',
+    stroke: '#1a0202',
+    strokeThickness: omen?.tonight ? 6 : 3,
+    shadow: { offsetX: 0, offsetY: 0, color: '#ff2a1a', blur: omen?.tonight ? 22 : 8, fill: true, stroke: true },
+  }).setOrigin(0.5, 0).setLetterSpacing(omen?.tonight ? 8 : 5).setAlpha(0);
+
   const skip = scene.add.zone(0, 0, W, H).setOrigin(0).setInteractive();
   // Plain scene objects rather than a container, so the masks hold under the canvas renderer too.
-  const layer = [dim, vignette, glow, rays, body, horizon, barTop, barBottom, trimTop, trimBottom, label, rule, word, before, after, burst, wave, flash, news, skip];
+  const layer = [dim, vignette, glow, rays, body, horizon, barTop, barBottom, trimTop, trimBottom, label, rule, word, before, after, burst, wave, flash, news, warning, skip];
   for (const part of layer) part.setDepth(90);
 
   playSound(night ? 'day.night' : 'day.dawn');
@@ -220,6 +242,17 @@ export function playDayCard(scene: Phaser.Scene, card: DayCard, onImpact?: () =>
   }
   news.setY(cy + 94);
   tween({ targets: news, alpha: 1, y: cy + 84, duration: 640, delay: 1600, ease: 'Cubic.Out' });
+  if (omen) {
+    warning.setY(cy + 138).setScale(omen.tonight ? 1.25 : 1);
+    tween({ targets: warning, alpha: 1, y: cy + 128, scale: 1, duration: omen.tonight ? 420 : 560, delay: 1900, ease: omen.tonight ? 'Back.Out' : 'Cubic.Out' });
+    if (omen.tonight) {
+      at(1900, () => {
+        playSound('boss.omen');
+        if (!still) scene.cameras.main.shake(160, 0.003);
+      });
+      if (!still) tween({ targets: warning, alpha: 0.55, duration: 420, delay: 2400, yoyo: true, repeat: 2, ease: 'Sine.InOut' });
+    }
+  }
 
   return new Promise<void>((resolve) => {
     let done = false;

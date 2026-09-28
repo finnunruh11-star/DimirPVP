@@ -1,11 +1,9 @@
 import { Mage } from '../core/Mage';
-import { moneyLabel, partyOf, rest } from '../pve/exploration/economy';
+import { partyOf, rest } from '../pve/exploration/economy';
 import { resolveLocale, type ResolvedLocale } from '../pve/exploration/locales';
 import { cellWorldTile, OPEN_WORLD_ID, openWorldModel, openWorldPacks } from '../pve/exploration/openWorld';
 import { capturePartySnapshot } from '../pve/exploration/party';
 import {
-  buyMap,
-  MAP_PRICE,
   QUEST_CALM,
   QUEST_LODGE,
   QUEST_OVER,
@@ -113,33 +111,9 @@ const tests: [name: string, run: () => void][] = [
     equal(partyOf(run)[0].bag.filter((id) => id === 'herbBogcap').length, 3, 'the Bogcap is kept');
     const report = reportQuestJob(run);
     assert(report.ok && report.message.includes('+5g'), `reported: ${report.message}`);
-    equal(questJob(run)?.id, 'map', 'last, the map');
-    assert(questLines(run).some((line) => line.includes(moneyLabel(run.gold))), 'the tracker counts the purse');
-  }],
-
-  ['sells a map of the realm for eight gold, which ends the quest and opens the travel map', () => {
-    const run = freshRun();
-    deadDone(run);
-    reportQuestJob(run);
-    run.day += 1;
-    takeQuestJob(run);
-    run.quest.progress = 3;
-    reportQuestJob(run);
-    run.gold = MAP_PRICE - 0.5;
-    assert(!buyMap(run).ok && !run.hasMap, 'seven and a half gold is not enough');
-    run.gold = MAP_PRICE + 0.5;
-    assert(buyMap(run).ok, 'eight is');
-    equal([run.gold, run.hasMap, questActive(run)], [0.5, true, false], 'paid, mapped, done');
-    assert(!buyMap(run).ok, 'one map is enough');
+    assert(report.message.includes('no more work'), 'the Bogcap is the last job');
+    equal([run.quest.job, questJob(run), questActive(run)], [QUEST_OVER, null, false], 'the quest is over');
     equal(questLines(run), [], 'the tracker is gone');
-  }],
-
-  ['ends the quest for a traveller who buys the map early', () => {
-    const run = freshRun();
-    deadDone(run);
-    run.gold = 12;
-    assert(buyMap(run).ok, 'bought on day one');
-    equal([run.quest.job, questActive(run)], [QUEST_OVER, false], 'the map is where the quest leads, so it ends there');
     assert(!openWorld(run).packs.some((pack) => pack.id.startsWith('quest:')), 'and its work leaves the world');
   }],
 

@@ -16,6 +16,7 @@ import type { Spell } from '../../spells/Spell';
 import type { Scenario } from '../../core/Scenario';
 import { MODIFIER_WORDS, WORDS, type WordId } from '../../core/Words';
 import { SceneInput } from '../../engine/SceneInput';
+import { loadRun } from '../../pve/exploration/save';
 import { RAID_BOSS_KINDS, type RaidBossKind } from '../../pve/swamprun';
 import { pickScenarioFile } from '../scenarioFile';
 import { MenuModel } from './MenuModel';
@@ -269,7 +270,7 @@ export class MenuExperience {
         capability.seats[0] === capability.seats[1]
           ? `${capability.seats[0]} ${capability.seats[0] === 1 ? 'seat' : 'seats'}`
           : `${capability.seats[0]}-${capability.seats[1]} seats`,
-        `${capability.loadoutSize} words`,
+        capability.usesBuild ? `${capability.loadoutSize} words` : 'Words chosen in the world',
         capability.allowAi ? 'AI supported' : 'No AI seats',
       ];
     const plaque = this.scene.add.text(76, 282, facts.join('  /  ').toUpperCase(), {
@@ -337,14 +338,33 @@ export class MenuExperience {
     roles.forEach(({ role, copy: roleCopy }, index) => {
       view.focus.add(this.choice(view.root, 76, 246 + index * 88, roleCopy, String(index + 1), () => {
         this.model.setRole(role);
+        this.model.resumeAdventure = false;
         this.lobbyRoom = '';
         this.lobbyStatus = null;
         if (role === 'local') this.model.setSeatCount(1);
         if (role === 'host' && this.model.seatCount < 2) this.model.setSeatCount(2);
-        if (role === 'guest') this.navigator.push({ id: 'mage-build', seat: 0 });
+        if (role === 'guest') this.navigator.push(this.model.capability.usesBuild ? { id: 'mage-build', seat: 0 } : { id: 'review' });
         else this.navigator.push({ id: 'roster' });
       }));
     });
+    // A host with an online Adventure saved can pick it back up with the same travellers.
+    const saved = this.model.mode === 'exploration' && this.model.capability.roles.includes('host') ? loadRun('online') : null;
+    if (saved) {
+      const travellers = saved.party.entities.length;
+      view.focus.add(this.choice(view.root, 76, 246 + roles.length * 88, {
+        label: 'Continue Co-op',
+        detail: `Day ${saved.day}, level ${saved.level}, ${travellers} travellers`,
+        title: 'CONTINUE ONLINE RUN',
+        description: `Host the saved online run again. ${travellers} players must join; each claims a traveller.`,
+      }, String(roles.length + 1), () => {
+        this.model.setRole('host');
+        this.model.resumeAdventure = true;
+        this.model.setSeatCount(travellers);
+        this.lobbyRoom = '';
+        this.lobbyStatus = null;
+        this.navigator.push({ id: 'review' });
+      }));
+    }
     this.addBack(view, 574);
     return view;
   }
@@ -607,14 +627,15 @@ export class MenuExperience {
       buttons.set(pack, button);
       view.focus.add(button);
     });
+    const builds = this.model.capability.usesBuild;
     const proceed = new CabinetButton(this.scene, 76, 500, {
       width: 714,
       height: 60,
-      label: returnToReview ? 'Return to Review' : 'Build Mages',
+      label: returnToReview || !builds ? 'Review Setup' : 'Build Mages',
       index: '>',
       primary: true,
       onActivate: () => {
-        if (returnToReview) this.navigator.push({ id: 'review' });
+        if (returnToReview || !builds) this.navigator.push({ id: 'review' });
         else this.navigator.push({ id: 'mage-build', seat: this.model.localDraftSeats()[0] ?? 0 });
       },
       onFocus: () => this.stage.setCaption('CATALOGUES READY', this.packSummary()),
@@ -830,7 +851,7 @@ export class MenuExperience {
         edit: () => this.navigator.push({ id: 'raid-target', returnToReview: true }),
       });
     }
-    if (rulesOwner && (this.model.capability.seats[0] !== this.model.capability.seats[1] || this.model.mode === 'ai')) {
+    if (rulesOwner && !this.model.resumeAdventure && (this.model.capability.seats[0] !== this.model.capability.seats[1] || this.model.mode === 'ai')) {
       rows.push({
         label: `${isPveRunMode(this.model.mode) ? 'Party' : 'Table'}: ${this.rosterSummary()}`,
         detail: 'Edit seats, AI fill and formation.',
@@ -858,11 +879,13 @@ export class MenuExperience {
         edit: () => this.navigator.push({ id: 'content-packs', returnToReview: true }),
       });
     }
-    rows.push({
-      label: `Mage Builds: ${this.buildSummary()}`,
-      detail: 'Rebuild every local mage from the start.',
-      edit: () => this.navigator.push({ id: 'mage-build', seat: this.model.localDraftSeats()[0] ?? 0 }),
-    });
+    if (this.model.capability.usesBuild) {
+      rows.push({
+        label: `Mage Builds: ${this.buildSummary()}`,
+        detail: 'Rebuild every local mage from the start.',
+        edit: () => this.navigator.push({ id: 'mage-build', seat: this.model.localDraftSeats()[0] ?? 0 }),
+      });
+    }
     const rowStart = rows.length > 6 ? 220 : 226;
     const rowGap = rows.length > 6 ? 47 : 54;
     const rowHeight = rows.length > 6 ? 41 : 46;
@@ -1524,7 +1547,11 @@ export class MenuExperience {
     const humans = this.model.humanCount();
     if (this.model.mode === 'training') return 'Solo sandbox with one configurable training opponent.';
     if (this.model.mode === 'expedition') return 'One local explorer in a solo campaign.';
-    if (this.model.mode === 'exploration') return 'One local traveller, setting out from Kerusai.';
+    if (this.model.mode === 'exploration') {
+      return this.model.role === 'local'
+        ? 'One traveller, setting out from Kerusai. Class and words are chosen there.'
+        : `${humans} travellers online, setting out from Kerusai. Classes and words are chosen there.`;
+    }
     if (isPveRunMode(this.model.mode)) {
       return `${this.model.seatCount} explorer${this.model.seatCount === 1 ? '' : 's'}: ${humans} human, ${this.model.aiCount} AI.`;
     }
@@ -1546,7 +1573,8 @@ export class MenuExperience {
   }
 
   private roleLabel(): string {
-    return this.model.role === 'host' ? 'Host co-op' : this.model.role === 'guest' ? 'Join co-op' : 'Local';
+    if (this.model.role === 'host') return this.model.resumeAdventure ? 'Continue co-op' : 'Host co-op';
+    return this.model.role === 'guest' ? 'Join co-op' : 'Local';
   }
 
   private packSummary(): string {

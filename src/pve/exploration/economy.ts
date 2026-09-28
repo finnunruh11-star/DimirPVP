@@ -2,10 +2,12 @@
 // and mutates it through the party snapshot, so a save always reflects the shop
 // counter. Seeded from the run: the same day in the same shop shows the same shelf.
 
+import type { MageClass } from '../../core/Classes';
 import { Dice } from '../../core/Dice';
 import { getItem, type ItemDef, type ItemId, type Rarity } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
 import { sleepUntilMorning } from './clock';
+import { leadMember, livingMembers, memberOf, respawnFallen } from './coop';
 import { capturePartySnapshot, restoreParty } from './party';
 import type { ExplorationRun } from './run';
 import { FORGE_RECIPES, shopById, stockCandidates, type ShopDef } from './shops';
@@ -60,16 +62,48 @@ export function runDice(run: ExplorationRun, purpose: string): Dice {
   return new Dice((hashString(purpose) ^ Math.imul(run.seed, 0x9e3779b1) ^ Math.imul(run.day, 0x85ebca6b)) >>> 0);
 }
 
-/** Restore the party, let `fn` change it, and store the result back on the run. */
+/** Restore the party, let `fn` change it, and store the result back on the run. The leader is the first member standing. */
 export function withParty<T>(run: ExplorationRun, fn: (leader: Mage, party: Mage[]) => T): T {
   const party = restoreParty(run.party);
-  const result = fn(party[0], party);
+  const leader = leadMember(party);
+  if (!leader) throw new Error('The party is empty.');
+  const result = fn(leader, party);
   run.party = capturePartySnapshot(party);
   return result;
 }
 
+/** The same for one member; no member means the leader. */
+export function withMember<T>(run: ExplorationRun, member: MageClass | null | undefined, fn: (mage: Mage, party: Mage[]) => T): T {
+  return withParty(run, (leader, party) => fn(actingMember(party, member) ?? leader, party));
+}
+
+function actingMember(party: readonly Mage[], member: MageClass | null | undefined): Mage | undefined {
+  if (member == null) return leadMember(party);
+  const mage = memberOf(party, member);
+  if (!mage) throw new Error('No such party member.');
+  return mage;
+}
+
 export function partyOf(run: ExplorationRun): Mage[] {
   return restoreParty(run.party);
+}
+
+/** One member as stored; no member means the leader. */
+export function memberIn(run: ExplorationRun, member?: MageClass | null): Mage | undefined {
+  const party = partyOf(run);
+  return member == null ? leadMember(party) : memberOf(party, member);
+}
+
+/** Hand out finds: each to `prefer` if they can carry it, else the first member standing with room, else the first standing. */
+export function grantToParty(run: ExplorationRun, id: ItemId, count = 1, prefer?: MageClass | null): void {
+  const weight = getItem(id).weight;
+  withParty(run, (leader, party) => {
+    const living = livingMembers(party);
+    const carriers = living.length ? living : [leader];
+    const first = prefer ? carriers.find((mage) => mage.mageClass === prefer) : undefined;
+    const order = first ? [first, ...carriers.filter((mage) => mage !== first)] : carriers;
+    for (let i = 0; i < count; i++) grantToMage(order.find((mage) => mage.canCarry(weight)) ?? order[0], id);
+  });
 }
 
 // -----------------------------------------------------------------------------
@@ -142,7 +176,7 @@ export function grantToMage(mage: Mage, id: ItemId): void {
   mage.sanity = Math.min(mage.sanity, mage.maxSanity);
 }
 
-export function buyItem(run: ExplorationRun, shopId: string, key: string): ShopResult {
+export function buyItem(run: ExplorationRun, shopId: string, key: string, member?: MageClass | null): ShopResult {
   const shop = shopById(shopId);
   if (!shop) return { ok: false, message: 'No such shop.' };
   const slot = shopStock(run, shop).find((entry) => entry.key === key);
@@ -150,9 +184,9 @@ export function buyItem(run: ExplorationRun, shopId: string, key: string): ShopR
   if (slot.sold) return { ok: false, message: 'Sold out until tomorrow.' };
   if (run.gold < slot.price) return { ok: false, message: `Costs ${moneyLabel(slot.price)}.` };
   const def = getItem(slot.id);
-  return withParty(run, (leader) => {
-    if (!leader.canCarry(def.weight * slot.qty)) return { ok: false, message: 'Too heavy to carry.' };
-    for (let i = 0; i < slot.qty; i++) grantToMage(leader, slot.id);
+  return withMember(run, member, (buyer) => {
+    if (!buyer.canCarry(def.weight * slot.qty)) return { ok: false, message: 'Too heavy to carry.' };
+    for (let i = 0; i < slot.qty; i++) grantToMage(buyer, slot.id);
     run.gold = money(run.gold - slot.price);
     if (!slot.fixed) run.purchases.push(slot.key);
     return { ok: true, message: `Bought ${slot.qty > 1 ? `${slot.qty}x ` : ''}${def.name} for ${moneyLabel(slot.price)}.` };
@@ -179,11 +213,11 @@ export function sellPrice(shop: ShopDef, def: ItemDef): number {
 }
 
 /** Unequipped goods the shop will take, one row per item id. */
-export function sellOffers(run: ExplorationRun, shop: ShopDef): SellOffer[] {
-  const leader = partyOf(run)[0];
-  if (!leader) return [];
+export function sellOffers(run: ExplorationRun, shop: ShopDef, member?: MageClass | null): SellOffer[] {
+  const seller = memberIn(run, member);
+  if (!seller) return [];
   const counts = new Map<ItemId, number>();
-  for (const id of [...leader.bag, ...leader.utility]) counts.set(id, (counts.get(id) ?? 0) + 1);
+  for (const id of [...seller.bag, ...seller.utility]) counts.set(id, (counts.get(id) ?? 0) + 1);
   const offers: SellOffer[] = [];
   for (const [id, count] of counts) {
     const def = getItem(id);
@@ -194,15 +228,15 @@ export function sellOffers(run: ExplorationRun, shop: ShopDef): SellOffer[] {
   return offers.sort((a, b) => b.unit * b.count - a.unit * a.count);
 }
 
-export function sellItem(run: ExplorationRun, shopId: string, id: ItemId, all: boolean): ShopResult {
+export function sellItem(run: ExplorationRun, shopId: string, id: ItemId, all: boolean, member?: MageClass | null): ShopResult {
   const shop = shopById(shopId);
   if (!shop) return { ok: false, message: 'No such shop.' };
   const def = getItem(id);
   const unit = sellPrice(shop, def);
   if (unit <= 0) return { ok: false, message: 'Not bought here.' };
-  return withParty(run, (leader) => {
+  return withMember(run, member, (seller) => {
     let sold = 0;
-    for (const list of [leader.bag, leader.utility]) {
+    for (const list of [seller.bag, seller.utility]) {
       for (let i = list.length - 1; i >= 0 && (all || sold === 0); i--) {
         if (list[i] !== id) continue;
         list.splice(i, 1);
@@ -220,19 +254,32 @@ export function sellItem(run: ExplorationRun, shopId: string, id: ItemId, all: b
 //  SERVICES
 // -----------------------------------------------------------------------------
 
-/** A room for the night: 75% of everything back, and wake at seven on the next day. */
+/** A night's rooms for the whole party, fallen members included. */
+export function roomPrice(run: ExplorationRun, shop: ShopDef | undefined): number | undefined {
+  const price = shop?.restPrice;
+  return price == null ? undefined : money(price * Math.max(1, run.party.entities.length));
+}
+
+/**
+ * A room for the night: 75% of everything back, and wake at seven on the next day.
+ * The fallen get up again, with 1 HP, 1 sanity, no mana and no word charges.
+ */
 export function rest(run: ExplorationRun, shopId: string): ShopResult {
   const shop = shopById(shopId);
-  const price = shop?.restPrice;
+  const price = roomPrice(run, shop);
   if (!shop || price == null) return { ok: false, message: 'No beds here.' };
-  if (run.gold < price) return { ok: false, message: `A room costs ${moneyLabel(price)}.` };
+  if (run.gold < price) return { ok: false, message: `Rooms cost ${moneyLabel(price)}.` };
   run.gold = money(run.gold - price);
   const dice = runDice(run, `rest:${shop.id}`);
-  withParty(run, (_leader, party) => {
+  const risen = withParty(run, (_leader, party) => {
+    const fallen = party.filter((mage) => !mage.alive);
     for (const mage of party) if (mage.alive) mage.swamprunRest(dice);
+    for (const mage of fallen) respawnFallen(mage);
+    return fallen.map((mage) => mage.name);
   });
   sleepUntilMorning(run);
-  return { ok: true, message: `Rested for ${moneyLabel(price)}. Day ${run.day}, 07:00. Shops have restocked.` };
+  const back = risen.length ? ` ${risen.join(' and ')} ${risen.length > 1 ? 'are' : 'is'} back on their feet.` : '';
+  return { ok: true, message: `Rested for ${moneyLabel(price)}. Day ${run.day}, 07:00. Shops have restocked.${back}` };
 }
 
 export interface RecipeView {
@@ -243,9 +290,9 @@ export interface RecipeView {
   ready: boolean;
 }
 
-export function recipesAt(run: ExplorationRun, shop: ShopDef): RecipeView[] {
-  const leader = partyOf(run)[0];
-  const have = (id: ItemId): number => leader ? leader.bag.filter((entry) => entry === id).length : 0;
+export function recipesAt(run: ExplorationRun, shop: ShopDef, member?: MageClass | null): RecipeView[] {
+  const smith = memberIn(run, member);
+  const have = (id: ItemId): number => smith ? smith.bag.filter((entry) => entry === id).length : 0;
   return (shop.recipes ?? []).flatMap((id) => {
     const recipe = FORGE_RECIPES[id];
     if (!recipe) return [];
@@ -260,20 +307,20 @@ export function recipesAt(run: ExplorationRun, shop: ShopDef): RecipeView[] {
   });
 }
 
-export function forge(run: ExplorationRun, shopId: string, recipeId: string): ShopResult {
+export function forge(run: ExplorationRun, shopId: string, recipeId: string, member?: MageClass | null): ShopResult {
   const shop = shopById(shopId);
-  const view = shop ? recipesAt(run, shop).find((entry) => entry.id === recipeId) : undefined;
+  const view = shop ? recipesAt(run, shop, member).find((entry) => entry.id === recipeId) : undefined;
   if (!shop || !view) return { ok: false, message: 'Unknown recipe.' };
   if (!view.ready) return { ok: false, message: 'Missing materials or gold.' };
   const output = getItem(view.output);
-  return withParty(run, (leader) => {
+  return withMember(run, member, (smith) => {
     const freed = view.inputs.reduce((sum, input) => sum + getItem(input.id).weight * input.need, 0);
-    if (!leader.canCarry(output.weight - freed)) return { ok: false, message: 'Too heavy to carry.' };
+    if (!smith.canCarry(output.weight - freed)) return { ok: false, message: 'Too heavy to carry.' };
     for (const input of view.inputs) {
-      for (let n = 0; n < input.need; n++) leader.bag.splice(leader.bag.indexOf(input.id), 1);
+      for (let n = 0; n < input.need; n++) smith.bag.splice(smith.bag.indexOf(input.id), 1);
     }
     run.gold = money(run.gold - view.gold);
-    grantToMage(leader, view.output);
+    grantToMage(smith, view.output);
     return { ok: true, message: `Forged ${output.name}.` };
   });
 }
@@ -282,8 +329,8 @@ export function forge(run: ExplorationRun, shopId: string, recipeId: string): Sh
 //  PACK
 // -----------------------------------------------------------------------------
 
-export function equipItem(run: ExplorationRun, id: ItemId): ShopResult {
-  return withParty(run, (leader) => {
+export function equipItem(run: ExplorationRun, id: ItemId, member?: MageClass | null): ShopResult {
+  return withMember(run, member, (leader) => {
     if (!leader.canEquipFromBag(id) || !leader.equipFromBag(id)) {
       return { ok: false, message: 'Cannot equip that now.' };
     }
@@ -291,8 +338,8 @@ export function equipItem(run: ExplorationRun, id: ItemId): ShopResult {
   });
 }
 
-export function unequipItem(run: ExplorationRun, id: ItemId): ShopResult {
-  return withParty(run, (leader) => {
+export function unequipItem(run: ExplorationRun, id: ItemId, member?: MageClass | null): ShopResult {
+  return withMember(run, member, (leader) => {
     const def = getItem(id);
     if (def.permanentlyBinding) return { ok: false, message: `${def.name} is bound to you.` };
     let removed = false;
@@ -315,8 +362,8 @@ export function unequipItem(run: ExplorationRun, id: ItemId): ShopResult {
 }
 
 /** Leave an item behind for good. */
-export function dropItem(run: ExplorationRun, id: ItemId): ShopResult {
-  return withParty(run, (leader) => {
+export function dropItem(run: ExplorationRun, id: ItemId, member?: MageClass | null): ShopResult {
+  return withMember(run, member, (leader) => {
     for (const list of [leader.bag, leader.utility]) {
       const index = list.indexOf(id);
       if (index >= 0) {
@@ -325,5 +372,25 @@ export function dropItem(run: ExplorationRun, id: ItemId): ShopResult {
       }
     }
     return { ok: false, message: 'Not in your pack.' };
+  });
+}
+
+/** Pass a carried item to another member. Items that change their bearer's body stay put. */
+export function giveItem(run: ExplorationRun, id: ItemId, from: MageClass, to: MageClass): ShopResult {
+  const def = getItem(id);
+  if (from === to) return { ok: false, message: 'Already yours.' };
+  if (def.permanentlyBinding || def.hpMult != null || def.hpFlat != null || def.sanityMult != null) {
+    return { ok: false, message: `${def.name} cannot change hands.` };
+  }
+  return withParty(run, (_leader, party) => {
+    const giver = memberOf(party, from);
+    const taker = memberOf(party, to);
+    if (!giver || !taker) return { ok: false, message: 'No such party member.' };
+    if (!taker.canCarry(def.weight)) return { ok: false, message: `${taker.name} cannot carry it.` };
+    const list = giver.bag.includes(id) ? giver.bag : giver.utility.includes(id) ? giver.utility : null;
+    if (!list) return { ok: false, message: 'Not in your pack.' };
+    list.splice(list.indexOf(id), 1);
+    grantToMage(taker, id);
+    return { ok: true, message: `Gave ${def.name} to ${taker.name}.` };
   });
 }

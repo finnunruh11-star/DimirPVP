@@ -17,12 +17,13 @@
 //  WS protocol (client -> relay):
 //    { k: 'join', room, size }   first message; registers the socket. The first
 //                                joiner's `size` (2-4) fixes the room capacity.
-//    <anything else>             forwarded verbatim to every other peer
+//    <anything else>             forwarded to every other peer, with `from` set
+//                                to the sender's seat (clients cannot forge it)
 //  WS protocol (relay -> client):
 //    { k: 'seat', seat, size }   your seat index (0-based) and the room size
 //    { k: 'ready', size }        every seat is filled, start the handshake
 //    { k: 'full' }               the room is already at capacity
-//    { k: 'bye' }                another player disconnected
+//    { k: 'bye', seat }          the player in `seat` disconnected
 // =============================================================================
 
 import { createServer } from 'node:http';
@@ -33,6 +34,8 @@ import { WebSocketServer } from 'ws';
 
 const PORT = Number(process.env.PORT) || 8787;
 const DIST_DIR = fileURLToPath(new URL('../dist', import.meta.url));
+/** Largest message a client may send; a whole Adventure run fits with room to spare. */
+const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -84,7 +87,7 @@ const httpServer = createServer(async (req, res) => {
 
 // --- WebSocket relay (pairs the two clients of a room) -----------------------
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
 
 // Keep proxied WebSocket connections (e.g. Cloudflare tunnels) from idling out
 // during long reaction windows. Intermediaries close "quiet" sockets after ~100s
@@ -134,7 +137,8 @@ wss.on('connection', (ws) => {
     }
 
     if (msg && msg.k === 'join') {
-      room = String(msg.room ?? '');
+      if (room !== null) return;
+      room = String(msg.room ?? '').slice(0, 64);
       let entry = rooms.get(room);
       if (!entry) {
         // The first joiner (the host) fixes the room capacity, clamped 2-4.
@@ -144,10 +148,14 @@ wss.on('connection', (ws) => {
       }
       if (entry.sockets.length >= entry.capacity) {
         ws.send(JSON.stringify({ k: 'full' }));
+        room = null;
         ws.close();
         return;
       }
-      const seat = entry.sockets.length;
+      // Seats stay with their players; a freed seat goes to the next joiner.
+      let seat = 0;
+      while (entry.sockets.some((peer) => peer.seat === seat)) seat += 1;
+      ws.seat = seat;
       entry.sockets.push(ws);
       ws.send(JSON.stringify({ k: 'seat', seat, size: entry.capacity }));
       if (entry.sockets.length === entry.capacity) {
@@ -159,20 +167,22 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // Forward everything else to every other peer in the room.
-    const entry = room ? rooms.get(room) : null;
-    if (!entry) return;
+    // Forward everything else to every other peer in the room, stamped with the sender.
+    const entry = room !== null ? rooms.get(room) : null;
+    if (!entry || !msg || typeof msg !== 'object' || Array.isArray(msg)) return;
+    msg.from = ws.seat;
+    const out = JSON.stringify(msg);
     for (const peer of entry.sockets) {
-      if (peer !== ws && peer.readyState === peer.OPEN) peer.send(raw.toString());
+      if (peer !== ws && peer.readyState === peer.OPEN) peer.send(out);
     }
   });
 
   ws.on('close', () => {
-    const entry = room ? rooms.get(room) : null;
+    const entry = room !== null ? rooms.get(room) : null;
     if (!entry) return;
     entry.sockets = entry.sockets.filter((p) => p !== ws);
     for (const peer of entry.sockets) {
-      if (peer.readyState === peer.OPEN) peer.send(JSON.stringify({ k: 'bye' }));
+      if (peer.readyState === peer.OPEN) peer.send(JSON.stringify({ k: 'bye', seat: ws.seat }));
     }
     if (entry.sockets.length === 0) rooms.delete(room);
   });

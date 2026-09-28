@@ -3,8 +3,10 @@
 
 import type { Dice } from '../../core/Dice';
 import { getItem, type ItemId } from '../../core/Items';
+import type { Mage } from '../../core/Mage';
 import { mineEnemyLevel } from '../minerun';
-import { grantToMage, money, partyOf, withParty } from './economy';
+import { livingMembers } from './coop';
+import { grantToParty, money, partyOf, withParty } from './economy';
 import type { EncounterSpawn, EncounterZone } from './encounters';
 import type { ExplorationRun } from './run';
 
@@ -45,44 +47,61 @@ export interface RoadEvent {
 
 // ---- helpers ----------------------------------------------------------------
 
-/** Change the leader's HP by a flat amount; roadside harm never kills. */
+/** Apply `change` to every member standing; returns what it did to the leader. */
+const eachStanding = (ctx: EventContext, change: (mage: Mage) => number): number =>
+  withParty(ctx.run, (leader, party) => {
+    let led = 0;
+    for (const mage of livingMembers(party)) {
+      const done = change(mage);
+      if (mage === leader) led = done;
+    }
+    return led;
+  });
+
+/** Change every standing member's HP by a flat amount; roadside harm never kills. */
 const hp = (ctx: EventContext, delta: number): number =>
-  withParty(ctx.run, (leader) => {
-    const before = leader.hp;
-    leader.hp = Math.max(1, Math.min(leader.maxHp, leader.hp + delta));
-    return leader.hp - before;
+  eachStanding(ctx, (mage) => {
+    const before = mage.hp;
+    mage.hp = Math.max(1, Math.min(mage.maxHp, mage.hp + delta));
+    return mage.hp - before;
   });
 
 const sanity = (ctx: EventContext, delta: number): void => {
-  withParty(ctx.run, (leader) => {
-    leader.sanity = Math.max(1, Math.min(leader.maxSanity, leader.sanity + delta));
+  eachStanding(ctx, (mage) => {
+    mage.sanity = Math.max(1, Math.min(mage.maxSanity, mage.sanity + delta));
+    return 0;
   });
 };
 
 const give = (ctx: EventContext, id: ItemId, count = 1): string => {
-  withParty(ctx.run, (leader) => {
-    for (let i = 0; i < count; i++) grantToMage(leader, id);
-  });
+  grantToParty(ctx.run, id, count);
   return `${count > 1 ? `${count}x ` : ''}${getItem(id).name}`;
 };
 
 type CheckStat = 'strength' | 'dex' | 'int';
 
-/** d20 + stat against a DC. */
+const statOf = (mage: Mage, stat: CheckStat): number =>
+  stat === 'strength' ? mage.statStrength : stat === 'dex' ? mage.statDex : mage.statInt;
+
+/** d20 + the best standing member's stat against a DC. */
 const check = (ctx: EventContext, stat: CheckStat, dc: number): { pass: boolean; total: number } => {
-  const leader = partyOf(ctx.run)[0];
-  const bonus = !leader ? 0 : stat === 'strength' ? leader.statStrength : stat === 'dex' ? leader.statDex : leader.statInt;
+  const standing = livingMembers(partyOf(ctx.run));
+  const bonus = standing.length ? Math.max(...standing.map((mage) => statOf(mage, stat))) : 0;
   const total = ctx.dice.die(20) + bonus;
   return { pass: total >= dc, total };
 };
 
-const hasItem = (ctx: EventContext, id: ItemId): boolean => {
-  const leader = partyOf(ctx.run)[0];
-  return !!leader && (leader.utility.includes(id) || leader.bag.includes(id));
-};
+const carries = (mage: Mage, id: ItemId): boolean => mage.utility.includes(id) || mage.bag.includes(id);
 
-/** Heal the leader by a share of max HP. */
-const mend = (ctx: EventContext, share: number): number => hp(ctx, Math.ceil((partyOf(ctx.run)[0]?.maxHp ?? 0) * share));
+const hasItem = (ctx: EventContext, id: ItemId): boolean =>
+  livingMembers(partyOf(ctx.run)).some((mage) => carries(mage, id));
+
+/** Heal every standing member by a share of their max HP. */
+const mend = (ctx: EventContext, share: number): number => eachStanding(ctx, (mage) => {
+  const before = mage.hp;
+  mage.hp = Math.min(mage.maxHp, mage.hp + Math.ceil(mage.maxHp * share));
+  return mage.hp - before;
+});
 
 const leave: EventChoice = { label: 'Walk on', detail: 'Leave it be.', resolve: () => ({ message: 'You walk on.' }) };
 
@@ -141,9 +160,9 @@ export const ROAD_EVENTS: RoadEvent[] = [
         detail: 'Costs one Health Potion. He gives you a piece of his kit.',
         available: (ctx) => hasItem(ctx, 'healthPotion'),
         resolve: (ctx) => {
-          withParty(ctx.run, (leader) => {
-            const index = leader.utility.indexOf('healthPotion');
-            if (index >= 0) leader.utility.splice(index, 1);
+          withParty(ctx.run, (_leader, party) => {
+            const giver = livingMembers(party).find((mage) => mage.utility.includes('healthPotion'));
+            if (giver) giver.utility.splice(giver.utility.indexOf('healthPotion'), 1);
           });
           const kit = give(ctx, ctx.dice.pick<ItemId>(['copperRing', 'ironBand', 'leatherCap', 'leatherBoots']));
           return { message: `The traveller recovers and presses ${kit} on you.` };

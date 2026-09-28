@@ -16,6 +16,10 @@ import {
   type LichSpell,
 } from '../pve/lichPowers';
 import { chooseMineAction } from '../pve/mineAI';
+import { isGoblin } from '../pve/goblins';
+import { chooseGoblinAction } from './goblinAI';
+import { isBaralUnit } from '../pve/baral';
+import { chooseBaralAction } from './baralAI';
 import type { MineActionChoice } from '../pve/mineActions';
 
 export type AIDecision =
@@ -38,6 +42,11 @@ export type AIDecision =
   // Reaper: channel for the turn; the clap resolves at the start of its next.
   | { type: 'reaper-channel' }
   | { type: 'mine-action'; choice: MineActionChoice }
+  // Goblin Shaman: mend a goblin (+3 HP, faster) or hex a foe (slower).
+  | { type: 'goblin-heal'; target: Mage }
+  | { type: 'goblin-hex'; target: Mage }
+  // A routed goblin at the edge of the field leaves the fight.
+  | { type: 'goblin-escape' }
   | { type: 'end' };
 
 export interface AIReaction {
@@ -87,6 +96,8 @@ export class SimpleAI {
     // its end-step, secures kills). Every other undead falls through to the
     // shared logic below — but plays optimally while a Lich commands them.
     if (this.self.enemyKind === 'lich') return this.chooseLichAction();
+    if (isGoblin(this.self)) return chooseGoblinAction(this.game, this.self);
+    if (isBaralUnit(this.self)) return chooseBaralAction(this.game, this.self);
     if (this.self.reaperKind) return this.chooseReaperAction();
     if (this.self.ghastKind) return this.chooseGhastAction();
     if (this.self.expeditionCompanion === 'dwarf') return this.chooseDwarfAction();

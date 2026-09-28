@@ -20,6 +20,7 @@ import {
   type SessionRole,
 } from '../../config/MatchConfig';
 import { Net, type NetMessage } from '../../net/Net';
+import { ADVENTURE_PROTOCOL } from '../../net/AdventureSession';
 import { RAID_BOSS_KINDS, type RaidBossKind } from '../../pve/swamprun';
 import { MenuModel } from './MenuModel';
 
@@ -51,7 +52,7 @@ export function defaultRelayUrl(): string {
 
 export function sanitizeOnlineLoadout(value: unknown): WordId[] {
   const source = Array.isArray(value) ? value : [];
-  const words = source.filter((word): word is WordId => typeof word === 'string' && word in WORDS);
+  const words = source.filter((word): word is WordId => typeof word === 'string' && Object.prototype.hasOwnProperty.call(WORDS, word));
   const offeredBase = words.filter((word) => !isModifierWord(word));
   const sniffWords: WordId[] = ['pierce', 'mind', 'veil', 'fire', 'lightning', 'storm'];
   const isSniff = sniffWords.every((word) => offeredBase.includes(word));
@@ -108,7 +109,7 @@ export class OnlineCoordinator {
     const url = request.url.trim();
     if (!room) throw new Error('A room code is required.');
     if (!/^wss?:\/\//.test(url)) throw new Error('Relay URL must start with ws:// or wss://.');
-    if (!this.model.loadoutReady(0)) throw new Error('Finish your mage build first.');
+    if (this.model.capability.usesBuild && !this.model.loadoutReady(0)) throw new Error('Finish your mage build first.');
     if (request.role === 'host' && this.model.humanCount() < 2) {
       throw new Error('Online rooms require at least two human seats.');
     }
@@ -134,7 +135,7 @@ export class OnlineCoordinator {
         message: `Seat ${localSeat + 1} of ${roomHumans}. Waiting for players...`,
       });
       await this.waitFor('ready');
-      this.net.send({ k: 'hello', seat: localSeat, loadout: myLoadout, class: myClass });
+      this.net.send({ k: 'hello', seat: localSeat, loadout: myLoadout, class: myClass, v: ADVENTURE_PROTOCOL });
 
       const config = localSeat === 0
         ? await this.assembleHost(roomHumans, myLoadout, myClass)
@@ -173,17 +174,20 @@ export class OnlineCoordinator {
     myClass: MageClass
   ): Promise<MatchConfig> {
     this.report({ stage: 'assembling', message: 'All players joined. Collecting mage builds...' });
+    const adventure = this.model.mode === 'exploration';
     const loadouts = new Map<number, WordId[]>([[0, myLoadout]]);
     const classes = new Map<number, MageClass>([[0, myClass]]);
     while (loadouts.size < roomHumans) {
       const hello = await this.waitFor('hello');
-      const seat = Number(hello.seat) | 0;
+      const seat = typeof hello.from === 'number' ? hello.from : Number(hello.seat) | 0;
       if (seat < 0 || seat >= roomHumans) continue;
+      if (adventure && hello.v !== ADVENTURE_PROTOCOL) throw new Error(`Player ${seat + 1} runs a different version of the game.`);
       loadouts.set(seat, sanitizeOnlineLoadout(hello.loadout));
       classes.set(seat, toMageClass(hello.class));
     }
 
-    const totalSeats = Math.max(roomHumans, Math.min(4, this.model.seatCount));
+    // An Adventure party is all human: classes and words are chosen in the world.
+    const totalSeats = adventure ? roomHumans : Math.max(roomHumans, Math.min(4, this.model.seatCount));
     const seats = Array.from({ length: totalSeats }, (_, seat): SeatConfig => {
       const human = seat < roomHumans;
       return {
@@ -195,6 +199,7 @@ export class OnlineCoordinator {
       };
     });
     const seed = (Math.floor(Math.random() * 0x7fffffff) + 1) | 0;
+    const resume = adventure && this.model.resumeAdventure;
     this.net?.send({
       k: 'start',
       mode: this.model.mode,
@@ -203,6 +208,8 @@ export class OnlineCoordinator {
       itemSets: this.model.itemSets,
       swampPrepMode: usesSwampPrep(this.model.mode) ? this.model.prepMode : undefined,
       raidBoss: this.model.mode === 'raid' ? this.model.raidBoss : undefined,
+      adventure: adventure ? { resume } : undefined,
+      v: ADVENTURE_PROTOCOL,
     });
     return {
       mode: this.model.mode,
@@ -215,6 +222,7 @@ export class OnlineCoordinator {
       itemSets: { ...this.model.itemSets },
       swampPrepMode: usesSwampPrep(this.model.mode) ? this.model.prepMode : undefined,
       raidBoss: this.model.mode === 'raid' ? this.model.raidBoss : undefined,
+      adventure: adventure ? { resume } : undefined,
     };
   }
 
@@ -227,6 +235,10 @@ export class OnlineCoordinator {
     const seats = sanitizeOnlineSeats(start.seats, totalSeats);
     const seed = Number(start.seed) | 0;
     const mode = this.networkMode(start.mode);
+    if (mode === 'exploration' && start.v !== ADVENTURE_PROTOCOL) {
+      throw new Error('The host runs a different version of the game.');
+    }
+    const adventure = start.adventure && typeof start.adventure === 'object' ? start.adventure as Record<string, unknown> : null;
     return {
       mode,
       loadouts: [seats[0].loadout, seats[1]?.loadout ?? []],
@@ -242,6 +254,7 @@ export class OnlineCoordinator {
           : 'custom'
         : undefined,
       raidBoss: mode === 'raid' ? sanitizeOnlineRaidBoss(start.raidBoss) : undefined,
+      adventure: mode === 'exploration' ? { resume: adventure?.resume === true } : undefined,
     };
   }
 
@@ -257,7 +270,7 @@ export class OnlineCoordinator {
   }
 
   private networkMode(value: unknown): MatchMode {
-    return value === 'swamprun' || value === 'minerun' || value === 'raid'
+    return value === 'swamprun' || value === 'minerun' || value === 'raid' || value === 'exploration'
       ? value
       : 'online';
   }

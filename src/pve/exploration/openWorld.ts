@@ -1,20 +1,22 @@
-// The whole world on foot. For runs that would rather walk than plan trips,
-// the world map becomes one walkable place: every world tile is a square of
-// WORLD_SCALE x WORLD_SCALE ground tiles, towns and dungeons are gates to walk
-// into, packs roam the country between them and caches lie hidden off the
-// roads. Built once from the world map; packs reroll daily. Pure: no Phaser.
+// The world on foot. The whole map is built once as one walkable place: every
+// world tile is a square of WORLD_SCALE x WORLD_SCALE ground tiles, towns and
+// dungeons are gates to walk into, packs roam the country between them and caches
+// lie hidden off the roads. A party on foot walks only the area round the tile it
+// set out from (see area.ts). Packs reroll daily. Pure: no Phaser.
 
 import { Dice } from '../../core/Dice';
 import type { BuildingSpec } from '../../world/buildings';
 import { cellHash } from '../../world/kenney';
 import { buildLocaleModel, type BuildingPlacement, type ExitDef, type LocaleDef, type LocaleModel, type PropPlacement } from '../../world/locale';
 import { floodReach, type Cell } from '../../world/pathfind';
+import { areaBounds, areaBoundsOf, inAreaBounds } from './area';
 import { hashString } from './economy';
 import { describeSpawns, packPace, rollEncounter, spawnTint } from './encounters';
 import { rollFind } from './finds';
 import type { Landmark, LocaleTravel, ResolvedLocale, Secret, SecretResult, WildPack } from './locales';
 import { questCacheSpecs, questCalm, questPackSpecs, searchQuestCache } from './quest';
 import type { ExplorationRun } from './run';
+import { SITE_RADIUS, siteFind, sitePlan, siteWokeFlag, type EncounterSite } from './site';
 import {
   createWorld,
   depthAt,
@@ -581,6 +583,8 @@ export function openWorldSecrets(run: ExplorationRun): Secret[] {
 
 function searchCache(run: ExplorationRun, secret: Secret): SecretResult {
   if (secret.id.startsWith('quest:')) return searchQuestCache(run);
+  const site = run.area?.site;
+  if (site && secret.id.startsWith('site:')) return siteFind(run, site, secret);
   const world = createWorld();
   const tile = cellWorldTile(secret);
   const dice = new Dice((hashString(`${secret.id}:found`) ^ run.seed) >>> 0);
@@ -592,6 +596,8 @@ function enterPlace(run: ExplorationRun, exit: ExitDef): LocaleTravel {
   if (!place) return { t: 'stay', notice: 'Nothing here.' };
   if (place.dungeon) return { t: 'dungeon', place: place.id };
   if (!place.locale) return { t: 'stay', notice: place.note ?? `${place.name} is closed.` };
+  // Inside the walls the walk is over; the party leaves by the map again.
+  run.area = null;
   run.pos = { x: place.x, y: place.y };
   if (!run.visited.includes(place.id)) run.visited.push(place.id);
   return { t: 'locale', locale: place.locale, notice: `You enter ${place.name}.` };
@@ -639,18 +645,88 @@ function questSecrets(run: ExplorationRun): Secret[] {
 
 export function resolveOpenWorld(run: ExplorationRun, id: string): ResolvedLocale | null {
   if (id !== OPEN_WORLD_ID) return null;
+  const area = run.area;
+  // At a site only what was spotted (and what came with it) stands on the ground.
+  const content = area?.site ? siteContent(run, area.tile, area.site) : null;
+  // On foot only the country round where the party set out is walked.
+  const bounds = area ? areaBoundsOf(area) : null;
+  const here = (cell: Cell): boolean => !bounds || inAreaBounds(bounds, cellWorldTile(cell));
   return {
     def: openWorldDef(),
     model: openWorldModel(),
     kind: 'world',
     zone: 'capitol',
     depth: 1,
-    packs: [...openWorldPacks(run), ...questPacks(run)],
-    secrets: [...openWorldSecrets(run), ...questSecrets(run)],
+    packs: content ? content.packs : [...openWorldPacks(run), ...questPacks(run)].filter(here),
+    secrets: content ? content.secrets : [...openWorldSecrets(run), ...questSecrets(run)].filter(here),
     search: searchCache,
     travel: enterPlace,
     fogChunk: K,
     landmarks: [...OPEN_WORLD_LANDMARKS],
     world: true,
   };
+}
+
+/** Where the party walks in at a site: the edge it came over from, a tile out from the middle. */
+export function siteArrival(tile: Cell, site: EncounterSite): Cell {
+  const from = site.from ?? { x: tile.x, y: tile.y + 1 };
+  const dx = Math.sign(from.x - tile.x);
+  const dy = Math.sign(from.y - tile.y);
+  return openWorldCell({ x: tile.x + dx, y: tile.y + (dx || dy ? dy : 1) });
+}
+
+/** A site's packs and things, each set down on open ground round the middle of its tile. */
+export function siteContent(run: ExplorationRun, tile: Cell, site: EncounterSite): { packs: WildPack[]; secrets: Secret[] } {
+  const model = openWorldModel();
+  const land = openWorldMainland();
+  const plan = sitePlan(site);
+  const dice = new Dice((site.seed ^ 0x9ace) >>> 0);
+  const bounds = areaBounds(tile, SITE_RADIUS);
+  const centre = openWorldCell(tile);
+  const arrival = siteArrival(tile, site);
+  const taken: Cell[] = [];
+  const spot = (near: number, far: number): Cell => {
+    for (let tries = 0; tries < 60; tries++) {
+      const angle = dice.float() * Math.PI * 2;
+      const r = near + dice.float() * Math.max(0, far - near) + Math.floor(tries / 20);
+      const x = Math.round(centre.x + Math.cos(angle) * r);
+      const y = Math.round(centre.y + Math.sin(angle) * r);
+      if (!inAreaBounds(bounds, cellWorldTile({ x, y })) || !land[y * model.w + x] || model.exitAt(x, y)) continue;
+      if (Math.hypot(x - arrival.x, y - arrival.y) < 5) continue;
+      if (taken.some((cell) => Math.hypot(cell.x - x, cell.y - y) < 2.5)) continue;
+      taken.push({ x, y });
+      return { x, y };
+    }
+    return { ...centre };
+  };
+  const woke = run.flags.includes(siteWokeFlag(site));
+  const packs: WildPack[] = [];
+  for (const pack of plan.packs) {
+    const at = spot(pack.near, pack.far);
+    if (run.groupsBeaten[pack.id] != null) continue;
+    packs.push({
+      id: pack.id,
+      x: at.x,
+      y: at.y,
+      sight: pack.sight,
+      depth: site.depth,
+      spawns: pack.spawns,
+      label: pack.label,
+      tint: spawnTint(pack.spawns),
+      zone: site.zone,
+      pace: packPace(pack.spawns),
+      asleep: pack.asleep && !woke,
+      wakeTiles: pack.wakeTiles,
+    });
+  }
+  const secrets: Secret[] = plan.things.map((thing) => ({
+    id: thing.id,
+    ...spot(thing.near, thing.far),
+    reveal: 40,
+    label: thing.label,
+    hold: thing.hold,
+    look: thing.role,
+    ...(thing.role === 'herb' && site.herb ? { herb: site.herb } : {}),
+  }));
+  return { packs, secrets };
 }

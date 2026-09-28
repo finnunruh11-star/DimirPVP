@@ -6,6 +6,7 @@ import type { RaidBossKind } from '../pve/swamprun';
 import type { ExplorationRun, LocaleState } from '../pve/exploration/run';
 import type { EncounterKind, EncounterSpawn, EncounterZone } from '../pve/exploration/encounters';
 import type { DungeonId } from '../pve/exploration/world';
+import type { BossFight } from '../pve/exploration/bloodmoon';
 import { LOADOUT_SIZE } from './constants';
 
 export type MatchMode =
@@ -77,9 +78,9 @@ export const MODE_CAPABILITIES = {
     usesBuild: true, usesContentPacks: true, requiresRaidBoss: false,
   },
   exploration: {
-    category: 'adventures', roles: ['local'], seats: [1, 1], allowAi: false,
-    formats: [], prepModes: [], loadoutSize: 3,
-    usesBuild: true, usesContentPacks: true, requiresRaidBoss: false,
+    category: 'adventures', roles: ['local', 'host', 'guest'], seats: [1, 3], allowAi: false,
+    formats: [], prepModes: [], loadoutSize: 2,
+    usesBuild: false, usesContentPacks: true, requiresRaidBoss: false,
   },
   minerun: {
     category: 'adventures', roles: ['local', 'host', 'guest'], seats: [1, 4], allowAi: true,
@@ -163,9 +164,14 @@ export interface ExplorationCombat {
   opening?: ExplorationOpening;
   /** A dive into a dungeon: fights follow one another until the party walks back out. */
   dungeon?: DungeonId;
+  /** Online: the relay seat that plays each party member. */
+  seats?: Partial<Record<MageClass, number>>;
+  /** A bloodmoon's boss: no fleeing, and the boss scales with the party. */
+  boss?: BossFight;
 }
 
-export type ExplorationOpening = { kind: 'weapon' } | { kind: 'spell'; words: WordId[] };
+/** `by` is the party member who lands the free strike; the first one standing when unset. */
+export type ExplorationOpening = ({ kind: 'weapon' } | { kind: 'spell'; words: WordId[] }) & { by?: MageClass };
 
 export interface MatchConfig {
   mode: MatchMode;
@@ -192,4 +198,6 @@ export interface MatchConfig {
   seed?: number;
   /** Memory mode: the saved fight to rebuild instead of drafting a new one. */
   scenario?: Scenario;
+  /** Online Adventure: the host picks its saved online run back up instead of starting afresh. */
+  adventure?: { resume: boolean };
 }

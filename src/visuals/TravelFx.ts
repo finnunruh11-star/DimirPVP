@@ -18,6 +18,7 @@ import { OW_CELL, OW_SCALE } from '../world/overworldRender';
 import type { Cell } from '../world/pathfind';
 import { ensureGlowTextures, GLOW } from './glowTextures';
 import { ParticleFx } from './ParticleFx';
+import { playTravelBreak, type BreakSetting } from './TravelBreak';
 
 type Point = { x: number; y: number };
 
@@ -168,6 +169,11 @@ export class TravelFx {
     const y = this.token.y - 4;
     this.torch.setPosition(x, y).setAlpha(dark * 0.34 * flicker);
     this.torchCore.setPosition(x, y).setAlpha(dark * 0.3 * flicker);
+  }
+
+  /** A quiet stop: the party takes a break, and a little scene plays beside it. */
+  takeBreak(setting: BreakSetting = {}): Promise<void> {
+    return playTravelBreak(this.scene, this.token, this.particles, DEPTH.float, this.reduced, setting);
   }
 
   /** A short rest: a small fire is lit beside the party, crackles a moment and is put out. */

@@ -406,6 +406,7 @@ export function dealDamage(
     amount += globalHexcraftBonus;
     ctx.log(`Mind Shadow deepens the attack (+${globalHexcraftBonus}).`);
   }
+  if (ctx.caster.damageScale !== 1) amount *= ctx.caster.damageScale;
 
   amount = Math.max(0, Math.round(amount));
   // Worn armour soaks physical / magical blows (flat reduction), unless this
@@ -571,6 +572,7 @@ export function dealDamage(
     ctx.game.tickDeathCurse(target, `${damage.type} damage`);
   }
   if (amount > 0) ctx.game.checkReapDeath(target, ctx.caster);
+  if (amount > 0) ctx.game.checkBaralWound(target);
 
   // A landed hit can shatter veils. The victim's veil may be torn off; the
   // attacker may reveal themselves by striking. DoT ticks (canMiss === false)

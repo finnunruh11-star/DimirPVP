@@ -29,7 +29,13 @@ export interface WildPack {
   pace?: number;
   /** Already on the party's trail: it chases from the start and never settles. */
   hunting?: boolean;
+  /** Asleep until a traveller comes within `wakeTiles` (half that sneaking) or something wakes it. */
+  asleep?: boolean;
+  wakeTiles?: number;
 }
+
+/** What a secret looks like on the ground; plain secrets glint. */
+export type SecretLook = 'herb' | 'cache' | 'stash' | 'trinket';
 
 export interface Secret {
   id: string;
@@ -38,6 +44,11 @@ export interface Secret {
   /** Tiles away it can be noticed from (a light widens this). */
   reveal: number;
   label: string;
+  /** Milliseconds E must be held to take it; taken at a press when absent. */
+  hold?: number;
+  look?: SecretLook;
+  /** A herb patch shows the herb it grows. */
+  herb?: string;
 }
 
 export interface ResolvedLocale {
@@ -80,6 +91,10 @@ export interface SecretResult {
   message: string;
   /** A guardian that must be fought first; the secret stays hidden until it falls. */
   fight?: WildPack;
+  /** The fight springs out of the find itself. */
+  trap?: boolean;
+  /** Taking it makes noise: each sleeper this close wakes at this chance. */
+  wake?: { tiles: number; chance: number };
   /** Lift the fog off the whole map. */
   revealAll?: boolean;
 }

@@ -20,7 +20,8 @@ import reaperAttackSheetUrl from '../Sprites/Reaper/wraith_original_attack_sheet
 import reaperHitSheetUrl from '../Sprites/Reaper/wraith_original_hit_sheet.png';
 import reaperDeathSheetUrl from '../Sprites/Reaper/wraith_original_death_sheet.png';
 
-export type CreatureSpriteKind = 'zombie' | 'skeleton' | 'wisp' | 'defender' | 'reaper';
+/** The authored sheets, plus a bloodmoon boss's painted ones (see visuals/bosses). */
+export type CreatureSpriteKind = 'zombie' | 'skeleton' | 'wisp' | 'defender' | 'reaper' | `boss-${string}`;
 
 /** Creature frames carry more empty margin than the mage's, so they are drawn this much taller. */
 export const CREATURE_FRAME_RATIO = 4.5 / 2.8;

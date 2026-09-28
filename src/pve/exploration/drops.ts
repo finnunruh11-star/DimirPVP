@@ -28,6 +28,14 @@ export const DROP_TABLES: Readonly<Record<string, readonly DropRow[]>> = {
   lich: [{ item: 'lichCore', chance: 1 }, { item: 'ectoplasm', chance: 1, extra: 3 }],
   reaper: [{ item: 'reaperCore', chance: 1 }, { item: 'manaStoneBig', chance: 1, extra: 1 }],
   deathknightSpear: [{ item: 'darksteelBar', chance: 1, extra: 1 }, { item: 'manaStoneBig', chance: 1 }],
+  // ---- The goblin band ----
+  goblinChief: [{ item: 'crudeTrinket', chance: 1, extra: 2 }, { item: 'manaStoneMedium', chance: 1 }],
+  goblinRaider: [{ item: 'crudeTrinket', chance: 0.3 }],
+  goblinShaman: [{ item: 'manaStoneSmall', chance: 0.45 }],
+  // ---- Baral's workshop ----
+  baral: [{ item: 'manaStoneBig', chance: 1, extra: 1 }, { item: 'crudeTrinket', chance: 1, extra: 2 }],
+  denialArtifact: [{ item: 'sentinelLens', chance: 0.5 }],
+  baralDrake: [{ item: 'crudeTrinket', chance: 0.15 }],
   // ---- Stone, scale and bandits ----
   rockling: [],
   kobold: [{ item: 'crudeTrinket', chance: 0.3 }],

@@ -311,4 +311,44 @@ export const RECIPES = {
     k.tone({ type: 'sawtooth', freq: 233, freqTo: 155, dur: 0.55, gain: 0.07, attack: 0.01, reverb: 0.35 });
     k.tone({ type: 'sine', freq: 98, freqTo: 49, dur: 0.5, gain: 0.35 });
   },
+
+  // ---- Bloodmoon ----
+  'boss.omen': (k: SynthKit) => {
+    // A distant bell tolling once, with a low swell under it.
+    k.tone({ type: 'sine', freq: 196, dur: 2.4, gain: 0.16, attack: 0.004, reverb: 0.7 });
+    k.tone({ type: 'sine', freq: 392.8, dur: 1.8, gain: 0.07, attack: 0.004, reverb: 0.7 });
+    k.tone({ type: 'sine', freq: 523, dur: 1.2, gain: 0.04, attack: 0.004, reverb: 0.75 });
+    k.tone({ type: 'sawtooth', freq: 55, dur: 1.6, gain: 0.04, attack: 0.5, reverb: 0.5 });
+  },
+  'boss.bloodmoon': (k: SynthKit) => {
+    // Two heartbeats under a dark swell that keeps rising.
+    for (const at of [0.18, 0.5]) {
+      k.tone({ type: 'sine', freq: 70, freqTo: 38, start: at, dur: 0.22, gain: 0.55 });
+      k.tone({ type: 'sine', freq: 62, freqTo: 34, start: at + 0.16, dur: 0.2, gain: 0.4 });
+    }
+    k.tone({ type: 'sawtooth', freq: 55, freqTo: 82, dur: 0.95, gain: 0.07, attack: 0.5, reverb: 0.6 });
+    k.tone({ type: 'sawtooth', freq: 56.5, freqTo: 84, dur: 0.95, gain: 0.06, attack: 0.5, reverb: 0.6 });
+    k.noise({ dur: 0.9, gain: 0.07, filter: 'bandpass', freq: 300, freqTo: 1800, q: 1.4, attack: 0.6, reverb: 0.5 });
+  },
+  'boss.slash': (k: SynthKit) => {
+    k.noise({ dur: 0.18, gain: 0.4, filter: 'bandpass', freq: 900, freqTo: 6000, q: 1.2, attack: 0.02 });
+    k.noise({ start: 0.12, dur: 0.05, gain: 0.5, filter: 'highpass', freq: 2400, attack: 0.001 });
+    k.tone({ type: 'sine', freq: 160, freqTo: 40, start: 0.12, dur: 0.4, gain: 0.45 });
+  },
+  'boss.roar': (k: SynthKit) => {
+    // A growl: rough noise sweeping down through a narrowing filter, a sub under it.
+    k.noise({ kind: 'brown', dur: 1.1, gain: 0.5, filter: 'lowpass', freq: 1600, freqTo: 220, attack: 0.05, flicker: { rate: 38, depth: 0.6 }, reverb: 0.4 });
+    k.tone({ type: 'sawtooth', freq: 110, freqTo: 62, dur: 1, gain: 0.14, attack: 0.04, reverb: 0.4 });
+    k.tone({ type: 'sawtooth', freq: 116, freqTo: 58, dur: 1, gain: 0.1, attack: 0.04, reverb: 0.4 });
+    k.tone({ type: 'sine', freq: 55, freqTo: 36, dur: 1.1, gain: 0.4 });
+  },
+  'boss.vs': (k: SynthKit) => {
+    // The VS slam: a sucked-in breath, then one enormous hit with a ringing tail.
+    k.noise({ dur: 0.2, gain: 0.18, filter: 'highpass', freq: 800, freqTo: 5000, attack: 0.18 });
+    k.noise({ start: 0.2, dur: 0.07, gain: 0.7, filter: 'lowpass', freq: 3000, attack: 0.001 });
+    k.tone({ type: 'sine', freq: 120, freqTo: 30, start: 0.2, dur: 1, gain: 0.7, reverb: 0.3 });
+    k.noise({ kind: 'brown', start: 0.2, dur: 0.9, gain: 0.35, filter: 'lowpass', freq: 900, freqTo: 120, reverb: 0.6 });
+    k.tone({ type: 'triangle', freq: 880, freqTo: 660, start: 0.2, dur: 1.2, gain: 0.07, reverb: 0.7 });
+    k.tone({ type: 'triangle', freq: 1320, freqTo: 990, start: 0.21, dur: 0.9, gain: 0.04, reverb: 0.7 });
+  },
 } satisfies Record<string, (kit: SynthKit) => void>;

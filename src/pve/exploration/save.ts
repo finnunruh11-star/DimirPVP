@@ -2,16 +2,55 @@
 // hostile: the party goes through `parseScenario`, and every scalar is clamped
 // or dropped rather than trusted.
 
-import { parseScenario } from '../../core/Scenario';
+import { MAGE_CLASSES, type MageClass } from '../../core/Classes';
+import { parseScenario, type Scenario } from '../../core/Scenario';
+import { AREA_RADIUS } from './area';
 import { BOUNTY_CAP } from './bounties';
 import { START_HOUR } from './clock';
+import { classesUnique } from './coop';
 import { isPackedExplored, packExplored, revealTiles, unpackExplored, widenExplored } from './explored';
-import { gateArrival, OPEN_WORLD_ID, worldTileCell } from './openWorld';
+import { cellWorldTile, OPEN_WORLD_ID, worldTileCell } from './openWorld';
+import { parseExplorationMines } from './mines';
+import { bloodmoonCycle } from './bloodmoon';
 import { QUEST_JOBS, QUEST_OVER } from './quest';
-import { EXPLORATION_VERSION, type ActiveBounty, type ExplorationRun, type LocaleState, type MapStyle, type QuestState, type RoadState } from './run';
+import { EXPLORATION_VERSION, type ActiveBounty, type AreaState, type ExplorationRun, type LocaleState, type QuestState, type RoadState } from './run';
+import { parseSite } from './site';
 import { createWorld, DESERT_COLUMNS, isPassable, placeById, PLACES, START_PLACE, WORLD_H, WORLD_W } from './world';
 
-const STORAGE_KEY = 'dimir.exploration.v1';
+const SLOT_KEYS = {
+  solo: 'dimir.exploration.v1',
+  online: 'dimir.exploration.online.v1',
+} as const;
+
+/** Which run the autosave reads and writes: the solo run, the online run this host keeps, or none (a guest). */
+export type SaveSlot = keyof typeof SLOT_KEYS | 'none';
+
+let slot: SaveSlot = 'solo';
+let onSaved: ((run: ExplorationRun) => void) | null = null;
+const retired = new WeakSet<ExplorationRun>();
+
+export function setSaveSlot(next: SaveSlot): void {
+  slot = next;
+}
+
+/** Never save this run again: an online run once its session has closed, so it cannot land in the solo slot. */
+export function retireRun(run: ExplorationRun): void {
+  retired.add(run);
+}
+
+export function saveSlot(): SaveSlot {
+  return slot;
+}
+
+/** Hear about every save (the online host shares each one with its guests). */
+export function setSaveListener(listener: ((run: ExplorationRun) => void) | null): void {
+  onSaved = listener;
+}
+
+function slotKey(which: SaveSlot = slot): string | null {
+  return which === 'none' ? null : SLOT_KEYS[which];
+}
+
 const MAX_FLAGS = 256;
 const MAX_BEATEN = 1024;
 const MAX_VISITED = 2048;
@@ -33,22 +72,27 @@ function storage(): Storage | null {
 }
 
 export function saveRun(run: ExplorationRun): boolean {
+  const key = slotKey();
+  if (!key || retired.has(run)) return true;
+  onSaved?.(run);
   const store = storage();
   if (!store) return false;
   try {
-    store.setItem(STORAGE_KEY, JSON.stringify(run));
+    store.setItem(key, JSON.stringify(run));
     return true;
   } catch {
     return false;
   }
 }
 
-export function clearRun(): void {
-  storage()?.removeItem(STORAGE_KEY);
+export function clearRun(which: SaveSlot = slot): void {
+  const key = slotKey(which);
+  if (key) storage()?.removeItem(key);
 }
 
-export function hasSavedRun(): boolean {
-  return !!storage()?.getItem(STORAGE_KEY);
+export function hasSavedRun(which: SaveSlot = slot): boolean {
+  const key = slotKey(which);
+  return !!key && !!storage()?.getItem(key);
 }
 
 const int = (value: unknown, fallback: number): number =>
@@ -60,8 +104,9 @@ const strings = (value: unknown, cap: number): string[] =>
     : [];
 
 /** Read the stored run, or null when there is none and when it cannot be trusted. */
-export function loadRun(): ExplorationRun | null {
-  const raw = storage()?.getItem(STORAGE_KEY);
+export function loadRun(which: SaveSlot = slot): ExplorationRun | null {
+  const key = slotKey(which);
+  const raw = key ? storage()?.getItem(key) : null;
   if (!raw) return null;
   return parseRun(raw);
 }
@@ -115,6 +160,9 @@ export function parseRun(raw: string): ExplorationRun | null {
 
     // parseScenario does the heavy validation of the roster itself.
     const party = parseScenario(JSON.stringify(parsed.party));
+    if (party.entities.length === 0 || !classesUnique(party)) return null;
+    const level = clamp(parsed.level, 1, 99, 1);
+    const levelsTaken = parseLevelsTaken(parsed.levelsTaken, party, level, clamp(parsed.pendingLevels, 0, 20, 0));
     const locale = parsed.locale as Record<string, unknown> | null | undefined;
     const beaten: Record<string, number> = Object.create(null);
     if (parsed.groupsBeaten && typeof parsed.groupsBeaten === 'object') {
@@ -123,9 +171,11 @@ export function parseRun(raw: string): ExplorationRun | null {
         beaten[key] = Math.max(0, int(day, 0));
       }
     }
-    // Runs from before maps were sold already had one, and never saw the quest.
-    const hasMap = version < 5 || parsed.hasMap === true;
-    const mapStyle = hasMap && parsed.mapStyle !== 'open' ? 'travel' : 'open';
+    // Runs from before maps were sold never saw the quest.
+    const localeState = parseLocale(locale, version);
+    const day = clamp(parsed.day, 1, 1_000_000, 1);
+    // A save from before the bosses does not owe the bloodmoons it already slept through.
+    const bloodmoons = Math.min(bloodmoonCycle(day), clamp(parsed.bloodmoons, 0, 100_000, bloodmoonCycle(day)));
 
     return {
       version: EXPLORATION_VERSION,
@@ -139,23 +189,26 @@ export function parseRun(raw: string): ExplorationRun | null {
         ? Math.min(1_000_000, Math.max(0, Math.round(parsed.gold * 10) / 10))
         : 0,
       party,
+      creating: parsed.creating === true,
       flags: strings(parsed.flags, MAX_FLAGS),
       visited,
-      level: clamp(parsed.level, 1, 99, 1),
+      level,
       xp: clamp(parsed.xp, 0, 1_000_000, 0),
-      pendingLevels: clamp(parsed.pendingLevels, 0, 20, 0),
-      day: clamp(parsed.day, 1, 1_000_000, 1),
+      pendingLevels: Math.max(0, ...party.entities.map((entity) => level - (levelsTaken[entity.mageClass] ?? 1))),
+      levelsTaken,
+      day,
       lastTown,
       bounties: parseBounties(parsed.bounties, version),
       bountiesTaken: strings(parsed.bountiesTaken, MAX_VISITED),
       purchases: strings(parsed.purchases, MAX_VISITED),
-      locale: parseLocale(locale, version, mapStyle),
+      locale: localeState,
       wildsSeen: strings(parsed.wildsSeen, 8192),
       groupsBeaten: beaten,
-      mapStyle,
-      hasMap,
+      area: parseArea(parsed.area, party, localeState),
       quest: version < 5 ? { job: QUEST_OVER, taken: false, progress: 0, opens: 1 } : parseQuest(parsed.quest),
       road: parseRoad(parsed.road),
+      mines: parseExplorationMines(parsed.mines),
+      bloodmoons,
     };
   } catch {
     return null;
@@ -168,7 +221,21 @@ function parseRoad(value: unknown): RoadState {
   return { tiles: clamp(road.tiles, 0, 64, 0), danger: hazard(road.danger), luck: hazard(road.luck) };
 }
 
-function parseLocale(locale: Record<string, unknown> | null | undefined, version: number, mapStyle: MapStyle): LocaleState | null {
+/** The level each member has taken rewards up to. Saves before co-op kept one count of levels owed. */
+function parseLevelsTaken(value: unknown, party: Scenario, level: number, legacyPending: number): Partial<Record<MageClass, number>> {
+  const out: Partial<Record<MageClass, number>> = {};
+  const stored = value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  for (const entity of party.entities) {
+    const mageClass = entity.mageClass;
+    if (!MAGE_CLASSES.includes(mageClass)) continue;
+    out[mageClass] = stored
+      ? clamp(stored[mageClass], 1, level, 1)
+      : Math.max(1, level - legacyPending);
+  }
+  return out;
+}
+
+function parseLocale(locale: Record<string, unknown> | null | undefined, version: number): LocaleState | null {
   if (!locale || typeof locale.id !== 'string') return null;
   const at = { x: clamp(locale.x, 0, 100_000, 0), y: clamp(locale.y, 0, 100_000, 0) };
   const id = locale.id.slice(0, 64);
@@ -176,12 +243,34 @@ function parseLocale(locale: Record<string, unknown> | null | undefined, version
   if (id === OPEN_WORLD_ID && version < 6) {
     return { id, ...worldTileCell({ x: Math.floor(at.x / V5_WORLD_SCALE), y: Math.floor(at.y / V5_WORLD_SCALE) }) };
   }
-  // The forest glades became a dive: a party inside one steps out at the Small Forest's gate.
-  if (id.startsWith(OLD_FOREST_PREFIX)) {
-    const forest = placeById('small-forest')!;
-    return mapStyle === 'open' ? { id: OPEN_WORLD_ID, ...gateArrival(forest) } : null;
-  }
+  // The forest glades became a dive: a party inside one is back on the map by the Small Forest.
+  if (id.startsWith(OLD_FOREST_PREFIX)) return null;
   return { id, ...at };
+}
+
+/** On foot: where the party set out from and what each member has spent. Runs that walked the whole world set out from where they stand. */
+function parseArea(value: unknown, party: Scenario, locale: LocaleState | null): AreaState | null {
+  if (locale?.id !== OPEN_WORLD_ID) return null;
+  const raw = value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  const stored = raw?.tile && typeof raw.tile === 'object' ? raw.tile as Record<string, unknown> : null;
+  const here = cellWorldTile(locale);
+  const tile = stored
+    ? { x: clamp(stored.x, 0, WORLD_W - 1, here.x), y: clamp(stored.y, 0, WORLD_H - 1, here.y) }
+    : here;
+  const spentRaw = raw?.spent && typeof raw.spent === 'object' ? raw.spent as Record<string, unknown> : {};
+  const spent: AreaState['spent'] = {};
+  for (const entity of party.entities) {
+    const hours = Object.prototype.hasOwnProperty.call(spentRaw, entity.mageClass) ? spentRaw[entity.mageClass] : undefined;
+    if (typeof hours === 'number' && Number.isFinite(hours) && hours > 0) spent[entity.mageClass] = Math.min(240, hours);
+  }
+  const site = parseSite(raw?.site);
+  const radius = typeof raw?.radius === 'number' && Number.isInteger(raw.radius) ? clamp(raw.radius, 1, AREA_RADIUS, AREA_RADIUS) : null;
+  return {
+    tile,
+    spent,
+    ...(radius != null && radius !== AREA_RADIUS ? { radius } : {}),
+    ...(site ? { site } : {}),
+  };
 }
 
 function parseQuest(value: unknown): QuestState {

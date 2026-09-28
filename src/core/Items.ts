@@ -1854,7 +1854,7 @@ export function getItem(id: ItemId): ItemDef {
 /** A list is a valid {@link ItemId} array (used to sanitise networked carts). */
 export function asItemIds(value: unknown): ItemId[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((v): v is ItemId => typeof v === 'string' && v in ITEM_BY_ID);
+  return value.filter((v): v is ItemId => typeof v === 'string' && Object.prototype.hasOwnProperty.call(ITEM_BY_ID, v));
 }
 
 /** Format a silver amount as a friendly gold/silver string. */

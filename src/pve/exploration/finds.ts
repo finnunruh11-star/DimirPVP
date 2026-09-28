@@ -4,7 +4,7 @@
 
 import type { Dice } from '../../core/Dice';
 import { getItem, type ItemId } from '../../core/Items';
-import { grantToMage, withParty } from './economy';
+import { grantToParty } from './economy';
 import type { ExplorationRun } from './run';
 import type { RegionId } from './world';
 
@@ -17,13 +17,23 @@ export const HERBS: Record<RegionId, ItemId[]> = {
   white: ['herbEmberroot'],
 };
 
-const GEMS: Record<RegionId, ItemId[]> = {
+export const GEMS: Record<RegionId, ItemId[]> = {
   capitol: ['gemAmethyst'],
   forest: ['gemEmerald', 'gemAmethyst'],
   red: ['gemRuby', 'gemSapphire'],
   black: ['gemOnyx', 'gemAmethyst'],
   lake: ['gemSapphire', 'gemEmerald'],
   white: ['gemSapphire', 'gemAmethyst', 'gemDiamond'],
+};
+
+/** Ore near enough the surface to dig out by hand. */
+export const ORES: Record<RegionId, ItemId[]> = {
+  capitol: ['oreCoal'],
+  forest: ['oreCoal', 'oreIron'],
+  red: ['oreIron', 'oreCopper', 'oreGold'],
+  black: [],
+  lake: ['oreCopper'],
+  white: ['oreCopper', 'oreGold'],
 };
 
 const SUPPLIES: ItemId[] = ['healthPotion', 'manaPotion', 'torch', 'throwingDagger', 'arrow'];
@@ -38,23 +48,19 @@ const WHERE: Record<RegionId, string[]> = {
   white: ['Under a dune crest', 'In a sun-bleached skeleton', 'Beside a half-buried pillar'],
 };
 
-/** Hand the leader one find and say what it was. Things, never coin, and nothing learned from it. */
+/** Hand the party one find and say what it was. Things, never coin, and nothing learned from it. */
 export function rollFind(run: ExplorationRun, zone: RegionId, depth: number, dice: Dice): string {
   const where = dice.pick(WHERE[zone]);
   const roll = dice.float();
   const pool = roll < 0.55 ? HERBS[zone] : roll < 0.75 ? SUPPLIES : roll < 0.93 || depth < 3 ? GEMS[zone] : LOST_KIT;
   const id = dice.pick(pool);
   const count = pool === HERBS[zone] ? dice.die(2) : id === 'arrow' ? 3 + dice.die(4) : 1;
-  withParty(run, (leader) => {
-    for (let i = 0; i < count; i++) grantToMage(leader, id);
-  });
+  grantToParty(run, id, count);
   return `${where}: ${count > 1 ? `${count}x ` : ''}${getItem(id).name}.`;
 }
 
 function grant(run: ExplorationRun, id: ItemId, count: number): string {
-  withParty(run, (leader) => {
-    for (let i = 0; i < count; i++) grantToMage(leader, id);
-  });
+  grantToParty(run, id, count);
   return `${count > 1 ? `${count}x ` : ''}${getItem(id).name}`;
 }
 

@@ -90,7 +90,7 @@ export const MODE_COPY: Record<MatchMode, MenuEntryCopy> = {
     label: 'Exploration',
     detail: 'An open world of cities, roads and wilds',
     title: 'THE WIDE WORLD',
-    description: 'Set out from Kerusai with five silver and no map. Walk the roads between cities, take what the country offers, and break off a fight by whichever edge you can reach. Progress is saved as you go.',
+    description: 'Set out from Kerusai with five silver. Plan routes on the travel map, deal with what you find on the way, and break off a fight by whichever edge you can reach. Progress is saved as you go.',
   },
   raid: {
     label: 'Raid',

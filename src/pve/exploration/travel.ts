@@ -43,7 +43,6 @@ export const TRAVEL_MODES: Record<TravelMode, ModeRule> = {
 export const TRAVEL_ORDER: readonly TravelMode[] = ['sprint', 'sneak', 'explore', 'fast'];
 
 export const HOURS_PER_TILE = 0.25;
-export const SEARCH_HOURS = 2;
 /** Chances per tile at a sprint over explored open country by day. */
 const TILE_ENEMY = 0.025;
 const TILE_FIND = 0.03;
@@ -214,34 +213,6 @@ export function exploreAlong(run: ExplorationRun, cells: readonly Cell[], radius
   const fresh = revealTiles(mask, cells, radius);
   if (fresh) run.explored = packExplored(mask);
   return fresh;
-}
-
-export function searchKey(run: ExplorationRun): string {
-  return `${run.pos.x},${run.pos.y}:${run.day}`;
-}
-
-export function canSearch(run: ExplorationRun): { allowed: boolean; reason?: string } {
-  return run.searched.includes(searchKey(run))
-    ? { allowed: false, reason: 'You have already searched here today.' }
-    : { allowed: true };
-}
-
-export type SearchOutcome = 'loot' | 'event' | 'robbery' | 'monsters' | 'nothing';
-
-/** Stay put and comb the area: one roll, weighted toward something worth finding. */
-export function rollSearch(world: WorldMap, run: ExplorationRun): { outcome: SearchOutcome; zone: RegionId; depth: number } {
-  const { x, y } = run.pos;
-  run.searched = [...run.searched, searchKey(run)].slice(-64);
-  const dice = stepDice(run, run.steps * 7 + 3);
-  const roll = dice.float();
-  const zone = regionAt(world, x, y);
-  const depth = Math.min(10, depthAt(world, x, y) + (isNight(run.hour) ? 1 : 0));
-  let outcome: SearchOutcome = roll < 0.55 ? 'loot' : roll < 0.75 ? 'event' : roll < 0.9 ? 'monsters' : 'nothing';
-  if (outcome === 'monsters') {
-    if (nearTown(x, y)) outcome = 'nothing';
-    else if (dice.float() < REGIONS[zone].robbery) outcome = 'robbery';
-  }
-  return { outcome, zone, depth };
 }
 
 /** A word for the preview: how likely the trip is to end in a fight. */

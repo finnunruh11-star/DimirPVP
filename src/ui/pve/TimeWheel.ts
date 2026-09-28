@@ -5,6 +5,7 @@
 
 import Phaser from 'phaser';
 import { clockTime, hoursToTurn, isNight, spanLabel } from '../../pve/exploration/clock';
+import { bloodmoonOmen, hoursToBloodmoon } from '../../pve/exploration/bloodmoon';
 import { MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
 import { isReducedMotion } from '../cabinet/motion';
 import { cssColor, darkness, skyColor } from '../../visuals/daylight';
@@ -144,6 +145,9 @@ export class TimeWheel extends Phaser.GameObjects.Container {
   private readonly timeText: Phaser.GameObjects.Text;
   private readonly phaseText: Phaser.GameObjects.Text;
   private readonly maskShape: Phaser.GameObjects.Graphics;
+  private readonly omenText: Phaser.GameObjects.Text;
+  private readonly omenMoon: Phaser.GameObjects.Graphics;
+  private omenPulse?: Phaser.Tweens.Tween;
   private shown = -1;
   private target = 0;
 
@@ -236,7 +240,17 @@ export class TimeWheel extends Phaser.GameObjects.Container {
     }).setOrigin(0.5, 0).setLetterSpacing(1);
 
     this.ring = scene.add.graphics().setVisible(false);
-    this.add([bezel, pointer, plate, this.dayText, this.timeText, this.phaseText, this.ring]);
+    // Hanging under the plate: how long until the bloodmoon.
+    this.omenText = scene.add.text(6, bottom + 7, '', {
+      fontFamily: MENU_FONT.control,
+      fontSize: '12px',
+      fontStyle: 'bold',
+      color: '#d8766a',
+      backgroundColor: '#140608',
+      padding: { x: 7, y: 3 },
+    }).setOrigin(0.5, 0).setLetterSpacing(2);
+    this.omenMoon = scene.add.graphics();
+    this.add([bezel, pointer, plate, this.dayText, this.timeText, this.phaseText, this.ring, this.omenText, this.omenMoon]);
     this.once(Phaser.GameObjects.Events.DESTROY, () => {
       for (const part of under) part.destroy();
     });
@@ -289,5 +303,31 @@ export class TimeWheel extends Phaser.GameObjects.Container {
     if (this.phaseText.text !== phase) this.phaseText.setText(phase);
     this.timeText.setColor(night ? '#cdd8ff' : MENU_HEX.bone);
     this.phaseText.setColor(night ? '#9fb3f0' : turn <= 2 ? '#f0a050' : '#e2cd8a');
+    this.applyOmen(day, hour);
+  }
+
+  private applyOmen(day: number, hour: number): void {
+    const omen = bloodmoonOmen(day);
+    const label = omen.tonight
+      ? `BLOODMOON IN ${spanLabel(Math.max(0, hoursToBloodmoon(day, hour))).toUpperCase()}`
+      : `BLOODMOON IN ${omen.daysLeft} DAYS`;
+    if (this.omenText.text === label) return;
+    this.omenText.setText(label).setColor(omen.tonight ? '#ffd2c6' : '#d8766a').setBackgroundColor(omen.tonight ? '#5a0a0c' : '#140608');
+    const moon = this.omenMoon;
+    const mx = this.omenText.x - this.omenText.width / 2 - 9;
+    const my = this.omenText.y + this.omenText.height / 2;
+    moon.clear();
+    moon.fillStyle(0x140608, 1).fillCircle(mx, my, 8);
+    moon.fillStyle(omen.tonight ? 0xff4a34 : 0xa8322a, 1).fillCircle(mx, my, 6);
+    moon.fillStyle(omen.tonight ? 0xff9a7a : 0xd8584a, 1).fillCircle(mx - 2, my - 2, 2.4);
+    moon.fillStyle(omen.tonight ? 0xc0281e : 0x7a1c16, 1).fillCircle(mx + 2, my + 2, 1.4);
+    if (omen.tonight && !this.omenPulse && !isReducedMotion()) {
+      this.omenPulse = this.scene.tweens.add({ targets: [this.omenText, moon], alpha: 0.55, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+    } else if (!omen.tonight && this.omenPulse) {
+      this.omenPulse.stop();
+      this.omenPulse = undefined;
+      this.omenText.setAlpha(1);
+      moon.setAlpha(1);
+    }
   }
 }

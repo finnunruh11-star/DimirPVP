@@ -3,6 +3,7 @@ import { Dice } from '../../core/Dice';
 import type { Scenario } from '../../core/Scenario';
 import type { WordId } from '../../core/Words';
 import { Net } from '../../net/Net';
+import { ADVENTURE_PROTOCOL } from '../../net/AdventureSession';
 import { rollSwamprunEncounter } from '../../pve/swamprun';
 import { MenuModel } from './MenuModel';
 import {
@@ -63,16 +64,22 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(model.setRole('host'), false, 'Expedition host rejection');
   }],
 
-  ['keeps Exploration honest as a solo three-word campaign', () => {
+  ['keeps Exploration builds out of the menu', () => {
     const model = new MenuModel();
     model.setMode('exploration');
 
-    equal(MODE_CAPABILITIES.exploration.roles, ['local'], 'Exploration roles');
+    equal(MODE_CAPABILITIES.exploration.roles, ['local', 'host', 'guest'], 'Exploration roles');
+    equal(MODE_CAPABILITIES.exploration.seats, [1, 3], 'One traveller per class');
     equal(MODE_CAPABILITIES.exploration.category, 'adventures', 'Exploration category');
+    equal(MODE_CAPABILITIES.exploration.usesBuild, false, 'Exploration builds in the world');
     equal(model.seatCount, 1, 'Exploration seat count');
     equal(model.aiCount, 0, 'Exploration AI count');
-    equal(model.loadoutLimit(), 3, 'Exploration loadout size');
-    equal(model.setRole('guest'), false, 'Exploration guest rejection');
+    equal(model.loadoutLimit(), 2, 'Exploration starting words');
+    equal(model.isReady(), true, 'Exploration needs no menu build');
+    equal(model.setRole('guest'), true, 'Exploration can be joined online');
+    equal(model.setRole('host'), true, 'Exploration can be hosted');
+    model.setSeatCount(4);
+    equal(model.seatCount, 3, 'at most three travellers');
   }],
 
   ['uses one human and fills the rest with AI in AI Duel', () => {
@@ -122,11 +129,10 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
   ['assembles native Exploration as a lone traveller', () => {
     const model = new MenuModel();
     model.setMode('exploration');
-    fillBuild(model, 0, ['pierce', 'veil', 'shadow']);
     const config = model.toLocalMatchConfig(() => 0.25);
     equal(config.mode, 'exploration', 'Exploration mode');
     equal(config.seats?.length, 1, 'Exploration seats');
-    equal(config.seats?.[0].loadout, ['pierce', 'veil', 'shadow', 'subtle'], 'Exploration loadout');
+    equal(config.seats?.[0].loadout, [], 'Exploration words are picked in the world');
     equal(config.seats?.[0].isAI, false, 'Exploration seat is human');
   }],
 
@@ -446,6 +452,43 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       globalThis.WebSocket = originalWebSocket;
     }
   }],
+
+  ['assembles an online Adventure party of humans with no menu build', async () => {
+    const originalWebSocket = globalThis.WebSocket;
+    globalThis.WebSocket = FakeAdventureRelaySocket as unknown as typeof WebSocket;
+    try {
+      const model = new MenuModel();
+      model.setMode('exploration');
+      model.setRole('host');
+      model.setSeatCount(2);
+      const coordinator = new OnlineCoordinator(model, () => undefined);
+      const config = await coordinator.connect({ role: 'host', room: '77', url: 'ws://relay.test/ws' });
+      equal(config.mode, 'exploration', 'Adventure mode');
+      equal(config.seats?.map((seat) => seat.isAI), [false, false], 'no AI travellers');
+      equal(config.adventure, { resume: false }, 'a new run');
+      config.net?.close();
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+    }
+  }],
+
+  ['routes Adventure messages around the lockstep queue', async () => {
+    const socket = new FakeSocket();
+    const net = new (Net as unknown as new (ws: WebSocket) => Net)(socket as unknown as WebSocket);
+    const deliver = (message: object): void => socket.onmessage?.({ data: JSON.stringify(message) } as MessageEvent);
+    deliver({ k: 'x-live', from: 0, n: 1 });
+    deliver({ k: 'x-live', from: 0, n: 2 });
+    deliver({ k: 'turn', cmd: 1 });
+    deliver({ k: 'x-run', from: 0 });
+    equal((await net.recv()).k, 'turn', 'the lockstep queue only sees lockstep messages');
+    const seen: unknown[] = [];
+    net.setAdventureHandler((message) => seen.push(message.k === 'x-live' ? message.n : message.k));
+    equal(seen, [2, 'x-run'], 'held adventure messages replay, keeping only the newest live frame');
+    deliver({ k: 'bye', seat: 1 });
+    equal(seen[2], 'bye', 'a departure reaches the session');
+    equal((await net.recv()).k, 'bye', 'and a fight waiting on the queue');
+    net.close();
+  }],
 ];
 
 class FakeSocket {
@@ -483,6 +526,32 @@ class FakeRelaySocket extends FakeSocket {
         loadout: ['corrode', 'curse', 'pierce', 'shadow', 'mind', 'channel'],
         class: 'life',
       });
+    }
+  }
+
+  private emit(message: object): void {
+    queueMicrotask(() => {
+      this.onmessage?.({ data: JSON.stringify(message) } as MessageEvent);
+    });
+  }
+}
+
+/** A relay with one guest who joins an Adventure room, stamped as the relay does. */
+class FakeAdventureRelaySocket extends FakeSocket {
+  onopen: (() => void) | null = null;
+
+  constructor(_url: string | URL) {
+    super();
+    queueMicrotask(() => this.onopen?.());
+  }
+
+  override send(raw: string): void {
+    const message = JSON.parse(raw) as { k: string };
+    if (message.k === 'join') {
+      this.emit({ k: 'seat', seat: 0, size: 2 });
+      this.emit({ k: 'ready', size: 2 });
+    } else if (message.k === 'hello') {
+      this.emit({ k: 'hello', seat: 1, from: 1, loadout: [], class: 'life', v: ADVENTURE_PROTOCOL });
     }
   }
 

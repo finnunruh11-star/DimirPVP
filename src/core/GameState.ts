@@ -29,6 +29,8 @@ import {
   VEIL,
 } from '../config/constants';
 import { WORDS } from './Words';
+import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_TURNS } from '../pve/goblins';
+import { BARAL_MARK, DENIAL_RELOCATION_DAMAGE, DENIAL_STIFLE_MILL, denialArmed } from '../pve/baral';
 import { splitModifiers } from './Words';
 import { stormWordsCompatible } from './Colors';
 import { makeSandCadett, makeRemnant } from './sandSummons';
@@ -482,7 +484,7 @@ export class GameState {
    */
   private rollInitiative(): void {
     const scored = this.mages.flatMap((m, i) => {
-      if (m.isSummon) return [];
+      if (m.isSummon || m.inert) return [];
       const roll = this.rollD20(m);
       const total = roll + m.effectiveDex();
       const priority = Math.max(m.profile.redPrimaryTier ? 1 : 0, m.intrinsicInitiativePriority);
@@ -507,6 +509,11 @@ export class GameState {
   addMage(m: Mage): void {
     this.mages.push(m);
     const idx = this.mages.length - 1;
+    // Objects on the field take no turns.
+    if (m.inert) {
+      this.initiativeRolls[idx] = 0;
+      return;
+    }
     this.initiativeOrder.push(idx);
     const roll = this.rollD20(m);
     this.initiativeRolls[idx] = roll + m.effectiveDex();
@@ -3613,6 +3620,7 @@ export class GameState {
     }
     this.transferReapOnDeath(target, owner);
     this.onDesecrationDeath(target, owner);
+    if (target.baral) this.dismantleBaralWorks(target);
     this.onMageDefeated?.(target, source);
   }
 
@@ -3783,6 +3791,8 @@ export class GameState {
       mover.facing = Math.atan2(destination.y - origin.y, destination.x - origin.x);
     }
     this.resolveOpportunityStrikes(mover, origin, destination);
+    // An Artifact of Denial will not be moved: it cracks every time it is.
+    if (mover.denial && mover.alive && dist(origin, destination) > 1) this.crackMovedArtifact(mover);
 
     const lightRadius = this.effectiveLightRadius(mover);
     if (!mover.alive || lightRadius <= 0) return;
@@ -5324,6 +5334,136 @@ export class GameState {
   companionHeal(source: Mage, target: Mage): void {
     const ctx = this.effectContext(source, target, null);
     heal(ctx, target, rollDice(ctx, '3d3', 'Elven Heal'));
+  }
+
+  /** Goblin Shaman: mend a goblin by 3 and hasten it by half its pace. Every mending stacks. */
+  goblinMend(source: Mage, target: Mage): void {
+    if (!source.alive || !target.alive) return;
+    const ctx = this.effectContext(source, target, null);
+    heal(ctx, target, GOBLIN_MEND_HP);
+    target.statuses.push({
+      key: `goblin-haste:${this.nextId++}`,
+      name: 'Goblin Haste',
+      kind: 'debuff',
+      duration: GOBLIN_RITE_TURNS,
+      mods: { moveRange: Math.round(target.baseMoveRange() * GOBLIN_HASTE) },
+    });
+    this.log(`${target.name} is hastened: +${Math.round(GOBLIN_HASTE * 100)}% move for ${GOBLIN_RITE_TURNS - 1} turns.`);
+  }
+
+  /** Goblin Shaman: slow a foe by a quarter of its pace. Every hex stacks. */
+  goblinHex(source: Mage, target: Mage): void {
+    if (!source.alive || !target.alive) return;
+    applyDebuff(this.effectContext(source, target, null), target, {
+      name: 'Goblin Hex',
+      key: `goblin-hex:${this.nextId++}`,
+      duration: GOBLIN_RITE_TURNS,
+      mods: { moveRange: -Math.round(target.baseMoveRange() * GOBLIN_HEX) },
+    });
+  }
+
+  /** A fleeing goblin that reached the edge of the field is gone from the fight. */
+  goblinEscape(goblin: Mage): void {
+    if (!goblin.alive) return;
+    goblin.withdrawn = true;
+    this.log(`${goblin.name} flees the battle.`);
+  }
+
+  // ---- Baral, Artificer of Nope ----------------------------------------------
+
+  /** Drakes Baral calls up mid-action; the scene raises them once the action settles. */
+  pendingDrakes: { baral: Mage; count: number }[] = [];
+
+  /** The living Artifacts of Denial that answer `item`: a party action, never a bare reaction window. */
+  private artifactsAgainst(item: StackItem): Mage[] {
+    if (item.windowTrigger) return [];
+    return this.mages.filter((m) => m.alive && !!m.denial && m.team !== item.source.team);
+  }
+
+  /**
+   * An armed Artifact of Denial stifles `item`: it never resolves, its actor takes
+   * 1 mill, and the artifact's charges are spent. Only the first armed one
+   * answers; the others keep theirs for the next action. Returns the artifact.
+   */
+  stifleByDenial(item: StackItem): Mage | null {
+    const artifact = this.artifactsAgainst(item).find(denialArmed);
+    if (!artifact?.denial) return null;
+    artifact.denial.charges = 0;
+    this.log(`${artifact.name} says no: ${item.source.name}'s ${item.label} is stifled.`);
+    this.vfxSink?.combatFeedback?.(item.source, { kind: 'blocked', label: 'STIFLED' });
+    if (item.source.alive) {
+      dealDamage(
+        { ...this.effectContext(artifact, item.source, null), crit: false },
+        item.source,
+        dmg(DENIAL_STIFLE_MILL, 'sanity'),
+        { canMiss: false, noImpactFx: true }
+      );
+    }
+    return artifact;
+  }
+
+  /** A party action went through: every Artifact of Denial gains a charge, up to what arms it. */
+  chargeDenial(item: StackItem): void {
+    for (const artifact of this.artifactsAgainst(item)) {
+      const d = artifact.denial!;
+      if (d.charges >= d.threshold) continue;
+      d.charges += 1;
+      if (d.charges >= d.threshold) this.log(`${artifact.name} is armed.`);
+    }
+  }
+
+  private crackMovedArtifact(artifact: Mage): void {
+    const by = this.current && this.current !== artifact && this.current.alive ? this.current : artifact;
+    this.log(`${artifact.name} cracks as it is moved.`);
+    dealDamage(
+      { ...this.effectContext(by, artifact, null), crit: false },
+      artifact,
+      dmg(DENIAL_RELOCATION_DAMAGE, 'typeless'),
+      { canMiss: false, trueDamage: true }
+    );
+  }
+
+  /** Baral's first fall below his marks: two drakes come, and he is unseen until his next turn. */
+  checkBaralWound(target: Mage): void {
+    const b = target.baral;
+    if (!b || b.wounded || !target.alive) return;
+    if (target.hp >= b.hpMark && target.sanity >= BARAL_MARK) return;
+    b.wounded = true;
+    this.log(`${target.name}: "Nope." Two drakes clatter out and he is gone from sight.`);
+    this.pendingDrakes.push({ baral: target, count: 2 });
+    applyInvisibility({ ...this.effectContext(target, target, null), crit: false }, target, { duration: 1, mode: 'full' });
+  }
+
+  /** The end of Baral's turn: every second one builds an artifact, the others drakes, two once he is at his marks. */
+  baralEndStep(baral: Mage): { artifacts: number; drakes: number } {
+    const b = baral.baral;
+    if (!b || !baral.alive) return { artifacts: 0, drakes: 0 };
+    b.turns += 1;
+    if (b.turns % 2 === 0) return { artifacts: 1, drakes: 0 };
+    return { artifacts: 0, drakes: baral.hp <= b.hpMark || baral.sanity <= BARAL_MARK ? 2 : 1 };
+  }
+
+  /** A drake's turn ended: one fewer left, and at none it falls apart. True when it did. */
+  wearDrake(drake: Mage): boolean {
+    if (drake.drakeTurns == null || !drake.alive) return false;
+    drake.drakeTurns -= 1;
+    if (drake.drakeTurns > 0) return false;
+    drake.withdrawn = true;
+    this.log(`${drake.name} winds down and falls apart.`);
+    this.vfxSink?.summonPuff?.(drake.pos, 60);
+    return true;
+  }
+
+  /** With Baral gone his works fail: the drakes fall apart and the artifacts go dark. */
+  private dismantleBaralWorks(baral: Mage): void {
+    const works = this.mages.filter((m) => m.alive && m.team === baral.team && (!!m.denial || m.drakeTurns != null));
+    if (!works.length) return;
+    for (const m of works) {
+      m.withdrawn = true;
+      this.vfxSink?.summonPuff?.(m.pos, 60);
+    }
+    this.pendingDrakes = [];
+    this.log(`With ${baral.name} gone, his drakes fall apart and the Artifacts of Denial go dark.`);
   }
 
   effectContext(
