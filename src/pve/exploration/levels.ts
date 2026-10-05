@@ -9,7 +9,7 @@ import { Dice } from '../../core/Dice';
 import type { Mage } from '../../core/Mage';
 import { STAT_ORDER, type StatKey } from '../../core/Stats';
 import { isModifierWord, WORD_ORDER, WORDS, type WordId } from '../../core/Words';
-import { levelReward, rackIsFull } from '../progression';
+import { levelCoreStatGain, levelReward, rackIsFull } from '../progression';
 import { levelTaken, memberOf, takeLevel } from './coop';
 import { hashString, withParty, type ShopResult } from './economy';
 import type { ExplorationRun } from './run';
@@ -91,7 +91,7 @@ export function applyLevelChoice(run: ExplorationRun, member: MageClass, choice:
   if (choice.level !== level || level > run.level) return { ok: false, message: 'No level to claim.' };
   const reward = levelReward(level);
   const stats = [...new Set(choice.stats)];
-  if (stats.length !== choice.stats.length || stats.length > reward.stats) return { ok: false, message: 'Too many stats.' };
+  if (stats.length !== choice.stats.length || stats.length !== reward.stats) return { ok: false, message: `Choose ${reward.stats} stat${reward.stats === 1 ? '' : 's'}.` };
   return withParty(run, (_leader, party) => {
     const mage = memberOf(party, member);
     if (!mage) return { ok: false, message: 'No such party member.' };
@@ -104,7 +104,11 @@ export function applyLevelChoice(run: ExplorationRun, member: MageClass, choice:
     } else if (choice.word) {
       return { ok: false, message: 'No word at this level.' };
     }
-    for (const stat of stats) mage.gainStat(stat, 1);
+    const coreGain = levelCoreStatGain(level);
+    for (const stat of ['strength', 'dex', 'int'] as const) mage.gainStat(stat, coreGain);
+    mage.gainStat('mana', 1);
+    mage.gainStat('hp', 1);
+    for (const stat of stats) mage.gainStat(stat, reward.statGain);
     mage.setLoadout(loadout);
     settleColors(mage, choice.primary, choice.secondary);
     takeLevel(run, member, level);

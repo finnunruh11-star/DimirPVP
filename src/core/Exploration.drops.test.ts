@@ -5,7 +5,8 @@ import { bountyBoard, BOUNTY_CAP } from '../pve/exploration/bounties';
 import { DROP_TABLES, depthLuck, dropTable, rollDrops } from '../pve/exploration/drops';
 import { grantToMage, rest, sellItem, sellPrice, withParty } from '../pve/exploration/economy';
 import { ZONE_ROSTERS } from '../pve/exploration/encounters';
-import { ROAD_EVENTS } from '../pve/exploration/events';
+import { stage } from '../pve/exploration/eventKit';
+import { ROAD_EVENTS, variantsFor } from '../pve/exploration/events';
 import { capturePartySnapshot } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import { ROOM_PRICE, SHOPS, shopById } from '../pve/exploration/shops';
@@ -32,40 +33,37 @@ const guild = shopById('capitol-guild')!;
 const TOWNS = ['capitol', 'kerusai', 'hearthfire', 'oakhaven', 'pennybruck', 'thassa', 'nerogril', 'theocracy'];
 
 const tests: [name: string, run: () => void][] = [
-  ['a zombie leaves a small mana stone half the time and a medium one a tenth of the time', () => {
+  ['the restless dead, goblins, bandits and the desert leave nothing; mana stones still sell', () => {
     const rng = new Dice(99);
-    const rolls = 20000;
-    let small = 0;
-    let medium = 0;
-    for (let i = 0; i < rolls; i++) {
-      const drops = rollDrops('zombie', 1, rng);
-      if (drops.includes('manaStoneSmall')) small += 1;
-      if (drops.includes('manaStoneMedium')) medium += 1;
+    const nothing = ['zombie', 'skeleton', 'acidZombie', 'defender', 'goblinChief', 'goblinRaider', 'goblinShaman', 'bandit', 'bandit-archer', 'bandit-captain', 'sand-stalker', 'sandworm'];
+    for (const kind of nothing) {
+      for (let i = 0; i < 200; i++) equal(rollDrops(kind, 9, rng), [], `${kind} leaves nothing`);
     }
-    assert(Math.abs(small / rolls - 0.5) < 0.015, `small stones ${(small / rolls).toFixed(3)}`);
-    assert(Math.abs(medium / rolls - 0.1) < 0.01, `medium stones ${(medium / rolls).toFixed(3)}`);
     equal([sellPrice(guild, getItem('manaStoneSmall')), sellPrice(guild, getItem('manaStoneMedium'))], [0.2, 0.5], 'they sell for 2s and 5s');
   }],
 
-  ['fodder usually leaves nothing and harder creatures leave more; only bosses always pay', () => {
+  ['fodder usually leaves nothing and harder creatures leave more; boss hoards can come up empty', () => {
     const rng = new Dice(5);
     const empty = (kind: string, depth = 1): number => {
       let none = 0;
       for (let i = 0; i < 4000; i++) if (rollDrops(kind, depth, rng).length === 0) none += 1;
       return none / 4000;
     };
-    for (const kind of ['zombie', 'rabbit', 'slime', 'kobold', 'bandit', 'wolf']) {
+    for (const kind of ['zombie', 'rabbit', 'slime', 'kobold', 'bandit', 'wolf', 'rockling']) {
       assert(empty(kind) > 0.3, `${kind} often leaves nothing (${empty(kind).toFixed(2)})`);
     }
-    equal(rollDrops('rockling', 1, rng), [], 'rocklings are just rock');
     const worth = (kind: string): number => {
       let silver = 0;
       for (let i = 0; i < 4000; i++) for (const id of rollDrops(kind, 1, rng)) silver += getItem(id).cost;
       return silver / 4000;
     };
-    assert(worth('skeleton') > worth('zombie') && worth('ghast') > worth('skeleton'), 'the harder the dead, the richer the pickings');
+    assert(worth('specter') > worth('wisp') && worth('ghast') > worth('specter'), 'the harder the dead, the richer the pickings');
     assert(worth('boar') > worth('rabbit'), 'a boar is worth more than a rabbit');
-    assert(empty('lich') === 0 && empty('reaper') === 0, 'bosses always pay');
+    assert(worth('deathknightSpear') > worth('ghast'), 'a deathknight is worth the most');
+    for (const boss of ['lich', 'reaper']) {
+      const none = empty(boss);
+      assert(none > 0.25 && none < 0.35, `a ${boss}'s hoard comes up empty on a 1-6 (${none.toFixed(2)})`);
+    }
     assert(depthLuck(1) === 1 && depthLuck(11) > 1 && depthLuck(99) === 1.5, 'depth helps, up to half again');
     equal(rollDrops('nobody', 3, rng), [], 'an unknown creature leaves nothing');
   }],
@@ -115,11 +113,11 @@ const tests: [name: string, run: () => void][] = [
     const zones = ['capitol', 'black', 'red', 'forest', 'wilds', 'lake', 'white'] as const;
     for (const event of ROAD_EVENTS) {
       for (const zone of zones) {
-        if (event.zones && !event.zones.includes(zone)) continue;
-        event.choices.forEach((choice, index) => {
+        for (const variant of variantsFor(event, zone)) variant.choices.forEach((_, index) => {
           for (let seed = 1; seed <= 6; seed++) {
             const run = freshRun(seed);
             run.gold = 10;
+            const choice = stage(event, variant, new Dice(seed)).choices[index];
             const ctx = { run, zone, depth: 3, dice: new Dice(seed * 31 + index) };
             withParty(run, (leader) => grantToMage(leader, 'healthPotion'));
             if (choice.available && !choice.available(ctx)) continue;

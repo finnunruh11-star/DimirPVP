@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import type { DamageType } from '../core/Damage';
 import type { Vec2 } from '../core/utils';
-import type { CombatFeedback } from '../effects/effects';
+import type { CombatFeedback, GodFxKind, GodFxOptions } from '../effects/effects';
 import { IMPACT_FX, type ImpactWeight } from '../effects/FxPresets';
 import { DAMAGE_COLORS } from './CombatFeedbackLayer';
 import { ImpactSheetPlayer, type ImpactSheetKey } from './ImpactSheets';
@@ -201,6 +201,126 @@ const DEBRIS_TYPES = new Set<DamageType>(['shatter', 'pierce', 'slashing']);
 const WARD_COLOR = 0xc9a961;
 const MISS_COLOR = 0x8da89d;
 
+interface GodRecipe {
+  sheet: ImpactSheetKey;
+  /** Longest side of the art at its default size, in px. */
+  size: number;
+  /** Colour of the rings and scatter that ride along with the art. */
+  accent: number;
+  /** Tint for near-white art; coloured art is left as authored. */
+  tint?: number;
+  glow?: boolean;
+  /** An expanding ring of light under the art. */
+  ring?: boolean;
+  scatter?: Scatter;
+  shake?: ImpactWeight;
+  /** A brief full-screen wash, for the moments that bend the whole field. */
+  flash?: { duration: number; color: number };
+}
+
+/** How each god-word flourish reads. The art carries the silhouette, the rest the weight. */
+const GOD_FX: Record<GodFxKind, GodRecipe> = {
+  deathMark: {
+    sheet: 'god-death',
+    size: 150,
+    accent: 0xb9304a,
+    scatter: {
+      count: 10, speed: 90, lifespan: 900, shape: 'smoke', size: 70,
+      alpha: 0.35, gravityY: -60, drag: 0.8,
+    },
+    shake: 'heavy',
+  },
+  skull: {
+    sheet: 'god-skull',
+    size: 120,
+    tint: 0xd8dceb,
+    accent: 0x9aa3b5,
+    scatter: {
+      count: 8, speed: 70, lifespan: 820, shape: 'smoke', size: 60,
+      alpha: 0.3, gravityY: -80, drag: 0.8,
+    },
+  },
+  reap: {
+    sheet: 'god-reap',
+    size: 240,
+    accent: 0x9b6bff,
+    glow: true,
+    scatter: {
+      count: 14, speed: 260, lifespan: 420, shape: 'spark', size: 18,
+      glow: true, drag: 0.85, alignToTravel: true,
+    },
+  },
+  hex: {
+    sheet: 'god-hex',
+    size: 150,
+    accent: 0x7cd46b,
+    scatter: {
+      count: 12, speed: 150, lifespan: 700, shape: 'mote', size: 12,
+      glow: true, gravityY: -60, drag: 0.8, stagger: 0.05,
+    },
+  },
+  void: {
+    sheet: 'god-void',
+    size: 170,
+    accent: 0x7b5ab8,
+    scatter: {
+      count: 8, speed: 60, lifespan: 900, shape: 'smoke', size: 80,
+      alpha: 0.35, drag: 0.85,
+    },
+  },
+  warp: {
+    sheet: 'god-warp',
+    size: 150,
+    accent: 0x7fd3ff,
+    glow: true,
+    ring: true,
+    scatter: {
+      count: 16, speed: 220, lifespan: 480, shape: 'spark', size: 14,
+      glow: true, drag: 0.8, alignToTravel: true,
+    },
+  },
+  sphere: {
+    sheet: 'god-sphere',
+    size: 150,
+    accent: 0x9ee7ff,
+    glow: true,
+    ring: true,
+    scatter: {
+      count: 12, speed: 120, lifespan: 700, shape: 'mote', size: 12,
+      glow: true, drag: 0.85, stagger: 0.04,
+    },
+  },
+  implode: {
+    sheet: 'god-implode',
+    size: 200,
+    accent: 0xd08bff,
+    glow: true,
+    ring: true,
+    shake: 'heavy',
+  },
+  rift: {
+    sheet: 'god-rift',
+    size: 320,
+    accent: 0xff5599,
+    glow: true,
+    ring: true,
+    shake: 'seismic',
+    flash: { duration: 240, color: 0xffd6ea },
+  },
+  cataclysm: {
+    sheet: 'impact-cataclysm',
+    size: 220,
+    tint: 0xd9c9ff,
+    accent: 0xffe4b0,
+    glow: true,
+    shake: 'seismic',
+    scatter: {
+      count: 20, speed: 320, lifespan: 600, shape: 'shard', size: 13,
+      gravityY: 700, tumble: true, drag: 0.55, stagger: 0.03,
+    },
+  },
+};
+
 interface FlashState {
   tinted: boolean;
   tint: number;
@@ -362,6 +482,34 @@ export class ImpactFxDirector {
     this.particles.burst(at, {
       color, count: 1, speed: 0, lifespan: 420, shape: 'ring', size: size * 0.8, glow: true,
     });
+  }
+
+  /** A god word leaves its mark: authored art, light, and for the heaviest, weight. */
+  godFx(kind: GodFxKind, at: Vec2, opts: GodFxOptions = {}): void {
+    if (this.destroyed) return;
+    const recipe = GOD_FX[kind];
+    const reduced = this.reducedMotion();
+    const size = opts.size ?? recipe.size;
+    const accent = opts.color ?? recipe.accent;
+    this.sheets.play(recipe.sheet, at, {
+      color: opts.color ?? recipe.tint ?? 0xffffff,
+      size,
+      angle: opts.angle,
+      glow: recipe.glow,
+      depth: 9.8,
+      still: reduced,
+    });
+    if (recipe.scatter) this.particles.burst(at, { ...recipe.scatter, color: recipe.scatter.color ?? accent });
+    if (recipe.ring) {
+      this.particles.burst(at, {
+        color: accent, count: 1, speed: 0, lifespan: 560, shape: 'ring', size: size * 0.9, glow: true,
+      });
+    }
+    if (recipe.shake) this.shake(recipe.shake);
+    if (recipe.flash && !reduced) {
+      const c = recipe.flash.color;
+      this.scene.cameras.main.flash(recipe.flash.duration, (c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
+    }
   }
 
   destroy(): void {

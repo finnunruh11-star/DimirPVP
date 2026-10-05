@@ -5,7 +5,8 @@
 import Phaser from 'phaser';
 import { playSound } from '../../audio';
 import { GAME_WIDTH } from '../../config/constants';
-import { getItem, RARITY_COLOR, type ItemDef, type ItemId, type Rarity } from '../../core/Items';
+import { getItem, type ItemDef, type Rarity } from '../../core/Items';
+import { packLabel } from '../../core/Pack';
 import { SceneInput } from '../../engine/SceneInput';
 import {
   bountyBoard,
@@ -14,31 +15,30 @@ import {
   MAX_ACTIVE_BOUNTIES,
 } from '../../pve/exploration/bounties';
 import {
+  craftersIn,
+  LONG_REST_HOURS,
   memberIn,
   moneyLabel,
   partyOf,
-  recipesAt,
   roomPrice,
   sellOffers,
   shopStock,
 } from '../../pve/exploration/economy';
+import { bloodmoonDue, hoursBeforeBloodmoon } from '../../pve/exploration/bloodmoon';
+import { clockTime, spanLabel } from '../../pve/exploration/clock';
+import type { RestNap } from '../../pve/exploration/nap';
 import type { ExplorationActions, ExplorationIntent } from '../../pve/exploration/intents';
 import { partyXpScale } from '../../pve/exploration/coop';
-import {
-  QUEST_LODGE,
-  questActive,
-  questJob,
-  questReady,
-} from '../../pve/exploration/quest';
 import type { ExplorationRun } from '../../pve/exploration/run';
+import { SHORT_REST_HOURS } from '../../pve/exploration/shortRest';
 import type { ShopDef } from '../../pve/exploration/shops';
 import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
 import { addCabinetBackdrop, addRecess, addSectionRule, MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
+import { CraftingView } from './CraftingView';
 
-type Tab = 'quest' | 'buy' | 'sell' | 'rest' | 'bounties' | 'forge';
+type Tab = 'buy' | 'sell' | 'rest' | 'bounties' | 'forge';
 
 const TAB_LABEL: Record<Tab, string> = {
-  quest: 'Quest',
   buy: 'Buy',
   sell: 'Sell',
   rest: 'Rest',
@@ -72,10 +72,35 @@ export interface ShopViewHooks {
   /** The run changed: save it and refresh the HUD. */
   changed(): void;
   close(): void;
+  /** The party has slept here: play the night. It saves the run and closes the window itself. */
+  slept?(nap: RestNap): void;
   /** Keeper portrait texture key (two-frame sheet). */
   portrait?: string;
   townId: string;
   actions: ExplorationActions;
+  /** Online: a night is everyone's or nobody's, so the Rest tab calls for one and joins it. */
+  inn?: InnHooks;
+  /**
+   * A free short rest at the inn. Alone it happens at once and says how it went;
+   * online the others are asked to join, the window closes and it returns null.
+   */
+  shortRest?(): string | null;
+}
+
+export interface InnCallView {
+  /** Who called for the night. */
+  by: string;
+  /** The call is for this counter. */
+  here: boolean;
+  /** This player has said yes. */
+  joined: boolean;
+  waitingFor: string[];
+}
+
+export interface InnHooks {
+  call(): InnCallView | null;
+  propose(): void;
+  answer(join: boolean): void;
 }
 
 export function itemDetail(def: ItemDef): string {
@@ -96,6 +121,8 @@ export class ShopView extends Phaser.GameObjects.Container {
   private inspectorTitle!: Phaser.GameObjects.Text;
   private inspectorBody!: Phaser.GameObjects.Text;
   private header!: Phaser.GameObjects.Text;
+  /** The crafting bench, open over the counter. */
+  private bench: CraftingView | null = null;
 
   constructor(
     scene: Phaser.Scene,
@@ -107,19 +134,22 @@ export class ShopView extends Phaser.GameObjects.Container {
     scene.add.existing(this);
     this.setDepth(120);
     this.tabs = this.openTabs();
-    this.tab = this.tabs[0] ?? 'sell';
+    this.tab = hooks.inn?.call()?.here && this.tabs.includes('rest') ? 'rest' : this.tabs[0] ?? 'sell';
     this.sceneInput = new SceneInput(scene);
+    const counter = (run: (event: KeyboardEvent) => void) => (event: KeyboardEvent): void => {
+      if (!this.bench) run(event);
+    };
     this.sceneInput.bindKeys([
-      { key: 'LEFT', capture: true, run: () => this.focus.move(-1) },
-      { key: 'UP', capture: true, run: () => this.focus.move(-1) },
-      { key: 'RIGHT', capture: true, run: () => this.focus.move(1) },
-      { key: 'DOWN', capture: true, run: () => this.focus.move(1) },
-      { key: 'TAB', capture: true, run: (event) => this.focus.move(event.shiftKey ? -1 : 1) },
-      { key: 'SPACE', capture: true, run: () => this.focus.activate() },
-      { key: 'ENTER', capture: true, run: () => this.focus.activate() },
-      { key: 'ESC', capture: true, run: () => this.hooks.close() },
-      { key: 'Q', run: () => this.cycleTab(-1) },
-      { key: 'E', run: () => this.cycleTab(1) },
+      { key: 'LEFT', capture: true, run: counter(() => this.focus.move(-1)) },
+      { key: 'UP', capture: true, run: counter(() => this.focus.move(-1)) },
+      { key: 'RIGHT', capture: true, run: counter(() => this.focus.move(1)) },
+      { key: 'DOWN', capture: true, run: counter(() => this.focus.move(1)) },
+      { key: 'TAB', capture: true, run: counter((event) => this.focus.move(event.shiftKey ? -1 : 1)) },
+      { key: 'SPACE', capture: true, run: counter(() => this.focus.activate()) },
+      { key: 'ENTER', capture: true, run: counter(() => this.focus.activate()) },
+      { key: 'ESC', capture: true, run: counter(() => { if (!this.working) this.hooks.close(); }) },
+      { key: 'Q', run: counter(() => this.cycleTab(-1)) },
+      { key: 'E', run: counter(() => this.cycleTab(1)) },
     ]);
     this.render();
   }
@@ -127,15 +157,16 @@ export class ShopView extends Phaser.GameObjects.Container {
   override destroy(fromScene?: boolean): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.bench?.destroy();
+    this.bench = null;
     this.sceneInput.destroy();
     super.destroy(fromScene);
   }
 
-  /** What this counter offers right now: the quest comes and goes. */
+  /** What this counter offers. */
   private openTabs(): Tab[] {
-    const { shop, run } = this;
+    const { shop } = this;
     return [
-      ...(shop.id === QUEST_LODGE && questActive(run) ? (['quest'] as const) : []),
       ...(shop.stock ? (['buy'] as const) : []),
       ...(shop.buys.length ? (['sell'] as const) : []),
       ...(shop.services.includes('rest') ? (['rest'] as const) : []),
@@ -171,7 +202,27 @@ export class ShopView extends Phaser.GameObjects.Container {
 
   /** Redraw from the run as it now stands (another player's change landed). */
   refresh(): void {
-    if (!this.disposed && !this.working) this.render();
+    if (this.disposed) return;
+    if (this.bench) this.bench.refresh();
+    else if (!this.working) this.render();
+  }
+
+  /** Take the rooms. The night plays out and the window goes with it, so it stays busy from here on. */
+  private async sleep(): Promise<void> {
+    if (this.working) return;
+    this.working = true;
+    const from = { day: this.run.day, hour: this.run.hour };
+    const result = await this.hooks.actions.apply({ op: 'rest', shop: this.shop.id });
+    if (this.disposed) return;
+    if (result.ok && this.hooks.slept) {
+      this.hooks.slept({ from, to: { day: this.run.day, hour: this.run.hour }, bloodmoon: bloodmoonDue(this.run), message: result.message });
+      return;
+    }
+    this.working = false;
+    this.message = result.message;
+    playSound(result.ok ? 'ui.confirm' : 'ui.deny');
+    if (result.ok) this.hooks.changed();
+    this.render();
   }
 
   private get member() {
@@ -202,7 +253,7 @@ export class ShopView extends Phaser.GameObjects.Container {
       color: MENU_HEX.bone,
     });
     const leader = memberIn(run, this.member);
-    const carried = leader ? `${leader.carriedWeight().toFixed(1)}/${leader.carryCap()}kg` : '';
+    const carried = leader ? `${leader.carriedWeight().toFixed(1)}/${leader.carryCap()}kg  /  ${packLabel(leader)}` : '';
     const who = leader && partyOf(run).length > 1 ? `${leader.name}  /  ` : '';
     this.header = scene.add.text(152, 82, `${shop.sign}  /  Day ${run.day}  /  ${who}Carrying ${carried}`, {
       fontFamily: MENU_FONT.body,
@@ -258,7 +309,6 @@ export class ShopView extends Phaser.GameObjects.Container {
     this.add([this.inspectorTitle, this.inspectorBody, close]);
 
     switch (this.tab) {
-      case 'quest': this.renderQuest(); break;
       case 'buy': this.renderBuy(); break;
       case 'sell': this.renderSell(); break;
       case 'rest': this.renderRest(); break;
@@ -363,54 +413,11 @@ export class ShopView extends Phaser.GameObjects.Container {
     this.rows(entries);
   }
 
-  /** The Kerusai quest: take the day's job, report it done, or wait for tomorrow's. */
-  private renderQuest(): void {
-    const run = this.run;
-    const job = questJob(run);
-    if (!job) return this.rows([]);
-    const quest = run.quest;
-    const reward = `Reward ${moneyLabel(job.reward.gold)}, ${this.xp(job.reward.xp)} XP`;
-    const note = (text: string) => (): void => {
-      this.message = text;
-      this.render();
-    };
-    if (!quest.taken && run.day < quest.opens) {
-      const price = roomPrice(run, this.shop);
-      const room = price != null ? ` Rooms cost ${moneyLabel(price)} (Rest tab).` : '';
-      return this.rows([{
-        label: `Next job: day ${quest.opens}`,
-        detail: `No more work today.${room}`,
-        enabled: true,
-        run: note(`The keeper has the next job on day ${quest.opens}.${room}`),
-      }]);
-    }
-    if (!quest.taken) {
-      return this.rows([{
-        label: `Take the job: ${job.title}`,
-        detail: `${reward}  /  ${job.brief}`,
-        inspect: `${job.brief}\n${reward}.`,
-        enabled: true,
-        run: () => void this.apply({ op: 'quest-take' }),
-      }]);
-    }
-    if (questReady(run)) {
-      return this.rows([{
-        label: `Report: ${job.title}`,
-        detail: reward,
-        enabled: true,
-        run: () => void this.apply({ op: 'quest-report' }),
-      }]);
-    }
-    this.rows([{
-      label: `${job.title}  ${quest.progress}/${job.need}`,
-      detail: job.goal,
-      inspect: `${job.goal}\n${job.tip}`,
-      enabled: true,
-      run: note(`${job.goal} ${job.tip}`),
-    }]);
-  }
-
   private renderRest(): void {
+    if (this.hooks.inn) {
+      this.renderInnCall(this.hooks.inn);
+      return;
+    }
     const price = roomPrice(this.run, this.shop) ?? 0;
     const party = partyOf(this.run);
     const fallen = party.filter((mage) => !mage.alive).map((mage) => mage.name);
@@ -421,26 +428,121 @@ export class ShopView extends Phaser.GameObjects.Container {
         : `${leader.name} has fallen and gets up after a night here.`
       : '';
     const leads = this.hooks.actions.leads;
-    const rooms = party.length > 1 ? `Rooms for the party (${party.length})` : 'Rent a room for the night';
+    const rooms = party.length > 1 ? `Rooms for the party (${party.length}), ${LONG_REST_HOURS} hours` : `A room for ${LONG_REST_HOURS} hours`;
     const risen = fallen.length ? ` ${fallen.join(' and ')} get${fallen.length > 1 ? '' : 's'} up with 1 HP, 1 sanity, no mana and no charges.` : '';
-    const button = new CabinetButton(this.scene, 290, 250, {
+    const due = bloodmoonDue(this.run);
+    const hours = hoursBeforeBloodmoon(this.run, LONG_REST_HOURS);
+    const nextDay = this.run.hour + hours >= 24;
+    const night = hours < LONG_REST_HOURS
+      ? `The bloodmoon rises in ${spanLabel(hours)} and will wake you: only the hours slept count.`
+      : `Sleep until ${clockTime((this.run.hour + hours) % 24)}${nextDay ? ` on day ${this.run.day + 1}` : ''}: 75% of health, mana, sanity and word charges back.${nextDay ? ' Every shop restocks at midnight.' : ''}`;
+    const button = new CabinetButton(this.scene, 290, 204, {
       width: 700,
-      height: 110,
+      height: 104,
       label: `${rooms}  /  ${moneyLabel(price)}`,
-      detail: leads
-        ? `Restores 75% of health, mana, sanity and word charges. Day ${this.run.day + 1} dawns and every shop restocks.${risen}`
-        : 'The host books the rooms for the party.',
+      detail: due
+        ? 'The bloodmoon is up. Nobody sleeps through it.'
+        : leads ? `${night}${risen}` : 'The host books the rooms for the party.',
       index: '1',
-      enabled: leads && this.run.gold >= price,
-      onActivate: () => void this.apply({ op: 'rest', shop: this.shop.id }),
+      enabled: leads && !due && this.run.gold >= price,
+      onActivate: () => void this.sleep(),
     });
-    const now = this.scene.add.text(640, 400, vitals, {
+    const now = this.scene.add.text(640, 420, vitals, {
       fontFamily: MENU_FONT.control,
       fontSize: '15px',
       color: MENU_HEX.bone,
     }).setOrigin(0.5, 0);
     this.add([button, now]);
     this.focus.add(button);
+    this.addShortRest(322, '2', leads ? null : 'The host decides when the party rests.');
+  }
+
+  /** The free short rest, under the rooms: `blocked` says why it cannot be had from here. */
+  private addShortRest(y: number, index: string, blocked: string | null): void {
+    const rest = this.hooks.shortRest;
+    if (!rest) return;
+    const online = !!this.hooks.inn;
+    const button = new CabinetButton(this.scene, 290, y, {
+      width: 700,
+      height: 76,
+      label: 'Short rest at a table  /  free',
+      detail: blocked ?? `${SHORT_REST_HOURS.min}-${SHORT_REST_HOURS.max} h: a quarter of HP, mana, sanity and charges back.${online ? ' The others are asked to join.' : ''}`,
+      index,
+      enabled: !blocked && !this.working,
+      onActivate: () => {
+        if (this.working) return;
+        const said = rest();
+        if (this.disposed) return;
+        if (said) this.message = said;
+        this.render();
+      },
+    });
+    this.add(button);
+    this.focus.add(button);
+  }
+
+  /** Online: call the party in for the night, or answer a call that is out. */
+  private renderInnCall(inn: InnHooks): void {
+    const price = roomPrice(this.run, this.shop) ?? 0;
+    const party = partyOf(this.run);
+    const due = bloodmoonDue(this.run);
+    const call = inn.call();
+    const rooms = `Rooms for the party (${party.length}), ${LONG_REST_HOURS} hours  /  ${moneyLabel(price)}`;
+    const buttons: CabinetButton[] = [];
+    let note: string;
+    if (!call) {
+      note = 'A night needs everyone. Whoever calls for it pays from the purse; the rest join for free.';
+      buttons.push(new CabinetButton(this.scene, 290, 230, {
+        width: 700,
+        height: 96,
+        label: `Call the party in: ${rooms}`,
+        detail: due ? 'The bloodmoon is up. Nobody sleeps through it.' : 'Everyone is told. The night starts once all of you have joined here.',
+        index: '1',
+        enabled: !due && this.run.gold >= price,
+        onActivate: () => {
+          playSound('ui.confirm');
+          inn.propose();
+          this.render();
+        },
+      }));
+    } else if (!call.here) {
+      note = `${call.by} has asked for rooms at another inn. Go there to join, or turn it down.`;
+      buttons.push(new CabinetButton(this.scene, 290, 230, {
+        width: 700, height: 72, label: 'Not tonight', detail: 'Turn the night down: nobody rests.', index: '1',
+        onActivate: () => inn.answer(false),
+      }));
+    } else if (call.joined) {
+      note = call.waitingFor.length
+        ? `You're in. Waiting for ${call.waitingFor.join(' and ')} to come to the keeper.`
+        : 'Everyone is in. Lights out.';
+      buttons.push(new CabinetButton(this.scene, 290, 230, {
+        width: 700, height: 72, label: 'Changed my mind', detail: 'Call the night off for everyone.', index: '1',
+        onActivate: () => inn.answer(false),
+      }));
+    } else {
+      note = `${call.by} wants to stay the night. ${call.waitingFor.length ? `Still to join: ${call.waitingFor.join(', ')}.` : ''}`;
+      buttons.push(new CabinetButton(this.scene, 290, 210, {
+        width: 700, height: 72, label: 'Join the night (free)', detail: rooms, index: '1',
+        onActivate: () => {
+          playSound('ui.confirm');
+          inn.answer(true);
+        },
+      }));
+      buttons.push(new CabinetButton(this.scene, 290, 294, {
+        width: 700, height: 72, label: 'Not tonight', detail: 'Nobody rests unless everyone does.', index: '2',
+        onActivate: () => inn.answer(false),
+      }));
+    }
+    const text = this.scene.add.text(640, 470, note, {
+      fontFamily: MENU_FONT.control,
+      fontSize: '15px',
+      color: MENU_HEX.bone,
+      align: 'center',
+      wordWrap: { width: 700 },
+    }).setOrigin(0.5, 0);
+    this.add([...buttons, text]);
+    for (const button of buttons) this.focus.add(button);
+    this.addShortRest(378, String(buttons.length + 1), null);
   }
 
   private renderBounties(): void {
@@ -481,18 +583,51 @@ export class ShopView extends Phaser.GameObjects.Container {
   }
 
   private renderForge(): void {
-    const recipes = recipesAt(this.run, this.shop, this.member);
-    this.rows(recipes.map((recipe) => {
-      const def = getItem(recipe.output);
-      const needs = recipe.inputs.map((input) => `${getItem(input.id).name} ${input.have}/${input.need}`).join(', ');
-      return {
-        label: `${def.name}  /  ${moneyLabel(recipe.gold)}`,
-        detail: `${needs}`,
-        inspect: `${needs}\n${itemDetail(def)}`,
-        enabled: recipe.ready,
-        accent: RARITY_COLOR[def.rarity],
-        run: () => void this.apply({ op: 'forge', shop: this.shop.id, recipe: recipe.id }),
-      };
-    }));
+    const crafters = craftersIn(this.run, this.member);
+    const objects = partyOf(this.run).some((mage) => mage.spellClass === 'objects');
+    const button = new CabinetButton(this.scene, 290, 214, {
+      width: 700,
+      height: 104,
+      label: 'Crafting bench',
+      detail: crafters.length
+        ? 'Design a sword, staff, bow or armour from your materials, pour in mana and roll for it.'
+        : objects ? 'Only an Objects mage can craft, and only for themselves.' : 'Only an Objects mage can craft.',
+      index: '1',
+      enabled: crafters.length > 0,
+      onActivate: () => this.openBench(),
+    });
+    const note = this.scene.add.text(640, 350, [
+      'Parts take materials (ores, hides, scales); sockets take focus pieces (gems, cores, fangs).',
+      'Score = materials + mana (up to 10) + two d20, keep the higher. A 20 counts 22, a pair 26.',
+      'The higher the score, the more effects the item draws from what its materials can lend.',
+    ].join('\n'), {
+      fontFamily: MENU_FONT.body,
+      fontSize: '14px',
+      color: MENU_HEX.boneDim,
+      align: 'center',
+      lineSpacing: 6,
+    }).setOrigin(0.5, 0);
+    this.add([button, note]);
+    this.focus.add(button);
+  }
+
+  private openBench(): void {
+    if (this.bench || this.working) return;
+    playSound('ui.open');
+    this.setVisible(false);
+    const bench: CraftingView = new CraftingView(this.scene, this.run, this.shop, {
+      actions: this.hooks.actions,
+      changed: () => this.hooks.changed(),
+      close: () => {
+        if (this.bench !== bench) return;
+        bench.destroy();
+        this.bench = null;
+        if (this.disposed) return;
+        playSound('ui.close');
+        this.setVisible(true);
+        this.render();
+      },
+    });
+    this.bench = bench;
   }
 }

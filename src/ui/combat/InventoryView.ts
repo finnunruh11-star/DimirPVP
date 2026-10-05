@@ -1,6 +1,8 @@
 import Phaser from 'phaser';
 import type { ItemId } from '../../core/Items';
 import { SceneInput } from '../../engine/SceneInput';
+import { itemRarityColor } from '../../visuals/itemIcons';
+import { itemIconTexture } from '../../visuals/itemIconTextures';
 import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
 import {
   MENU_COLOR,
@@ -10,6 +12,7 @@ import {
   addRecess,
   addSectionRule,
 } from '../cabinet/theme';
+import { addJourneyStrip, type JourneyView } from '../pve/JourneyStrip';
 
 export type InventoryActionKind = 'consume' | 'throw' | 'equip' | 'unequip' | 'drop-hand' | 'drop-accessory';
 
@@ -40,6 +43,8 @@ export interface InventorySnapshot {
   equipment: InventoryItemView[];
   supplies: InventoryItemView[];
   statuses: InventoryStatusView[];
+  /** On an exploration run: the day and hour, and the party's level. */
+  journey?: JourneyView;
 }
 
 export interface InventoryActions {
@@ -81,9 +86,10 @@ export class InventoryView extends Phaser.GameObjects.Container {
     const subtitle = scene.add.text(60, 82, `${snapshot.carry}${snapshot.readOnly ? '  /  INSPECTION ONLY' : ''}`, {
       fontFamily: MENU_FONT.body,
       fontSize: '14px',
-      color: MENU_HEX.boneDim,
+      color: /OVERLOADED|Heavy/.test(snapshot.carry) ? '#e6b55a' : MENU_HEX.boneDim,
     });
     this.add([title, subtitle]);
+    if (snapshot.journey) addJourneyStrip(scene, this, 1222, 34, snapshot.journey);
     addSectionRule(scene, this, 58, 112, 1164);
     addRecess(scene, this, 58, 186, 1164, 390);
     addRecess(scene, this, 58, 594, 1164, 74, MENU_COLOR.woodDeep);
@@ -192,20 +198,24 @@ export class InventoryView extends Phaser.GameObjects.Container {
       panel.fillStyle(MENU_COLOR.charcoalRaised, 1).fillRect(x, y, 550, 68);
       panel.fillStyle(MENU_COLOR.brassDark, 1).fillRect(x, y, 5, 68);
       panel.lineStyle(1, MENU_COLOR.brassDark, 0.8).strokeRect(x + 0.5, y + 0.5, 549, 67);
-      const name = this.scene.add.text(x + 16, y + 12, item.name, {
+      // The item's picture in a dark well, rimmed in its rarity.
+      panel.fillStyle(MENU_COLOR.pitch, 1).fillRect(x + 13, y + 13, 42, 42);
+      panel.lineStyle(1, itemRarityColor(item.id), 0.9).strokeRect(x + 13.5, y + 13.5, 41, 41);
+      const icon = this.scene.add.image(x + 34, y + 34, itemIconTexture(this.scene, item.id)).setScale(2);
+      const name = this.scene.add.text(x + 68, y + 12, item.name, {
         fontFamily: MENU_FONT.control,
         fontSize: '14px',
         fontStyle: 'bold',
         color: MENU_HEX.bone,
-        fixedWidth: 280,
+        fixedWidth: 258,
       });
-      const location = this.scene.add.text(x + 16, y + 37, item.location.toUpperCase(), {
+      const location = this.scene.add.text(x + 68, y + 37, item.location.toUpperCase(), {
         fontFamily: MENU_FONT.control,
         fontSize: '9px',
         fontStyle: 'bold',
         color: MENU_HEX.brass,
       });
-      this.contentLayer.add([panel, name, location]);
+      this.contentLayer.add([panel, icon, name, location]);
       item.actions.slice(0, 2).forEach((action, actionIndex) => {
         const chip = new CabinetChip(this.scene, x + 334 + actionIndex * 100, y + 16, {
           width: 92,

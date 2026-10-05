@@ -1,5 +1,6 @@
 import type { WordId } from '../core/Words';
-import { comboKey, isClassSpell, spellDisplayName, WORDS } from '../core/Words';
+import { comboKey, isClassSpell, isModifierWord, spellDisplayName, WORDS } from '../core/Words';
+import { MAX_SPELL_WORDS } from '../config/constants';
 import type { Spell } from './Spell';
 import type { ItemSet } from '../core/Items';
 import type { MageClass } from '../core/Classes';
@@ -53,6 +54,7 @@ export function registerSpell(spell: Omit<Spell, 'id'> & { id?: string }): Spell
     codename: spell.name,
     name: spellDisplayName(spell.words),
     dc: isClassSpell(spell.words) ? classSpellDc(spell.words, spell.dc) : spell.dc,
+    nonClassDc: spell.dc,
     id,
   } as Spell;
   registry.set(comboKey(spell.words), full);
@@ -78,6 +80,7 @@ function buildClassSpell(words: WordId[], cls: MageClass, variant: ClassSpellVar
     codename: variant.name,
     name: spellDisplayName(words),
     dc: classSpellDc(words, variant.dc),
+    nonClassDc: variant.dc,
     words,
     id: `${key}@${cls}`,
   } as Spell;
@@ -131,22 +134,37 @@ export function isClassSpellCombo(words: WordId[]): boolean {
 /**
  * Look up the spell for a given set of selected words, if any exists. For class
  * spells the caster's {@link MageClass} selects which variant resolves; passing
- * none falls back to the default class (used by class-agnostic callers).
+ * none falls back to the default class (used by class-agnostic callers). A
+ * classless caster (null) gets only the ordinary spell of a combo, if any.
  */
 export function getSpell(
   words: WordId[],
-  mageClass: MageClass = DEFAULT_MAGE_CLASS
+  mageClass: MageClass | null = DEFAULT_MAGE_CLASS
 ): Spell | undefined {
   const key = comboKey(words);
-  const variants = classRegistry.get(key);
-  const variant = variants?.[mageClass];
+  const variants = words.length > 1 ? classRegistry.get(key) : undefined;
+  const variant = mageClass ? variants?.[mageClass] : undefined;
   if (variant) return spellActive(variant) ? variant : undefined;
   const s = registry.get(key);
   return s && spellActive(s) ? s : undefined;
 }
 
-export function hasSpell(words: WordId[], mageClass: MageClass = DEFAULT_MAGE_CLASS): boolean {
+export function hasSpell(words: WordId[], mageClass: MageClass | null = DEFAULT_MAGE_CLASS): boolean {
   return getSpell(words, mageClass) !== undefined;
+}
+
+/**
+ * The spell a selection casts, modifiers included. A modifier never makes a
+ * class spell: with one attached, the combo casts its ordinary spell.
+ */
+export function spellForSelection(
+  words: readonly WordId[],
+  mageClass: MageClass | null = DEFAULT_MAGE_CLASS
+): Spell | undefined {
+  const base = words.filter((word) => !isModifierWord(word));
+  if (base.length === 0) return undefined;
+  const modified = base.length !== words.length;
+  return getSpell(base, modified ? null : mageClass);
 }
 
 /** Resolve any spell (normal OR any class variant) by its stable id. */
@@ -164,6 +182,9 @@ export function spellById(id: string): Spell | undefined {
 /** Every catalogue, for reference UI that must not depend on match state. */
 export const ALL_SPELL_SETS: ReadonlySet<ItemSet> = new Set<ItemSet>(['original', 'finns', 'dlc']);
 
+/** Adventures (Exploration) cast from every catalogue. */
+export const ADVENTURE_SPELL_SETS: Partial<Record<ItemSet, boolean>> = { original: true, finns: true, dlc: true };
+
 /**
  * Every active spell, with class spells resolved to the given class's variant
  * (one entry per class-spell combo). Callers that operate on a specific mage
@@ -171,7 +192,7 @@ export const ALL_SPELL_SETS: ReadonlySet<ItemSet> = new Set<ItemSet>(['original'
  * to ignore the active-set global entirely.
  */
 export function allSpells(
-  mageClass: MageClass = DEFAULT_MAGE_CLASS,
+  mageClass: MageClass | null = DEFAULT_MAGE_CLASS,
   sets?: ReadonlySet<ItemSet>
 ): Spell[] {
   const active = (spell: Spell): boolean =>
@@ -180,19 +201,48 @@ export function allSpells(
   for (const spell of registry.values()) {
     if (active(spell)) resolved.set(comboKey(spell.words), spell);
   }
+  // Classless casters keep only the ordinary spells.
+  if (!mageClass) return [...resolved.values()];
   for (const [key, variants] of classRegistry) {
     const variant = variants[mageClass];
-    if (!variant) continue;
+    if (!variant || variant.words.length < 2) continue;
     if (active(variant)) resolved.set(key, variant);
     else resolved.delete(key);
   }
   return [...resolved.values()];
 }
 
+/** How many of a rack's 1-3 word combinations cast something, and which ones are blank. */
+export function rackCoverage(
+  words: WordId[],
+  mageClass: MageClass | null = DEFAULT_MAGE_CLASS,
+  sets?: ReadonlySet<ItemSet>
+): { combos: number; spells: number; blanks: WordId[][] } {
+  const base = [...new Set(words.filter((word) => !isModifierWord(word)))];
+  const known = new Set(allSpells(mageClass, sets).map((spell) => comboKey(spell.words)));
+  const blanks: WordId[][] = [];
+  let combos = 0;
+  const walk = (start: number, picked: WordId[]): void => {
+    if (picked.length > 0) {
+      combos++;
+      if (!known.has(comboKey(picked))) blanks.push(picked);
+    }
+    if (picked.length === MAX_SPELL_WORDS) return;
+    for (let i = start; i < base.length; i++) walk(i + 1, [...picked, base[i]]);
+  };
+  walk(0, []);
+  return { combos, spells: combos - blanks.length, blanks };
+}
+
+/** How far a spell reaches from its caster alone: a shadow-reach spell only as far as its reach from the caster's own shadow. */
+export function casterReach(spell: Spell): number {
+  return spell.reachFromShadows ?? spell.range;
+}
+
 /** All reaction-capable spells castable from a given loadout. */
 export function reactionSpellsFor(
   loadout: WordId[],
-  mageClass: MageClass = DEFAULT_MAGE_CLASS
+  mageClass: MageClass | null = DEFAULT_MAGE_CLASS
 ): Spell[] {
   const set = new Set(loadout);
   const castable = allSpells(mageClass).filter((s) => s.words.every((w) => set.has(w)));

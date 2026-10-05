@@ -10,7 +10,7 @@ import { parseRun } from '../pve/exploration/save';
 import { parseFightWire, toFightWire } from '../net/fightWire';
 import {
   BOSS_IDS, BOSS_STAND_IN, BOSSES, bloodmoonBoss, bloodmoonCombat, bloodmoonCycle, bloodmoonDue, bloodmoonFight,
-  bloodmoonOmen, bossPool, bossRoster, bossScaling, hoursToBloodmoon, nextBloodmoonDay, parseBossFight, roman,
+  bloodmoonOmen, bossPool, bossRoster, bossScaling, cycleDay, cycleDayTitle, hoursToBloodmoon, nextBloodmoonDay, parseBossFight, roman,
 } from '../pve/exploration/bloodmoon';
 import { BOSS_ART } from '../visuals/bosses/art';
 import { BOSS_ANIMS, GROUND, renderAnim } from '../visuals/bosses/rig';
@@ -45,6 +45,11 @@ const tests: [name: string, run: () => void][] = [
     equal(bloodmoonOmen(4), { daysLeft: 1, tonight: true }, 'day 4 is the last day');
     equal(bloodmoonOmen(5), { daysLeft: 10, tonight: false }, 'the day it rose');
     equal(bloodmoonOmen(14).tonight, true, 'day 14 before the second');
+  }],
+
+  ['names each day of the cycle, the last one the final day', () => {
+    equal([1, 2, 3, 4, 5, 6, 14, 15].map(cycleDay), [1, 2, 3, 4, 1, 2, 10, 1], 'days of the cycle');
+    equal([1, 3, 4, 5, 13, 14].map(cycleDayTitle), ['The First Day', 'The Third Day', 'The Final Day', 'The First Day', 'The Ninth Day', 'The Final Day'], 'titles');
   }],
 
   ['draws each bloodmoon from its own pool, the same boss for the same run', () => {
@@ -133,9 +138,11 @@ const tests: [name: string, run: () => void][] = [
             lowest = Math.max(lowest, y);
           }
           const dying = anim === 'death' && index / (frames.length - 1) > 0.22;
-          assert(dying || filled > 400, `${id} ${anim} ${index} is drawn`);
+          const ground = art.ground ?? GROUND;
+          // Small pixel-art frames hold far fewer pixels than the painted ones.
+          assert(dying || filled > (art.h < 64 ? 60 : 400), `${id} ${anim} ${index} is drawn`);
           // Floating bosses hover a little above the line; none sinks through it.
-          if (!dying) assert(lowest >= GROUND - 12 && lowest <= GROUND + 6, `${id} ${anim} ${index} stands on the ground (${lowest})`);
+          if (!dying) assert(lowest >= ground - 12 && lowest <= ground + 6, `${id} ${anim} ${index} stands on the ground (${lowest})`);
         });
       }
     }

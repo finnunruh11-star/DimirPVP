@@ -7,6 +7,7 @@ import type { ExplorationRun, LocaleState } from '../pve/exploration/run';
 import type { EncounterKind, EncounterSpawn, EncounterZone } from '../pve/exploration/encounters';
 import type { DungeonId } from '../pve/exploration/world';
 import type { BossFight } from '../pve/exploration/bloodmoon';
+import type { SceneFight } from '../pve/exploration/sceneFight';
 import { LOADOUT_SIZE } from './constants';
 
 export type MatchMode =
@@ -16,7 +17,6 @@ export type MatchMode =
   | 'tutorial'
   | 'training'
   | 'swamprun'
-  | 'expedition'
   | 'exploration'
   | 'minerun'
   | 'raid'
@@ -72,11 +72,6 @@ export const MODE_CAPABILITIES = {
     formats: [], prepModes: ['quick', 'custom', 'creative'], loadoutSize: LOADOUT_SIZE,
     usesBuild: true, usesContentPacks: true, requiresRaidBoss: false,
   },
-  expedition: {
-    category: 'adventures', roles: ['local'], seats: [1, 1], allowAi: false,
-    formats: [], prepModes: [], loadoutSize: 3,
-    usesBuild: true, usesContentPacks: true, requiresRaidBoss: false,
-  },
   exploration: {
     category: 'adventures', roles: ['local', 'host', 'guest'], seats: [1, 3], allowAi: false,
     formats: [], prepModes: [], loadoutSize: 2,
@@ -107,7 +102,6 @@ export const MODE_CAPABILITIES = {
 export function isPveRunMode(mode: MatchMode): boolean {
   return (
     mode === 'swamprun' ||
-    mode === 'expedition' ||
     mode === 'exploration' ||
     mode === 'minerun' ||
     mode === 'raid'
@@ -168,6 +162,8 @@ export interface ExplorationCombat {
   seats?: Partial<Record<MageClass, number>>;
   /** A bloodmoon's boss: no fleeing, and the boss scales with the party. */
   boss?: BossFight;
+  /** A handcrafted roadside scene: sides, placements, props and what it pays. */
+  scene?: SceneFight;
 }
 
 /** `by` is the party member who lands the free strike; the first one standing when unset. */

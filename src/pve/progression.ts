@@ -1,6 +1,61 @@
-// Level progression shared by Expedition and Exploration. Pure: no Phaser, no RNG.
+// Level progression for Exploration. Pure: no Phaser, no RNG.
 
 import { isModifierWord, type WordId } from '../core/Words';
+import type { MineEnemyKind } from './minerun';
+import type { EnemyKind } from './swamprun';
+
+/** XP for felling each creature, a zombie being 1. A bloodmoon boss and what it brings give none: its fall is a level. */
+export const KILL_XP: Record<EnemyKind | MineEnemyKind, number> = {
+  zombie: 1,
+  slime: 1,
+  'slime-red': 1,
+  'slime-blue': 1,
+  'slime-black': 1,
+  'slime-white': 1,
+  rabbit: 1,
+  rockling: 1,
+  'cavern-bat': 2,
+  pftlhb: 2,
+  wisp: 2,
+  skeleton: 3,
+  kobold: 3,
+  wolf: 3,
+  acidZombie: 3,
+  goblinRaider: 5,
+  goblinShaman: 5,
+  specter: 5,
+  'elite-kobold': 5,
+  boar: 5,
+  lioness: 8,
+  'sand-stalker': 5,
+  bandit: 8,
+  'bandit-archer': 8,
+  lion: 8,
+  sentinel: 8,
+  'bandit-captain': 10,
+  'earth-elemental': 10,
+  golem: 10,
+  ghast: 10,
+  soldierDemon: 10,
+  beastDemon: 10,
+  'red-dragonborn': 10,
+  'black-dragonborn': 10,
+  defender: 10,
+  'magma-sentinel': 10,
+  oni: 15,
+  sandworm: 15,
+  lich: 20,
+  reaper: 33,
+  deathknightSpear: 66,
+  goblinChief: 0,
+  baral: 0,
+  baralDrake: 0,
+  denialArtifact: 0,
+};
+
+export function killXp(kind: string | undefined): number {
+  return kind && kind in KILL_XP ? KILL_XP[kind as keyof typeof KILL_XP] : 0;
+}
 
 /** A rack never holds more base words than this; later word levels replace one. */
 export const MAX_BASE_WORDS = 5;
@@ -11,17 +66,25 @@ export function xpToNext(level: number, scale = 1): number {
 }
 
 export interface LevelReward {
-  /** How many different stats may each be raised by 1. */
+  /** How many different stats are raised. */
   stats: number;
+  /** How much each raised stat goes up. */
+  statGain: number;
   /** Whether a new word is offered. */
   word: boolean;
 }
 
-/** Odd levels train a stat, even levels teach a word, every fifth does both twice over. */
+/** What a traveller's chosen strength starts with, on top of everything else. */
+export const START_STAT_BONUS = 3;
+
+/** Even levels offer one stat; even levels and every fifth also teach a word. */
 export function levelReward(level: number): LevelReward {
-  if (level % 5 === 0) return { stats: 2, word: true };
-  if (level % 2 === 0) return { stats: 0, word: true };
-  return { stats: 1, word: false };
+  return { stats: level % 2 === 0 ? 1 : 0, statGain: 1, word: level % 2 === 0 || level % 5 === 0 };
+}
+
+/** Rounded-up cumulative growth in each physical or mental stat for this level. */
+export function levelCoreStatGain(level: number): number {
+  return Math.ceil((level - 1) * 2 / 5) - Math.ceil((level - 2) * 2 / 5);
 }
 
 export interface LevelTrack {

@@ -27,7 +27,7 @@ import { DEFAULT_MAGE_CLASS } from './Classes';
 import type { DieResult, StatKey } from './Stats';
 import { STAT_ORDER } from './Stats';
 import type { DamageType } from './Damage';
-import type { ItemId, WeaponMod, ShieldMod } from './Items';
+import type { ItemId, WeaponMod, ShieldMod, CastThrough } from './Items';
 import { getItem, carryCapacity, SLOT_CAPS } from './Items';
 import type {
   ForgetStatus,
@@ -54,6 +54,9 @@ export interface ActionPool {
   main: number;
   bonus: number;
 }
+
+/** Weights are summed in floating point (0.2 kg herbs): a load this close to the limit is at it, not over. */
+const CARRY_EPSILON = 1e-6;
 
 export class Mage {
   name: string;
@@ -89,6 +92,17 @@ export class Mage {
    * and aligns "class spells" (all-noun or all-verb combos). See core/Classes.ts.
    */
   mageClass: MageClass;
+
+  /** No class yet: `mageClass` only names the traveller in its party; class spells and the class colour ability stay closed. */
+  classless = false;
+
+  /** The class a traveller took up; `mageClass` then stays its party id. */
+  calling: MageClass | null = null;
+
+  /** The class that picks spells and colour abilities: none while classless. */
+  get spellClass(): MageClass | null {
+    return this.classless ? null : this.calling ?? this.mageClass;
+  }
 
   /** Mana pool: powers word-spells and color abilities. */
   mana: number;
@@ -152,12 +166,16 @@ export class Mage {
   dealtDamageThisTurn = false;
   /** Maximum health withered away by a desecration; restored when the combat ends. */
   witheredMaxHp = 0;
+  /** Where this mage stood and how it fared when its latest turn began (Reality rewinds). */
+  turnStartState?: { x: number; y: number; hp: number; sanity: number };
   /** Total distance (px) moved so far this turn (Momentum Boots threshold). */
   distMovedThisTurn = 0;
   /** Consecutive turns spent moving (Momentum Boots). */
   momentumStacks = 0;
   /** Consecutive turns spent stationary (Anchor Boots, capped at 4). */
   anchorStacks = 0;
+  /** Stones gathered by gear that hurls them with the next landed strike. */
+  gatheredStones = 0;
   /** One-shot bonus fraction applied to the next basic attack (Tantrum Gloves). */
   rageBonus = 0;
   /** Greed stacks accrued by a Gambler's Blade (1d3 per hit). */
@@ -222,6 +240,8 @@ export class Mage {
   conjuredBowFiredThisTurn = false;
   /** Black Bell attack mode: false = Toll (long wound), true = Condense (cash out afflictions). */
   blackBellCondense = false;
+  /** Hand items set aside to make room for conjured gear; they return when it fades. */
+  stowedForConjured: ItemId[] = [];
   /** Whether the held Edgelord Lantern currently projects its dark light. */
   edgelordLanternActive = false;
   /** Allows the otherwise untouched-turn throw immediately after deactivating. */
@@ -250,6 +270,8 @@ export class Mage {
     stones?: number;
     stonesRound?: number;
     charges?: number;
+    /** A lioness pounces once a fight. */
+    pounced?: boolean;
   };
   /** Airborne creatures cannot be hit by ordinary close-range attacks. */
   intrinsicAirborne = false;
@@ -259,10 +281,13 @@ export class Mage {
   intrinsicArmorFlat = 0;
   /** Persistent Deep Swamp curse carried between wave combats. */
   swamprunCurse?: 'madness' | 'decay' | 'sloth' | 'feeding';
-  /** Guild companion role used by Expedition AI and loadout rules. */
-  expeditionCompanion?: 'dwarf' | 'elf' | 'human';
-  expeditionPermanent = false;
-  companionHealCharges = 0;
+  /** A companion who fights by its own routine (the dwarven guard of a roadside scene). */
+  companion?: 'dwarf';
+  /**
+   * A roadside scene's extra side: an escort fights for the party but never joins it,
+   * a rival fights everyone, prey fights nobody and is not needed to win.
+   */
+  sceneSide?: 'escort' | 'rival' | 'prey';
   /** Damage types this creature is intrinsically immune to (×0). Mindless = 'sanity'. */
   intrinsicImmuneTypes: DamageType[] = [];
   /** Damage types this creature intrinsically resists (×0.5 each). */
@@ -636,6 +661,7 @@ export class Mage {
 
   /** Clear combat-scoped state without restoring persistent run resources. */
   resetForNewCombat(options: { preserveLanternState?: boolean } = {}): void {
+    this.dismissFleetingGear();
     this.statuses = options.preserveLanternState
       ? this.statuses.filter((status) => status.kind === 'soulRend')
       : [];
@@ -648,7 +674,9 @@ export class Mage {
     this.dealtDamageThisTurn = false;
     this.maxHp += this.witheredMaxHp;
     this.witheredMaxHp = 0;
+    this.turnStartState = undefined;
     this.distMovedThisTurn = 0;
+    this.gatheredStones = 0;
     this.rageBonus = 0;    this.spellcastActive = false;
     this.hasCastThisTurn = false;
     this.focusNextSpell = false;
@@ -698,7 +726,6 @@ export class Mage {
     this.lightningMindCharges = 0;
     this.resetCombatReactions(false);
     this.resetDodges();
-    if (this.expeditionCompanion === 'elf') this.companionHealCharges = 3;
   }
 
   /** How many Leaps this mage has left this combat. */
@@ -706,9 +733,50 @@ export class Mage {
     return MAX_LEAPS_PER_COMBAT - this.leapsUsed;
   }
 
-  /** How many dodges this mage gets per combat: one for every 6 Dexterity. */
+  /**
+   * Hold a conjured hand item, first in hand. Other non-wand hand items go to
+   * the bag so the holder can still cast (two-handed gear clears both hands).
+   */
+  conjureInHand(id: ItemId): void {
+    const def = getItem(id);
+    const twoHanded = (held: ItemId): boolean => !!getItem(held).twoHanded;
+    const stowable = (held: ItemId): boolean => !getItem(held).permanentlyBinding && !this.sabotagedItems.has(held);
+    const stow = (held: ItemId): void => {
+      if (!stowable(held)) return;
+      this.hands = this.hands.filter((h) => h !== held);
+      if (getItem(held).fleeting) return;
+      this.bag.push(held);
+      this.stowedForConjured.push(held);
+    };
+    for (const held of [...this.hands]) {
+      if (def.twoHanded || twoHanded(held) || !getItem(held).isWand) stow(held);
+    }
+    if (this.hands.length >= SLOT_CAPS.hand) {
+      const last = [...this.hands].reverse().find(stowable);
+      if (last) stow(last);
+    }
+    if (this.hands.length >= SLOT_CAPS.hand || this.hands.some(twoHanded) || (def.twoHanded && this.hands.length > 0)) return;
+    this.hands.unshift(id);
+  }
+
+  /** Conjured gear fades when a fight is over; whatever it displaced returns to hand. */
+  dismissFleetingGear(): void {
+    const fleeting = (id: ItemId): boolean => !!getItem(id).fleeting;
+    this.hands = this.hands.filter((id) => !fleeting(id));
+    this.bag = this.bag.filter((id) => !fleeting(id));
+    this.utility = this.utility.filter((id) => !fleeting(id));
+    for (const id of this.stowedForConjured) {
+      const i = this.bag.indexOf(id);
+      if (i < 0 || !this.hasFreeHand() || (getItem(id).twoHanded && this.hands.length > 0)) continue;
+      this.bag.splice(i, 1);
+      this.hands.push(id);
+    }
+    this.stowedForConjured = [];
+  }
+
+  /** How many dodges this mage gets per combat: one for every 6 Dexterity, plus what gear grants. */
   maxDodges(): number {
-    return Math.floor(this.effectiveDex() / 6);
+    return Math.floor(this.effectiveDex() / 6) + this.itemSum((d) => d.extraDodges ?? 0);
   }
 
   /** Refill the per-combat dodge pool. Call once when the duel begins. */
@@ -1139,6 +1207,31 @@ export class Mage {
     return this.itemSum((d) => d.manaOnHit ?? 0);
   }
 
+  /** Mana held in worn and held gear, given back as an Exploration fight begins. */
+  fightStartMana(): number {
+    return this.itemSum((d) => d.fightStartMana ?? 0);
+  }
+
+  /** Worn or held gear keeps stuns and disarms off (roots still hold). */
+  stunProof(): boolean {
+    return this.hasItemWhere((d) => !!d.stunProof);
+  }
+
+  /** Worn or held gear keeps this mage where it stands against every shove. */
+  holdsGround(): boolean {
+    return this.hasItemWhere((d) => !!d.immovable);
+  }
+
+  /** HP healed at the start of each turn from gear. */
+  regenPerTurn(): number {
+    return this.itemSum((d) => d.regen ?? 0);
+  }
+
+  /** Most stones gear lets this mage gather, or 0. */
+  stoneStore(): number {
+    return this.equippedItems().reduce((most, id) => Math.max(most, getItem(id).gatherStones ?? 0), 0);
+  }
+
   /** Total flat mana discount on word-spells (stacks across all equipped wands). */
   manaDiscountSum(): number {
     return this.itemSum((d) => d.manaDiscount ?? 0);
@@ -1207,7 +1300,7 @@ export class Mage {
   }
 
   private hasMomentumBoots(): boolean {
-    return this.boots != null && !!getItem(this.boots).momentumBoots;
+    return this.hasItemWhere((d) => !!d.momentumBoots);
   }
 
   private hasAnchorBoots(): boolean {
@@ -1234,9 +1327,41 @@ export class Mage {
     return this.itemSum((d) => d.meleeDamageBonus ?? 0);
   }
 
-  /** Does this mage carry a Bag of Holding (no carry-weight limit)? */
-  hasBagOfHolding(): boolean {
-    return this.hasItemWhere((d) => !!d.bagOfHolding);
+  /** What a carried bag makes of the weight inside it: the Bag of Holding's 75%, else 1. */
+  packWeightMult(): number {
+    let mult = 1;
+    for (const id of [...this.utility, ...this.bag]) mult = Math.min(mult, getItem(id).pack?.weightMult ?? 1);
+    return mult;
+  }
+
+  /** Held staffs that change the spells cast through them (a staff stifled by a Needle no longer does). */
+  castThroughs(): CastThrough[] {
+    return this.hands
+      .filter((id) => !this.isItemBanned(id))
+      .flatMap((id) => {
+        const through = getItem(id).castThrough;
+        return through ? [through] : [];
+      });
+  }
+
+  /** Mana every word spell costs on top (or below, if negative), from held staffs. */
+  spellManaDelta(): number {
+    return this.castThroughs().reduce((sum, through) => sum + (through.manaDelta ?? 0), 0);
+  }
+
+  /** Extra spell reach (px) from held staffs. */
+  spellRangeBonus(): number {
+    return this.castThroughs().reduce((sum, through) => sum + (through.rangePx ?? 0), 0);
+  }
+
+  /** Damage factor on every spell hit from held staffs. */
+  spellDamageMult(): number {
+    return this.castThroughs().reduce((product, through) => product * (through.damageMult ?? 1), 1);
+  }
+
+  /** Held items with their own staff bolts. */
+  staffBoltItems(): ItemId[] {
+    return this.hands.filter((id) => !!getItem(id).staffBolts?.length && !this.isItemBanned(id));
   }
 
   hasSandPocket(): boolean {
@@ -1427,34 +1552,49 @@ export class Mage {
     this.sanity = this.maxSanity;
   }
 
-  /** Total weight (kg) currently carried (gear + stowed bag + arrow ammo). */
+  /** Total weight (kg) carried: worn gear, plus the bags, plus whatever is inside them (a Bag of Holding lightens that). */
   carriedWeight(): number {
-    const bagWeight = this.bag.reduce((acc, id) => acc + getItem(id).weight, 0);
+    const weigh = (ids: readonly ItemId[]): number => ids.reduce((acc, id) => acc + getItem(id).weight, 0);
+    const worn = [...this.hands, ...this.accessories];
+    if (this.head) worn.push(this.head);
+    if (this.torso) worn.push(this.torso);
+    if (this.boots) worn.push(this.boots);
+    const stowed = [...this.utility, ...this.bag];
+    const bags = stowed.filter((id) => !!getItem(id).pack);
+    const inside = stowed.filter((id) => !getItem(id).pack);
     const sandWeight = this.hasSandPocket() ? this.sandPocketKg : 0;
-    return this.itemSum((d) => d.weight) + bagWeight + this.arrows * getItem('arrow').weight + sandWeight;
+    const loose = weigh(inside) + this.arrows * getItem('arrow').weight + sandWeight;
+    return weigh(worn) + weigh(bags) + loose * this.packWeightMult();
   }
 
-  /** Movement penalty for carrying within 1kg of, or at/over, capacity. */
+  /**
+   * Movement penalty for weight: half speed within 1kg of capacity (a full load
+   * included), no movement at all only once the load is over capacity.
+   */
   carryEncumbranceMultiplier(): number {
     const capacity = this.carryCap();
     if (!Number.isFinite(capacity)) return 1;
     const weight = this.carriedWeight();
-    if (weight >= capacity) return 0;
-    if (weight >= capacity - 1) return 0.5;
+    if (weight > capacity + CARRY_EPSILON) return 0;
+    if (weight >= capacity - 1 - CARRY_EPSILON) return 0.5;
     return 1;
   }
 
-  /** Carry capacity (kg), scaling with Strength. Bag of Holding lifts the cap. */
+  /** Carrying more than the capacity: this mage cannot move until something is dropped. */
+  overloaded(): boolean {
+    return this.carryEncumbranceMultiplier() === 0;
+  }
+
+  /** Carry capacity (kg), scaling with Strength. */
   carryCap(): number {
     // Summons ignore weight entirely (their single-item rule limits them instead).
     if (this.isSummon) return Infinity;
-    if (this.hasBagOfHolding()) return Infinity;
     return carryCapacity(this.statStrength);
   }
 
   /** Can this mage take on `extraKg` more weight? */
   canCarry(extraKg: number): boolean {
-    return this.carriedWeight() + extraKg <= this.carryCap();
+    return this.carriedWeight() + extraKg <= this.carryCap() + CARRY_EPSILON;
   }
 
   /**
@@ -1505,7 +1645,7 @@ export class Mage {
       this.hands.some((held) => !!getItem(held).twoHanded) ||
       (!!getItem(id).twoHanded && this.hands.length > 0)
     ) return false;
-    if (this.carriedWeight() > this.carryCap() && !getItem(id).bagOfHolding) return false;
+    if (this.carriedWeight() > this.carryCap()) return false;
     this.bag.splice(i, 1);
     this.hands.push(id);
     // Lighting a torch starts its burn timer (measured in combats).
@@ -1520,7 +1660,7 @@ export class Mage {
     if (def.slot === 'hand') return this.equipHand(id);
     const i = this.bag.indexOf(id);
     if (i < 0) return false;
-    if (this.carriedWeight() > this.carryCap() && !def.bagOfHolding) return false;
+    if (this.carriedWeight() > this.carryCap()) return false;
     if (def.slot === 'accessory') {
       if (this.accessories.length >= SLOT_CAPS.accessory) return false;
       this.bag.splice(i, 1);
@@ -1543,7 +1683,7 @@ export class Mage {
   canEquipFromBag(id: ItemId): boolean {
     const def = getItem(id);
     if (!this.bag.includes(id)) return false;
-    if (this.carriedWeight() > this.carryCap() && !def.bagOfHolding) return false;
+    if (this.carriedWeight() > this.carryCap()) return false;
     if (def.slot === 'hand') return this.hasFreeHand() && !(def.twoHanded && this.hands.length > 0);
     if (def.slot === 'accessory') return this.accessories.length < SLOT_CAPS.accessory;
     if (def.slot === 'utility') return false;
@@ -1561,7 +1701,6 @@ export class Mage {
     // Cursed or sabotaged items are bound in place and cannot be removed.
     if (this.sabotagedItems.has(id) || getItem(id).permanentlyBinding) return false;
     if (this.carriedWeight() > this.carryCap()) return false;
-    if (getItem(id).bagOfHolding && this.carriedWeight() > carryCapacity(this.statStrength)) return false;
     this.hands.splice(i, 1);
     // A conjured bow (Veil Corrode Pierce, Objects) dissipates when unequipped.
     if (getItem(id).conjuredVeilBow) {
@@ -1800,6 +1939,10 @@ export class Mage {
     if (kind === 'move' && Dev.infiniteMove) return;
     this.actions[kind] = Math.max(0, this.actions[kind] - 1);
     if (this.swamprunCurse === 'feeding') this.spendMana(1);
+    // Sworn to stillness: the first action taken on a turn is the only one.
+    if (this.statuses.some((s) => s.kind === 'stillOath')) {
+      this.actions = { move: 0, main: 0, bonus: 0 };
+    }
   }
 
   // ---- Turn lifecycle -------------------------------------------------------
@@ -1858,7 +2001,13 @@ export class Mage {
         s.kind !== 'soulRend' &&
         s.kind !== 'reap' &&
         s.kind !== 'phaseOut' &&
-        s.kind !== 'deathCurse'
+        s.kind !== 'deathCurse' &&
+        s.kind !== 'petrify' &&
+        s.kind !== 'timeStop' &&
+        s.kind !== 'doom' &&
+        s.kind !== 'deathMark' &&
+        s.kind !== 'clockStopped' &&
+        s.kind !== 'imbue'
       ) s.duration -= 1;
     }
     const expired = this.statuses.filter((s) => s.duration <= 0);

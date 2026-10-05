@@ -53,17 +53,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(rollSwamprunEncounter(7, lowRoll, 2).kinds, ['reaper'], 'Two-member Reaper encounter');
   }],
 
-  ['keeps Expedition honest as a solo three-word campaign', () => {
-    const model = new MenuModel();
-    model.setMode('expedition');
-
-    equal(MODE_CAPABILITIES.expedition.roles, ['local'], 'Expedition roles');
-    equal(model.seatCount, 1, 'Expedition seat count');
-    equal(model.aiCount, 0, 'Expedition AI count');
-    equal(model.loadoutLimit(), 3, 'Expedition loadout size');
-    equal(model.setRole('host'), false, 'Expedition host rejection');
-  }],
-
   ['keeps Exploration builds out of the menu', () => {
     const model = new MenuModel();
     model.setMode('exploration');
@@ -113,17 +102,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(config.seats, undefined, 'Training explicit seats');
     equal(config.loadouts[0].length, 6, 'Training player loadout');
     equal(config.loadouts[1].length, 6, 'Training opponent loadout');
-  }],
-
-  ['assembles native Expedition with its three-word build', () => {
-    const model = new MenuModel();
-    model.setMode('expedition');
-    fillBuild(model, 0, ['bind', 'shadow', 'mind']);
-    const config = model.toLocalMatchConfig(() => 0.25);
-    equal(config.mode, 'expedition', 'Expedition mode');
-    equal(config.seats?.length, 1, 'Expedition seats');
-    equal(config.seats?.[0].loadout, ['bind', 'shadow', 'mind', 'subtle'], 'Expedition loadout');
-    equal(config.swampPrepMode, undefined, 'Expedition preparation');
   }],
 
   ['assembles native Exploration as a lone traveller', () => {
@@ -205,11 +183,11 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
 
   ['trims presets to the selected mode cap', () => {
     const model = new MenuModel();
-    model.setMode('expedition');
+    model.setMode('exploration');
     model.applyPreset('SNIFF');
 
-    equal(model.draftFor(0).words, ['pierce', 'mind', 'veil'], 'Trimmed Expedition preset');
-    equal(model.loadoutReady(0), true, 'Expedition preset readiness');
+    equal(model.draftFor(0).words, ['pierce', 'mind'], 'Trimmed Exploration preset');
+    equal(model.loadoutReady(0), true, 'Exploration preset readiness');
   }],
 
   ['reveals Storm only through the six-word SNIFF preset', () => {
@@ -487,6 +465,25 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     deliver({ k: 'bye', seat: 1 });
     equal(seen[2], 'bye', 'a departure reaches the session');
     equal((await net.recv()).k, 'bye', 'and a fight waiting on the queue');
+    net.close();
+  }],
+
+  ['keeps party votes out of the lockstep queue', async () => {
+    const socket = new FakeSocket();
+    const net = new (Net as unknown as new (ws: WebSocket) => Net)(socket as unknown as WebSocket);
+    const deliver = (message: object): void => socket.onmessage?.({ data: JSON.stringify(message) } as MessageEvent);
+    deliver({ k: 'mine-vote', from: 1, round: 1, choice: 'N' });
+    deliver({ k: 'mine-choice', round: 1, choice: 'N' });
+    equal((await net.recv()).k, 'mine-choice', 'a vote never enters the lockstep queue');
+    const seen: unknown[] = [];
+    net.setSideHandler((message) => seen.push(message.choice));
+    equal(seen, ['N'], 'an early vote waits for the vote it belongs to');
+    deliver({ k: 'mine-vote', from: 2, round: 1, choice: 'E' });
+    equal(seen, ['N', 'E'], 'votes go straight to the running vote');
+    net.setSideHandler(null);
+    deliver({ k: 'mine-vote', from: 2, round: 1, choice: 'W' });
+    deliver({ k: 'turn', cmd: 1 });
+    equal((await net.recv()).k, 'turn', 'a late vote stays out of the next fight');
     net.close();
   }],
 ];

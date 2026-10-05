@@ -56,6 +56,8 @@ export interface Spell {
   ignoresStealth?: boolean;
   /** The target must stand within this many pixels of one of the caster's own shadows. */
   requiresTargetNearOwnShadow?: number;
+  /** Range measured from any friendly shadow: the caster's, a living ally's or summon's, or a pool of the caster's side. */
+  reachFromShadows?: number;
   description: string;
 
   /**
@@ -64,6 +66,8 @@ export interface Spell {
    * effects that never fail (movement, melee).
    */
   dc?: number;
+  /** The authored DC before the class-spell discount; a modifier cast pays this. */
+  nonClassDc?: number;
 
   /**
    * Optional area-of-effect footprint, used both for targeting previews and by
@@ -89,6 +93,12 @@ export interface Spell {
   minStackDepth?: number;
   /** On successful resolution, remove every older item still on the stack. */
   nullifiesStack?: boolean;
+  /** On successful resolution, remove every enemy item still on the stack. */
+  nullifiesHostileStack?: boolean;
+  /** Nobody may answer this spell: its stack item is silent from the moment it is declared. */
+  unanswerable?: boolean;
+  /** Only castable on the caster's own turn, never in answer to anything. */
+  turnOnly?: boolean;
   /**
    * On successful resolution, take the answered stack item off the stack and
    * re-resolve it at the start of its target's next turn (the Delay word).

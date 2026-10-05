@@ -1,14 +1,15 @@
-// Setting out online. Travellers are claimed one seat at a time, host first:
-// a class each for a new party, or one of the saved travellers for a resumed
-// run. A new party then picks its words, modifier and weapon all at once, and
-// the host checks every pick against the run's seeded offers before applying.
+// Setting out online. A new party's travellers have no class, so each seat just
+// gets the traveller made for it; a resumed run's travellers are claimed one
+// seat at a time, host first. A new party then names its words (the awakening)
+// all at once, and the host checks every pick against the run's seeded offers
+// before applying.
 
-import { MAGE_CLASS_DEFS, MAGE_CLASSES, type MageClass } from '../core/Classes';
+import { MAGE_CLASS_DEFS, type MageClass } from '../core/Classes';
 import { applyCreation, validCreationPick, type CreationPick } from '../pve/exploration/creation';
 import { isMageClass } from '../pve/exploration/levels';
 import { partyOf } from '../pve/exploration/economy';
 import type { ExplorationRun } from '../pve/exploration/run';
-import { chooseKit, type Chooser } from '../ui/pve/CreationFlow';
+import { awaken, type Awakener, type Chooser } from '../ui/pve/CreationFlow';
 import { AdventureSession, HOST_SEAT } from './AdventureSession';
 import type { NetMessage } from './Net';
 
@@ -20,14 +21,11 @@ interface ClaimOption {
   detail: string;
 }
 
-/** What can be claimed: any class for a new party, else the travellers the run already has. */
+/** The travellers the run already has, for a resumed run. */
 function claimOptions(run: ExplorationRun): ClaimOption[] {
-  if (run.creating) {
-    return MAGE_CLASSES.map((mageClass) => ({ id: mageClass, label: MAGE_CLASS_DEFS[mageClass].label, detail: MAGE_CLASS_DEFS[mageClass].blurb }));
-  }
   return partyOf(run).map((mage) => ({
     id: mage.mageClass,
-    label: `${mage.name}, ${MAGE_CLASS_DEFS[mage.mageClass].label}`,
+    label: mage.spellClass ? `${mage.name}, ${MAGE_CLASS_DEFS[mage.spellClass].label}` : mage.name,
     detail: mage.alive ? `HP ${mage.hp}/${mage.maxHp}, mana ${mage.mana}/${mage.maxMana}` : 'Fallen: back after a night at an inn.',
   }));
 }
@@ -40,14 +38,20 @@ function readClaims(message: NetMessage, size: number): (MageClass | null)[] {
 /** Everyone gets a traveller, in seat order. Sets the session's roster. */
 export async function claimTravellers(session: AdventureSession, run: ExplorationRun, choose: Chooser, prompt: Prompt): Promise<void> {
   const options = claimOptions(run);
-  const title = run.creating ? 'CHOOSE A CLASS' : 'CHOOSE YOUR TRAVELLER';
   const ask = (taken: readonly (MageClass | null)[]): Promise<MageClass> =>
-    choose<MageClass>(title, run.creating ? 'Each class travels once in a party.' : 'Each traveller is played by one of you.',
+    choose<MageClass>('CHOOSE YOUR TRAVELLER', 'Each traveller is played by one of you.',
       options.map((option) => ({
         ...option,
         detail: taken.includes(option.id) ? 'Already taken.' : option.detail,
         enabled: !taken.includes(option.id),
       })));
+  if (session.isHost && run.creating) {
+    // Nobody has a class to pick: seat n walks as the traveller made for seat n.
+    const claims = Array.from({ length: session.size }, (_, seat) => run.party.entities[seat]?.mageClass ?? null);
+    session.roster = claims;
+    session.send({ k: 'x-claims', claims, turn: -1 });
+    return;
+  }
   if (session.isHost) {
     const claims: (MageClass | null)[] = Array.from({ length: session.size }, () => null);
     for (let seat = 0; seat < session.size; seat++) {
@@ -104,8 +108,8 @@ export async function claimTravellers(session: AdventureSession, run: Exploratio
   });
 }
 
-/** A new party: everyone picks words, a modifier and a weapon at once; the host applies them together. */
-export async function chooseKits(session: AdventureSession, run: ExplorationRun, choose: Chooser, prompt: Prompt): Promise<void> {
+/** A new party: everyone names words and a modifier at once; the host applies them together. */
+export async function awakenParty(session: AdventureSession, run: ExplorationRun, awakener: Awakener, reducedMotion: boolean, prompt: Prompt): Promise<void> {
   const member = session.member;
   if (!member) return;
   if (session.isHost) {
@@ -119,27 +123,29 @@ export async function chooseKits(session: AdventureSession, run: ExplorationRun,
       const seat = typeof message.from === 'number' ? message.from : -1;
       const mageClass = session.roster[seat];
       const raw = (message.pick && typeof message.pick === 'object' ? message.pick : {}) as Partial<CreationPick>;
-      const pick = mageClass ? { mageClass, words: raw.words ?? [], modifier: raw.modifier, weapon: raw.weapon } as CreationPick : null;
-      const ok = !!pick && seat > HOST_SEAT && !picks[seat] && validCreationPick(run, pick);
+      const pick = { calling: raw.calling, words: Array.isArray(raw.words) ? raw.words.slice(0, 4) : [], modifier: raw.modifier, stat: raw.stat } as CreationPick;
+      const ok = !!mageClass && seat > HOST_SEAT && !picks[seat] && validCreationPick(run, mageClass, pick);
       session.send({ k: 'x-kit-ack', to: seat, ok });
       if (ok) {
         picks[seat] = pick;
         check();
       }
     });
-    picks[HOST_SEAT] = { mageClass: member, ...(await chooseKit(choose, run, member)) };
+    picks[HOST_SEAT] = await awaken(awakener, run, member, reducedMotion);
     check();
-    if (!picks.every((pick) => pick)) prompt('Waiting for the others to pick their words...');
+    if (!picks.every((pick) => pick)) prompt('Waiting for the others to finish talking to themselves...');
     await allIn;
     off();
     prompt(null);
-    if (applyCreation(run, picks as CreationPick[])) session.changed();
+    // applyCreation takes the picks in party order.
+    const ordered = run.party.entities.map((entity) => picks[session.roster.indexOf(entity.mageClass)]);
+    if (ordered.every((pick): pick is CreationPick => !!pick) && applyCreation(run, ordered)) session.changed();
     session.publishNow();
     return;
   }
   for (;;) {
-    const pick = await chooseKit(choose, run, member);
-    prompt('Waiting for the others to pick their words...');
+    const pick = await awaken(awakener, run, member, reducedMotion);
+    prompt('Waiting for the others to finish talking to themselves...');
     const ok = await new Promise<boolean>((resolve) => {
       const off = session.on('x-kit-ack', (message) => {
         if (message.to !== session.localSeat) return;
@@ -149,7 +155,7 @@ export async function chooseKits(session: AdventureSession, run: ExplorationRun,
       session.send({ k: 'x-kit', pick });
     });
     if (ok) break;
-    prompt('The host could not use that pick. Choose again.');
+    prompt('The host could not use that pick. Once more.');
   }
   if (run.creating) {
     await new Promise<void>((resolve) => {

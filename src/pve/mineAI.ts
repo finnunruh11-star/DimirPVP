@@ -109,6 +109,12 @@ export function chooseMineAction(game: GameState, source: Mage): MineAIDecision 
 
   if (mine.kind === 'wolf') return chooseWolfAction(game, source, enemies);
 
+  if (mine.kind === 'lioness') {
+    const prey = enemies.filter((target) => canUseMineAction(game, source, { id: 'lion-pounce', target }));
+    const target = chooseTied(game, prey, (candidate) => -candidate.hp);
+    return target ? { type: 'mine-action', choice: { id: 'lion-pounce', target } } : null;
+  }
+
   if (mine.kind === 'cavern-bat') {
     const radius = (mine.level >= 6 ? 5 : 4) * RANGE_UNIT;
     const inShriek = enemies.filter((target) => dist(source.pos, target.pos) <= radius + target.bodyRadius());

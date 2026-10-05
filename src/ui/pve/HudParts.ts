@@ -7,13 +7,39 @@ import { MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
 import { isReducedMotion } from '../cabinet/motion';
 import { mix } from '../../world/pixels';
 
-/** A solid hardwood plate with a brass rule along its top. */
+/** A hardwood plate with a brass rule along its top, standing proud on a dark edge, a stud in each lower corner. */
 export function drawPlate(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number): void {
+  g.fillStyle(MENU_COLOR.pitch, 1).fillRect(x + 2, y + 3, w, h);
   g.fillStyle(MENU_COLOR.woodDeep, 1).fillRect(x, y, w, h);
-  g.fillStyle(MENU_COLOR.wood, 1).fillRect(x + 2, y + 4, w - 4, h - 6);
-  g.fillStyle(MENU_COLOR.woodRaised, 1).fillRect(x + 2, y + 4, w - 4, 1);
+  g.fillStyle(MENU_COLOR.wood, 1).fillRect(x + 3, y + 4, w - 6, h - 7);
+  g.lineStyle(1, MENU_COLOR.woodRaised, 0.9).lineBetween(x + 3, y + 4.5, x + w - 3, y + 4.5);
+  g.lineStyle(1, MENU_COLOR.pitch, 0.55).lineBetween(x + 3, y + h - 3.5, x + w - 3, y + h - 3.5);
   g.lineStyle(1, MENU_COLOR.brassDark, 1).strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
   g.fillStyle(MENU_COLOR.brass, 1).fillRect(x, y, w, 2);
+  g.fillStyle(MENU_COLOR.brassLight, 0.9);
+  for (const [cx, cy] of [[x + 2, y + h - 4], [x + w - 4, y + h - 4]]) g.fillRect(cx, cy, 2, 2);
+}
+
+/** A thin brass rule with a diamond at its middle, under a window's title. */
+export function drawRule(g: Phaser.GameObjects.Graphics, cx: number, y: number, half: number, color: number = MENU_COLOR.brass): void {
+  g.lineStyle(1, color, 0.9).lineBetween(cx - half, y, cx - 12, y).lineBetween(cx + 12, y, cx + half, y);
+  g.lineStyle(1, color, 0.35).lineBetween(cx - half - 40, y, cx - half - 4, y).lineBetween(cx + half + 4, y, cx + half + 40, y);
+  g.fillStyle(color, 1).fillPoints([
+    new Phaser.Geom.Point(cx, y - 5), new Phaser.Geom.Point(cx + 6, y), new Phaser.Geom.Point(cx, y + 5), new Phaser.Geom.Point(cx - 6, y),
+  ], true);
+  g.fillCircle(cx - half - 2, y, 1.5).fillCircle(cx + half + 2, y, 1.5);
+}
+
+/** A window's frame: a hardwood border standing proud, a dark field sunk into it and a brass line round that. */
+export function drawWindow(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number, accent: number = MENU_COLOR.brass): void {
+  g.fillStyle(MENU_COLOR.pitch, 1).fillRect(x - 6, y - 6, w + 16, h + 17);
+  g.fillStyle(MENU_COLOR.woodDeep, 1).fillRect(x, y, w, h);
+  g.fillStyle(MENU_COLOR.charcoal, 1).fillRect(x + 10, y + 10, w - 20, h - 20);
+  g.lineStyle(1, MENU_COLOR.brassDark, 1).strokeRect(x + 10.5, y + 10.5, w - 21, h - 21);
+  g.lineStyle(1, MENU_COLOR.woodRaised, 0.7).strokeRect(x + 3.5, y + 3.5, w - 7, h - 7);
+  g.fillStyle(accent, 1).fillRect(x + 10, y + 10, w - 20, 4);
+  g.fillStyle(MENU_COLOR.brassLight, 1);
+  for (const [cx, cy] of [[x + 4, y + 4], [x + w - 7, y + 4], [x + 4, y + h - 7], [x + w - 7, y + h - 7]]) g.fillRect(cx, cy, 3, 3);
 }
 
 /** A bone key cap with a pressed-in lower edge. Returns its width. */

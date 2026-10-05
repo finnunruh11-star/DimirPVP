@@ -3,6 +3,7 @@
 import { attackCurve, DEFAULT_FRAMES, DEFAULT_RATE, FRAME_H, GROUND, ramp, recoil, type BossArt, type Pose } from '../rig';
 import { Canvas, ease, hash2, lit, noise2, span, TAU, type Pt } from '../raster';
 import { ball, cloth, eye, limb, plate, rod } from '../parts';
+import { goblinChief, goblinRaider, goblins, goblinShaman } from './goblins';
 
 // ---------------------------------------------------------------------------
 //  ANGY BIG ROCK
@@ -166,190 +167,8 @@ export const rock: BossArt = {
 };
 
 // ---------------------------------------------------------------------------
-//  THE FEARED "HRRRK SNAZZLEGOB" AND HIS BAND
+//  THE FEARED "HRRRK SNAZZLEGOB" AND HIS BAND: drawn in the toon style, see ./goblins
 // ---------------------------------------------------------------------------
-
-const GOB_SKIN = ramp('#131b0b', '#26381a', '#3d5c28', '#5d8538', '#8db455', '#c4dd86');
-const LEATHER = ramp('#180e07', '#322011', '#51331e', '#77502d', '#a07046');
-const WAR_RED = ramp('#2a0606', '#5a0e0e', '#931a18', '#cf3322', '#f56a4a');
-const IRON = ramp('#121317', '#292c35', '#474d5d', '#727b91', '#a9b2c7', '#e2e8f4');
-const WOOD = ramp('#1b0f07', '#382311', '#5c3b1d', '#84572d', '#ad7944');
-const BONE = ramp('#3b3325', '#786c54', '#b6a987', '#ebe1c2');
-const HEX_GREEN = ramp('#0c3a16', '#1e7a30', '#4ed05a', '#aaffa0', '#f0fff0');
-const TRINKET_GOLD = 0xf2c94c;
-
-type GoblinKit = 'chief' | 'raider' | 'shaman';
-
-interface GoblinPose {
-  hop: number;
-  lean: number;
-  hand: Pt;
-  off: Pt;
-  step: number;
-  weapon: number;
-  jaw: number;
-  /** How bright a shaman's staff burns. */
-  glow: number;
-}
-
-function goblinPose(p: Pose, kit: GoblinKit, phase: number): GoblinPose {
-  const cyc = p.t * TAU + phase;
-  const shaman = kit === 'shaman';
-  if (p.anim === 'idle') {
-    const hop = Math.abs(Math.sin(cyc)) * (shaman ? 0.8 : kit === 'chief' ? 1.6 : 2.4);
-    return shaman
-      ? { hop, lean: 1, hand: [-9, -23 + Math.sin(cyc) * 1], off: [5, -17], step: 0, weapon: -1.5 + Math.sin(cyc) * 0.05, jaw: 0, glow: 0.45 + Math.sin(cyc * 2) * 0.25 }
-      : { hop, lean: 0, hand: [-9, -26 - hop + Math.sin(cyc * 2) * 1.5], off: [4, -18], step: 0, weapon: -1.9 + Math.sin(cyc) * 0.25, jaw: Math.sin(cyc * 2) > 0.3 ? 1 : 0, glow: 0 };
-  }
-  if (p.anim === 'walk') {
-    const hop = Math.abs(Math.sin(cyc)) * (shaman ? 1.4 : 3.4);
-    return { hop, lean: shaman ? 0 : -2, hand: shaman ? [-10, -22] : [-10, -25 - hop], off: [5, -17], step: Math.sin(cyc) * (shaman ? 3 : 4.5), weapon: shaman ? -1.35 : -1.7, jaw: 1, glow: 0.35 };
-  }
-  if (p.anim === 'attack') {
-    const { wind, hit } = attackCurve(p.t);
-    if (shaman) {
-      return { hop: wind * 1.2, lean: 1 - hit * 3, hand: [-7 + wind * 2 - hit * 6, -23 - wind * 15 + hit * 5], off: [6 - wind * 4, -20 - wind * 6], step: 0, weapon: -1.5 - wind * 0.25 + hit * 0.7, jaw: 1, glow: Math.min(1, 0.4 + wind * 0.6 + hit) };
-    }
-    return { hop: wind * 3, lean: -5 * hit + 2 * wind, hand: [-4 + wind * 10 - hit * 10, -30 - wind * 8 + hit * 12], off: [5, -18], step: -hit * 3, weapon: -1.2 - wind * 1.6 + hit * 2.3, jaw: 1, glow: 0 };
-  }
-  const k = recoil(p);
-  return { hop: 0, lean: 4 * k, hand: [-6 + 3 * k, -22], off: [6, -17], step: 0, weapon: shaman ? -1.2 : -0.8, jaw: 0, glow: shaman ? 0.2 : 0 };
-}
-
-function goblin(c: Canvas, fx: number, s: number, kit: GoblinKit, q: GoblinPose, shade: number, phase = 0): void {
-  const S = (v: number): number => v * s;
-  const x = fx + S(q.lean);
-  const g = GROUND - S(q.hop);
-  const P = (dx: number, dy: number): Pt => [x + S(dx), g + S(dy)];
-  // The chief's tattered war cape hangs behind everything.
-  if (kit === 'chief') {
-    c.layer((part) => cloth(part, [P(-1, -29), P(5, -30), P(10, -28)], [S(22), S(24), S(21)], WAR_RED, { phase: phase + q.hop, sway: S(7), spread: S(9), ripple: S(1.6), shade: shade - 0.08 }), null, 0.5);
-  }
-  // Far arm, far leg.
-  limb(c, P(3, -26), P(q.off[0], q.off[1]), [S(6.5), S(6.5)], [S(2.4), S(2), S(2.3)], GOB_SKIN, -1, shade - 0.18);
-  limb(c, P(2, -12), [fx + S(5 - q.step), GROUND - 1], [S(6.5), S(6.5)], [S(2.8), S(2.3), S(2.1)], GOB_SKIN, 1, shade - 0.16);
-  // Torso, hunched forward: a leather vest and a red sash, a bone necklace on a shaman.
-  ball(c, x + S(1), g + S(-20), S(8.5), S(10), LEATHER, shade, 0.35);
-  if (kit === 'shaman') {
-    c.layer((part) => cloth(part, [P(-7, -14), P(1, -13), P(8, -15)], [S(9), S(10), S(9)], LEATHER, { phase: phase + q.hop, sway: S(1), spread: S(4), ripple: S(0.8), shade: shade - 0.05 }), null, 0.5);
-    for (let k = 0; k < 4; k++) c.dot(x + S(-5 + k * 2.6), g + S(-25 + Math.abs(k - 1.5) * 0.8), BONE[3]);
-  } else {
-    c.layer((part) => part.poly([P(-7, -18), P(8, -26), P(9, -22), P(-6, -14)], WAR_RED, 0.55 + shade), null, 0.5);
-  }
-  limb(c, P(-2, -12), [fx + S(-5 + q.step), GROUND - 1], [S(6.5), S(6.5)], [S(3), S(2.4), S(2.2)], GOB_SKIN, 1, shade);
-  for (const foot of [[fx + S(-6 + q.step), GROUND - 1], [fx + S(4 - q.step), GROUND - 1]] as const) {
-    ball(c, foot[0] - S(1.5), foot[1] - S(0.8), S(3.2), S(1.8), GOB_SKIN, shade - 0.05);
-  }
-  // Head: big, low, ears swept back, a grin full of teeth.
-  const hx = x + S(-6);
-  const hy = g + S(-32);
-  if (kit === 'shaman') {
-    // A crest of feathers, red and bone, swept back from the brow.
-    for (let k = 0; k < 3; k++) {
-      c.layer((part) => part.tube([[hx + S(1 + k), hy - S(6), S(1.3)], [hx + S(6 + k * 3), hy - S(15 - k * 2), S(1)], [hx + S(9 + k * 4), hy - S(19 - k * 3), S(0.5)]], k === 1 ? BONE : WAR_RED, { shade }), null, 0.5);
-    }
-  }
-  c.layer((part) => part.poly([[hx + S(2), hy - S(4)], [hx + S(15), hy - S(12)], [hx + S(6), hy + S(1)]], GOB_SKIN, 0.4 + shade), null, 0.5);
-  ball(c, hx, hy, S(9.5), S(8.5), GOB_SKIN, shade);
-  c.layer((part) => part.poly([[hx + S(3), hy - S(3)], [hx + S(17), hy - S(7)], [hx + S(5), hy + S(2)]], GOB_SKIN, 0.62 + shade), null, 0.5);
-  if (kit === 'chief') {
-    // A crown of iron teeth and a gold ring in the ear.
-    c.layer((part) => {
-      part.rect(hx - S(8), hy - S(8), S(15), S(3), IRON[2]);
-      for (let k = 0; k < 5; k++) part.poly([[hx - S(8) + S(k * 3.2), hy - S(7)], [hx - S(6.6) + S(k * 3.2), hy - S(13 + (k % 2) * 2)], [hx - S(5.4) + S(k * 3.2), hy - S(7)]], IRON, 0.7);
-    }, null, 0.5);
-    c.dot(hx + S(7), hy + S(1), TRINKET_GOLD);
-    c.dot(hx + S(7), hy + S(2), TRINKET_GOLD);
-  } else if (kit === 'raider') {
-    c.layer((part) => part.poly([[hx - S(7), hy - S(4)], [hx + S(7), hy - S(7)], [hx + S(8), hy - S(4)], [hx - S(7), hy - S(1)]], WAR_RED, 0.6 + shade), null, 0.5);
-    c.layer((part) => part.tube([[hx + S(8), hy - S(5), S(1.2)], [hx + S(13), hy - S(1), S(0.9)]], WAR_RED), null, 0.5);
-  } else {
-    // Red war paint in two stripes across the face.
-    c.line(hx - S(8), hy - S(1), hx - S(2), hy - S(2), WAR_RED[3]);
-    c.line(hx - S(8), hy + S(2), hx - S(3), hy + S(1), WAR_RED[3]);
-  }
-  ball(c, hx - S(8), hy + S(1.5), S(3.2), S(2.2), GOB_SKIN, shade + 0.05);
-  eye(c, Math.round(hx - S(4)), Math.round(hy - S(1)), kit === 'shaman' ? HEX_GREEN[4] : 0xffe07a, kit === 'shaman' ? HEX_GREEN[2] : 0xd8301c, s > 1 ? 2 : 1);
-  c.line(hx - S(7), hy - S(3.5), hx - S(1), hy - S(2), GOB_SKIN[0], s > 1 ? 2 : 1);
-  if (kit === 'chief') c.line(hx - S(5), hy - S(5), hx - S(2), hy + S(1), GOB_SKIN[4]);
-  const my = hy + S(4.5) + q.jaw * S(0.8);
-  c.line(hx - S(7), my, hx + S(2), my + S(1), GOB_SKIN[0], 2);
-  for (let k = 0; k < 3; k++) c.dot(hx - S(6) + S(k * 2.8), my + (k % 2 ? 1 : 0), BONE[3]);
-  // The near arm and whatever it carries.
-  const hand = limb(c, P(-3, -26), P(q.hand[0], q.hand[1]), [S(6.5), S(6.5)], [S(2.6), S(2.1), S(2.4)], GOB_SKIN, -1, shade);
-  const a = q.weapon;
-  const dx = Math.cos(a);
-  const dy = Math.sin(a);
-  if (kit === 'chief') {
-    // A cleaver as long as he is tall.
-    rod(c, [[hand[0], hand[1], S(1.3)], [hand[0] + dx * S(8), hand[1] + dy * S(8), S(1.3)]], WOOD, shade);
-    const bx = hand[0] + dx * S(8);
-    const by = hand[1] + dy * S(8);
-    const along = (d: number, w: number): Pt => [bx + dx * S(d) - dy * S(w), by + dy * S(d) + dx * S(w)];
-    plate(c, [along(0, -1), along(15, -1.5), along(16.5, -9), along(1, -8)], IRON, 0.62 + shade, 0.004);
-    c.line(along(1, -8)[0], along(1, -8)[1], along(16.5, -9)[0], along(16.5, -9)[1], IRON[5]);
-    c.dot(along(4, -4)[0], along(4, -4)[1], IRON[0]);
-  } else if (kit === 'raider') {
-    const end: Pt = [hand[0] + dx * S(13), hand[1] + dy * S(13)];
-    rod(c, [[hand[0], hand[1], S(1.3)], [end[0], end[1], S(3.6)]], WOOD, shade);
-    for (let k = 0; k < 4; k++) {
-      const sa = a + (k - 1.5) * 0.9;
-      c.dot(end[0] + Math.cos(sa) * S(4.5), end[1] + Math.sin(sa) * S(4.5), BONE[3]);
-    }
-  } else {
-    // A staff capped with a skull whose sockets burn green.
-    const top: Pt = [hand[0] + dx * S(15), hand[1] + dy * S(15)];
-    rod(c, [[hand[0] - dx * S(14), hand[1] - dy * S(14), S(1.1)], [top[0], top[1], S(1.1)]], WOOD, shade);
-    ball(c, top[0], top[1] - S(2.5), S(3.6), S(3.2), BONE, shade);
-    const socket = q.glow > 0.6 ? HEX_GREEN[4] : HEX_GREEN[3];
-    c.dot(top[0] - S(1.6), top[1] - S(2.8), socket);
-    c.dot(top[0] + S(0.6), top[1] - S(2.8), socket);
-    if (q.glow > 0.55) {
-      const r = S(5 + q.glow * 3);
-      for (let k = 0; k < 10; k++) {
-        const ga = (k / 10) * TAU + q.glow * 2;
-        c.dot(top[0] + Math.cos(ga) * r, top[1] - S(2.5) + Math.sin(ga) * r * 0.8, HEX_GREEN[2 + (k % 3)]);
-      }
-    }
-  }
-}
-
-function goblinUnit(kit: GoblinKit, w: number, fx: number, s: number, pixel: number): BossArt {
-  return {
-    w,
-    h: FRAME_H,
-    pixel,
-    frames: DEFAULT_FRAMES,
-    rate: { ...DEFAULT_RATE, idle: kit === 'shaman' ? 8 : 10, walk: 12 },
-    ink: 0x0a0806,
-    ember: kit === 'shaman' ? 0x7cf07a : 0xff6a3a,
-    draw(c, p) {
-      c.rim = { color: 0xe0503a, strength: 0.45 };
-      goblin(c, fx, s, kit, goblinPose(p, kit, 0), 0);
-    },
-  };
-}
-
-/** The whole band at once, for the Vs. screen: a raider, a shaman, and Snazzlegob in front. */
-export const goblins: BossArt = {
-  w: 128,
-  h: FRAME_H,
-  frames: DEFAULT_FRAMES,
-  rate: { ...DEFAULT_RATE, idle: 10, walk: 12 },
-  ink: 0x0a0806,
-  ember: 0xff6a3a,
-  draw(c, p) {
-    c.rim = { color: 0xe0503a, strength: 0.45 };
-    const sink = p.anim === 'death' ? ease.inOut(span(p.t, 0, 0.5)) * 4 : 0;
-    goblin(c, 32, 1.02, 'raider', goblinPose(p, 'raider', 1.7), -0.12, 1.7);
-    goblin(c, 100, 1.02, 'shaman', goblinPose(p, 'shaman', 3.4), -0.1, 3.4);
-    goblin(c, 62 + sink, 1.36, 'chief', goblinPose(p, 'chief', 0), 0);
-  },
-};
-
-export const goblinChief = goblinUnit('chief', 84, 46, 1.3, 1.6);
-export const goblinRaider = goblinUnit('raider', 64, 36, 1, 1.5);
-export const goblinShaman = goblinUnit('shaman', 64, 32, 1, 1.5);
 
 // ---------------------------------------------------------------------------
 //  EVIL MINION OF MINOR VILLAINY
@@ -361,6 +180,7 @@ const PALE = ramp('#1d1624', '#3b2e47', '#5e4d6c', '#86739a', '#b9a8c9', '#e3d8e
 const SUIT = ramp('#07060a', '#141119', '#231d2c', '#372d44', '#51425f');
 const GOLD = ramp('#2e1d05', '#664210', '#a8701c', '#e0a838', '#ffe08a', '#fff6d2');
 const BOMB = ramp('#060608', '#131419', '#23252d', '#3b3f4c', '#6c7285');
+const BONE = ramp('#3b3325', '#786c54', '#b6a987', '#ebe1c2');
 
 export const minion: BossArt = {
   w: 120,

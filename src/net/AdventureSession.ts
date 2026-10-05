@@ -15,6 +15,7 @@
 import type Phaser from 'phaser';
 import type { MatchConfig } from '../config/MatchConfig';
 import type { MageClass } from '../core/Classes';
+import { asItemIds } from '../core/Items';
 import {
   applyIntent,
   parseIntent,
@@ -24,6 +25,8 @@ import {
   type IntentResult,
 } from '../pve/exploration/intents';
 import type { ExplorationRun } from '../pve/exploration/run';
+import { applyCouncil, emptyCouncil, parseCouncil, parseCouncilOp, type Council, type CouncilOp } from '../pve/exploration/council';
+import { moneyLabel } from '../pve/exploration/economy';
 import { parseRun, retireRun, saveRun, setSaveListener, setSaveSlot } from '../pve/exploration/save';
 import { parseFightWire, type FightWire } from './fightWire';
 import type { Net, NetMessage } from './Net';
@@ -41,6 +44,8 @@ export type AdventureSceneKey = 'Exploration' | 'Locale';
 type Listener = (message: NetMessage) => void;
 
 const PUBLISH_MS = 250;
+/** Intents that spend or earn from the shared purse. */
+const PURSE_INTENTS: ReadonlySet<ExplorationIntent['op']> = new Set<ExplorationIntent['op']>(['buy', 'sell', 'sell-all', 'craft']);
 const ARRIVAL_TIMEOUT_MS = 12_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -82,6 +87,9 @@ export class AdventureSession {
   /** Seat -> the party member that player walks as, once classes are claimed. */
   roster: (MageClass | null)[];
   run: ExplorationRun | null = null;
+  /** What the party is deciding together; the host's copy is the true one. */
+  council: Council;
+  private pollCount = 0;
   paused = false;
   ended = false;
   private rev = 0;
@@ -102,6 +110,7 @@ export class AdventureSession {
     this.size = Math.max(2, options.size);
     this.names = options.names;
     this.roster = Array.from({ length: this.size }, () => null);
+    this.council = emptyCouncil(this.size);
   }
 
   get isHost(): boolean {
@@ -204,6 +213,23 @@ export class AdventureSession {
       case 'x-arrived':
         if (this.isHost && typeof message.id === 'number') this.markArrived(from, message.id);
         return;
+      case 'x-say': {
+        const op = parseCouncilOp(message.op);
+        if (this.isHost && op && from > HOST_SEAT && from < this.size) this.hear(from, op);
+        return;
+      }
+      case 'x-council': {
+        const council = !this.isHost && fromHost ? parseCouncil(message.council, this.size) : null;
+        if (!council) return;
+        this.council = council;
+        this.emit({ k: 'x-council' });
+        return;
+      }
+      case 'x-news':
+        if (!this.isHost && fromHost && message.except !== this.localSeat && typeof message.text === 'string') {
+          this.emit({ k: 'x-news', text: message.text.slice(0, 240) });
+        }
+        return;
       case 'x-pause':
         if (!this.isHost && fromHost) this.paused = message.on === true;
         break;
@@ -255,6 +281,56 @@ export class AdventureSession {
   }
 
   // ---------------------------------------------------------------------------
+  //  THE COUNCIL
+  // ---------------------------------------------------------------------------
+
+  /** Have a say: the host settles it at once, a guest asks the host. */
+  say(op: CouncilOp): void {
+    if (this.isHost) this.hear(this.localSeat, op);
+    else this.send({ k: 'x-say', op });
+  }
+
+  private hear(seat: number, op: CouncilOp): void {
+    const change = applyCouncil(this.council, seat, op, (s) => this.nameOf(s));
+    if (!change.changed) return;
+    if (change.note) this.news(change.note);
+    this.publishCouncil();
+  }
+
+  /** Host: the council as it now stands, to every guest and to this client's own listeners. */
+  publishCouncil(): void {
+    if (!this.isHost || this.ended) return;
+    this.send({ k: 'x-council', council: this.council });
+    this.emit({ k: 'x-council' });
+  }
+
+  /** Host: start over with nothing to decide (a new scene, a fight). */
+  resetCouncil(): void {
+    this.council = emptyCouncil(this.size);
+    this.publishCouncil();
+  }
+
+  /** Host: a fresh id for a choice put to the party. */
+  nextPollId(): number {
+    this.pollCount += 1;
+    return this.pollCount;
+  }
+
+  /** Host: tell every player, this one included, except the one in `except`. */
+  news(text: string, except = -1): void {
+    if (!this.isHost) return;
+    this.send({ k: 'x-news', text, except });
+    if (except !== this.localSeat) this.emit({ k: 'x-news', text });
+  }
+
+  /** Host: the purse is shared, so everyone hears what it was spent on. */
+  private tellPurchase(seat: number, intent: ExplorationIntent, result: IntentResult): void {
+    if (!result.ok || !this.run || !PURSE_INTENTS.has(intent.op)) return;
+    const purse = intent.op === 'craft' ? '' : ` Purse: ${moneyLabel(this.run.gold)}.`;
+    this.news(`${this.nameOf(seat)}: ${result.message}${purse}`, seat);
+  }
+
+  // ---------------------------------------------------------------------------
   //  REQUESTS
   // ---------------------------------------------------------------------------
 
@@ -268,6 +344,7 @@ export class AdventureSession {
         apply: (intent) => {
           const result = this.run ? applyIntent(this.run, member, intent) : { ok: false, message: 'No run.' };
           if (result.ok) this.changed();
+          this.tellPurchase(this.localSeat, intent, result);
           return Promise.resolve(result);
         },
       };
@@ -308,6 +385,7 @@ export class AdventureSession {
       ok: message.ok === true,
       message: typeof message.message === 'string' ? message.message.slice(0, 240) : '',
       levels: typeof message.levels === 'number' ? message.levels : undefined,
+      item: asItemIds([message.item])[0],
     });
   }
 
@@ -316,7 +394,7 @@ export class AdventureSession {
     const intent = parseIntent(message.intent);
     const member = this.roster[from];
     const reply = (result: IntentResult): void => {
-      this.send({ k: 'x-result', to: from, id, ok: result.ok, message: result.message, levels: result.levels });
+      this.send({ k: 'x-result', to: from, id, ok: result.ok, message: result.message, levels: result.levels, item: result.item });
     };
     if (!intent || !member || !this.run) return reply({ ok: false, message: 'That cannot be done.' });
     if (PARTY_INTENTS.has(intent.op)) return reply({ ok: false, message: 'Only the host can do that for the party.' });
@@ -327,6 +405,7 @@ export class AdventureSession {
       this.publishNow();
       this.emit({ k: 'x-changed' });
     }
+    this.tellPurchase(from, intent, result);
     reply(result);
   }
 
@@ -337,6 +416,7 @@ export class AdventureSession {
   /** Host: take the guests to `scene`. Returns the id their arrival reports carry. */
   go(scene: AdventureSceneKey, data: Record<string, unknown>): number {
     this.sceneId += 1;
+    this.resetCouncil();
     this.publishNow();
     this.send({ k: 'x-scene', id: this.sceneId, scene, data });
     return this.sceneId;
@@ -377,6 +457,7 @@ export class AdventureSession {
 
   /** Host: take the guests into a fight. The run goes first, then the fight; then nothing until it is over. */
   startFight(fight: FightWire, seed: number): void {
+    this.resetCouncil();
     this.publishNow();
     // Nothing from an earlier fight may be read as part of this one.
     this.net.clearQueue();

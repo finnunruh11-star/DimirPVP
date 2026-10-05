@@ -3,6 +3,7 @@ import { Mage } from '../core/Mage';
 import { dayNews } from '../pve/exploration/calendar';
 import { hoursToTurn, spanLabel } from '../pve/exploration/clock';
 import { stormOnDay } from '../pve/exploration/desert';
+import { hasMonsters } from '../pve/exploration/encounters';
 import { ROAD_EVENTS } from '../pve/exploration/events';
 import { gatherHerbs, HERBS, rollCache } from '../pve/exploration/finds';
 import { emptyRoad, findSighting, LEG_TILES, rollBeat, stopsAlong, walkStep, type Beat } from '../pve/exploration/journey';
@@ -48,11 +49,12 @@ function stepAt(cell: Cell, over: Partial<TripStep> = {}): TripStep {
   };
 }
 
-/** Open country well away from any town, with room all round. */
+/** Open country well away from any town, with room all round, where monsters live. */
 function wildCell(): Cell {
   for (let y = 6; y < world.h - 6; y++) {
     for (let x = 6; x < world.w - 6; x++) {
       if (nearTown(x, y) || placeAt(x, y) || !isPassable(world, x, y) || townDistance(x, y) < 9) continue;
+      if (!hasMonsters(regionAt(world, x, y))) continue;
       let open = 0;
       for (let dy = -5; dy <= 5; dy++) for (let dx = -5; dx <= 5; dx++) if (isPassable(world, x + dx, y + dy)) open++;
       if (open >= 110) return { x, y };
@@ -83,17 +85,17 @@ function beatsFor(mode: TravelMode, road: { danger: number; luck: number }, cell
 const wild = wildCell();
 
 const tests: [name: string, run: () => void][] = [
-  ['stops every six tiles, and a short hop carries its tiles into the next trip', () => {
+  ['stops every four tiles, and a short hop carries its tiles into the next trip', () => {
     const run = freshRun();
     const step = stepAt(wild, { enemy: 0.05, find: 0.03 });
     for (let tile = 1; tile < LEG_TILES; tile++) assert(!walkStep(run, step), `tile ${tile} is no stop`);
-    assert(walkStep(run, step), 'the sixth tile is');
+    assert(walkStep(run, step), 'the fourth tile is');
     assert(run.road.danger > 0 && run.road.luck > 0, 'danger and luck build up as the party walks');
-    equal(stopsAlong(freshRun(), 20), [5, 11, 17], 'a fresh road stops after tiles 6, 12 and 18');
-    equal(stopsAlong(freshRun(), 6), [], 'a stop falling on the arrival waits for the next trip');
+    equal(stopsAlong(freshRun(), 20), [3, 7, 11, 15], 'a fresh road stops after tiles 4, 8, 12 and 16');
+    equal(stopsAlong(freshRun(), 4), [], 'a stop falling on the arrival waits for the next trip');
     const hopped = freshRun();
-    hopped.road.tiles = 4;
-    equal(stopsAlong(hopped, 20), [1, 7, 13], 'four tiles already walked bring the first stop forward');
+    hopped.road.tiles = 3;
+    equal(stopsAlong(hopped, 20), [0, 4, 8, 12, 16], 'three tiles already walked bring the first stop forward');
   }],
 
   ['rolls the same stop from the same run, then clears the leg and moves the seed on', () => {
@@ -114,13 +116,15 @@ const tests: [name: string, run: () => void][] = [
     assert(calm.fight < 30, `a quiet leg rarely does (${calm.fight}/300)`);
   }],
 
-  ['mostly rests on a quiet road, and turns up more when exploring', () => {
+  ['keeps some quiet stretches, brings roadside events often, and turns up more when exploring', () => {
     const sprint = beatsFor('sprint', { danger: 0, luck: 0.15 }, wild);
     const explore = beatsFor('explore', { danger: 0, luck: 0.15 }, wild);
-    assert(sprint.rest > 120, `a quiet sprint mostly rests (${sprint.rest}/300)`);
+    assert(sprint.rest > 60 && sprint.rest < 180, `a quiet sprint still has quiet stretches (${sprint.rest}/300)`);
+    assert(sprint.event > 40, `roadside events are common (${sprint.event}/300)`);
     assert(sprint.sighting > 30 && sprint.sighting < 140, `something is spotted now and then (${sprint.sighting}/300)`);
     assert(explore.sighting > sprint.sighting, `exploring spots more (${explore.sighting} vs ${sprint.sighting})`);
-    assert(sprint.loot + sprint.event > 0, 'finds and roadside events still turn up');
+    assert(explore.rest < sprint.rest, `exploring is rarely quiet (${explore.rest} vs ${sprint.rest})`);
+    assert(sprint.loot > 0, 'finds still turn up');
   }],
 
   ['spots things a short walk off the way, never on the route ahead nor in a town', () => {
@@ -141,7 +145,11 @@ const tests: [name: string, run: () => void][] = [
       if (sighting.kind === 'pack') assert(sighting.spawns?.length, `seed ${seed}: a pack has members`);
       if (sighting.kind === 'herbs') assert(sighting.herb && HERBS[sighting.zone].includes(sighting.herb), `seed ${seed}: a local herb`);
       if (sighting.kind === 'cache') assert(sighting.site, `seed ${seed}: a ruin has a name`);
-      if (sighting.kind === 'event') assert(ROAD_EVENTS.some((event) => event.id === sighting.eventId), `seed ${seed}: a real event`);
+      if (sighting.kind === 'event') {
+        assert(ROAD_EVENTS.some((event) => event.id === sighting.eventId && event.sighted), `seed ${seed}: a real event that sits off the road`);
+        const scene = sighting.scene;
+        assert(scene && scene.id === sighting.eventId && scene.title === sighting.title && scene.text === sighting.text, `seed ${seed}: the card shows the scene that will play`);
+      }
     }
     assert(seen > 380, `open country always has somewhere to look (${seen}/400)`);
     assert(Object.values(kinds).every((n) => n > 0), `herbs, packs, ruins and scenes all turn up (${JSON.stringify(kinds)})`);
@@ -164,20 +172,20 @@ const tests: [name: string, run: () => void][] = [
     const run = freshRun();
     const herbs = (): number => {
       const leader = restoreParty(run.party)[0];
-      return [...leader.bag, ...leader.utility].filter((id) => id === 'herbMoonleaf').length;
+      return [...leader.bag, ...leader.utility].filter((id) => id === 'herbMoonglow').length;
     };
     for (let seed = 0; seed < 12; seed++) {
       const before = herbs();
-      const message = gatherHerbs(run, 'herbMoonleaf', new Dice(seed));
+      const message = gatherHerbs(run, 'herbMoonglow', new Dice(seed));
       const gained = herbs() - before;
       assert(gained >= 2 && gained <= 4, `seed ${seed}: ${gained} picked`);
-      equal(message, `Gathered ${gained}x Moonleaf.`, `seed ${seed}: says what was picked`);
+      equal(message, `Gathered ${gained}x Moonglow.`, `seed ${seed}: says what was picked`);
     }
     const gold = run.gold;
     for (let seed = 0; seed < 12; seed++) {
       const message = rollCache(run, 'forest', 4, new Dice(seed), 'Old hunting lodge');
       assert(message.startsWith('Old hunting lodge: ') && message.endsWith('.'), `seed ${seed}: "${message}"`);
-      assert(!/Moonleaf|Bogcap|Emberroot/.test(message), `seed ${seed}: no herbs in a ruin`);
+      assert(!/Moonglow|Waterleaf|Deathweed|Fireblossom/.test(message), `seed ${seed}: no herbs in a ruin`);
     }
     equal(run.gold, gold, 'no coin from either');
   }],
@@ -205,8 +213,6 @@ const tests: [name: string, run: () => void][] = [
     while (stormOnDay(run, calm)) calm += 1;
     run.day = calm;
     assert(!dayNews(run).some((line) => line.startsWith('Sandstorm')), 'a still day calls no storm');
-    run.quest = { job: 1, taken: false, progress: 0, opens: calm };
-    assert(dayNews(run).includes('Work at the Kerusai Lodge'), 'the Lodge has its next job');
   }],
 
   ['reads the hour: when the light turns, and what colour it is', () => {

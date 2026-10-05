@@ -7,7 +7,7 @@ import { dist, stepTowards, type Vec2 } from '../core/utils';
 import type { Scarab } from '../core/Scarab';
 import type { StackItem } from '../core/Stack';
 import { getColorAbilitiesFor, type ColorAbility } from '../spells/colorAbilities';
-import { MELEE_RANGE, RANGE_UNIT } from '../config/constants';
+import { FIELD, MELEE_RANGE, RANGE_UNIT } from '../config/constants';
 import {
   LICH_SPELLS,
   LICH_SPELL_RANGE,
@@ -28,7 +28,6 @@ export type AIDecision =
   // Swat a harassing enemy scarab that is latched onto or beside us.
   | { type: 'scarab'; scarab: Scarab }
   | { type: 'spell'; spell: Spell; target?: Mage; point?: Vec2 }
-  | { type: 'companion-heal'; target: Mage }
   | { type: 'color-ability'; ability: ColorAbility; target?: Mage; point?: Vec2 }
   | { type: 'deaths-angel-wings' }
   // A bespoke Lich power: cast for free (no pay/DC) and always succeeds.
@@ -65,7 +64,7 @@ export class SimpleAI {
   private castableSpells(action: 'main' | 'bonus'): Spell[] {
     const set = new Set(this.self.loadout);
     const forgotten = this.self.forgotten();
-    return allSpells(this.self.mageClass).filter(
+    return allSpells(this.self.spellClass).filter(
       (s) =>
         s.actionType === action &&
         // Delay only does anything in answer to something on the stack.
@@ -79,6 +78,7 @@ export class SimpleAI {
 
   /** Pick the next action for the AI's turn, or end the turn. */
   chooseAction(): AIDecision {
+    if (this.self.sceneSide === 'prey') return this.choosePreyAction();
     if (this.self.mine) {
       const mine = chooseMineAction(this.game, this.self);
       if (mine) return mine;
@@ -100,9 +100,7 @@ export class SimpleAI {
     if (isBaralUnit(this.self)) return chooseBaralAction(this.game, this.self);
     if (this.self.reaperKind) return this.chooseReaperAction();
     if (this.self.ghastKind) return this.chooseGhastAction();
-    if (this.self.expeditionCompanion === 'dwarf') return this.chooseDwarfAction();
-    if (this.self.expeditionCompanion === 'human') return this.chooseHumanAction();
-    if (this.self.expeditionCompanion === 'elf') return this.chooseElfAction();
+    if (this.self.companion === 'dwarf') return this.chooseDwarfAction();
 
     const enemy = this.chooseTarget();
     const acts = this.self.actions;
@@ -114,6 +112,8 @@ export class SimpleAI {
         const scarab = this.game.enemyScarabsInRange(this.self, MELEE_RANGE)[0];
         if (scarab) return { type: 'scarab', scarab };
       }
+      const detour = acts.move > 0 ? this.detourAroundCurtain() : null;
+      if (detour) return { type: 'move', point: detour };
       return { type: 'end' };
     }
 
@@ -156,7 +156,7 @@ export class SimpleAI {
     const forgotten = this.self.forgotten();
     // With a reaction word the AI may answer with ANY castable spell.
     const grants = this.self.grantsReaction;
-    const reactions = allSpells(this.self.mageClass).filter(
+    const reactions = allSpells(this.self.spellClass).filter(
       (s) =>
         this.self.hasCharges(s.words) &&
         s.words.every((w) => set.has(w)) &&
@@ -166,25 +166,21 @@ export class SimpleAI {
     );
     if (reactions.length === 0) return null;
 
-    if (this.self.expeditionCompanion === 'human') {
-      const threat = top.spell?.words.length ?? (top.kind === 'action' ? 2 : 1);
-      const stop = reactions.find((spell) => spell.words.length === 1 && spell.words[0] === 'stop');
-      if (stop && this.game.isValidSpellTarget(stop, this.self, enemy)) {
-        const sourceDangerous = !!(enemy.enemyKind === 'lich' || enemy.reaperKind || enemy.ghastKind);
-        // If a Lich/Reaper is alive, save Stop for it — only spend on minor
-        // foes when facing a 3+ word cast (very high threat).
-        const threshold = !sourceDangerous && this.lichAlive() ? 3 : 2;
-        if (threat >= threshold) return { spell: stop, target: enemy };
+    // Prefer a counter (e.g. Bind Pierce) when low, otherwise hide (Veil).
+    // A bare window (end of turn, a blink) holds nothing worth countering.
+    const counter = top.windowTrigger ? undefined : reactions.find((s) => s.counters);
+    if (counter && this.isProtectiveReaction(counter)) {
+      const struck = top.target && top.target.team === this.self.team ? top.target : this.self;
+      if (this.game.isValidSpellTarget(counter, this.self, struck) && this.game.rng.chance(0.6)) {
+        return { spell: counter, target: struck };
       }
     }
-
-    // Prefer a counter (e.g. Bind Pierce) when low, otherwise hide (Veil).
-    const counter = reactions.find((s) => s.counters);
     if (counter && this.game.isValidSpellTarget(counter, this.self, enemy) && this.game.rng.chance(0.6)) {
       if (counter.targeting === 'point') {
         const reach = Number.isFinite(counter.range) ? counter.range : this.self.moveRange();
         return { spell: counter, point: stepTowards(this.self.pos, enemy.pos, reach) };
       }
+      if (counter.targeting === 'none') return { spell: counter };
       return { spell: counter, target: enemy };
     }
     const selfBuff = reactions.find((s) => s.targeting === 'self' || s.targeting === 'any');
@@ -199,6 +195,24 @@ export class SimpleAI {
       return { spell: offensive[0], target: enemy };
     }
     return null;
+  }
+
+  /** Prey never fights back: it runs straight away from whatever is nearest. */
+  private choosePreyAction(): AIDecision {
+    const threat = this.game.opponentOf(this.self);
+    const reach = this.self.moveRange();
+    if (this.self.actions.move <= 0 || reach <= 0 || threat === this.self || !threat.alive) return { type: 'end' };
+    const dx = this.self.x - threat.x;
+    const dy = this.self.y - threat.y;
+    const len = Math.max(1, Math.hypot(dx, dy));
+    const margin = this.self.bodyRadius() + 4;
+    return {
+      type: 'move',
+      point: {
+        x: Math.min(FIELD.x + FIELD.w - margin, Math.max(FIELD.x + margin, this.self.x + (dx / len) * reach)),
+        y: Math.min(FIELD.y + FIELD.h - margin, Math.max(FIELD.y + margin, this.self.y + (dy / len) * reach)),
+      },
+    };
   }
 
   private chooseDwarfAction(): AIDecision {
@@ -228,145 +242,18 @@ export class SimpleAI {
     return { type: 'end' };
   }
 
-  private elfHealTarget(): Mage | null {
-    if (this.self.actions.main <= 0 || this.self.companionHealCharges <= 0) return null;
-    const allies = this.game.mages
-      .filter(
-        (mage) =>
-          mage.team === this.self.team &&
-          mage.alive &&
-          mage.hp < mage.maxHp &&
-          dist(this.self.pos, mage.pos) <= 10 * RANGE_UNIT
-      )
-      .sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp);
-    return allies[0] ?? null;
-  }
-
-  private chooseElfAction(): AIDecision {
-    // Priority 1: heal a wounded ally within range if charges remain.
-    const healTarget = this.elfHealTarget();
-    if (healTarget) return { type: 'companion-heal', target: healTarget };
-
-    const enemies = this.game.livingEnemiesOf(this.self).filter(
-      (mage) => !this.game.isUntargetable(mage, this.self)
-    );
-    if (enemies.length === 0) return { type: 'end' };
-
-    // Prefer the Lich if alive; otherwise target the strongest visible foe.
-    const lichEnemy = enemies.find((m) => m.enemyKind === 'lich');
-    const target = lichEnemy ?? [...enemies].sort((a, b) => b.effectiveStr() - a.effectiveStr())[0];
-    const nearest = [...enemies].sort((a, b) => dist(this.self.pos, a.pos) - dist(this.self.pos, b.pos))[0];
-    const nearDist = dist(this.self.pos, nearest.pos);
-
-    // Preferred range band: bow auto-hits within 15 tiles; stay at 5–13 tiles.
-    const PREF_MIN = 5 * RANGE_UNIT;  // retreat if any foe is closer than this
-    const PREF_MAX = 13 * RANGE_UNIT; // advance if target is farther than this
-
-    // Priority 2: shoot if in weapon range.
-    if (this.self.actions.main > 0 && this.game.canMelee(this.self, target)) {
-      return { type: 'melee', target };
-    }
-
-    // Priority 3: reposition to maintain preferred range.
-    if (this.self.actions.move > 0) {
-      if (nearDist < PREF_MIN) {
-        // Too close — back away from the nearest enemy.
-        const dx = this.self.x - nearest.x;
-        const dy = this.self.y - nearest.y;
-        const len = Math.max(1, Math.hypot(dx, dy));
-        const move = this.self.moveRange();
-        return { type: 'move', point: { x: this.self.x + (dx / len) * move, y: this.self.y + (dy / len) * move } };
-      }
-      if (dist(this.self.pos, target.pos) > PREF_MAX) {
-        return { type: 'move', point: stepTowards(this.self.pos, target.pos, this.self.moveRange()) };
-      }
-    }
-
-    return { type: 'end' };
-  }
-
-  private chooseHumanAction(): AIDecision {
-    const visible = this.game.livingEnemiesOf(this.self).filter(
-      (mage) => !this.game.isUntargetable(mage, this.self)
-    );
-    if (visible.length === 0) return { type: 'end' };
-    const strongest = [...visible].sort((a, b) => b.effectiveStr() - a.effectiveStr())[0];
-    if (!this.self.hasCastThisTurn && this.self.actions.bonus > 0) {
-      const abilities = getColorAbilitiesFor(this.self.profile.primary, this.self.mageClass).filter(
-        (ability) =>
-          this.self.abilityCastsLeft(ability.id) > 0 &&
-          this.canAffordColorAbility(ability)
-      );
-      const rejuvenate = abilities.find((ability) => ability.id === 'ability:rejuvenate');
-      const manaTarget = this.game.mages
-        .filter(
-          (mage) =>
-            mage.team === this.self.team &&
-            mage.alive &&
-            mage.mana < mage.maxMana * 0.4 &&
-            dist(this.self.pos, mage.pos) <= 15 * RANGE_UNIT
-        )
-        .sort((a, b) => a.mana / a.maxMana - b.mana / b.maxMana)[0];
-      if (rejuvenate && manaTarget) return { type: 'color-ability', ability: rejuvenate, target: manaTarget };
-      const wall = abilities.find((ability) => ability.id === 'ability:wall');
-      if (wall && dist(this.self.pos, strongest.pos) < 8 * RANGE_UNIT) {
-        return {
-          type: 'color-ability',
-          ability: wall,
-          point: stepTowards(this.self.pos, strongest.pos, wall.range),
-        };
-      }
-    }
-    if (!this.self.hasCastThisTurn && this.self.actions.main > 0) {
-      const bind = this.castableSpells('main')
-        .filter(
-          (spell) =>
-            spell.words.includes('bind') &&
-            spell.targeting === 'enemy' &&
-            this.game.isValidSpellTarget(spell, this.self, strongest)
-        )
-        .sort((a, b) => b.words.length - a.words.length)[0];
-      if (bind) return this.castDecision(bind, strongest);
-      const fallback = this.castableSpells('main').find(
-        (spell) => spell.targeting === 'enemy' && this.game.isValidSpellTarget(spell, this.self, strongest)
-      );
-      if (fallback) return this.castDecision(fallback, strongest);
-    }
-    const nearest = [...visible].sort((a, b) => dist(this.self.pos, a.pos) - dist(this.self.pos, b.pos))[0];
-    if (this.self.actions.move > 0 && dist(this.self.pos, nearest.pos) < 8 * RANGE_UNIT) {
-      const dx = this.self.x - nearest.x;
-      const dy = this.self.y - nearest.y;
-      const length = Math.max(1, Math.hypot(dx, dy));
-      const move = this.self.moveRange();
-      return {
-        type: 'move',
-        point: { x: this.self.x + (dx / length) * move, y: this.self.y + (dy / length) * move },
-      };
-    }
-    return { type: 'end' };
-  }
-
-  private canAffordColorAbility(ability: ColorAbility): boolean {
-    const manaCost = this.self.profile.blueSecondaryTier ? 0 : ability.manaCost;
-    if (!this.self.hasMana(manaCost)) return false;
-    const chargeCost = Math.max(0, ability.chargeCost - (this.self.profile.blueSecondaryTier ? 1 : 0));
-    if (this.self.hasColorCharges(chargeCost)) return true;
-    return this.self.profile.blackSecondaryTier && chargeCost - this.self.colorCharges <= 2;
-  }
-
-  /** True when any living enemy is a Lich or Reaper (dangerous boss units). */
-  private lichAlive(): boolean {
-    return this.game.mages.some(
-      (m) => m.team !== this.self.team && m.alive && (m.enemyKind === 'lich' || !!m.reaperKind)
-    );
-  }
-
   private bestOffensiveSpell(action: 'main' | 'bonus', enemy: Mage): Spell | null {
     const options = this.castableSpells(action).filter((s) => {
+      if (this.desecrationWasted(s)) return false;
       if (this.isWeaponEnchant(s)) return this.bestEnchantTarget(s) !== null;
       if (this.isIndiscriminateStorm(s) && !this.stormIsWorthRisk()) return false;
+      // A curtain blocks the caster's own shots too, so it is raised only to hide.
+      if (s.rotatableWall) return this.self.hp <= this.self.maxHp * 0.5;
       if (s.targeting === 'enemy') return this.game.isValidSpellTarget(s, this.self, enemy);
       if (s.targeting === 'point') return this.pointSpellCanReach(s, enemy);
+      if (s.targeting === 'any' && this.prefersEnemyTarget(s)) {
+        return this.game.isValidSpellTarget(s, this.self, enemy);
+      }
       if (s.targeting === 'self' || s.targeting === 'ally' || s.targeting === 'any') {
         // Only self-cast defensively when hurt.
         return this.self.hp <= this.self.maxHp * 0.5;
@@ -395,11 +282,20 @@ export class SimpleAI {
       if (target) return { type: 'spell', spell, target };
     }
     if (spell.targeting === 'enemy') return { type: 'spell', spell, target: enemy };
+    if (spell.targeting === 'any' && this.prefersEnemyTarget(spell)) {
+      return { type: 'spell', spell, target: enemy };
+    }
     if (spell.targeting === 'self' || spell.targeting === 'ally' || spell.targeting === 'any')
       return { type: 'spell', spell, target: this.self };
     if (spell.targeting === 'point') {
       const toEnemy = Math.hypot(enemy.pos.x - this.self.pos.x, enemy.pos.y - this.self.pos.y);
       const min = spell.minRange ?? 0;
+      if (spell.rotatableWall) {
+        // Stand the wall across the line to the foe, halfway there.
+        this.self.wallAngle = Math.atan2(enemy.y - this.self.y, enemy.x - this.self.x) + Math.PI / 2;
+        const halfway = Math.max(min, Math.min(spell.range, toEnemy / 2));
+        return { type: 'spell', spell, point: stepTowards(this.self.pos, enemy.pos, halfway) };
+      }
       const reach = Math.max(min, Math.min(spell.range, toEnemy));
       const point = stepTowards(this.self.pos, enemy.pos, reach);
       return { type: 'spell', spell, point };
@@ -408,8 +304,29 @@ export class SimpleAI {
   }
 
   private isWeaponEnchant(spell: Spell): boolean {
+    // Fire Mind and Lightning Mind enchant weapons only in their Objects versions.
+    if (spell.id === 'fire+mind@objects' || spell.id === 'lightning+mind@objects') return true;
+    return comboKey(spell.words) === 'fire+lightning+mind';
+  }
+
+  /** 'Any' spells that only hurt what they touch: a stasis prison, a stopped clock, a sea lift. */
+  private prefersEnemyTarget(spell: Spell): boolean {
     const key = comboKey(spell.words);
-    return key === 'fire+mind' || key === 'lightning+mind' || key === 'fire+lightning+mind';
+    return key === 'bind+reality+stop' || key === 'bind+pierce+stop' || key === 'bind+reality+water';
+  }
+
+  /** Reactions that protect whoever is being struck rather than hurting the striker. */
+  private isProtectiveReaction(spell: Spell): boolean {
+    return comboKey(spell.words) === 'bind+stop+veil';
+  }
+
+  /**
+   * Desecrate only harms the unhallowed. With no such foe on the field its
+   * black spells do nothing; Bone Spire's damage is colourless and still lands.
+   */
+  private desecrationWasted(spell: Spell): boolean {
+    if (!spell.words.includes('desecrate') || comboKey(spell.words) === 'desecrate+pierce+shatter') return false;
+    return !this.game.mages.some((m) => m.team !== this.self.team && this.game.isDesecrationAffected(m));
   }
 
   private bestEnchantTarget(spell: Spell): Mage | null {
@@ -428,6 +345,37 @@ export class SimpleAI {
       return bScore - aScore;
     });
     return allies[0] ?? null;
+  }
+
+  /**
+   * A foe hidden only by a glass curtain is still there: a healthy AI walks
+   * round the nearer end of the curtain instead of standing idle.
+   */
+  private detourAroundCurtain(): Vec2 | null {
+    if (this.self.hp <= this.self.maxHp * 0.5) return null;
+    const foe = this.game
+      .livingEnemiesOf(this.self)
+      .filter(
+        (m) =>
+          !this.game.isVeiled(m) &&
+          !this.game.isUntargetable(m, this.self, { ignoreStealth: true }) &&
+          this.game.sightBlocked(this.self.pos, m.pos)
+      )
+      .sort((a, b) => dist(this.self.pos, a.pos) - dist(this.self.pos, b.pos))[0];
+    if (!foe) return null;
+    const curtain = this.game.sightBlockers(this.self.pos, foe.pos)[0];
+    if (!curtain) return null;
+    const reach = curtain.range / 2 + this.self.bodyRadius() * 2 + 12;
+    const [around] = [1, -1]
+      .map((side) => ({
+        x: curtain.x + Math.cos(curtain.angle) * reach * side,
+        y: curtain.y + Math.sin(curtain.angle) * reach * side,
+      }))
+      .sort(
+        (a, b) =>
+          dist(this.self.pos, a) + dist(a, foe.pos) - (dist(this.self.pos, b) + dist(b, foe.pos))
+      );
+    return stepTowards(this.self.pos, around, this.self.moveRange());
   }
 
   private isIndiscriminateStorm(spell: Spell): boolean {

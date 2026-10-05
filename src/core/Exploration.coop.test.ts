@@ -14,13 +14,17 @@ import {
 } from '../pve/exploration/coop';
 import {
   applyCreation,
+  ARMS_PENDING,
   creationWordOffers,
   STARTER_WEAPONS,
   validCreationPick,
   type CreationPick,
 } from '../pve/exploration/creation';
+import { armsPending, gateRefusal, lodgeWaiting, starterPicks, takeStarterWeapon, weaponsShared } from '../pve/exploration/arms';
+import { START_PLACE } from '../pve/exploration/world';
 import { giveItem, grantToParty, memberIn, partyOf, rest, roomPrice, withParty } from '../pve/exploration/economy';
 import { rollReinforcements } from '../pve/exploration/encounters';
+import { stage } from '../pve/exploration/eventKit';
 import { ROAD_EVENTS } from '../pve/exploration/events';
 import { applyIntent, parseIntent } from '../pve/exploration/intents';
 import { applyLevelChoice, levelWordOffers } from '../pve/exploration/levels';
@@ -55,11 +59,11 @@ function partyRun(size: number, seed = 5, gold = 10): ExplorationRun {
   return run;
 }
 
-/** The first offered word each round, a modifier and a weapon. */
+/** The first offered word each round, a modifier, and a calling. */
 function firstPick(run: ExplorationRun, mageClass: MageClass): CreationPick {
   const words = [creationWordOffers(run, mageClass, 0, [])[0]];
   words.push(creationWordOffers(run, mageClass, 1, words)[0]);
-  return { mageClass, words, modifier: 'delay', weapon: 'huntingBow' };
+  return { calling: 'life', words, modifier: 'delay', stat: 'int' };
 }
 
 const tests: [name: string, run: () => void][] = [
@@ -75,21 +79,61 @@ const tests: [name: string, run: () => void][] = [
     }
   }],
 
-  ['sets the party out with one class each, two words, a modifier and a weapon', () => {
+  ['sets the party out with its calling, two words and a modifier, still unarmed', () => {
     const run = createRun(9, partyRun(2).party, { creating: true });
     equal(run.gold, 1, 'five silver per traveller');
-    const picks = [firstPick(run, 'hexcraft'), firstPick(run, 'objects')];
-    assert(picks.every((pick) => validCreationPick(run, pick)), 'the offered picks are valid');
-    assert(!validCreationPick(run, { ...picks[0], words: ['storm', 'fire'] }), 'unoffered words are refused');
-    assert(!validCreationPick(run, { ...picks[0], weapon: 'torch' }), 'only starter weapons');
-    assert(!applyCreation(run, [picks[0], { ...picks[1], mageClass: 'hexcraft' }]), 'a class travels once');
+    const [first, second] = run.party.entities.map((entity) => entity.mageClass);
+    const picks = [firstPick(run, first), firstPick(run, second)];
+    assert(validCreationPick(run, first, picks[0]) && validCreationPick(run, second, picks[1]), 'the offered picks are valid');
+    assert(!validCreationPick(run, first, { ...picks[0], words: ['storm', 'fire'] }), 'unoffered words are refused');
+    assert(!validCreationPick(run, first, { ...picks[0], modifier: 'bind' }), 'only modifiers as the modifier');
+    assert(!validCreationPick(run, first, { ...picks[0], stat: 'charm' as never }), 'only a real stat');
+    assert(!validCreationPick(run, first, { ...picks[0], calling: 'bard' as never }), 'only a real calling');
+    const intBefore = partyOf(run)[0].statInt;
+    assert(!applyCreation(run, [picks[0]]), 'everyone names their words');
     assert(run.creating, 'a refused creation changes nothing');
     assert(applyCreation(run, picks), 'the party sets out');
     const party = partyOf(run);
-    equal(party.map((mage) => mage.mageClass), ['hexcraft', 'objects'], 'classes in seat order');
     equal(party[0].loadout, [...picks[0].words, 'delay'], 'two words and the modifier');
-    assert(party[1].hands.includes('huntingBow') && party[1].arrows >= 15, 'the bow comes with arrows');
-    assert(!run.creating && classesUnique(run.party), 'creation is over and classes are unique');
+    equal(party[0].statInt, intBefore + 3, 'the chosen stat starts 3 higher');
+    assert(party.every((mage) => !mage.classless && mage.spellClass === 'life'), 'everyone casts with the calling it named');
+    equal(party.map((mage) => mage.mageClass), [first, second], 'the party ids are untouched');
+    assert(party.every((mage) => !STARTER_WEAPONS.some((weapon) => mage.hands.includes(weapon.id))), 'nobody is armed yet');
+    assert(!run.creating && armsPending(run) && classesUnique(run.party), 'creation is over and the Lodge is next');
+    assert(partyOf(parseRun(JSON.stringify(run))!).every((mage) => mage.spellClass === 'life'), 'the calling survives a save');
+  }],
+
+  ['arms the party at the Lodge: one weapon each, and the gate opens once all are armed', () => {
+    const run = createRun(9, partyRun(2).party, { creating: true });
+    const [first, second] = run.party.entities.map((entity) => entity.mageClass);
+    applyCreation(run, [firstPick(run, first), firstPick(run, second)]);
+    assert(gateRefusal(run, START_PLACE, START_PLACE), 'the gate is shut while unarmed');
+    equal(gateRefusal(run, 'elsewhere', START_PLACE), null, 'only Kerusai holds the party');
+    equal(lodgeWaiting(run), [first, second], 'nobody is in the Lodge yet');
+    assert(applyIntent(run, second, { op: 'lodge' }).ok, 'a traveller comes in');
+    equal(lodgeWaiting(run), [first], 'and is no longer waited for');
+    assert(!weaponsShared(run), 'fewer travellers than pedestals');
+    assert(!takeStarterWeapon(run, first, 'torch').ok, 'only what is on the pedestals');
+    assert(takeStarterWeapon(run, first, 'huntingBow').ok, 'the bow is taken');
+    assert(memberIn(run, first)!.hands.includes('huntingBow') && memberIn(run, first)!.arrows >= 15, 'the bow comes with arrows');
+    assert(!takeStarterWeapon(run, first, 'quarterstaff').ok, 'one each');
+    assert(!takeStarterWeapon(run, second, 'huntingBow').ok, 'a taken weapon is gone');
+    assert(armsPending(run) && gateRefusal(run, START_PLACE, START_PLACE), 'still one unarmed');
+    equal(parseIntent({ op: 'arm', weapon: 'quarterstaff' }), { op: 'arm', weapon: 'quarterstaff' }, 'the intent parses');
+    equal(parseIntent({ op: 'lodge' }), { op: 'lodge' }, 'so does coming in');
+    assert(applyIntent(run, second, { op: 'arm', weapon: 'quarterstaff' }).ok, 'the second arms by intent');
+    equal(starterPicks(run), { [first]: 'huntingBow', [second]: 'quarterstaff' }, 'who took what');
+    assert(!armsPending(run) && gateRefusal(run, START_PLACE, START_PLACE) === null, 'the gate opens');
+    assert(!run.flags.some((flag) => flag.startsWith('arms-in:')), 'the Lodge presence is tidied away');
+  }],
+
+  ['keeps the pedestals one each while a full party fits the rack', () => {
+    const run = partyRun(3);
+    run.flags.push(ARMS_PENDING);
+    assert(!weaponsShared(run), 'three travellers, four pedestals');
+    assert(takeStarterWeapon(run, MAGE_CLASSES[0], 'apprenticeWand').ok, 'one takes the wand');
+    assert(!takeStarterWeapon(run, MAGE_CLASSES[1], 'apprenticeWand').ok, 'nobody else gets it');
+    assert(takeStarterWeapon(run, MAGE_CLASSES[1], 'travellersDagger').ok, 'another takes something else');
   }],
 
   ['scales XP by party size, so a level takes as many fights per head', () => {
@@ -106,13 +150,30 @@ const tests: [name: string, run: () => void][] = [
     const run = partyRun(2);
     addRunXp(run, 18);
     const offers = levelWordOffers(run, 'life', 2, memberIn(run, 'life')!.loadout);
-    assert(!applyLevelChoice(run, 'life', { level: 3, stats: [] }).ok, 'only the next level');
-    assert(!applyLevelChoice(run, 'life', { level: 2, stats: ['hp'] }).ok, 'no stats on an even level');
+    assert(!applyLevelChoice(run, 'life', { level: 3, stats: ['hp'] }).ok, 'only the next level');
+    assert(!applyLevelChoice(run, 'life', { level: 2, stats: ['hp', 'int'], word: offers[0] }).ok, 'one stat a level');
     const unoffered = WORD_ORDER.find((word) => !offers.includes(word) && !memberIn(run, 'life')!.loadout.includes(word))!;
-    assert(!applyLevelChoice(run, 'life', { level: 2, stats: [], word: unoffered }).ok, 'only offered words');
-    assert(applyLevelChoice(run, 'life', { level: 2, stats: [], word: offers[0] }).ok, 'the offer is learned');
+    assert(!applyLevelChoice(run, 'life', { level: 2, stats: ['hp'], word: unoffered }).ok, 'only offered words');
+    const before = memberIn(run, 'life')!;
+    const hpBefore = before.maxHp;
+    const manaBefore = before.maxMana;
+    const luckBefore = before.maxLuck;
+    const coreBefore = [before.statStrength, before.statDex, before.statInt];
+    assert(applyLevelChoice(run, 'life', { level: 2, stats: ['hp'], word: offers[0] }).ok, 'the offer is learned');
+    equal(memberIn(run, 'life')!.maxHp, hpBefore + 2, 'health gets the automatic and chosen points');
+    equal(memberIn(run, 'life')!.maxMana, manaBefore + 1, 'mana grows each level');
+    equal([memberIn(run, 'life')!.statStrength, memberIn(run, 'life')!.statDex, memberIn(run, 'life')!.statInt], coreBefore.map((value) => value + 1), 'core stats round up after level 2');
+    equal(memberIn(run, 'life')!.maxLuck, luckBefore, 'luck does not grow');
     assert(memberIn(run, 'life')!.loadout.includes(offers[0]), 'the word is on the rack');
     equal([levelsOwed(run, 'life'), levelsOwed(run, 'objects'), run.pendingLevels], [0, 1, 1], 'the other member still owes it');
+    run.level = 7;
+    for (let level = 3; level <= 7; level++) {
+      if (level % 2 !== 0) assert(!applyLevelChoice(run, 'life', { level, stats: ['luck'] }).ok, 'odd levels reject stat picks');
+      assert(applyLevelChoice(run, 'life', { level, stats: level % 2 === 0 ? ['hp'] : [] }).ok, `level ${level} can be claimed`);
+    }
+    const grown = memberIn(run, 'life')!;
+    equal([grown.statStrength, grown.statDex, grown.statInt], coreBefore.map((value) => value + 3), 'six levels give three rounded core points');
+    equal([grown.maxHp, grown.maxMana, grown.maxLuck], [hpBefore + 9, manaBefore + 6, luckBefore], 'vitals grow and luck stays fixed');
   }],
 
   ['a night at an inn raises the fallen with 1 HP, 1 sanity and nothing to cast with', () => {
@@ -152,10 +213,10 @@ const tests: [name: string, run: () => void][] = [
       party[1].statStrength = 30;
     });
     const carter = ROAD_EVENTS.find((event) => event.id === 'carter')!;
-    carter.choices[0].resolve({ run, zone: 'capitol', depth: 1, dice: new Dice(1) });
+    stage(carter, carter.variants[0], new Dice(1)).choices[0].resolve({ run, zone: 'capitol', depth: 1, dice: new Dice(1) });
     const shrine = ROAD_EVENTS.find((event) => event.id === 'shrine')!;
     withParty(run, (_leader, party) => { for (const mage of party) mage.hp = 2; });
-    shrine.choices[0].resolve({ run, zone: 'capitol', depth: 1, dice: new Dice(2) });
+    stage(shrine, shrine.variants[0], new Dice(2)).choices[0].resolve({ run, zone: 'capitol', depth: 1, dice: new Dice(2) });
     assert(partyOf(run).every((mage) => mage.hp > 2), 'prayer heals everyone');
   }],
 

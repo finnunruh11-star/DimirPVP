@@ -90,6 +90,15 @@ export const SPELL_IMPACT_WEIGHT: Record<string, ImpactWeight> = {
   'mind+reality+shatter': 'heavy',
   'bind+shadow+shatter': 'heavy',
   'mind+shadow+shatter': 'heavy',
+  // The god words' heaviest blows.
+  'death+shadow+shatter': 'seismic',
+  'bind+reality+shatter': 'seismic',
+  'pierce+reality+shatter': 'seismic',
+  'desecrate+shadow+shatter': 'heavy',
+  'desecrate+pierce+shatter': 'heavy',
+  'death+pierce+shatter': 'heavy',
+  'reality+shatter+veil': 'heavy',
+  'pierce+shatter+stop': 'heavy',
 };
 
 export const IMPACT_FX = {

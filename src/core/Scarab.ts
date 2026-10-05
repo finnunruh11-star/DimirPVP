@@ -24,6 +24,8 @@ export interface Scarab {
   state: ScarabState;
   /** The enemy this scarab is currently locked onto (seek / attached), if any. */
   target: Mage | null;
+  /** Corrosive damage its bites dealt since it last returned; it heals its owner for exactly this. */
+  meal?: number;
 }
 
 export function scarabPos(s: Scarab): Vec2 {

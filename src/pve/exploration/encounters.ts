@@ -1,6 +1,8 @@
-// Who waits on the road. Each zone has its own roster so a region reads as a
-// place: bandits and vermin near the Capitol, the drowned dead in the black
-// country, fire and scale in the red. Pure and seeded: no Phaser, no Math.random.
+// Who waits on the road. Each creature lives in one region and turns up nowhere
+// else: the undead only in the swamps, beasts in the forest, kobolds, sentinels
+// and dragonborn in the red. Bandits rob anyone anywhere. A region with no
+// monsters of its own yet only has its robbers. Pure and seeded: no Phaser, no
+// Math.random.
 
 import type { Dice } from '../../core/Dice';
 import { ENEMY_DEFS, swamprunPartyScale, type EnemyKind } from '../swamprun';
@@ -34,9 +36,9 @@ const BANDITS: PoolEntry[] = [mine('bandit', 1), mine('bandit-archer', 2), mine(
 
 export const ZONE_ROSTERS: Record<EncounterZone, ZoneRoster> = {
   capitol: {
-    monsters: [mine('kobold', 1), mine('cavern-bat', 1), mine('rockling', 2), mine('elite-kobold', 4)],
+    monsters: [],
     robbery: BANDITS,
-    elites: [mine('bandit-captain', 1)],
+    elites: [],
   },
   black: {
     monsters: [swamp('zombie', 1), swamp('wisp', 2), swamp('acidZombie', 2), swamp('skeleton', 3), swamp('specter', 5)],
@@ -46,18 +48,18 @@ export const ZONE_ROSTERS: Record<EncounterZone, ZoneRoster> = {
   red: {
     monsters: [
       mine('kobold', 1),
-      mine('rockling', 1),
+      mine('slime-red', 1),
       mine('sentinel', 2),
       mine('elite-kobold', 3),
-      mine('earth-elemental', 5),
       mine('magma-sentinel', 6),
       mine('red-dragonborn', 7),
+      mine('black-dragonborn', 8),
     ],
     robbery: [...BANDITS, mine('elite-kobold', 4)],
     elites: [mine('sentinel', 1), mine('red-dragonborn', 6)],
   },
   forest: {
-    monsters: [mine('slime', 1), mine('rabbit', 1), mine('wolf', 2), mine('boar', 3)],
+    monsters: [mine('slime', 1), mine('rabbit', 1), mine('wolf', 2), mine('boar', 3), mine('lioness', 4), mine('lion', 5)],
     robbery: BANDITS,
     elites: [mine('boar', 1)],
   },
@@ -65,9 +67,8 @@ export const ZONE_ROSTERS: Record<EncounterZone, ZoneRoster> = {
     monsters: [
       mine('sentinel', 1),
       mine('kobold', 1),
-      mine('rockling', 1),
+      mine('slime-red', 1),
       mine('elite-kobold', 2),
-      mine('earth-elemental', 3),
       mine('magma-sentinel', 4),
       mine('red-dragonborn', 5),
       mine('black-dragonborn', 6),
@@ -75,31 +76,37 @@ export const ZONE_ROSTERS: Record<EncounterZone, ZoneRoster> = {
     robbery: [...BANDITS, mine('elite-kobold', 3)],
     elites: [mine('magma-sentinel', 1), mine('black-dragonborn', 5)],
   },
+  // Nothing lives by the lake or in the desert yet.
   lake: {
-    monsters: [
-      swamp('wisp', 1),
-      mine('cavern-bat', 1),
-      swamp('zombie', 2),
-      mine('kobold', 2),
-      swamp('acidZombie', 4),
-      swamp('skeleton', 5),
-    ],
+    monsters: [],
     robbery: [mine('bandit', 1), mine('bandit-archer', 1), mine('bandit-captain', 3)],
-    elites: [mine('bandit-captain', 1), swamp('specter', 6)],
+    elites: [],
   },
   white: {
-    monsters: [
-      mine('sand-stalker', 1),
-      swamp('skeleton', 1),
-      mine('rockling', 2),
-      mine('earth-elemental', 4),
-      swamp('specter', 5),
-      mine('sandworm', 7),
-    ],
+    monsters: [],
     robbery: [mine('bandit', 1), mine('bandit-archer', 1), mine('bandit-captain', 2)],
-    elites: [mine('bandit-captain', 1), mine('sandworm', 6)],
+    elites: [],
   },
 };
+
+/** Creatures no roster fields, which a set scene brings to the region they belong to. */
+const SCENE_NATIVES: Partial<Record<EncounterZone, readonly string[]>> = {
+  forest: ['goblinRaider', 'goblinShaman'],
+};
+
+/** The region has monsters of its own; without them only its robbers are met there. */
+export const hasMonsters = (zone: EncounterZone): boolean => ZONE_ROSTERS[zone].monsters.length > 0;
+
+/** `kind` belongs in `zone` and may turn up there. Nothing turns up anywhere else. */
+export function livesIn(kind: string, zone: EncounterZone): boolean {
+  const roster = ZONE_ROSTERS[zone];
+  return [...roster.monsters, ...roster.robbery, ...roster.elites].some((entry) => entry.kind === kind)
+    || (SCENE_NATIVES[zone]?.includes(kind) ?? false);
+}
+
+/** The trouble a roll brings: robbers, the region's own monsters, or nothing where it has none. */
+export const troubleIn = (zone: EncounterZone, robbed: boolean): EncounterKind | null =>
+  robbed ? 'robbery' : hasMonsters(zone) ? 'monsters' : null;
 
 function entryCost(entry: PoolEntry): number {
   if (entry.family === 'swamp') return ENEMY_DEFS[entry.kind as EnemyKind].power;
@@ -179,7 +186,7 @@ export function rollEncounter(
   rng: Dice,
 ): EncounterSpawn[] {
   const roster = ZONE_ROSTERS[zone];
-  const pool = kind === 'robbery' ? roster.robbery : roster.monsters;
+  const pool = kind === 'robbery' || !hasMonsters(zone) ? roster.robbery : roster.monsters;
   const out = fillEncounter(pool, depth, encounterBudget(depth), encounterCap(depth), rng, true);
 
   if (out.length === 0) {
@@ -198,7 +205,7 @@ export function rollEncounter(
 export function rollReinforcements(zone: EncounterZone, kind: EncounterKind, depth: number, rng: Dice, share: number): EncounterSpawn[] {
   if (share <= 0) return [];
   const roster = ZONE_ROSTERS[zone];
-  const pool = kind === 'robbery' ? roster.robbery : roster.monsters;
+  const pool = kind === 'robbery' || !hasMonsters(zone) ? roster.robbery : roster.monsters;
   const budget = Math.round(encounterBudget(depth) * share);
   const cap = Math.max(1, Math.round(encounterCap(depth) * share));
   return fillEncounter(pool, depth, budget, cap, rng, true);

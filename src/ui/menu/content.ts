@@ -27,7 +27,7 @@ export const CATEGORY_COPY: Record<MenuCategory, MenuEntryCopy> = {
     label: 'Adventures',
     detail: 'Persistent runs into hostile places',
     title: 'THE WAY OUT',
-    description: 'Take a party into the Swamp, the Mine, an Expedition, or a prepared Raid.',
+    description: 'Take a party into the Swamp, the Mine, or a prepared Raid.',
   },
   workshop: {
     label: 'Workshop',
@@ -73,12 +73,6 @@ export const MODE_COPY: Record<MatchMode, MenuEntryCopy> = {
     detail: 'Endless survival, supplies, and escalating horrors',
     title: 'THE SWAMP',
     description: 'Survive fresh combats at increasing depth. Spend shared gold between waves and keep what the party earns.',
-  },
-  expedition: {
-    label: 'Expedition',
-    detail: 'A solo campaign of depth, retreat, and town',
-    title: 'EXPEDITION',
-    description: 'Push deeper without field shops, choose when to retreat, then spend personal gold and recruit in town.',
   },
   minerun: {
     label: 'Mine Run',

@@ -1,7 +1,8 @@
 // What the travel map shows while the party is on the move: the way ahead with
 // its stops marked, prints and dust left behind, torchlight after dark, a
-// campfire at a rest, an alarm when trouble finds them, and a beacon over
-// anything spotted off the way. Presentation only.
+// thought bubble on a quiet stretch, a campfire at a rest, an alarm when
+// trouble finds them, and a beacon over anything spotted off the way.
+// Presentation only.
 
 import Phaser from 'phaser';
 import { playSound } from '../audio';
@@ -10,7 +11,7 @@ import type { SightingKind } from '../pve/exploration/journey';
 import type { Terrain } from '../pve/exploration/world';
 import { ENEMY_DEFS } from '../pve/swamprun';
 import { isReducedMotion } from '../ui/cabinet/motion';
-import { MENU_FONT } from '../ui/cabinet/theme';
+import { MENU_COLOR, MENU_FONT, MENU_HEX } from '../ui/cabinet/theme';
 import { drawSightingGlyph, SIGHTING_COLORS } from '../ui/pve/sightingGlyphs';
 import { CREATURE_FRAME_RATIO, creatureFacesRight, creatureSpriteFor, creatureTexture } from '../world/creatureSprite';
 import { MAGE_FIRST_FRAME, MAGE_IDLE } from '../world/mageSprite';
@@ -18,7 +19,6 @@ import { OW_CELL, OW_SCALE } from '../world/overworldRender';
 import type { Cell } from '../world/pathfind';
 import { ensureGlowTextures, GLOW } from './glowTextures';
 import { ParticleFx } from './ParticleFx';
-import { playTravelBreak, type BreakSetting } from './TravelBreak';
 
 type Point = { x: number; y: number };
 
@@ -27,6 +27,8 @@ const DEPTH = { prints: 20.4, route: 21, torch: 21.5, dust: 21.8, marker: 21.9, 
 const FIGURE_SCALE = OW_SCALE + 0.3;
 const MAX_PRINTS = 48;
 const INK = 0x120d09;
+/** Where a thought floats from the token's feet, the dots trailing back to its head, and how long it stays. */
+const THOUGHT = { x: 14, y: -70, dots: [[4, -36, 2.2], [8, -45, 3.2]] as const, hold: 1900 };
 
 const DUST: Partial<Record<Terrain, number>> = {
   road: 0xcdb88c, bridge: 0xb9a07a, plains: 0xc9c79a, sand: 0xead6a4, dunes: 0xead6a4, flats: 0xd8c39a,
@@ -49,6 +51,21 @@ function flameShape(g: Phaser.GameObjects.Graphics, w: number, h: number, color:
   g.fillStyle(color, 1).fillPoints(points, true);
 }
 
+/** A cloud `w` by `h` round the origin: a pill with bumps along its top and bottom, inked round the edge. */
+function thoughtCloud(g: Phaser.GameObjects.Graphics, w: number, h: number): void {
+  const puffs: [number, number, number][] = [];
+  const n = Math.max(2, Math.round(w / 24));
+  for (let i = 0; i < n; i++) {
+    const x = -w / 2 + (w * (i + 0.5)) / n;
+    puffs.push([x, -h * 0.3, h * 0.42], [x + (i % 2 ? -3 : 3), h * 0.32, h * 0.36]);
+  }
+  for (const [edge, color] of [[1.6, INK], [0, MENU_COLOR.bone]] as const) {
+    g.fillStyle(color, 1);
+    for (const [x, y, r] of puffs) g.fillCircle(x, y, r + edge);
+    g.fillRoundedRect(-w / 2 - edge, -h / 2 - edge, w + edge * 2, h + edge * 2, h / 2 + edge);
+  }
+}
+
 export interface Beacon {
   destroy(): void;
 }
@@ -61,6 +78,7 @@ export class TravelFx {
   private readonly prints: Phaser.GameObjects.Image[] = [];
   private readonly reduced = isReducedMotion();
   private stride = 1;
+  private thought: Phaser.GameObjects.Container | null = null;
 
   constructor(private readonly scene: Phaser.Scene, private readonly token: Phaser.GameObjects.Sprite) {
     ensureGlowTextures(scene);
@@ -79,6 +97,7 @@ export class TravelFx {
     this.scene.tweens.killTweensOf(this.prints);
     for (const print of this.prints) print.destroy();
     this.prints.length = 0;
+    this.dropThought();
     this.particles.destroy();
   }
 
@@ -158,8 +177,9 @@ export class TravelFx {
     });
   }
 
-  /** Keep the torch on the party, lit as far as the dark calls for. */
+  /** Keep the torch and any thought on the party, the torch lit as far as the dark calls for. */
   update(time: number, dark: number): void {
+    this.thought?.setPosition(this.token.x, this.token.y);
     const lit = dark > 0.02;
     this.torch.setVisible(lit);
     this.torchCore.setVisible(lit);
@@ -171,9 +191,50 @@ export class TravelFx {
     this.torchCore.setPosition(x, y).setAlpha(dark * 0.3 * flicker);
   }
 
-  /** A quiet stop: the party takes a break, and a little scene plays beside it. */
-  takeBreak(setting: BreakSetting = {}): Promise<void> {
-    return playTravelBreak(this.scene, this.token, this.particles, DEPTH.float, this.reduced, setting);
+  /** A quiet stretch: a thought bubble over the party, which walks on beneath it. */
+  think(text: string): void {
+    this.dropThought();
+    const scene = this.scene;
+    const side = this.token.flipX ? -1 : 1;
+    const dots = scene.add.graphics();
+    for (const [edge, color] of [[1.6, INK], [0, MENU_COLOR.bone]] as const) {
+      for (const [x, y, r] of THOUGHT.dots) dots.fillStyle(color, 1).fillCircle(side * x, y, r + edge);
+    }
+    const label = scene.add.text(0, 0, text, {
+      fontFamily: MENU_FONT.body,
+      fontSize: '13px',
+      fontStyle: 'italic',
+      color: MENU_HEX.ink,
+    }).setOrigin(0.5);
+    const cloud = scene.add.graphics();
+    thoughtCloud(cloud, Math.max(40, Math.ceil(label.width) + 20), Math.ceil(label.height) + 12);
+    const puff = scene.add.container(side * THOUGHT.x, THOUGHT.y, [cloud, label]);
+    const bubble = scene.add.container(this.token.x, this.token.y, [dots, puff]).setDepth(DEPTH.float).setAlpha(0);
+    this.thought = bubble;
+    scene.tweens.add({ targets: bubble, alpha: 1, duration: 180, ease: 'Sine.Out' });
+    if (!this.reduced) {
+      puff.setScale(0.4);
+      scene.tweens.add({ targets: puff, scale: 1, duration: 280, ease: 'Back.Out' });
+      scene.tweens.add({ targets: puff, y: THOUGHT.y - 6, delay: THOUGHT.hold, duration: 320, ease: 'Sine.In' });
+    }
+    scene.tweens.add({
+      targets: bubble,
+      alpha: 0,
+      delay: THOUGHT.hold,
+      duration: 320,
+      ease: 'Sine.In',
+      onComplete: () => {
+        if (this.thought === bubble) this.dropThought();
+      },
+    });
+  }
+
+  private dropThought(): void {
+    const bubble = this.thought;
+    if (!bubble) return;
+    this.thought = null;
+    this.scene.tweens.killTweensOf([bubble, ...bubble.list]);
+    bubble.destroy();
   }
 
   /** A short rest: a small fire is lit beside the party, crackles a moment and is put out. */

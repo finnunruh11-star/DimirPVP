@@ -11,9 +11,7 @@ import {
 } from '../pve/exploration/bounties';
 import {
   buyItem,
-  forge,
   partyOf,
-  recipesAt,
   rest,
   sellItem,
   sellOffers,
@@ -21,12 +19,13 @@ import {
   withParty,
 } from '../pve/exploration/economy';
 import { encounterCap, rollEncounter, ZONE_ROSTERS, type EncounterZone } from '../pve/exploration/encounters';
-import { ROAD_EVENTS } from '../pve/exploration/events';
+import { stage } from '../pve/exploration/eventKit';
+import { ROAD_EVENTS, variantsFor } from '../pve/exploration/events';
 import { capturePartySnapshot } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import { parseRun } from '../pve/exploration/save';
 import { shopById, SHOPS } from '../pve/exploration/shops';
-import { addXp, levelReward, rackIsFull, xpToNext } from '../pve/progression';
+import { addXp, killXp, levelCoreStatGain, levelReward, rackIsFull, xpToNext } from '../pve/progression';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -59,15 +58,22 @@ function freshRun(seed = 11, gold = 0): ExplorationRun {
 const ZONES: EncounterZone[] = ['capitol', 'black', 'red', 'forest', 'wilds'];
 
 const tests: [name: string, run: () => void][] = [
-  ['levels follow the Expedition curve', () => {
+  ['levels follow the level curve', () => {
     equal(xpToNext(1), 10, 'level 1 needs 10 XP');
     equal(xpToNext(2), 17, 'level 2 needs 17 XP');
-    equal(levelReward(2), { stats: 0, word: true }, 'even levels teach a word');
-    equal(levelReward(3), { stats: 1, word: false }, 'odd levels train a stat');
-    equal(levelReward(5), { stats: 2, word: true }, 'every fifth level does both');
+    equal(levelReward(2), { stats: 1, statGain: 1, word: true }, 'even levels offer one point and teach a word');
+    equal(levelReward(3), { stats: 0, statGain: 1, word: false }, 'odd levels have no stat choice');
+    equal(levelReward(5), { stats: 0, statGain: 1, word: true }, 'every fifth level also teaches a word');
+    equal([2, 3, 4, 5, 6, 7].map(levelCoreStatGain), [1, 0, 1, 0, 0, 1], 'rounded cumulative 0.4 growth');
     const track = { level: 1, xp: 0, pendingLevels: 0 };
     equal(addXp(track, 30), 2, 'a big payout can roll two levels');
     equal(track, { level: 3, xp: 3, pendingLevels: 2 }, 'leftover XP carries');
+  }],
+
+  ['pays XP by creature, a zombie being 1, and nothing for a boss\'s retinue', () => {
+    equal([killXp('zombie'), killXp('wisp'), killXp('wolf'), killXp('boar'), killXp('lion')], [1, 2, 3, 5, 8], 'the low table');
+    equal([killXp('ghast'), killXp('oni'), killXp('lich'), killXp('reaper'), killXp('deathknightSpear')], [10, 15, 20, 33, 66], 'the high table');
+    equal([killXp('baralDrake'), killXp('denialArtifact'), killXp(undefined)], [0, 0, 0], 'adds and unknowns give nothing');
   }],
 
   ['a full rack counts base words, not the modifier', () => {
@@ -94,9 +100,9 @@ const tests: [name: string, run: () => void][] = [
   }],
 
   ['the first stretch of road only fields depth-1 creatures', () => {
-    const early = new Set(ZONE_ROSTERS.capitol.monsters.filter((e) => e.unlock <= 1).map((e) => e.kind));
+    const early = new Set(ZONE_ROSTERS.forest.monsters.filter((e) => e.unlock <= 1).map((e) => e.kind));
     for (let seed = 1; seed <= 40; seed++) {
-      for (const spawn of rollEncounter('capitol', 'monsters', 1, new Dice(seed))) {
+      for (const spawn of rollEncounter('forest', 'monsters', 1, new Dice(seed))) {
         const kind = spawn.family === 'swamp' ? spawn.kind : spawn.spec.kind;
         assert(early.has(kind), `depth 1 fielded ${kind}`);
       }
@@ -112,8 +118,9 @@ const tests: [name: string, run: () => void][] = [
     assert(shop, 'the weaponsmith exists');
     const today = shopStock(run, shop).map((slot) => slot.id);
     equal(shopStock(run, shop).map((slot) => slot.id), today, 'same day, same shelf');
+    run.hour = 20;
     rest(run, 'capitol-guild');
-    equal(run.day, 2, 'resting starts a new day');
+    equal(run.day, 2, 'a night from the evening ends on a new day');
     const rolled = shopStock(run, shop).filter((slot) => !slot.fixed).map((slot) => slot.key);
     assert(rolled.every((key) => key.includes(':2:')), 'the rolled stock belongs to the new day');
   }],
@@ -170,24 +177,10 @@ const tests: [name: string, run: () => void][] = [
     assert(!rest(freshRun(5, 0), 'capitol-guild').ok, 'no gold, no bed');
   }],
 
-  ['the forge needs its materials and turns them into gear', () => {
-    const run = freshRun(9, 20);
-    const smithy = shopById('hearthfire-forge')!;
-    assert(!recipesAt(run, smithy).find((r) => r.id === 'ironCap')?.ready, 'no ore, no cap');
-    withParty(run, (leader) => leader.bag.push('oreIron', 'oreCoal'));
-    assert(recipesAt(run, smithy).find((r) => r.id === 'ironCap')?.ready, 'ore in hand, cap ready');
-    const result = forge(run, smithy.id, 'ironCap');
-    assert(result.ok, `forged: ${result.message}`);
-    const leader = partyOf(run)[0];
-    assert(!leader.bag.includes('oreIron') && !leader.bag.includes('oreCoal'), 'materials consumed');
-    assert(leader.head === 'ironCap' || leader.bag.includes('ironCap'), 'the cap is carried');
-  }],
-
   ['every registered shop has a door-ready definition', () => {
     for (const shop of Object.values(SHOPS)) {
       assert(shop.buys.length > 0 || shop.services.length > 0 || shop.stock, `${shop.id} does something`);
       if (shop.stock) assert(shopStock(freshRun(), shop).length > 0, `${shop.id} has something on the shelf`);
-      for (const recipe of shop.recipes ?? []) assert(recipesAt(freshRun(), shop).some((r) => r.id === recipe), `${shop.id} knows ${recipe}`);
     }
   }],
 
@@ -212,13 +205,13 @@ const tests: [name: string, run: () => void][] = [
   ['gather bounties take the goods; deliveries pay only at the destination', () => {
     const run = freshRun(4, 0);
     run.bounties.push(
-      { id: 'g', town: 'capitol', kind: 'gather', target: 'herbMoonleaf', count: 2, progress: 0, rewardGold: 5, rewardXp: 4, label: 'g' },
+      { id: 'g', town: 'capitol', kind: 'gather', target: 'herbMoonglow', count: 2, progress: 0, rewardGold: 5, rewardXp: 4, label: 'g' },
       { id: 'd', town: 'capitol', kind: 'deliver', target: 'kerusai', count: 1, progress: 0, rewardGold: 9, rewardXp: 5, label: 'd' },
     );
     assert(!canClaim(run, 'capitol', run.bounties[0]), 'no herbs yet');
-    withParty(run, (leader) => leader.bag.push('herbMoonleaf', 'herbMoonleaf', 'herbMoonleaf'));
+    withParty(run, (leader) => leader.bag.push('herbMoonglow', 'herbMoonglow', 'herbMoonglow'));
     assert(claimBounty(run, 'capitol', 'g').ok, 'herbs handed in');
-    equal(partyOf(run)[0].bag.filter((id) => id === 'herbMoonleaf').length, 1, 'exactly two were taken');
+    equal(partyOf(run)[0].bag.filter((id) => id === 'herbMoonglow').length, 1, 'exactly two were taken');
     assert(!claimBounty(run, 'capitol', 'd').ok, 'a parcel is not claimed at home');
     assert(claimBounty(run, 'kerusai', 'd').ok, 'a parcel is claimed where it is going');
     equal(run.gold, 14, 'both rewards paid');
@@ -239,10 +232,11 @@ const tests: [name: string, run: () => void][] = [
   ['every road event resolves every choice in every zone', () => {
     for (const event of ROAD_EVENTS) {
       for (const zone of event.zones ?? ZONES) {
-        event.choices.forEach((choice, index) => {
+        for (const variant of variantsFor(event, zone)) variant.choices.forEach((_, index) => {
           for (let seed = 1; seed <= 6; seed++) {
             const run = freshRun(seed, 20);
             withParty(run, (leader) => leader.utility.push('healthPotion'));
+            const choice = stage(event, variant, new Dice(seed)).choices[index];
             const ctx = { run, zone, depth: 2, dice: new Dice(seed * 31 + index) };
             if (choice.available && !choice.available(ctx)) continue;
             const outcome = choice.resolve(ctx);

@@ -21,7 +21,7 @@ import { FIELD } from '../config/constants';
 import { Dice } from './Dice';
 import type { ColorName } from './Colors';
 import type { MageClass } from './Classes';
-import { toMageClass } from './Classes';
+import { MAGE_CLASSES, toMageClass } from './Classes';
 import { asItemIds, type ItemId } from './Items';
 import { Mage } from './Mage';
 import type { Scarab, ScarabState } from './Scarab';
@@ -65,7 +65,6 @@ const NUMBER_FLAGS = [
   'silver',
   'intrinsicArmorFlat',
   'intrinsicInitiativePriority',
-  'companionHealCharges',
   'damageCapPerSource',
   'drainLinkTurns',
   'beastDemonBlood',
@@ -114,8 +113,8 @@ const BOOL_FLAGS = [
   'acidZombieKind',
   'reaperKind',
   'reaperChanneling',
-  'expeditionPermanent',
   'unarmedBanned',
+  'classless',
 ] as const satisfies readonly (keyof Mage)[];
 
 type NumberFlag = (typeof NUMBER_FLAGS)[number];
@@ -126,6 +125,8 @@ export interface ScenarioEntity {
   team: number;
   isAI: boolean;
   mageClass: MageClass;
+  /** The class a classless traveller took up, when it differs from its party id. */
+  calling?: MageClass;
   loadout: WordId[];
   primaryColor: ColorName | null;
   secondaryColor: ColorName | null;
@@ -272,6 +273,7 @@ function captureEntity(m: Mage, index: Map<Mage, number>): ScenarioEntity {
     team: m.team,
     isAI: m.isAI,
     mageClass: m.mageClass,
+    calling: m.calling ?? undefined,
     loadout: [...m.loadout],
     primaryColor: m.preferredPrimaryColor,
     secondaryColor: m.preferredSecondaryColor,
@@ -377,6 +379,10 @@ function int(value: unknown, fallback: number, min = -BIG, max = BIG): number {
 
 function bool(value: unknown, fallback = false): boolean {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+function isMageClassId(value: unknown): value is MageClass {
+  return MAGE_CLASSES.includes(value as MageClass);
 }
 
 function str(value: unknown, fallback = ''): string {
@@ -534,6 +540,7 @@ function parseEntity(raw: unknown): ScenarioEntity {
     team: int(e.team, 1, 1, 8),
     isAI: bool(e.isAI, true),
     mageClass: toMageClass(e.mageClass),
+    calling: isMageClassId(e.calling) ? e.calling : undefined,
     loadout: words(e.loadout),
     primaryColor: colorName(e.primaryColor),
     secondaryColor: colorName(e.secondaryColor),
@@ -733,6 +740,7 @@ function buildMage(e: ScenarioEntity, rng: Dice): Mage {
     mageClass: e.mageClass,
   });
   m.setLoadout(e.loadout, e.primaryColor, e.secondaryColor);
+  m.calling = e.calling ?? null;
 
   // Re-run the creature builders first: they restore the parts of a monster kit
   // that JSON cannot carry, such as an intrinsic strike's on-hit rider.

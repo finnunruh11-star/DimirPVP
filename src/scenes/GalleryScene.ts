@@ -26,7 +26,6 @@ import { cycleDiceMode, diceMode, diceModeLabel, toggleDiceTiming } from '../ui/
 import { CreativePrepView } from '../ui/prep/CreativePrepView';
 import { ItemDraftView } from '../ui/prep/ItemDraftView';
 import { StatAssignmentView } from '../ui/prep/StatAssignmentView';
-import { ExpeditionTownView } from '../ui/pve/ExpeditionTownView';
 import { MinePromptView } from '../ui/pve/MinePromptView';
 import { SwampShopView } from '../ui/pve/SwampShopView';
 
@@ -182,7 +181,7 @@ export class GalleryScene extends Phaser.Scene {
         detail: 'Bounded selection with explicit maximum and confirmation.',
         open: () => new MultiSelectView(
           this,
-          'EXPEDITION WORDS',
+          'LEVEL WORDS',
           'Choose up to two rewards.',
           [
             { id: 'shadow', label: 'Shadow', detail: 'Black word.' },
@@ -341,47 +340,6 @@ export class GalleryScene extends Phaser.Scene {
             { id: 'leave', label: 'Leave Chamber', enabled: true },
           ],
         }, close),
-      },
-      {
-        label: 'EXPEDITION TOWN',
-        detail: 'Merchant tabs, item cards, services, and departure.',
-        open: () => new ExpeditionTownView(this, {
-          buyerName: 'Vale',
-          gold: 18,
-          hostPhase: false,
-          activeTab: 'potions',
-          tabs: [
-            { id: 'potions', label: 'Potions' },
-            { id: 'armor', label: 'Armor' },
-            { id: 'weapons', label: 'Weapons' },
-            { id: 'cargo', label: 'Sell Cargo' },
-            { id: 'guild', label: 'Rest' },
-            { id: 'donate', label: 'Donate' },
-          ],
-          message: '',
-          items: itemIds.slice(0, 6).map((id, index) => {
-            const item = ITEM_DEFS.find((definition) => definition.id === id)!;
-            return { id, name: item.name, price: index + 2, detail: `${item.rarity} / ${item.weight}kg. ${item.blurb}`, accent: Phaser.Display.Color.HexStringToColor(RARITY_COLOR[item.rarity]).color, enabled: true };
-          }),
-          page: 0,
-          pages: 2,
-          cargo: [
-            { id: 'oreIron', name: 'Iron Ore', count: 4, total: 6, detail: '1.5g each · 2kg each · 8kg carried' },
-          ],
-          restEnabled: true,
-          recruits: [],
-          donations: [],
-        }, {
-          selectTab: () => undefined,
-          buy: close,
-          sell: close,
-          previousPage: () => undefined,
-          nextPage: () => undefined,
-          rest: close,
-          recruit: close,
-          donate: close,
-          finish: close,
-        }),
       },
     ];
   }

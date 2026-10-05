@@ -16,6 +16,7 @@ export type ShopKind =
   | 'herbalist'
   | 'supply';
 
+/** 'forge': a crafting bench, where an Objects mage designs gear from templates (core/crafting). */
 export type ShopService = 'rest' | 'bounties' | 'forge';
 
 /** Which pixel shopkeeper stands at the door. */
@@ -36,8 +37,8 @@ export type KeeperLook =
   | 'priest';
 
 export interface StockRule {
-  /** Always on the shelf, never sold out. `qty` is how many one purchase gives. */
-  fixed?: { id: ItemId; qty?: number }[];
+  /** Always on the shelf, never sold out. `qty` is how many one purchase gives; `price` (gold) overrides the usual markup. */
+  fixed?: { id: ItemId; qty?: number; price?: number }[];
   /** Rolled each day from this pool. */
   pool?: (def: ItemDef) => boolean;
   rarities?: readonly Rarity[];
@@ -63,12 +64,11 @@ export interface ShopDef {
   services: ShopService[];
   /** Gold per rest (guild only). */
   restPrice?: number;
-  /** Forge recipe ids this smithy knows. */
-  recipes?: string[];
 }
 
 const SHOPPABLE = (def: ItemDef): boolean =>
-  !def.enemyOnly && def.set !== 'conjured' && !def.material && !def.ammo && !def.potion && def.rarity !== 'lareneg';
+  !def.enemyOnly && def.set !== 'conjured' && !def.material && !def.ammo && !def.potion && def.rarity !== 'lareneg' &&
+  !def.keyItem && !def.pack;
 
 const isWeapon = (def: ItemDef): boolean =>
   SHOPPABLE(def) && def.slot === 'hand' && !def.lightSource && (!!def.weapon || !!def.isWand || !!def.shield);
@@ -95,6 +95,20 @@ const SUPPLIES: StockRule['fixed'] = [
 
 /** A night at any guild, in gold: two silver. */
 export const ROOM_PRICE = 0.2;
+/** Gold for a pickaxe, wherever it is sold. */
+export const PICKAXE_PRICE = 3;
+/** Gold for the Minemap. */
+export const MINE_MAP_PRICE = 3;
+
+/** Every guild sells bags (the pack grows with them) and the Minemap. */
+const GUILD_STOCK: StockRule = {
+  fixed: [
+    { id: 'smallBag', price: 0.5 },
+    { id: 'goodBag', price: 2 },
+    { id: 'bagOfHolding', price: 10 },
+    { id: 'mineMap', price: MINE_MAP_PRICE },
+  ],
+};
 
 const guild = (town: string, name: string): ShopDef => ({
   id: `${town}-guild`,
@@ -102,6 +116,7 @@ const guild = (town: string, name: string): ShopDef => ({
   name,
   sign: 'GUILD',
   keeper: 'guildmaster',
+  stock: GUILD_STOCK,
   buys: [{ accepts: isMaterial, rate: 1 }],
   services: ['rest', 'bounties'],
   restPrice: ROOM_PRICE,
@@ -136,26 +151,13 @@ const valuables = (town: string, name: string, rarities: readonly Rarity[]): Sho
   services: [],
 });
 
-export const FORGE_RECIPES: Record<string, { output: ItemId; inputs: [ItemId, number][]; gold: number }> = {
-  ironCap: { output: 'ironCap', inputs: [['oreIron', 1], ['oreCoal', 1]], gold: 2 },
-  ironGreaves: { output: 'ironGreaves', inputs: [['oreIron', 2]], gold: 3 },
-  chainShirt: { output: 'chainShirt', inputs: [['oreIron', 3], ['oreCoal', 1]], gold: 4 },
-  buckler: { output: 'buckler', inputs: [['oreIron', 2]], gold: 3 },
-  forgedWarAxe: { output: 'forgedWarAxe', inputs: [['oreIron', 2], ['oreCoal', 1]], gold: 4 },
-  warHammer: { output: 'warHammer', inputs: [['oreIron', 4], ['golemCore', 1]], gold: 8 },
-  emberplate: { output: 'emberplate', inputs: [['magmaCore', 1], ['redDrakeScale', 1], ['oreIron', 2]], gold: 8 },
-  drakescaleHelm: { output: 'drakescaleHelm', inputs: [['blackDrakeScale', 1], ['oreIron', 1]], gold: 6 },
-  rubyPendant: { output: 'rubyPendant', inputs: [['gemRuby', 1], ['oreGold', 1]], gold: 3 },
-  sapphireRing: { output: 'sapphireRing', inputs: [['gemSapphire', 1], ['oreCopper', 1]], gold: 3 },
-  emeraldCharm: { output: 'emeraldCharm', inputs: [['gemEmerald', 1], ['oreCopper', 1]], gold: 3 },
-  onyxAmulet: { output: 'onyxAmulet', inputs: [['gemOnyx', 1], ['oreIron', 1]], gold: 3 },
-  amethystCirclet: { output: 'amethystCirclet', inputs: [['gemAmethyst', 2], ['oreCopper', 1]], gold: 4 },
-};
-
-const ALL_RECIPES = Object.keys(FORGE_RECIPES);
-const BASIC_RECIPES = ['ironCap', 'ironGreaves', 'chainShirt', 'buckler', ...GEM_JEWELLERY];
-
-const FORGE_SUPPLIES: StockRule['fixed'] = [{ id: 'oreCoal' }, { id: 'oreCopper' }, { id: 'oreIron' }, { id: 'pickaxe' }];
+const FORGE_SUPPLIES: StockRule['fixed'] = [
+  { id: 'wood' },
+  { id: 'oreCoal' },
+  { id: 'oreCopper' },
+  { id: 'oreIron' },
+  { id: 'pickaxe', price: PICKAXE_PRICE },
+];
 
 const outfitter = (town: string, name: string): ShopDef => ({
   id: `${town}-outfitter`,
@@ -246,7 +248,6 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       stock: { fixed: FORGE_SUPPLIES, priceMult: 1.5 },
       buys: [],
       services: ['forge'],
-      recipes: BASIC_RECIPES,
     },
     // ---- Hearthfire: the basics, and the best steel in the land ----
     guild('hearthfire', 'Hearthfire Guildhall'),
@@ -290,7 +291,6 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       stock: { fixed: FORGE_SUPPLIES, priceMult: 1.2 },
       buys: [{ accepts: (def) => !!def.material && !def.materialKind, rate: 1.1 }],
       services: ['forge'],
-      recipes: ALL_RECIPES,
     },
     // ---- Kerusai: a small town ----
     guild('kerusai', 'Kerusai Lodge'),
@@ -304,7 +304,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       name: 'Greenhollow Herbs',
       sign: 'HERBS',
       keeper: 'herbalist',
-      stock: { fixed: [{ id: 'healthPotion' }, { id: 'manaPotion' }, { id: 'herbMoonleaf' }, { id: 'torch' }] },
+      stock: { fixed: [{ id: 'healthPotion' }, { id: 'manaPotion' }, { id: 'herbMoonglow' }, { id: 'torch' }] },
       buys: [
         { accepts: isHerb, rate: 1.5 },
         { accepts: isSupply, rate: 0.5 },
@@ -338,7 +338,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       name: 'Deepvein Supply',
       sign: 'SUPPLY',
       keeper: 'miner',
-      stock: { fixed: [{ id: 'torch' }, { id: 'lantern' }, { id: 'pickaxe' }, { id: 'throwingDagger' }, { id: 'oreCoal' }] },
+      stock: { fixed: [{ id: 'torch' }, { id: 'lantern' }, { id: 'pickaxe', price: PICKAXE_PRICE }, { id: 'mineMap', price: MINE_MAP_PRICE }, { id: 'throwingDagger' }, { id: 'oreCoal' }] },
       buys: [
         { accepts: isOre, rate: 1.2 },
         { accepts: isGem, rate: 1.1 },
@@ -399,6 +399,41 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     },
   ] satisfies ShopDef[]).map((shop) => [shop.id, shop] as const),
 );
+
+/** What a merchant saved on the road may turn out to sell. */
+export const WAYSIDE_KINDS = ['weaponsmith', 'armory', 'jeweller', 'apothecary', 'bowyer', 'herbalist', 'supply', 'gems'] as const satisfies readonly ShopKind[];
+export type WaysideKind = (typeof WAYSIDE_KINDS)[number];
+/** Grateful merchants sell a little under their usual price. */
+export const WAYSIDE_DISCOUNT = 0.85;
+
+export const waysideShopId = (kind: WaysideKind): string => `wayside-${kind}`;
+
+const WAYSIDE_NAMES: Record<WaysideKind, string> = {
+  weaponsmith: "Travelling Weaponsmith's Cart",
+  armory: "Travelling Armourer's Cart",
+  jeweller: "Travelling Jeweller's Coach",
+  apothecary: "Travelling Apothecary's Wagon",
+  bowyer: "Travelling Bowyer's Cart",
+  herbalist: "Travelling Herbalist's Wagon",
+  supply: "Travelling Outfitter's Wagon",
+  gems: "Travelling Gem Dealer's Coach",
+};
+
+// Wayside wares stock like the first town shop of their kind, cheaper, and buy nothing.
+for (const kind of WAYSIDE_KINDS) {
+  const model = Object.values(SHOPS).find((shop) => shop.kind === kind && shop.stock);
+  if (!model?.stock) continue;
+  SHOPS[waysideShopId(kind)] = {
+    id: waysideShopId(kind),
+    kind,
+    name: WAYSIDE_NAMES[kind],
+    sign: 'WARES',
+    keeper: model.keeper,
+    stock: { ...model.stock, priceMult: (model.stock.priceMult ?? 1) * WAYSIDE_DISCOUNT },
+    buys: [],
+    services: [],
+  };
+}
 
 export function shopById(id: string): ShopDef | undefined {
   return Object.prototype.hasOwnProperty.call(SHOPS, id) ? SHOPS[id] : undefined;

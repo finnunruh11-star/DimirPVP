@@ -27,8 +27,14 @@ export type MineEnemyKind =
   | 'sandworm'
   | 'rabbit'
   | 'slime'
+  | 'slime-red'
+  | 'slime-blue'
+  | 'slime-black'
+  | 'slime-white'
   | 'boar'
-  | 'wolf';
+  | 'wolf'
+  | 'lion'
+  | 'lioness';
 
 export type SentinelRole = 'tank' | 'healer' | 'dps';
 
@@ -84,6 +90,23 @@ const FIRE_RESIST: DamageType[] = ['heat', 'light'];
 const FIRE_WEAK: DamageType[] = ['shadow'];
 const SCALE_RESIST: DamageType[] = ['slashing'];
 const SCALE_WEAK: DamageType[] = ['pierce'];
+
+const SLIME: Omit<MineEnemyDef, 'kind' | 'name' | 'tint'> = {
+  hpSpec: '5',
+  sanity: 1,
+  moveUnits: 4,
+  stats: { strength: 1, dex: 1, int: 0 },
+  statGrowth: { strength: 0, dex: 0, int: 0 },
+  melee: { spec: '1d3', type: 'corrosive' },
+  bodyRadius: 14,
+  scale: 0.55,
+  unlock: 1,
+  cost: 1,
+  unscaled: true,
+};
+
+/** Slimes come in all five colours; only the colour differs. */
+export const SLIME_KINDS = ['slime', 'slime-red', 'slime-blue', 'slime-black', 'slime-white'] as const;
 
 export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
   rockling: {
@@ -348,22 +371,11 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     unlock: 1,
     cost: 2,
   },
-  slime: {
-    kind: 'slime',
-    name: 'Slime',
-    hpSpec: '5',
-    sanity: 1,
-    moveUnits: 4,
-    stats: { strength: 1, dex: 1, int: 0 },
-    statGrowth: { strength: 0, dex: 0, int: 0 },
-    melee: { spec: '1d3', type: 'corrosive' },
-    bodyRadius: 14,
-    tint: 0x6fd35a,
-    scale: 0.55,
-    unlock: 1,
-    cost: 1,
-    unscaled: true,
-  },
+  slime: { ...SLIME, kind: 'slime', name: 'Slime', tint: 0x6fd35a },
+  'slime-red': { ...SLIME, kind: 'slime-red', name: 'Red Slime', tint: 0xd9523f },
+  'slime-blue': { ...SLIME, kind: 'slime-blue', name: 'Blue Slime', tint: 0x4f8fe0 },
+  'slime-black': { ...SLIME, kind: 'slime-black', name: 'Black Slime', tint: 0x4a3f55 },
+  'slime-white': { ...SLIME, kind: 'slime-white', name: 'White Slime', tint: 0xeae6da },
   boar: {
     kind: 'boar',
     name: 'Boar',
@@ -396,6 +408,37 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     cost: 3,
     packRange: [2, 5],
   },
+  // ---- Green beasts of the plains: sturdy and hard-hitting, little mind ----
+  lion: {
+    kind: 'lion',
+    name: 'Lion',
+    hpSpec: '3d6+14',
+    sanity: 4,
+    moveUnits: 5,
+    stats: { strength: 6, dex: 4, int: 0 },
+    statGrowth: { strength: 3, dex: 4, int: 0 },
+    melee: { spec: '1d3+3', type: 'slashing' },
+    bodyRadius: 26,
+    tint: 0xc7913f,
+    scale: 1,
+    unlock: 3,
+    cost: 8,
+  },
+  lioness: {
+    kind: 'lioness',
+    name: 'Lioness',
+    hpSpec: '3d6+8',
+    sanity: 3,
+    moveUnits: 6,
+    stats: { strength: 4, dex: 6, int: 0 },
+    statGrowth: { strength: 3, dex: 3, int: 0 },
+    melee: { spec: '1d3+2', type: 'slashing' },
+    bodyRadius: 22,
+    tint: 0xd8ad62,
+    scale: 0.9,
+    unlock: 2,
+    cost: 6,
+  },
 };
 
 const SENTINEL_PROFILES: Record<SentinelRole, Partial<MineEnemyDef>> = {
@@ -427,13 +470,17 @@ const SENTINEL_PROFILES: Record<SentinelRole, Partial<MineEnemyDef>> = {
 };
 
 /**
- * Which roster a spawn table draws from. Sentinels and Dragonborn hold the
- * volcanic surface, not the tunnels; Kobolds work both.
+ * Which roster a spawn table draws from. The mines hold everything of the red
+ * surface but its slimes, and the tunnel dwellers besides.
  */
 export const MINE_SPAWN_KINDS: readonly MineEnemyKind[] = [
   'rockling',
   'kobold',
   'elite-kobold',
+  'sentinel',
+  'magma-sentinel',
+  'red-dragonborn',
+  'black-dragonborn',
   'golem',
   'earth-elemental',
   'pftlhb',
@@ -526,6 +573,15 @@ export function mineWaveComposition(
   return out;
 }
 
+/** "1d3+3" plus 1 is "1d3+4": a dice spec takes one flat modifier. */
+function withBonus(spec: string, bonus: number): string {
+  if (bonus === 0) return spec;
+  const m = /^(\d*d\d+)([+-]\d+)?$/.exec(spec);
+  if (!m) return spec;
+  const flat = Number(m[2] ?? 0) + bonus;
+  return flat ? `${m[1]}${flat > 0 ? '+' : ''}${flat}` : m[1];
+}
+
 function resolvedDef(spawn: MineSpawnSpec): MineEnemyDef {
   const base = MINE_ENEMY_DEFS[spawn.kind];
   if ((spawn.kind !== 'sentinel' && spawn.kind !== 'magma-sentinel') || !spawn.role) return base;
@@ -562,7 +618,7 @@ export function applyMineEnemyTraits(mage: Mage, spawn: MineSpawnSpec, rng: Dice
   mage.intrinsicMoveUnits = def.moveUnits + moveGrowth;
   mage.intrinsicMelee = def.melee
     ? {
-        spec: power > 0 ? `${def.melee.spec}+${power}` : def.melee.spec,
+        spec: withBonus(def.melee.spec, power),
         type: def.melee.type,
         onHit: magma
           ? (ctx, target) => ctx.game.applySentinelFireStacks(target, 1, ctx.caster)
@@ -646,20 +702,26 @@ const BASE_GOLD: Record<MineEnemyKind, number> = {
   sandworm: 8,
   rabbit: 0.25,
   slime: 0.25,
+  'slime-red': 0.25,
+  'slime-blue': 0.25,
+  'slime-black': 0.25,
+  'slime-white': 0.25,
   boar: 1.5,
   wolf: 1,
+  lion: 2,
+  lioness: 1.5,
 };
 
 const BONUS_SALVAGE: Record<MineEnemyKind, ItemId | null> = {
   rockling: null,
   kobold: 'crudeTrinket',
   'elite-kobold': 'chargedScale',
-  golem: 'golemCore',
+  golem: 'stoneHeart',
   sentinel: 'sentinelLens',
   'magma-sentinel': 'magmaCore',
-  'earth-elemental': 'elementalGeode',
+  'earth-elemental': 'redStone',
   pftlhb: 'darkEye',
-  'cavern-bat': 'echoMembrane',
+  'cavern-bat': 'batLeather',
   'red-dragonborn': 'redDrakeScale',
   'black-dragonborn': 'blackDrakeScale',
   bandit: 'crudeTrinket',
@@ -669,8 +731,14 @@ const BONUS_SALVAGE: Record<MineEnemyKind, ItemId | null> = {
   sandworm: 'gemDiamond',
   rabbit: 'rabbitPelt',
   slime: 'slimeGel',
+  'slime-red': 'slimeGel',
+  'slime-blue': 'slimeGel',
+  'slime-black': 'slimeGel',
+  'slime-white': 'slimeGel',
   boar: 'boarHide',
   wolf: 'wolfPelt',
+  lion: 'lionPelt',
+  lioness: 'lionPelt',
 };
 
 export function rollMineLoot(kind: MineEnemyKind, rng: Dice): MineLootResult {

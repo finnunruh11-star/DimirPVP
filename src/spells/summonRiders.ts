@@ -10,6 +10,7 @@
 import { RANGE_UNIT } from '../config/constants';
 import { dmg } from '../core/Damage';
 import type { Mage } from '../core/Mage';
+import { minionRider } from '../effects/classKit';
 import {
   applyControl,
   applyDebuff,
@@ -61,7 +62,8 @@ const RIDERS: Record<string, (self: Mage) => SummonOnHit> = {
 
 /** Give `unit` the strike rider its kind carries, if it has one. */
 export function attachSummonRider(unit: Mage, kind: string): void {
+  if (!unit.intrinsicMelee) return;
   const make = RIDERS[kind];
-  if (!make || !unit.intrinsicMelee) return;
-  unit.intrinsicMelee.onHit = make(unit);
+  const rider = make ? make(unit) : minionRider(kind, unit);
+  if (rider) unit.intrinsicMelee.onHit = rider;
 }

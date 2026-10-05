@@ -9,12 +9,13 @@
 //  and call it from your spells — nothing else needs to change.
 // =============================================================================
 
+import type { BarrierBurst } from '../core/Barrier';
 import type { DamageInstance, DamageType } from '../core/Damage';
 import type { Dice } from '../core/Dice';
 import type { Desecration, DesecrationField, GameState } from '../core/GameState';
 import type { Mage } from '../core/Mage';
 import type { MageClass } from '../core/Classes';
-import { getItem } from '../core/Items';
+import { getItem, type CastThrough } from '../core/Items';
 import {
   addOrExtendStatus,
   type ControlMode,
@@ -43,6 +44,28 @@ export interface CombatFeedback {
   critical?: boolean;
   /** Who dealt this, so presentation can voice enemy blows differently. */
   source?: Mage;
+}
+
+/** The authored flourishes reserved for the god words (Death, Desecrate, Reality, Stop). */
+export type GodFxKind =
+  | 'deathMark'
+  | 'skull'
+  | 'reap'
+  | 'hex'
+  | 'void'
+  | 'warp'
+  | 'sphere'
+  | 'implode'
+  | 'rift'
+  | 'cataclysm';
+
+export interface GodFxOptions {
+  /** Longest side of the art, in px. */
+  size?: number;
+  /** Tint; the art keeps its own colours when omitted. */
+  color?: number;
+  /** Heading in radians, for directional art. */
+  angle?: number;
 }
 
 /**
@@ -105,6 +128,8 @@ export interface VfxSink {
   thunder?(at: Vec2): void;
   /** Pulse the active Twist Rune and show its orbit direction. */
   twistRune?(pivot: Vec2, radius: number, clockwise: boolean): void;
+  /** Play a god-word flourish at `at`: authored art, light and weight. */
+  godFx?(kind: GodFxKind, at: Vec2, opts?: GodFxOptions): void;
 }
 
 /** Options for an interactive point sub-target requested mid-resolution. */
@@ -121,6 +146,8 @@ export interface SubTargetPointOpts {
   directions?: readonly Vec2[];
   /** Whether this pick cannot be cancelled. */
   required?: boolean;
+  /** The point an AI controller should pick, when the spell knows better than "toward the foe". */
+  aiPoint?: Vec2;
 }
 
 /** Options for an interactive enemy sub-target requested mid-resolution. */
@@ -276,7 +303,7 @@ export function byClass<T>(
   ctx: EffectContext,
   variants: Record<MageClass, (ctx: EffectContext) => T>
 ): T {
-  return variants[ctx.caster.mageClass](ctx);
+  return variants[ctx.caster.spellClass ?? ctx.caster.mageClass](ctx);
 }
 
 /**
@@ -330,9 +357,76 @@ export interface DealDamageOptions {
   bypassFaraday?: boolean;
   /** Treat guaranteed targeted damage as a direct hit for Faraday Veil. */
   triggersFaraday?: boolean;
+  /** Already shaped by the staff its spell was cast through. */
+  staffShaped?: boolean;
 }
 
 export function dealDamage(
+  ctx: EffectContext,
+  target: Mage,
+  damage: DamageInstance,
+  opts: DealDamageOptions = {}
+): number {
+  const game = ctx.game;
+  if (!opts.staffShaped && game.castThroughCaster === ctx.caster && target.team !== ctx.caster.team && damage.amount > 0) {
+    const staffs = ctx.caster.castThroughs();
+    if (staffs.length > 0) return dealThroughStaffs(ctx, target, damage, opts, staffs);
+  }
+  // Hexcraft laws reshape and answer hits; a law's own hits never set off another.
+  if (game.hexLawDepth > 0 || game.hexcraftGlobals.length === 0) {
+    const dealt = dealOneHit(ctx, target, damage, opts);
+    game.imbueOnDamaged(target, dealt);
+    return dealt;
+  }
+  const prep = game.lawBeforeHit(ctx, target, damage, opts, game.isVeiled(target));
+  const victim = prep.redirect ?? target;
+  const victimVeiled = game.isVeiled(victim);
+  // The hit itself still answers to laws that watch what it does (a torn veil, a root).
+  const main = dealOneHit(ctx, victim, prep.damage, prep.redirect ? { ...prep.opts, canMiss: false } : prep.opts);
+  game.hexLawDepth += 1;
+  try {
+    game.lawAfterHit(ctx, victim, prep.damage.type, main, victimVeiled);
+    game.imbueOnDamaged(victim, main);
+    return main;
+  } finally {
+    game.hexLawDepth -= 1;
+  }
+}
+
+/**
+ * A word spell's hit on a foe, through the staffs its caster holds: their damage
+ * factors multiply it, a split staff turns part of it into another type, and a
+ * hexing staff leaves extra damage taken on whoever it lands on.
+ */
+function dealThroughStaffs(
+  ctx: EffectContext,
+  target: Mage,
+  damage: DamageInstance,
+  opts: DealDamageOptions,
+  staffs: readonly CastThrough[],
+): number {
+  const factor = staffs.reduce((product, staff) => product * (staff.damageMult ?? 1), 1);
+  const amount = Math.max(1, Math.round(damage.amount * factor));
+  const shaped: DealDamageOptions = { ...opts, staffShaped: true };
+  const split = staffs.find((staff) => staff.split)?.split;
+  const moved = split && split.type !== damage.type ? Math.floor(amount * split.share) : 0;
+  let dealt = dealDamage(ctx, target, { ...damage, amount: amount - moved }, shaped);
+  if (split && moved > 0 && target.alive) dealt += dealDamage(ctx, target, { ...damage, type: split.type, amount: moved }, shaped);
+  if (dealt > 0 && target.alive) {
+    for (const staff of staffs) {
+      if (!staff.hex) continue;
+      applyDebuff(ctx, target, {
+        name: staff.hex.name,
+        key: `debuff:staff-${staff.hex.name.toLowerCase()}`,
+        duration: staff.hex.duration,
+        mods: { damageTaken: staff.hex.damageTaken },
+      });
+    }
+  }
+  return dealt;
+}
+
+function dealOneHit(
   ctx: EffectContext,
   target: Mage,
   damage: DamageInstance,
@@ -363,9 +457,20 @@ export function dealDamage(
     return 0;
   }
 
+  // Still water stops the next blow outright.
+  if (damage.amount > 0 && ctx.game.consumeStillWard(ctx.caster, target)) return 0;
+
+  // Stopped time: the blow hangs in the air and lands when time resumes.
+  const frozen = ctx.game.timeStopOn(target);
+  if (frozen && !frozen.sanctuary) {
+    const held = castPotencyScale(ctx, ctx.crit ? damage.amount * 2 : damage.amount);
+    ctx.game.holdHit(target, frozen, held, damage.type, ctx.caster);
+    return 0;
+  }
+
   // Veil dodge: only targeted (non-area) attacks can be slipped. Area effects
-  // always connect. True damage never misses.
-  if (canMiss && !isAoe && !isTrue && !Dev.autoSuccess) {
+  // always connect. True damage never misses. A fixed point cannot dodge at all.
+  if (canMiss && !isAoe && !isTrue && !Dev.autoSuccess && !ctx.game.isFixedPoint(target)) {
     const inv = ctx.game.effectiveInvisibility(target);
     if (inv) {
       const units = dist(ctx.caster.pos, target.pos) / RANGE_UNIT;
@@ -383,6 +488,7 @@ export function dealDamage(
       ctx.vfx?.combatFeedback?.(target, { kind: 'miss', label: 'DODGED' });
       return 0;
     }
+    if (ctx.game.mirrorImageIntercepts(ctx.caster, target)) return 0;
   }
 
   // A Mind Dodge ward absorbs the next instance of sanity damage.
@@ -435,6 +541,12 @@ export function dealDamage(
         feedbackLabel = 'VULNERABLE';
       }
     }
+  }
+
+  // Stone is brittle: shatter damage against a petrified body is doubled.
+  if (amount > 0 && damage.type === 'shatter' && ctx.game.isPetrified(target)) {
+    amount *= 2;
+    feedbackLabel = 'BRITTLE';
   }
 
   // An Aluminium Hat shrugs off any minor psychic jab below its threshold.
@@ -573,6 +685,11 @@ export function dealDamage(
   }
   if (amount > 0) ctx.game.checkReapDeath(target, ctx.caster);
   if (amount > 0) ctx.game.checkBaralWound(target);
+  // God-word marks read the landed wound: a death mark feeds on it, shatter
+  // hastens a doom, and a pact bills the one who dealt it.
+  if (amount > 0) ctx.game.feedDeathMark(target, damage.type);
+  if (amount > 0 && damage.type === 'shatter') ctx.game.advanceDoom(target, 'shatter');
+  if (amount > 0) ctx.game.echoSoulPact(ctx.caster, target, amount);
 
   // A landed hit can shatter veils. The victim's veil may be torn off; the
   // attacker may reveal themselves by striking. DoT ticks (canMiss === false)
@@ -675,7 +792,7 @@ function breakVeilOnStruck(
   amount: number
 ): void {
   const inv = target.getInvisibility();
-  if (!inv) return;
+  if (!inv || ctx.game.lawVeilHolds(target)) return;
   const isMill = type === 'sanity';
   const breaks =
     inv.mode === 'partial'
@@ -686,6 +803,7 @@ function breakVeilOnStruck(
   if (breaks) {
     removeInvisibility(target);
     ctx.log(`${target.name}'s veil is removed by the hit.`);
+    ctx.game.lawOnVeilBroken(ctx, target);
   }
 }
 
@@ -717,8 +835,15 @@ export function heal(
   pool: 'hp' | 'sanity' = 'hp'
 ): void {
   amount = Math.max(0, Math.round(amount));
+  // A mortal wound turns every mending into Reap instead.
+  const wounder = amount > 0 && pool === 'hp' ? ctx.game.mortalWounder(target) : null;
+  if (wounder) {
+    ctx.log(`${target.name}'s mortal wound will not close.`);
+    ctx.game.applyReap(target, amount, wounder);
+    return;
+  }
   // Fouled ground refuses mending outright, or hands it to whoever fouled it.
-  if (amount > 0 && ctx.game.desecrationBlocksHealing(target)) {
+  if (amount > 0 && (ctx.game.desecrationBlocksHealing(target) || ctx.game.lawBlocksHealing(target))) {
     ctx.log(`${target.name} cannot be healed on desecrated ground.`);
     return;
   }
@@ -744,6 +869,7 @@ export function heal(
     if (restored > 0) ctx.vfx?.combatFeedback?.(target, { kind: 'heal', amount: restored });
     if (amount > 0) {
       ctx.game.reapOnOwnerHeal(target);
+      ctx.game.crackPetrification(target);
     }
   }
 }
@@ -765,7 +891,14 @@ export function applyInvisibility(
   target: Mage,
   opts: { duration: number; mode: InvisMode; extend?: boolean; veilBindLinked?: boolean }
 ): void {
-  const duration = critScale(ctx, opts.duration);
+  if (ctx.game.lawVeilBlocked(target)) {
+    ctx.log(`${target.name} is rooted and cannot be veiled.`);
+    return;
+  }
+  const duration = ctx.game.lawVeilDuration(critScale(ctx, opts.duration));
+  // Its toll lands before the veil, so the toll cannot tear it.
+  ctx.game.lawOnVeilGained(ctx, target);
+  if (!target.alive) return;
   addOrExtendStatus(
     target.statuses,
     {
@@ -800,7 +933,14 @@ export function applyInvisibility(
 export function applyStun(
   ctx: EffectContext,
   target: Mage,
-  opts: { duration: number; type: StunType; extend?: boolean; veilBindLinked?: boolean }
+  opts: {
+    duration: number;
+    type: StunType;
+    extend?: boolean;
+    veilBindLinked?: boolean;
+    /** A stun that must be lifted on its own, apart from ordinary stuns of its type. */
+    key?: string;
+  }
 ): void {
   if (ctx.game.isUnreachable(target)) return;
   if (target.slowStunImmune) {
@@ -809,6 +949,14 @@ export function applyStun(
   }
   if (target.isDebuffImmune()) {
     ctx.log(`${target.name} is immune to stuns.`);
+    return;
+  }
+  if (opts.type !== 'movement' && target.stunProof()) {
+    ctx.log(`${target.name} cannot be stunned.`);
+    return;
+  }
+  if (opts.type === 'movement' && ctx.game.lawBlocksRoot(target)) {
+    ctx.log(`${target.name} is veiled and cannot be rooted.`);
     return;
   }
   const names: Record<StunType, string> = {
@@ -821,7 +969,7 @@ export function applyStun(
   addOrExtendStatus(
     target.statuses,
     {
-      key: `stun:${opts.type}`,
+      key: opts.key ?? `stun:${opts.type}`,
       name: names[opts.type],
       kind: 'stun',
       duration,
@@ -831,6 +979,7 @@ export function applyStun(
     !!opts.extend
   );
   ctx.log(`${target.name} is ${names[opts.type].toLowerCase()} (${duration} cycles).`);
+  if (opts.type === 'movement') ctx.game.lawOnRoot(ctx, target);
   if (!opts.veilBindLinked && opts.type !== 'main' && ctx.game.isInVeilBindZone(target)) {
     applyInvisibility(ctx, target, {
       duration,
@@ -870,6 +1019,10 @@ export function dash(
       y: mover.y + (opts.direction.y / len) * opts.distance,
     };
   } else {
+    return;
+  }
+  if (ctx.game.isImmovable(mover)) {
+    ctx.log(`${mover.name} is fixed in place.`);
     return;
   }
   const from = { x: mover.x, y: mover.y };
@@ -914,6 +1067,10 @@ export function blinkstep(
   } else {
     return;
   }
+  if (ctx.game.isImmovable(mover)) {
+    ctx.log(`${mover.name} is fixed in place.`);
+    return;
+  }
   const from = { x: mover.x, y: mover.y };
   // Clamp only to the field edge — barriers and crushing fields never stop a blink.
   mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x));
@@ -930,6 +1087,10 @@ export function blinkstep(
  * redraw. Clamped to the playfield edge. Used for shadow-to-shadow teleports.
  */
 export function teleport(ctx: EffectContext, mover: Mage, at: Vec2): void {
+  if (ctx.game.isImmovable(mover)) {
+    ctx.log(`${mover.name} is fixed in place.`);
+    return;
+  }
   const from = mover.pos;
   mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x));
   mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y));
@@ -1055,6 +1216,16 @@ export function applyDot(
     extendOnPierce?: { minAmount: number; chanceBelow: number; maxDuration: number };
     /** When a tick empties the bearer's sanity, jump to the nearest unit in this radius. */
     jumpOnMindBreakRadius?: number;
+    /** Only tick while the caster is hidden. */
+    whileSourceVeiled?: boolean;
+    /** Every heal the bearer would receive becomes that much Reap instead. */
+    healBecomesReap?: boolean;
+    /** Each tick spins the bearer a quarter turn around the DoT's source. */
+    orbitSource?: boolean;
+    /** Each tick carries the bearer: toward `to`, else away from the caster (negative: toward it). */
+    drift?: { px: number; to?: Vec2 };
+    /** Each tick stifles the bearer's next action. */
+    stifleOnTick?: boolean;
     extend?: boolean;
   }
 ): void {
@@ -1092,6 +1263,11 @@ export function applyDot(
       spreadVeils: opts.spreadVeils,
       extendOnPierce: opts.extendOnPierce,
       jumpOnMindBreakRadius: opts.jumpOnMindBreakRadius,
+      whileSourceVeiled: opts.whileSourceVeiled,
+      healBecomesReap: opts.healBecomesReap,
+      orbitSource: opts.orbitSource,
+      drift: opts.drift,
+      stifleOnTick: opts.stifleOnTick,
     },
     !!opts.extend
   );
@@ -1222,7 +1398,7 @@ export function applyDebuff(
 export function cleanse(ctx: EffectContext, target: Mage): void {
   const before = target.statuses.length;
   target.statuses = target.statuses.filter(
-    (s) => s.kind === 'invisibility'
+    (s) => s.kind === 'invisibility' || s.kind === 'imbue'
   );
   if (target.statuses.length !== before) {
     ctx.log(`${target.name} is cleansed.`);
@@ -1541,7 +1717,15 @@ export function placeRealityWedge(
 export function placeWall(
   ctx: EffectContext,
   center: Vec2,
-  opts: { angle: number; length: number; thickness: number; ttl: number }
+  opts: {
+    angle: number;
+    length: number;
+    thickness: number;
+    ttl: number;
+    /** Also blocks line of sight. */
+    opaque?: boolean;
+    burst?: Omit<BarrierBurst, 'ownerIndex'>;
+  }
 ): void {
   ctx.game.addBarrier({ x: center.x, y: center.y }, opts.angle, {
     shape: 'rect',
@@ -1549,8 +1733,14 @@ export function placeWall(
     thickness: opts.thickness,
     owner: ctx.caster.team,
     ttl: opts.ttl,
+    opaque: opts.opaque,
+    burst: opts.burst && { ...opts.burst, ownerIndex: ctx.game.mages.indexOf(ctx.caster) },
   });
-  ctx.log(`${ctx.caster.name} raises a wall. Blocks all movement.`);
+  ctx.log(
+    opts.opaque
+      ? `${ctx.caster.name} raises a glass curtain. Blocks movement and sight.`
+      : `${ctx.caster.name} raises a wall. Blocks all movement.`
+  );
 }
 
 /** Shatter+Mind+Reality: grant `m` an extra turn after the current one. */
@@ -1623,6 +1813,8 @@ export function placeHazardZone(
     to?: Vec2;
     /** Pieces sharing a group merge into one field that only ticks once. */
     groupId?: number;
+    /** Carries whoever it bites: toward its centre, or out of it. */
+    drift?: { px: number; inward: boolean };
   }
 ): void {
   const { to, ...zone } = opts;

@@ -25,6 +25,7 @@ import { CabinetChip, MenuFocusGroup, type MenuControl } from '../cabinet/contro
 import { isReducedMotion } from '../cabinet/motion';
 import { addCabinetBackdrop, addRecess, addSectionRule, MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
 import { drawSightingGlyph } from './sightingGlyphs';
+import { drawD20 } from './d20';
 
 /** One target on a shelf, as this searcher would roll for it. */
 export interface SearchChoice {
@@ -89,9 +90,10 @@ const OUTCOME: Record<SearchOutcome, { label: string; color: number }> = {
 };
 
 const ITEM_TINT: Record<string, number> = {
-  herbMoonleaf: 0xa9dc8e,
-  herbBogcap: 0xc7a064,
-  herbEmberroot: 0xe3814c,
+  herbMoonglow: 0xdfe8f5,
+  herbWaterleaf: 0x4a90e0,
+  herbDeathweed: 0x8a5a9a,
+  herbFireblossom: 0xf06a2a,
   oreCoal: 0x4a4a4c,
   oreCopper: 0xcd7a3c,
   oreIron: 0x93a0ae,
@@ -102,6 +104,7 @@ const ITEM_TINT: Record<string, number> = {
   gemRuby: 0xdd4450,
   gemSapphire: 0x4677de,
   gemDiamond: 0xe2f5ff,
+  gemPearl: 0xf0ebe0,
 };
 
 const LIST = { x: 58, y: 186, w: 640, h: 446 };
@@ -681,7 +684,7 @@ export class SearchView extends Phaser.GameObjects.Container {
       color: MENU_HEX.ink,
     }).setOrigin(0.5);
     die.add([body, face]);
-    this.drawD20(body, MENU_COLOR.bone);
+    drawD20(body, MENU_COLOR.bone);
     const formula = scene.add.text(GAME_WIDTH / 2, top + 268, choice.bonus > 0 ? `d20 + ${choice.bonus}   vs   DC ${choice.target.dc}` : `d20   vs   DC ${choice.target.dc}`, {
       fontFamily: MENU_FONT.control,
       fontSize: '15px',
@@ -737,7 +740,7 @@ export class SearchView extends Phaser.GameObjects.Container {
 
     if (!result) {
       face.setText('?');
-      this.drawD20(body, MENU_COLOR.boneDim);
+      drawD20(body, MENU_COLOR.boneDim);
       stamp.setText('NO ANSWER').setBackgroundColor('#948d7e').setVisible(true);
       message.setText('The search could not be made. Try again.').setAlpha(1);
       playSound('ui.deny');
@@ -750,7 +753,7 @@ export class SearchView extends Phaser.GameObjects.Container {
     const crit = roll.die === 20;
     const fumble = roll.die === 1;
     face.setText(String(roll.die));
-    this.drawD20(body, crit ? 0xf3dc8a : fumble ? 0xc27a70 : mixColor(MENU_COLOR.bone, look.color, 0.35));
+    drawD20(body, crit ? 0xf3dc8a : fumble ? 0xc27a70 : mixColor(MENU_COLOR.bone, look.color, 0.35));
     die.setScale(this.reduced ? 1 : 1.32);
     if (!this.reduced) scene.tweens.add({ targets: die, scale: 1, duration: 360, ease: 'Back.Out' });
     glow.setTint(look.color);
@@ -821,39 +824,6 @@ export class SearchView extends Phaser.GameObjects.Container {
       marker.setAlpha(1).setX(x);
       scene.tweens.add({ targets: marker, x: px(total), duration: this.reduced ? 80 : 420, ease: 'Cubic.Out' });
     };
-  }
-
-  private drawD20(g: Phaser.GameObjects.Graphics, color: number): void {
-    const r = 50;
-    const hex = Array.from({ length: 6 }, (_, k) => {
-      const a = -Math.PI / 2 + (k * Math.PI) / 3;
-      return new Phaser.Math.Vector2(Math.cos(a) * r, Math.sin(a) * r);
-    });
-    const tri = [new Phaser.Math.Vector2(0, -r * 0.5), new Phaser.Math.Vector2(-r * 0.47, r * 0.33), new Phaser.Math.Vector2(r * 0.47, r * 0.33)];
-    g.clear();
-    g.fillStyle(MENU_COLOR.pitch, 0.9).fillPoints(hex.map((p) => new Phaser.Math.Vector2(p.x + 4, p.y + 5)), true);
-    g.fillStyle(mixColor(color, 0x000000, 0.28), 1).fillPoints(hex, true);
-    g.fillStyle(color, 1).fillPoints(tri, true);
-    // Side facets: each triangle corner to its two nearest rim corners.
-    const facet = (a: Phaser.Math.Vector2, b: Phaser.Math.Vector2, c: Phaser.Math.Vector2, shade: number): void => {
-      g.fillStyle(mixColor(color, 0x000000, shade), 1).fillPoints([a, b, c], true);
-    };
-    facet(tri[0], hex[0], hex[1], 0.12);
-    facet(tri[0], hex[5], hex[0], 0.06);
-    facet(tri[1], hex[3], hex[4], 0.22);
-    facet(tri[1], hex[4], hex[5], 0.16);
-    facet(tri[2], hex[1], hex[2], 0.18);
-    facet(tri[2], hex[2], hex[3], 0.24);
-    facet(tri[0], tri[1], hex[5], 0.1);
-    facet(tri[0], tri[2], hex[1], 0.14);
-    facet(tri[1], tri[2], hex[3], 0.2);
-    g.lineStyle(2, MENU_COLOR.ink, 0.9).strokePoints(hex, true);
-    g.lineStyle(1, MENU_COLOR.ink, 0.55);
-    g.strokePoints(tri, true);
-    for (const [a, b] of [[0, 0], [0, 1], [0, 5], [1, 3], [1, 4], [1, 5], [2, 1], [2, 2], [2, 3]] as const) {
-      g.lineBetween(tri[a].x, tri[a].y, hex[b].x, hex[b].y);
-    }
-    g.lineStyle(1, 0xffffff, 0.35).lineBetween(tri[0].x + 3, tri[0].y + 6, tri[1].x + 6, tri[1].y - 2);
   }
 
   private offerButtons(stage: Phaser.GameObjects.Container, y: number, choice: SearchChoice, result: SearchRollResult | null): void {

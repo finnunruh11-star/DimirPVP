@@ -20,6 +20,7 @@ import { dmg } from '../core/Damage';
 import { addOrExtendStatus } from '../core/Status';
 import { CONE_DEGREES, FIELD, MELEE_RANGE, MOVE_RANGE, RANGE_UNIT, SHADOW_RADIUS } from '../config/constants';
 import {
+  afflictDuration,
   applyAuraDot,
   applyAnchorSpike,
   applyBlueflareStacks,
@@ -57,11 +58,10 @@ import {
   placeWall,
   rollDice,
   summonScarabs,
-  swapMinds,
   teleport,
   twistStrike,
 } from '../effects/effects';
-import { registerSpell } from './registry';
+import { registerSpell, spellById } from './registry';
 import {
   applyMindLightningStack,
   closestMindLightningDirection,
@@ -84,7 +84,17 @@ import {
 } from '../core/sandSummons';
 import type { EffectContext } from '../effects/effects';
 import type { DotStatus } from '../core/Status';
-import { dist, type Vec2 } from '../core/utils';
+import type { StackItem } from '../core/Stack';
+import type { Spell } from './Spell';
+import { splitModifiers, WORDS } from '../core/Words';
+import { barrierContains } from '../core/Barrier';
+import { dist, stepTowards, type Vec2 } from '../core/utils';
+import './waves/corrodeOrdinary';
+import './waves/veilOrdinary';
+import './waves/mindOrdinary';
+import './waves/waterOrdinary';
+import './waves/painOrdinary';
+import { aimSpell } from './aimSpell';
 
 /** Convert an abstract range number (5 / 10 / 15) to pixels. */
 const R = (units: number): number => units * RANGE_UNIT;
@@ -549,24 +559,16 @@ registerSpell({
   name: 'Shadow Pierce',
   words: ['shadow', 'pierce'],
   actionType: 'main',
-  range: R(5),
+  range: Infinity,
   targeting: 'enemy',
   dc: 12,
+  reachFromShadows: R(5),
   description:
-    '1d6 shadow damage + 1d6 pierce damage to one enemy (range 5). You must be standing in one of your shadow pools, or have a shadow pool within range 5 of the target.',
+    '2d6 pierce damage to one enemy within range 5 of any of your shadows: your own, a teammate\'s or summon\'s, or a shadow pool of your side.',
   visual: { preset: 'conjure', color: 0xb09bff, size: 28, speed: 1.2 },
   cast(ctx) {
     if (!ctx.target) return;
-    const tgt = ctx.target;
-    const fromShadow =
-      ctx.game.isInShadow(ctx.caster) ||
-      ctx.game.shadowsOf(ctx.caster.team).some((s) => Math.hypot(s.x - tgt.x, s.y - tgt.y) <= R(5));
-    if (!fromShadow) {
-      ctx.log(`${ctx.caster.name} has no shadow to strike from — the blade finds nothing.`);
-      return;
-    }
-    dealDamage(ctx, tgt, dmg(rollDice(ctx, '1d6', 'Shadow Pierce'), 'shadow'));
-    dealDamage(ctx, tgt, dmg(rollDice(ctx, '1d6', 'Shadow Pierce'), 'pierce'));
+    dealDamage(ctx, ctx.target, dmg(rollDice(ctx, '2d6', 'Shadow Pierce'), 'pierce'));
   },
 });
 
@@ -1137,22 +1139,6 @@ registerSpell({
         });
       }
     }
-  },
-});
-
-registerSpell({
-  name: 'Reality Mind',
-  words: ['reality', 'mind'],
-  actionType: 'main',
-  range: R(20),
-  targeting: 'enemy',
-  dc: 14,
-  description:
-    'Swap control with the target for 2 turns (range 20): you control their mage and they control yours.',
-  visual: { preset: 'beam', color: 0xff5599, size: 7, speed: 1 },
-  cast(ctx) {
-    if (!ctx.target) return;
-    swapMinds(ctx, ctx.target, 2);
   },
 });
 
@@ -2167,28 +2153,6 @@ registerSpell({
 });
 
 registerSpell({
-  name: 'Fire Mind',
-  words: ['fire', 'mind'],
-  actionType: 'main',
-  range: R(10),
-  targeting: 'any',
-  dc: 11,
-  description: 'Enchant the target’s active weapon. Every landed hit applies 1 Blueflare.',
-  visual: { preset: 'conjure', color: 0x56bfff, size: 38, speed: 1.3 },
-  cast(ctx) {
-    const target = ctx.target ?? ctx.caster;
-    const weaponId = target.activeWeaponId();
-    if (!weaponId) {
-      ctx.log(`${target.name} has no active weapon to enchant.`);
-      return;
-    }
-    target.weaponEnchant = 'fireMind';
-    target.enchantedWeapon = weaponId;
-    ctx.log(`${target.name}'s weapon begins burning with thought-fire.`);
-  },
-});
-
-registerSpell({
   name: 'Fire Lightning',
   words: ['fire', 'lightning'],
   actionType: 'main',
@@ -2274,37 +2238,6 @@ registerSpell({
         ownerIndex: ctx.game.mages.indexOf(ctx.caster),
       },
       false
-    );
-  },
-});
-
-registerSpell({
-  name: 'Lightning Mind',
-  words: ['lightning', 'mind'],
-  actionType: 'main',
-  range: 0,
-  targeting: 'self',
-  dc: 11,
-  description:
-    'Enchant your active weapon for a roll-scaled number of hits. Each hit adds 1 persistent Mind Lightning stack to its enemy, then a weighted arc strikes you or a marked enemy for stack-scaled sanity damage.',
-  visual: { preset: 'conjure', color: 0x79bfff, size: 46, speed: 1.7 },
-  cast(ctx) {
-    const target = ctx.target ?? ctx.caster;
-    const weaponId = target.activeWeaponId();
-    if (!weaponId) {
-      ctx.log(`${target.name} has no active weapon to enchant.`);
-      return;
-    }
-    const power = lightningPower(ctx);
-    const effectivePower = power * (ctx.crit ? 2 : 1);
-    target.weaponEnchant = 'lightningMind';
-    target.enchantedWeapon = weaponId;
-    target.lightningMindPower = power;
-    target.lightningMindCritical = !!ctx.crit;
-    target.lightningMindRange = lightningRange(ctx, Math.max(1, Math.ceil(effectivePower / 3)));
-    target.lightningMindCharges = critScale(ctx, Math.max(1, Math.ceil(effectivePower / 6)));
-    ctx.log(
-      `${target.name}'s weapon holds ${target.lightningMindCharges} ${power}-power Mind Lightning charge${target.lightningMindCharges === 1 ? '' : 's'}.`
     );
   },
 });
@@ -3580,25 +3513,8 @@ registerSpell({
   },
 });
 
-registerSpell({
-  name: 'Curse Drain Corrode',
-  words: ['curse', 'drain', 'corrode'],
-  actionType: 'main',
-  range: R(5),
-  targeting: 'point',
-  dc: 13,
-  aoe: { kind: 'circle', radius: R(5) },
-  description:
-    'Summon 5 scarabs around a point (range 5). Each turn they move toward the nearest enemy (up to 3 per enemy, staying within range 8 of you), bite for 1d3, then return to heal you for 1d3. Each scarab has 5 health and 5 sanity and can be killed by area effects.',
-  visual: { preset: 'burst', color: 0x57d6a0, size: 70, speed: 1.1 },
-  manualCastVisual: true,
-  // CLASS SPELL (all verbs). Currently hard-wired to the Life alignment (summon);
-  // future Objects / Hexcraft variants plug in through byClass().
-  cast(ctx) {
-    if (!ctx.targetPoint) return;
-    summonScarabs(ctx, ctx.targetPoint);
-  },
-});
+// Curse Drain Corrode's scarab swarm is its Life variant (spells/waves/corrodeClass.ts);
+// the ordinary spell for the combo is Gnawing Curse (spells/waves/corrodeOrdinary.ts).
 
 //  GEN EASTER-EGG SPELLS   (words: Heal / Sand / Corrode / Pierce / Shadow)
 // ---------------------------------------------------------------------------
@@ -3817,27 +3733,7 @@ registerSpell({
   },
 });
 
-registerSpell({
-  name: 'Pierce Corrode',
-  words: ['pierce', 'corrode'],
-  actionType: 'main',
-  range: 0,
-  targeting: 'self',
-  dc: 11,
-  description:
-    'Bind a floating Silencing Spike to yourself. On your turn it hurls itself at the furthest enemy within '
-    + 'range 15 for 1d6 piercing, then lodges there rotting them for 1d4 a turn until they fall. It takes no orders.',
-  visual: { preset: 'conjure', color: 0xc0b0d8, size: 26, speed: 1 },
-  cast(ctx) {
-    const spike = makeSilencingSpike({
-      ownerName: ctx.caster.name,
-      pos: ctx.caster.pos,
-      team: ctx.caster.team,
-    });
-    raise(ctx, spike, 'silencing-spike');
-    spike.attachedToIndex = ctx.game.mages.indexOf(ctx.caster);
-  },
-});
+// Pierce Corrode's Silencing Spike is its Life variant (spells/waves/corrodeClass.ts).
 
 registerSpell({
   name: 'Sand Heal Pierce',
@@ -5583,5 +5479,2015 @@ registerSpell({
       forgetPerTick: 1,
       jumpOnMindBreakRadius: R(4),
     });
+  },
+});
+
+// ===========================================================================
+//  THE LAST STANDARD 3-WORD COMBINATIONS   (set: 'finns')
+// ---------------------------------------------------------------------------
+//  With these, every 1-3 word combination of the eight standard words is a
+//  spell. Colour majority still decides character; a combo with one word of
+//  each colour gives every word one job. Shadow Shatter Curse stays Black Bell
+//  for Objects — the spell here is what Life and Hexcraft cast.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+//  BIND + VEIL + SHATTER
+//  Blue-dominant: an illusion that fights back. A struck double shatters into
+//  its attacker and pins it.
+// ---------------------------------------------------------------------------
+const GLASS_DOUBLES = 3;
+
+registerSpell({
+  name: 'Glass Doubles',
+  words: ['bind', 'veil', 'shatter'],
+  set: 'finns',
+  actionType: 'bonus',
+  range: R(8),
+  targeting: 'any',
+  dc: 13,
+  reaction: true,
+  description:
+    'Range 8cm. A chosen mage gains 3 glass doubles for 3 turns. A targeted attack on it hits a double instead 75% of the time (67% with 2 left, 50% with 1): the attack deals nothing, the double shatters, and the attacker takes 1d4 shatter and is rooted for 1 turn. Area effects ignore the doubles. Can be cast as a reaction.',
+  visual: { preset: 'heal', color: 0xcfe8f5, size: 48, speed: 1.1 },
+  cast(ctx) {
+    const bearer = ctx.target ?? ctx.caster;
+    addOrExtendStatus(
+      bearer.statuses,
+      {
+        key: 'mirrorImages',
+        name: `Glass Doubles ×${GLASS_DOUBLES}`,
+        kind: 'mirrorImages',
+        duration: critScale(ctx, 3),
+        images: GLASS_DOUBLES,
+      },
+      false
+    );
+    ctx.vfx?.spellEffect?.(bearer, 'vanish');
+    ctx.log(`${bearer.name} is surrounded by ${GLASS_DOUBLES} glass doubles.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + VEIL + CURSE
+//  Blue-dominant sleight of hand: you take its place, it takes yours, and it
+//  cannot walk back out of the trade.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Veiled Exchange',
+  words: ['bind', 'veil', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Range 15cm. Trade places with one enemy. It is rooted for 1 turn and takes 1d4 shadow at its turn start for 4 turns. You gain a half veil for 2 turns. An enemy that cannot be moved is only rooted and cursed.',
+  visual: { preset: 'beam', color: 0x9d8bd8, size: 7, speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const foe = ctx.target;
+    if (foe.displacementImmune) {
+      ctx.log(`${foe.name} cannot be moved.`);
+    } else {
+      const mine = { x: ctx.caster.x, y: ctx.caster.y };
+      const theirs = { x: foe.x, y: foe.y };
+      teleport(ctx, ctx.caster, theirs);
+      teleport(ctx, foe, mine);
+    }
+    applyStun(ctx, foe, { duration: 2, type: 'movement' });
+    applyDot(ctx, foe, {
+      name: 'Exchange Curse',
+      key: 'dot:veiled-exchange',
+      duration: 4,
+      damage: dmg(0, 'shadow'),
+      damageSpec: '1d4',
+    });
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + SHATTER + CURSE
+//  One job per colour: blue holds it still, black lets the stone set,
+//  colourless breaks the statue. Only healing cracks the stone back.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Stone Curse',
+  words: ['bind', 'shatter', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Range 12cm. The target turns to stone over its next 3 turns: slowed 50%, then rooted, then fully stunned with shatter damage against it doubled. When the third turn ends it shatters: 3d6 shatter to it and 1d6 shatter to every unit within 3cm, allies included. Each heal it receives undoes one stage; undoing the first ends the curse.',
+  visual: { preset: 'beam', color: 0xa8a39a, size: 8, speed: 0.9 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    ctx.game.petrify(ctx.caster, ctx.target);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  BIND + CORRODE + PIERCE
+//  One job per colour: the bolt goes through, the rivet holds, the rust bites.
+//  With nobody behind the target, it is nailed to the ground instead.
+// ---------------------------------------------------------------------------
+const RIVET_REACH = R(5);
+
+registerSpell({
+  name: 'Riveting Bolt',
+  words: ['bind', 'corrode', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Range 12cm. 2d6 pierce to one enemy. The bolt carries on through it: the first other enemy within 5cm behind it takes 1d6 pierce, is pulled against it, and the two are riveted for 3 turns. Whenever either moves, the other is dragged along. With nobody behind it, the target is rooted for 3 turns instead. Every body hit takes 1d4 corrosive at its turn start for 3 turns.',
+  visual: { preset: 'projectile', color: 0xb0a070, size: 9, speed: 2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const foe = ctx.target;
+    const heading = Math.atan2(foe.y - ctx.caster.y, foe.x - ctx.caster.x);
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Riveting Bolt'), 'pierce'));
+    if (!foe.alive) return;
+    const line = {
+      from: foe.pos,
+      to: { x: foe.x + Math.cos(heading) * RIVET_REACH, y: foe.y + Math.sin(heading) * RIVET_REACH },
+    };
+    const second = ctx.game.mages
+      .filter(
+        (m) =>
+          m !== foe &&
+          m !== ctx.caster &&
+          m.alive &&
+          m.team !== ctx.caster.team &&
+          !ctx.game.isUnreachable(m) &&
+          (m.x - foe.x) * Math.cos(heading) + (m.y - foe.y) * Math.sin(heading) > 0 &&
+          pointSegmentDistance(m.pos, line) <= m.bodyRadius()
+      )
+      .sort((a, b) => dist(a.pos, foe.pos) - dist(b.pos, foe.pos))[0];
+    const struck = [foe];
+    if (second) {
+      dealDamage(ctx, second, dmg(rollDice(ctx, '1d6', 'Riveting Bolt', second), 'pierce'), {
+        canMiss: false,
+      });
+      if (second.alive) {
+        struck.push(second);
+        const leash = foe.bodyRadius() + second.bodyRadius() + 6;
+        const gap = dist(second.pos, foe.pos);
+        if (gap > leash) ctx.game.forceMove(ctx.caster, second, stepTowards(second.pos, foe.pos, gap - leash));
+        ctx.game.rivet(foe, second, leash, critScale(ctx, 3));
+      }
+    }
+    if (struck.length === 1) applyStun(ctx, foe, { duration: 3, type: 'movement' });
+    for (const body of struck) {
+      if (!body.alive) continue;
+      applyDot(ctx, body, {
+        name: 'Rusted Rivet',
+        key: 'dot:rusted-rivet',
+        duration: 3,
+        damage: dmg(0, 'corrosive'),
+        damageSpec: '1d4',
+      });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  VEIL + MIND + SHATTER
+//  Blue-dominant counter-magic: the veil turns their spell away, the mind takes
+//  it, the shatter breaks whatever cannot be taken.
+// ---------------------------------------------------------------------------
+
+registerSpell({
+  name: 'Stolen Thought',
+  words: ['veil', 'mind', 'shatter'],
+  set: 'finns',
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'none',
+  dc: 13,
+  reaction: true,
+  counters: true,
+  minStackDepth: 1,
+  description:
+    'Reaction only. Counter the action you answer. A countered spell becomes yours: cast it at once with new targets, at no cost. Any other countered action deals 2d6 sanity to whoever took it.',
+  visual: { preset: 'nova', color: 0xe3a8ff, size: 56, speed: 1.4 },
+  async cast(ctx) {
+    const answered = ctx.game.counteredItem;
+    // Taken once: a stolen Stolen Thought must find nothing left to steal.
+    ctx.game.counteredItem = null;
+    if (!answered || answered.windowTrigger) {
+      ctx.log(`${ctx.caster.name} finds nothing to take.`);
+      return;
+    }
+    const stolen = answered.kind === 'spell' ? answered.spell : undefined;
+    if (!stolen) {
+      if (answered.source.alive) {
+        dealDamage(
+          ctx,
+          answered.source,
+          dmg(rollDice(ctx, '2d6', 'Stolen Thought'), 'sanity'),
+          { canMiss: false }
+        );
+      }
+      return;
+    }
+    const aim = await aimSpell(ctx, stolen, answered);
+    if (!aim) {
+      ctx.log(`${ctx.caster.name} lets the stolen ${stolen.name} fade.`);
+      return;
+    }
+    ctx.log(`${ctx.caster.name} casts the stolen ${stolen.name}.`);
+    await stolen.cast(ctx.game.effectContext(ctx.caster, aim.target, aim.point, aim.point2));
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  VEIL + MIND + CORRODE
+//  Blue-dominant: you are not hidden from the world, only eaten out of one
+//  mind, and the hole rots wider every turn it stays open.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Blind Spot',
+  words: ['veil', 'mind', 'corrode'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 13,
+  description:
+    'Range 15cm. 1d6 sanity. For 2 turns the target cannot perceive you: it cannot target you with attacks or spells, though its area effects still reach you. Its mind rots at its turn start for 3 turns: 1d4, then 1d6, then 1d8 sanity.',
+  visual: { preset: 'beam', color: 0xb7c98f, size: 7, speed: 1 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const foe = ctx.target;
+    if (foe.consumeWard('mind')) {
+      ctx.log(`${foe.name}'s Mind Dodge negates Blind Spot.`);
+      return;
+    }
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Blind Spot'), 'sanity'));
+    if (!foe.alive) return;
+    if (foe.isDebuffImmune() || foe.controlImmune || foe.isImmuneTo('sanity')) {
+      ctx.log(`${foe.name} has no mind to empty.`);
+      return;
+    }
+    const casterIndex = ctx.game.mages.indexOf(ctx.caster);
+    addOrExtendStatus(
+      foe.statuses,
+      {
+        key: `blindSpot:${casterIndex}`,
+        name: 'Blind Spot',
+        kind: 'blindSpot',
+        duration: afflictDuration(ctx, foe, 3),
+        hiddenIndex: casterIndex,
+      },
+      false
+    );
+    applyDot(ctx, foe, {
+      name: 'Mind Rot',
+      key: 'dot:blind-spot',
+      duration: 3,
+      damage: dmg(0, 'sanity'),
+      escalateSpecs: ['1d4', '1d6', '1d8'],
+    });
+    ctx.log(`${foe.name} can no longer perceive ${ctx.caster.name}.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  VEIL + SHATTER + CORRODE
+//  One job per colour: the veil blinds, the glass stands, the acid waits for it
+//  to fall.
+// ---------------------------------------------------------------------------
+const CURTAIN_LENGTH = R(6);
+const CURTAIN_THICKNESS = 18;
+
+registerSpell({
+  name: 'Caustic Curtain',
+  words: ['veil', 'shatter', 'corrode'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(10),
+  targeting: 'point',
+  rotatableWall: { length: CURTAIN_LENGTH, thickness: CURTAIN_THICKNESS },
+  dc: 14,
+  noCastSprite: true,
+  description:
+    'Raise a 6cm glass curtain within 10cm for 3 rounds; [H] rotates it while aiming. Nothing can walk through it, and no attack or enemy-targeted spell can cross it. Area effects pass. When it falls it shatters: every unit within 2cm of it takes 1d6 shatter and 1d6 corrosive, allies included.',
+  visual: { preset: 'burst', color: 0xbfe3e8, size: 40, speed: 1 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    placeWall(ctx, ctx.targetPoint, {
+      angle: ctx.caster.wallAngle,
+      length: CURTAIN_LENGTH,
+      thickness: CURTAIN_THICKNESS,
+      ttl: critScale(ctx, 3),
+      opaque: true,
+      burst: {
+        radius: R(2),
+        hits: [
+          { spec: '1d6', type: 'shatter' },
+          { spec: '1d6', type: 'corrosive' },
+        ],
+      },
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  VEIL + CURSE + PIERCE
+//  One job per colour: stay hidden, let the curse build, the arrows do the
+//  rest. Every turn you are seen, the archer holds.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Unseen Volley',
+  words: ['veil', 'curse', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    "Range 15cm. You gain a half veil for 3 turns. For 3 turns, at the target's turn start, an arrow strikes it while you are hidden: 1d6 pierce, then 2d6, then 3d6. A turn you are not hidden is skipped and does not advance the volley.",
+  visual: { preset: 'projectile', color: 0xc9b8e8, size: 7, speed: 2 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    applyInvisibility(ctx, ctx.caster, { duration: 3, mode: 'partial' });
+    applyDot(ctx, ctx.target, {
+      name: 'Unseen Volley',
+      key: 'dot:unseen-volley',
+      duration: 3,
+      damage: dmg(0, 'pierce'),
+      escalateSpecs: ['1d6', '2d6', '3d6'],
+      whileSourceVeiled: true,
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  MIND + SHATTER + CORRODE
+//  One job per colour: the blow stuns, the mind is split open, the rot eats a
+//  word out of it. Charges never come back.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Lobotomy',
+  words: ['mind', 'shatter', 'corrode'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(5),
+  targeting: 'enemy',
+  dc: 14,
+  description:
+    'Range 5cm. 1d6 shatter and 2d6 sanity to one enemy, and it is fully stunned for 1 turn. Its most-charged word loses 1d4 charges. A target with no charged words takes another 2d6 sanity instead.',
+  visual: { preset: 'conjure', color: 0xb8c07a, size: 34, speed: 1.3 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const foe = ctx.target;
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Lobotomy'), 'shatter'));
+    if (!foe.alive) return;
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Lobotomy'), 'sanity'));
+    if (!foe.alive) return;
+    applyStun(ctx, foe, { duration: 2, type: 'full' });
+    const charged = splitModifiers(foe.loadout).base.filter((word) => (foe.charges[word] ?? 0) > 0);
+    if (charged.length === 0) {
+      dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Lobotomy'), 'sanity'), { canMiss: false });
+      return;
+    }
+    const richest = charged.reduce((best, word) =>
+      (foe.charges[word] ?? 0) > (foe.charges[best] ?? 0) ? word : best
+    );
+    const lost = Math.min(foe.charges[richest] ?? 0, rollDice(ctx, '1d4', 'Lobotomy charges', foe));
+    foe.charges[richest] = (foe.charges[richest] ?? 0) - lost;
+    ctx.log(`${foe.name} loses ${lost} ${WORDS[richest].label} charge${lost === 1 ? '' : 's'}.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  SHADOW + SHATTER + CURSE   (Life and Hexcraft; Objects conjures Black Bell)
+//  Black-dominant: the Bell's two modes in one peal, on both sides. What
+//  already suffers is cashed out at once; what does not is tolled for later.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Condensing Toll',
+  words: ['shadow', 'shatter', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(10),
+  targeting: 'point',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(3) },
+  description:
+    'Tolls every unit within 3cm of a point in range 10cm, allies and you included. An afflicted unit is condensed: its remaining DoT damage lands at once as half shatter and half shadow, its other afflictions are removed, and a shadow opens beneath it, 1cm wider per non-damaging affliction removed. An unafflicted unit takes 1d6 shatter and 1d3 shadow at its turn start for 6 turns, 9 if it stands in a shadow.',
+  visual: { preset: 'burst', color: 0x7658b8, size: R(3), speed: 0.9 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const caught = ctx.game.magesInRadius(ctx.targetPoint, R(3));
+    const peal = rollDice(ctx, '1d6', 'Condensing Toll');
+    for (const unit of caught) {
+      if (!unit.alive) continue;
+      if (ctx.game.hasCondensableAffliction(unit)) {
+        ctx.game.condenseWithBlackBell(ctx.caster, unit);
+        continue;
+      }
+      dealDamage(ctx, unit, dmg(peal, 'shatter'), { canMiss: false, aoe: true });
+      if (!unit.alive) continue;
+      applyDot(ctx, unit, {
+        name: 'Toll',
+        key: 'dot:condensing-toll',
+        duration: ctx.game.isInShadow(unit) ? 9 : 6,
+        damage: dmg(0, 'shadow'),
+        damageSpec: '1d3',
+      });
+    }
+  },
+});
+
+// ===========================================================================
+//  THE GOD WORDS   (Death / Desecrate / Reality / Stop — set: 'finns')
+// ---------------------------------------------------------------------------
+//  The four god words join the eight standard words. Death and Desecrate never
+//  share a spell with blue; Reality and Stop never share one with black. Their
+//  combinations stand above the ordinary 3-word band: longer reach, harder
+//  rules, and an authored flourish of their own (VfxSink.godFx).
+//
+//  Desecrate keeps its universal filter: it only ever harms affected units,
+//  never black-primary units or minions. Where the colourless words hold the
+//  majority, the damage is theirs and lands on enemies as usual; Desecrate's
+//  one job there is the fouled ground.
+// ===========================================================================
+
+/** Where a ray from `from` through `toward` leaves the field. */
+function rayToFieldEdge(from: Vec2, toward: Vec2): Vec2 {
+  const dx = toward.x - from.x;
+  const dy = toward.y - from.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const ux = dx / length;
+  const uy = dy / length;
+  let t = Infinity;
+  if (ux > 1e-6) t = Math.min(t, (FIELD.x + FIELD.w - from.x) / ux);
+  if (ux < -1e-6) t = Math.min(t, (FIELD.x - from.x) / ux);
+  if (uy > 1e-6) t = Math.min(t, (FIELD.y + FIELD.h - from.y) / uy);
+  if (uy < -1e-6) t = Math.min(t, (FIELD.y - from.y) / uy);
+  if (!Number.isFinite(t)) t = 0;
+  return { x: from.x + ux * t, y: from.y + uy * t };
+}
+
+/** The end of a lane `length` long from `from` toward `toward`, stopping at the field edge. */
+function laneEnd(from: Vec2, toward: Vec2, length: number): Vec2 {
+  const edge = rayToFieldEdge(from, toward);
+  return dist(from, edge) <= length ? edge : stepTowards(from, edge, length);
+}
+
+/** Every living body but the caster touching a lane, nearest first. Either side. */
+function bodiesOnLane(ctx: EffectContext, from: Vec2, to: Vec2, pad: number): Mage[] {
+  return ctx.game.mages
+    .filter(
+      (m) =>
+        m.alive &&
+        m !== ctx.caster &&
+        pointSegmentDistance(m.pos, { from, to }) <= m.bodyRadius() + pad
+    )
+    .sort((a, b) => dist(from, a.pos) - dist(from, b.pos));
+}
+
+/** Add named words or actions to what `target` has forgotten, keeping the old ones. */
+function forgetTokens(ctx: EffectContext, target: Mage, tokens: string[], duration: number): void {
+  if (tokens.length === 0 || !target.alive) return;
+  if (target.isDebuffImmune()) {
+    ctx.log(`${target.name} is immune to debuffs and forgets nothing.`);
+    return;
+  }
+  addOrExtendStatus(
+    target.statuses,
+    {
+      key: 'forget',
+      name: 'Forgotten',
+      kind: 'forget',
+      duration: afflictDuration(ctx, target, duration),
+      forgotten: [...new Set([...target.forgotten(), ...tokens])],
+    },
+    false
+  );
+  ctx.log(`${target.name} forgets ${tokens.join(' & ')}.`);
+}
+
+/** A mind that cannot be reached: warded, immune, or out of reality. Logs why. */
+function mindShielded(ctx: EffectContext, foe: Mage): boolean {
+  if (ctx.game.isUnreachable(foe)) return true;
+  if (foe.isDebuffImmune() || foe.controlImmune) {
+    ctx.log(`${foe.name}'s mind cannot be touched.`);
+    return true;
+  }
+  if (foe.consumeWard('mind')) {
+    ctx.log(`${foe.name}'s Mind Dodge negates it.`);
+    return true;
+  }
+  return false;
+}
+
+/** A plain affliction status on a foe, honouring debuff immunity. Returns whether it held. */
+function afflict(ctx: EffectContext, foe: Mage, status: Parameters<typeof addOrExtendStatus>[1]): boolean {
+  if (!foe.alive || ctx.game.isUnreachable(foe)) return false;
+  if (foe.isDebuffImmune()) {
+    ctx.log(`${foe.name} is immune to debuffs. ${status.name} fails.`);
+    return false;
+  }
+  addOrExtendStatus(foe.statuses, status, false);
+  return true;
+}
+
+/** Heading from the caster to `at`, for directional art. */
+function headingTo(ctx: EffectContext, at: Vec2): number {
+  return Math.atan2(at.y - ctx.caster.y, at.x - ctx.caster.x);
+}
+
+// ---------------------------------------------------------------------------
+//  DEATH + SHADOW + SHATTER
+//  A bell of bone. Shadow amplifies what Death has already claimed: every
+//  survivor's Reap doubles before the headsman's count.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Knell of Endings',
+  words: ['death', 'shadow', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(3) },
+  noCastSprite: true,
+  description:
+    "A bell of bone tolls at a point within 12cm. Everything within 3cm, allies and you included, takes 2d6 shatter and is stunned for 1 turn. Each survivor's Reap doubles, gaining at least 2, then it is executed for 4. Leaves a shadow.",
+  visual: { preset: 'burst', color: 0x8a6bff, size: R(3), speed: 0.8 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const at = ctx.targetPoint;
+    ctx.vfx?.godFx?.('deathMark', at, { size: R(3) * 2.4 });
+    ctx.vfx?.godFx?.('cataclysm', at, { size: R(3) * 2.6 });
+    const caught = ctx.game.magesInRadius(at, R(3));
+    const toll = rollDice(ctx, '2d6', 'Knell of Endings');
+    for (const unit of caught) {
+      if (!unit.alive) continue;
+      dealDamage(ctx, unit, dmg(toll, 'shatter'), { canMiss: false, aoe: true });
+      if (!unit.alive) continue;
+      applyStun(ctx, unit, { duration: 2, type: 'full' });
+      ctx.game.applyReap(unit, Math.max(2, ctx.game.reapOn(unit)), ctx.caster);
+      if (unit.alive) ctx.game.executeTarget(ctx.caster, unit, 4);
+    }
+    placeShadow(ctx, at, 3);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DEATH + SHADOW + PIERCE
+//  The shot from the dark. It executes by fraction, not by number: the bigger
+//  the body, the sooner it is over, and a shadow doubles the fraction.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Nightshot',
+  words: ['death', 'shadow', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(25),
+  bonusRangeInOwnShadow: R(99),
+  targeting: 'enemy',
+  ignoresStealth: true,
+  dc: 15,
+  description:
+    'Shoot one enemy within 25cm, or anywhere if it stands in your shadow. Ignores concealment and cannot miss: 2d6 pierce, then it is executed at 25% of its maximum health, or 50% if it stands in any shadow. A kill leaves a shadow where it fell.',
+  visual: { preset: 'beam', color: 0x6b5a9c, size: 6, speed: 1.6 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe) return;
+    ctx.vfx?.godFx?.('void', foe.pos, { size: foe.bodyRadius() * 4 });
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Nightshot'), 'pierce'), { canMiss: false });
+    if (foe.alive) {
+      const share = ctx.game.isInShadow(foe) ? 0.5 : 0.25;
+      ctx.game.executeTarget(ctx.caster, foe, Math.floor(foe.maxHp * share));
+    }
+    if (foe.alive) return;
+    ctx.vfx?.godFx?.('skull', foe.pos, { size: foe.bodyRadius() * 5 });
+    placeShadow(ctx, foe.pos, 3);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DEATH + CORRODE + SHATTER
+//  Rot the body itself, then break what is left. The withered health does not
+//  come back until the fight is over.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Crumble',
+  words: ['death', 'corrode', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(10),
+  targeting: 'enemy',
+  dc: 15,
+  description:
+    'Deal 2d6 corrosive to one enemy within 10cm. Its maximum health withers by the damage dealt until the combat ends. If it is then at or below half its maximum health, its bones give way: it is stunned for 1 turn and executed for 6, and bone shards deal 1d6 shatter to everything else within 2cm.',
+  visual: { preset: 'conjure', color: 0x9aa877, size: 40, speed: 1.1 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe) return;
+    ctx.vfx?.godFx?.('hex', foe.pos, { size: foe.bodyRadius() * 5 });
+    const dealt = dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Crumble'), 'corrosive'));
+    if (!foe.alive || dealt <= 0) return;
+    const bite = Math.max(0, Math.min(dealt, foe.maxHp - 1));
+    foe.maxHp -= bite;
+    foe.witheredMaxHp += bite;
+    foe.hp = Math.min(foe.hp, foe.maxHp);
+    ctx.log(`${foe.name} withers: ${bite} maximum health is gone.`);
+    if (foe.hp > foe.maxHp / 2) return;
+    ctx.log(`${foe.name}'s bones give way.`);
+    ctx.vfx?.godFx?.('skull', foe.pos, { size: foe.bodyRadius() * 5, color: 0xc9d1a0 });
+    const shards = ctx.game.magesInRadius(foe.pos, R(2), foe);
+    applyStun(ctx, foe, { duration: 2, type: 'full' });
+    ctx.game.executeTarget(ctx.caster, foe, 6);
+    if (shards.length === 0) return;
+    const shard = rollDice(ctx, '1d6', 'Bone shards');
+    for (const unit of shards) {
+      if (unit.alive) dealDamage(ctx, unit, dmg(shard, 'shatter'), { canMiss: false, aoe: true });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DEATH + CORRODE + PIERCE
+//  A needle that does not care what is in its way. The wound it leaves turns
+//  mending into more death.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Mortal Wound',
+  words: ['death', 'corrode', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 15,
+  description:
+    'A needle flies 20cm through one enemy within 20cm and everything else in its path, allies included. Each body takes 2d6 pierce and a mortal wound for 4 turns: 1d6 corrosive at the start of its turn, and every heal it receives becomes that much Reap instead.',
+  visual: { preset: 'beam', color: 0x7f9a6a, size: 5, speed: 1.8 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    const from = ctx.caster.pos;
+    const to = laneEnd(from, ctx.target.pos, R(20));
+    const struck = bodiesOnLane(ctx, from, to, R(0.5));
+    if (!struck.includes(ctx.target)) struck.push(ctx.target);
+    ctx.vfx?.godFx?.('reap', stepTowards(from, to, dist(from, to) / 2), {
+      size: Math.max(R(4), dist(from, to)),
+      angle: headingTo(ctx, to),
+      color: 0xa8c890,
+    });
+    const pierce = rollDice(ctx, '2d6', 'Mortal Wound');
+    for (const body of struck) {
+      if (!body.alive) continue;
+      dealDamage(ctx, body, dmg(pierce, 'pierce'), { canMiss: false, aoe: true });
+      if (!body.alive) continue;
+      applyDot(ctx, body, {
+        name: 'Mortal Wound',
+        key: 'dot:mortal-wound',
+        duration: 4,
+        damage: dmg(0, 'corrosive'),
+        damageSpec: '1d6',
+        healBecomesReap: true,
+      });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DEATH + CURSE + SHATTER
+//  A doom the victim can hear coming. Curse waits it out; Shatter hurries it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Doom',
+  words: ['death', 'curse', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 15,
+  description:
+    'Doom one enemy within 15cm. At the start of each of its turns, and whenever it takes shatter damage, the doom draws 1 closer. On the third it falls: 4d6 shatter and an execution for 6, and everything else within 3cm takes half. Dooming the doomed makes it fall at once.',
+  visual: { preset: 'beam', color: 0x8d7f9c, size: 8, speed: 0.9 },
+  cast(ctx) {
+    if (!ctx.target) return;
+    ctx.vfx?.godFx?.('deathMark', ctx.target.pos, { size: ctx.target.bodyRadius() * 7 });
+    ctx.game.applyDoom(ctx.caster, ctx.target, {
+      countdown: 3,
+      spec: '4d6',
+      executeAmount: 6,
+      radius: R(3),
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DEATH + CURSE + PIERCE
+//  Hunted. Everyone's blows become Death's, and the mark comes due at the end.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Marked for Death',
+  words: ['death', 'curse', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  ignoresStealth: true,
+  dc: 15,
+  description:
+    'Deal 1d6 pierce to one enemy within 20cm, ignoring concealment, and mark it for 4 turns. It cannot hide, and every wound it takes from anyone adds 1 Reap, 2 if pierce. When the mark comes due, it is executed for 2.',
+  visual: { preset: 'beam', color: 0xa33a52, size: 5, speed: 1.7 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe) return;
+    ctx.game.applyDeathMark(ctx.caster, foe, afflictDuration(ctx, foe, 4), 2);
+    ctx.vfx?.godFx?.('deathMark', foe.pos, { size: foe.bodyRadius() * 6 });
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Marked for Death'), 'pierce'), { canMiss: false });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DEATH + SHATTER + PIERCE   (colourless majority: damage)
+//  One lance, one body. Death's only job is the count; a kill buys the
+//  wielder another swing.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Reaping Lance',
+  words: ['death', 'shatter', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 15,
+  description:
+    'Deal 3d6 pierce that cannot miss to one enemy within 20cm. If it survives, it is stunned for 1 turn and executed for 4. A kill gives you your main action back.',
+  visual: { preset: 'beam', color: 0xd9dde8, size: 9, speed: 1.9 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe) return;
+    ctx.vfx?.godFx?.('reap', foe.pos, { size: R(5), angle: headingTo(ctx, foe.pos) });
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '3d6', 'Reaping Lance'), 'pierce'), { canMiss: false });
+    if (foe.alive) {
+      applyStun(ctx, foe, { duration: 2, type: 'full' });
+      ctx.game.executeTarget(ctx.caster, foe, 4);
+    }
+    if (foe.alive) return;
+    ctx.vfx?.godFx?.('skull', foe.pos, { size: foe.bodyRadius() * 5 });
+    ctx.caster.actions.main += 1;
+    ctx.log(`${ctx.caster.name} reaps a main action back.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + SHADOW + SHATTER
+//  The dark falls like a weight: the unhallowed are dragged into the crush.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Darkfall',
+  words: ['desecrate', 'shadow', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(6) },
+  noCastSprite: true,
+  description:
+    'The dark falls on a point within 12cm. Affected units within 6cm are dragged to its centre, take 3d6 shatter and are stunned for 1 turn; those already standing in a shadow take double. Leaves a shadow. Black and minion units are spared.',
+  visual: { preset: 'nova', color: 0x4d3d6e, size: R(6), speed: 0.7 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const at = ctx.targetPoint;
+    ctx.vfx?.godFx?.('implode', at, { size: R(6) * 2.2 });
+    const prey = ctx.game.magesInRadius(at, R(6)).filter((m) => ctx.game.isDesecrationAffected(m));
+    const shadowed = new Set(prey.filter((m) => ctx.game.isInShadow(m)));
+    for (const m of prey) {
+      const gap = dist(m.pos, at);
+      if (gap > R(1)) ctx.game.forceMove(ctx.caster, m, stepTowards(m.pos, at, gap - R(1)));
+    }
+    if (prey.length > 0) {
+      const crush = rollDice(ctx, '3d6', 'Darkfall');
+      for (const m of prey) {
+        if (!m.alive) continue;
+        dealDamage(ctx, m, dmg(shadowed.has(m) ? crush * 2 : crush, 'shatter'), { canMiss: false, aoe: true });
+        if (m.alive) applyStun(ctx, m, { duration: 2, type: 'full' });
+      }
+    }
+    placeShadow(ctx, at, 3);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + SHADOW + CORRODE
+//  Ground that hunts. It crawls toward whatever it has not eaten yet.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Hungering Dark',
+  words: ['desecrate', 'shadow', 'corrode'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(4) },
+  noCastSprite: true,
+  description:
+    'Foul a 4cm circle within 12cm for 6 rounds. Every round it crawls 6cm toward the nearest affected unit. Affected units inside take 2d6 corrosive + 1d6 shadow at the start of their turn and cannot be healed. Each death inside grows it 1cm, up to 4cm.',
+  visual: { preset: 'burst', color: 0x3d4d3d, size: R(4), speed: 0.8 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    ctx.vfx?.godFx?.('void', ctx.targetPoint, { size: R(4) * 2.2 });
+    desecrateGround(ctx, ctx.targetPoint, {
+      name: 'Hungering Dark',
+      radius: R(4),
+      turns: 6,
+      blocksHealing: true,
+      crawl: R(6),
+      growOnDeath: R(1),
+      growOnDeathCap: R(4),
+      ticks: [
+        { spec: '2d6', type: 'corrosive' },
+        { spec: '1d6', type: 'shadow' },
+      ],
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + SHADOW + CURSE
+//  Two amplifiers and a law: the night doubles every round it is left to run.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'The Long Night',
+  words: ['desecrate', 'shadow', 'curse'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 15,
+  description:
+    'For 4 rounds the night deepens. Every affected unit takes shadow damage at the start of its turn: 1d4 in the first round, then 2d4, 4d4 and 8d4. They cannot be healed.',
+  visual: { preset: 'nova', color: 0x2d2440, size: 120, speed: 0.6 },
+  cast(ctx) {
+    ctx.vfx?.godFx?.('void', ctx.caster.pos, { size: R(8) });
+    desecrate(ctx, {
+      name: 'The Long Night',
+      rounds: 4,
+      blocksHealing: true,
+      ticks: [{ spec: '1d4', type: 'shadow' }],
+      stageTicks: [
+        [{ spec: '1d4', type: 'shadow' }],
+        [{ spec: '2d4', type: 'shadow' }],
+        [{ spec: '4d4', type: 'shadow' }],
+        [{ spec: '8d4', type: 'shadow' }],
+      ],
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + SHADOW + PIERCE
+//  Stakes under every unhallowed foot on the field; twice under those in shadow.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Forest of Stakes',
+  words: ['desecrate', 'shadow', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 15,
+  description:
+    'Stakes erupt beneath every affected unit on the field: 2d6 pierce, and rooted for 1 turn. Affected units standing in a shadow are staked twice.',
+  visual: { preset: 'nova', color: 0x6e4d7d, size: 140, speed: 0.9 },
+  cast(ctx) {
+    const prey = ctx.game.mages.filter((m) => ctx.game.isDesecrationAffected(m));
+    if (prey.length === 0) {
+      ctx.log('Nothing unhallowed stands on the field.');
+      return;
+    }
+    const stake = rollDice(ctx, '2d6', 'Forest of Stakes');
+    for (const m of prey) {
+      const times = ctx.game.isInShadow(m) ? 2 : 1;
+      ctx.vfx?.godFx?.('hex', m.pos, { size: m.bodyRadius() * 4 });
+      for (let i = 0; i < times && m.alive; i++) {
+        dealDamage(ctx, m, dmg(stake, 'pierce'), { canMiss: false, aoe: true });
+      }
+      if (m.alive) applyStun(ctx, m, { duration: 2, type: 'movement' });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + SHADOW + DEATH   (all nouns: a class spell)
+//  The dead do not rest. Everything unhallowed that falls gets back up for you.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Night of the Risen',
+  words: ['desecrate', 'shadow', 'death'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 15,
+  description:
+    'For 3 rounds the dead do not rest. Every affected unit takes 1d4 shadow at the start of its turn, and each one that dies rises as your Remnant. Every affected unit gains 1d4 Reap now, 2d4 if it stands in a shadow.',
+  visual: { preset: 'nova', color: 0x5d4d6e, size: 130, speed: 0.7 },
+  cast(ctx) {
+    ctx.vfx?.godFx?.('deathMark', ctx.caster.pos, { size: R(5) });
+    desecrate(ctx, {
+      name: 'Night of the Risen',
+      rounds: 3,
+      raiseDead: true,
+      ticks: [{ spec: '1d4', type: 'shadow' }],
+    });
+    for (const m of ctx.game.mages.filter((u) => ctx.game.isDesecrationAffected(u))) {
+      if (!m.alive) continue;
+      const spec = ctx.game.isInShadow(m) ? '2d4' : '1d4';
+      ctx.game.applyReap(m, rollDice(ctx, spec, 'Night of the Risen', m), ctx.caster);
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + CORRODE + SHATTER
+//  The ground rots away underfoot, holds whatever stands on it, and closes.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Rotting Sinkhole',
+  words: ['desecrate', 'corrode', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(6) },
+  noCastSprite: true,
+  description:
+    'Open a 6cm sinkhole within 12cm for 4 rounds. Nothing can walk out of it, and it shrinks 1.5cm every round. Affected units inside take 1d6 corrosive + 1d6 shatter at the start of their turn and cannot be healed. When it closes, affected units still inside take 6d6 shatter.',
+  visual: { preset: 'burst', color: 0x5d5a3d, size: R(6), speed: 0.8 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    ctx.vfx?.godFx?.('implode', ctx.targetPoint, { size: R(6) * 2 });
+    desecrateGround(ctx, ctx.targetPoint, {
+      name: 'Rotting Sinkhole',
+      radius: R(6),
+      turns: 4,
+      sealed: true,
+      blocksHealing: true,
+      growPerRound: -R(1.5),
+      collapse: { spec: '6d6', type: 'shatter' },
+      ticks: [
+        { spec: '1d6', type: 'corrosive' },
+        { spec: '1d6', type: 'shatter' },
+      ],
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + CORRODE + PIERCE
+//  Harpoon one of them and make it carry the rot to its own kind.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Plague Bearer',
+  words: ['desecrate', 'corrode', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(25),
+  targeting: 'enemy',
+  dc: 15,
+  description:
+    'Harpoon an affected unit within 25cm for 2d6 pierce and make it a carrier: for 5 rounds a 3cm desecration travels with it. Affected units inside, the carrier too, take 1d6 corrosive at the start of their turn and cannot be healed. When the carrier dies, the rot stays where it fell.',
+  visual: { preset: 'beam', color: 0x7d9a4d, size: 6, speed: 1.6 },
+  cast(ctx) {
+    const carrier = ctx.target;
+    if (!carrier) return;
+    if (!ctx.game.isDesecrationAffected(carrier)) {
+      ctx.log(`${carrier.name} is not unhallowed. The harpoon finds nothing to foul.`);
+      return;
+    }
+    dealDamage(ctx, carrier, dmg(rollDice(ctx, '2d6', 'Plague Bearer'), 'pierce'));
+    ctx.vfx?.godFx?.('hex', carrier.pos, { size: R(3) * 2 });
+    desecrateGround(ctx, carrier.pos, {
+      name: 'Plague Bearer',
+      radius: R(3),
+      turns: 5,
+      blocksHealing: true,
+      carrierIndex: carrier.alive ? ctx.game.mages.indexOf(carrier) : undefined,
+      ticks: [{ spec: '1d6', type: 'corrosive' }],
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + CURSE + SHATTER
+//  Cursed ground where every death is a charge waiting to go off.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Carrion Chain',
+  words: ['desecrate', 'curse', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(12),
+  targeting: 'point',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(6) },
+  noCastSprite: true,
+  description:
+    'Curse a 6cm circle within 12cm for 5 rounds. Affected units inside take 1d6 shatter at the start of their turn and cannot be healed. Any affected unit that dies inside bursts: 3d6 shatter to affected units within 3cm of it, which can set off more bursts.',
+  visual: { preset: 'burst', color: 0x6e5d7d, size: R(6), speed: 0.8 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    ctx.vfx?.godFx?.('hex', ctx.targetPoint, { size: R(6) * 2 });
+    desecrateGround(ctx, ctx.targetPoint, {
+      name: 'Carrion Chain',
+      radius: R(6),
+      turns: 5,
+      blocksHealing: true,
+      burstOnDeath: { spec: '3d6', type: 'shatter', radius: R(3) },
+      ticks: [{ spec: '1d6', type: 'shatter' }],
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + CURSE + PIERCE
+//  A law against walking. Every step is billed, and the bill grows each round.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Profane Thorns',
+  words: ['desecrate', 'curse', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 15,
+  description:
+    'For 4 rounds thorns answer every step. When an affected unit ends its turn, it takes 1 pierce die for every 2cm between where it started and ended that turn, up to 6: d4 in the first round, then d6, d8 and d10.',
+  visual: { preset: 'nova', color: 0x7d4d5d, size: 130, speed: 0.8 },
+  cast(ctx) {
+    ctx.vfx?.godFx?.('hex', ctx.caster.pos, { size: R(6) });
+    desecrate(ctx, {
+      name: 'Profane Thorns',
+      rounds: 4,
+      ticks: [],
+      thorns: { pxPerDie: R(2), maxDice: 6, sides: [4, 6, 8, 10], type: 'pierce' },
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + DEATH + SHATTER
+//  The cull. Every unhallowed thing on the field is weighed at once, and what
+//  falls breaks over what is left.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'The Culling',
+  words: ['desecrate', 'death', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 16,
+  description:
+    'Every affected unit on the field gains 1d4 Reap and is executed for 4. Each one that dies bursts: 2d6 shatter to affected units within 3cm, and anything a burst kills bursts too.',
+  visual: { preset: 'nova', color: 0x8d8d9c, size: 140, speed: 0.8 },
+  cast(ctx) {
+    const prey = ctx.game.mages.filter((m) => ctx.game.isDesecrationAffected(m));
+    if (prey.length === 0) {
+      ctx.log('Nothing unhallowed stands on the field.');
+      return;
+    }
+    ctx.vfx?.godFx?.('deathMark', { x: FIELD.x + FIELD.w / 2, y: FIELD.y + FIELD.h / 2 }, { size: R(8) });
+    const fallen: Mage[] = [];
+    for (const m of prey) {
+      if (!m.alive) continue;
+      ctx.game.applyReap(m, rollDice(ctx, '1d4', 'The Culling', m), ctx.caster);
+      if (m.alive) ctx.game.executeTarget(ctx.caster, m, 4);
+      if (!m.alive) fallen.push(m);
+    }
+    if (fallen.length === 0) return;
+    const burst = rollDice(ctx, '2d6', 'Culling burst');
+    const burstAlready = new Set<Mage>();
+    while (fallen.length > 0) {
+      const corpse = fallen.shift()!;
+      if (burstAlready.has(corpse)) continue;
+      burstAlready.add(corpse);
+      ctx.vfx?.godFx?.('skull', corpse.pos, { size: R(3) * 2 });
+      for (const m of ctx.game.magesInRadius(corpse.pos, R(3), corpse)) {
+        if (!ctx.game.isDesecrationAffected(m)) continue;
+        dealDamage(ctx, m, dmg(burst, 'shatter'), { canMiss: false, aoe: true });
+        if (!m.alive) fallen.push(m);
+      }
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + DEATH + PIERCE
+//  Kill it, and it is yours.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Thrall Spike',
+  words: ['desecrate', 'death', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(25),
+  targeting: 'enemy',
+  dc: 15,
+  description:
+    'Deal 3d6 pierce to one affected unit within 25cm, then execute it for 6. If it dies, it rises at once as your Remnant.',
+  visual: { preset: 'beam', color: 0x9a8aac, size: 7, speed: 1.8 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe) return;
+    if (!ctx.game.isDesecrationAffected(foe)) {
+      ctx.log(`${foe.name} is not unhallowed. The spike will not take it.`);
+      return;
+    }
+    ctx.vfx?.godFx?.('hex', foe.pos, { size: foe.bodyRadius() * 5 });
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '3d6', 'Thrall Spike'), 'pierce'));
+    if (foe.alive) ctx.game.executeTarget(ctx.caster, foe, 6);
+    if (!foe.alive) ctx.game.raiseThrall(foe, ctx.caster);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  DESECRATE + SHATTER + PIERCE   (colourless majority: damage)
+//  The spire is the damage and strikes enemies as usual; Desecrate's one job
+//  is the fouled ground it leaves.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Bone Spire',
+  words: ['desecrate', 'shatter', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(20),
+  targeting: 'point',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(2) },
+  noCastSprite: true,
+  description:
+    'A bone spire erupts at a point within 20cm. Enemies within 2cm take 3d6 pierce and are stunned for 1 turn. The ground within 5cm is fouled for 3 rounds: affected units there take 1d6 pierce at the start of their turn and cannot be healed.',
+  visual: { preset: 'burst', color: 0xe8e0d0, size: R(2), speed: 1.2 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const at = ctx.targetPoint;
+    ctx.vfx?.godFx?.('cataclysm', at, { size: R(2) * 3, color: 0xf0e6d2 });
+    const hits = areaDamage(ctx, at, R(2), dmg(rollDice(ctx, '3d6', 'Bone Spire'), 'pierce'));
+    for (const m of hits) if (m.alive) applyStun(ctx, m, { duration: 2, type: 'full' });
+    desecrateGround(ctx, at, {
+      name: 'Bone Spire',
+      radius: R(5),
+      turns: 3,
+      blocksHealing: true,
+      ticks: [{ spec: '1d6', type: 'pierce' }],
+    });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + BIND + VEIL
+//  Fold a unit out of the world and set it down wherever you like.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Pocket Dimension',
+  words: ['reality', 'bind', 'veil'],
+  set: 'finns',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'any',
+  dc: 15,
+  description:
+    'Fold any unit anywhere out of reality until its next turn begins: nothing can target or harm it, and it can only walk. Choose where on the field it returns.',
+  visual: { preset: 'burst', color: 0xff5599, size: 60, speed: 1.1 },
+  async cast(ctx) {
+    const folded = ctx.target;
+    if (!folded?.alive) return;
+    // An AI sends a friend as far from the fight as it can and a foe as far from where it stood.
+    const danger = folded.team === ctx.caster.team ? ctx.game.opponentOf(ctx.caster).pos : folded.pos;
+    const corners = [
+      { x: FIELD.x + 30, y: FIELD.y + 30 },
+      { x: FIELD.x + FIELD.w - 30, y: FIELD.y + 30 },
+      { x: FIELD.x + 30, y: FIELD.y + FIELD.h - 30 },
+      { x: FIELD.x + FIELD.w - 30, y: FIELD.y + FIELD.h - 30 },
+    ];
+    const aiPoint = corners.sort((a, b) => dist(b, danger) - dist(a, danger))[0];
+    const home = await ctx.requestPoint?.({
+      maxRange: Math.hypot(FIELD.w, FIELD.h),
+      origin: ctx.caster.pos,
+      prompt: `${ctx.caster.name}: choose where ${folded.name} returns (Esc keeps it in place).`,
+      aiPoint,
+    });
+    ctx.vfx?.godFx?.('warp', folded.pos, { size: folded.bodyRadius() * 6 });
+    if (home && !folded.displacementImmune) teleport(ctx, folded, home);
+    addOrExtendStatus(
+      folded.statuses,
+      {
+        key: 'phaseOut',
+        name: 'Folded Away',
+        kind: 'phaseOut',
+        duration: 1,
+        mode: 'banished',
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        ownerTeam: ctx.caster.team,
+      },
+      false
+    );
+    ctx.vfx?.godFx?.('void', folded.pos, { size: folded.bodyRadius() * 5 });
+    ctx.log(`${folded.name} is folded out of reality.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + BIND + MIND
+//  A contract with consequence: every wound it deals is billed to its mind.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Pact of Consequence',
+  words: ['reality', 'bind', 'mind'],
+  set: 'finns',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'enemy',
+  dc: 15,
+  description:
+    'Bind one enemy anywhere to the consequences of its choices for 3 turns: whenever it damages anything else, it takes the same amount as sanity damage. It takes 1d6 sanity now.',
+  visual: { preset: 'beam', color: 0xd46bb0, size: 6, speed: 1 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe) return;
+    const bound = afflict(ctx, foe, {
+      key: 'soulPact',
+      name: 'Pact of Consequence',
+      kind: 'soulPact',
+      duration: afflictDuration(ctx, foe, 3),
+      ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+    });
+    if (!bound) return;
+    ctx.log(`${foe.name} is bound to the consequences of its choices.`);
+    ctx.vfx?.godFx?.('void', foe.pos, { size: foe.bodyRadius() * 5, color: 0xd46bb0 });
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Pact of Consequence'), 'sanity'));
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + BIND + SHATTER
+//  Space collapses onto a point; the more it catches, the harder it crushes.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Singularity',
+  words: ['reality', 'bind', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'point',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(8) },
+  noCastSprite: true,
+  description:
+    'Collapse space onto a point anywhere. Enemies within 8cm are hauled to it, take 2d6 shatter plus 1d6 for every other enemy hauled with them, and are rooted for 1 turn.',
+  visual: { preset: 'nova', color: 0xff5599, size: R(8), speed: 0.7 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const at = ctx.targetPoint;
+    ctx.vfx?.godFx?.('implode', at, { size: R(8) * 2 });
+    const hauled = ctx.game.magesInRadius(at, R(8)).filter((m) => m.team !== ctx.caster.team);
+    if (hauled.length === 0) return;
+    for (const m of hauled) ctx.game.forceMove(ctx.caster, m, at);
+    let crush = rollDice(ctx, '2d6', 'Singularity');
+    if (hauled.length > 1) crush += rollDice(ctx, `${hauled.length - 1}d6`, 'Singularity crush');
+    for (const m of hauled) {
+      if (!m.alive) continue;
+      dealDamage(ctx, m, dmg(crush, 'shatter'), { canMiss: false, aoe: true });
+      if (m.alive) applyStun(ctx, m, { duration: 2, type: 'movement' });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + BIND + PIERCE
+//  Nailed to its coordinates: nothing moves it, and it cannot slip a blow.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Fixed Point',
+  words: ['reality', 'bind', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'enemy',
+  ignoresStealth: true,
+  dc: 15,
+  description:
+    'Nail one enemy anywhere to its place in reality: 2d6 pierce, ignoring concealment. For 3 turns it cannot walk, teleport or be moved by anything, and it cannot dodge.',
+  visual: { preset: 'beam', color: 0xff5599, size: 4, speed: 2 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe) return;
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Fixed Point'), 'pierce'), { canMiss: false });
+    const nailed = afflict(ctx, foe, {
+      key: 'fixedPoint',
+      name: 'Fixed Point',
+      kind: 'fixedPoint',
+      duration: afflictDuration(ctx, foe, 3),
+    });
+    if (!nailed) return;
+    applyStun(ctx, foe, { duration: 3, type: 'movement', key: 'stun:fixed-point' });
+    ctx.vfx?.godFx?.('warp', foe.pos, { size: foe.bodyRadius() * 5 });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + VEIL + MIND
+//  The last turn never happened. An enemy is left not even remembering it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Deja Vu',
+  words: ['reality', 'veil', 'mind'],
+  set: 'finns',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'any',
+  dc: 15,
+  description:
+    "Undo one unit's latest turn: it returns to where it stood, and to the health and sanity it had, when that turn began. An enemy also forgets the action it last took for 2 turns.",
+  visual: { preset: 'burst', color: 0xff88cc, size: 60, speed: 0.9 },
+  cast(ctx) {
+    const unit = ctx.target;
+    if (!unit) return;
+    ctx.vfx?.godFx?.('rift', unit.pos, { size: unit.bodyRadius() * 8 });
+    if (!ctx.game.rewind(unit, ctx.caster)) {
+      ctx.log(`${unit.name} has no turn to undo.`);
+      return;
+    }
+    if (unit.team === ctx.caster.team || !unit.alive) return;
+    const last = unit.lastAction;
+    const spell = last?.type === 'spell' && last.spellId ? spellById(last.spellId) : undefined;
+    const tokens = spell
+      ? splitModifiers(spell.words).base.map(String)
+      : last?.type === 'move'
+        ? ['move']
+        : last?.type === 'melee'
+          ? ['melee']
+          : [];
+    forgetTokens(ctx, unit, tokens, 2);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + VEIL + SHATTER
+//  Every illusion on the field breaks at once, and the glass cuts whoever hid.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Shattered Illusion',
+  words: ['reality', 'veil', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 15,
+  description:
+    'Shatter every illusion on the field. All enemy concealment ends. Every enemy takes 1d6 shatter; those that were concealed take 4d6 instead and are stunned for 1 turn. Your side slips into a half veil for 2 turns.',
+  visual: { preset: 'nova', color: 0xffa3d1, size: 150, speed: 0.9 },
+  cast(ctx) {
+    ctx.vfx?.godFx?.('rift', { x: FIELD.x + FIELD.w / 2, y: FIELD.y + FIELD.h / 2 }, { size: FIELD.w * 0.45 });
+    const foes = ctx.game.mages.filter((m) => m.alive && m.team !== ctx.caster.team);
+    const concealed = new Set(
+      foes.filter(
+        (m) =>
+          ctx.game.isVeiled(m) ||
+          m.statuses.some((s) => s.kind === 'invisibility' || s.kind === 'shadowVeil')
+      )
+    );
+    for (const m of foes) dispelVeil(ctx, m);
+    if (foes.length > 0) {
+      const light = rollDice(ctx, '1d6', 'Shattered Illusion');
+      const heavy = concealed.size > 0 ? rollDice(ctx, '4d6', 'Shattered Illusion: the hidden') : 0;
+      for (const m of foes) {
+        if (!m.alive) continue;
+        const hidden = concealed.has(m);
+        ctx.vfx?.shatterBurst?.(m.pos, m.bodyRadius() * 3);
+        dealDamage(ctx, m, dmg(hidden ? heavy : light, 'shatter'), { canMiss: false, aoe: true });
+        if (hidden && m.alive) applyStun(ctx, m, { duration: 2, type: 'full' });
+      }
+    }
+    for (const ally of ctx.game.mages) {
+      if (ally.alive && ally.team === ctx.caster.team) {
+        applyInvisibility(ctx, ally, { duration: 2, mode: 'partial' });
+      }
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + VEIL + PIERCE
+//  Rewrite your own targeting rules: distance and concealment stop counting.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Phantom Reach',
+  words: ['reality', 'veil', 'pierce'],
+  set: 'finns',
+  actionType: 'bonus',
+  range: 0,
+  targeting: 'self',
+  dc: 15,
+  description:
+    'Bonus action. Until the end of your next turn, your targeted spells reach any distance and ignore concealment. You slip into a half veil.',
+  visual: { preset: 'heal', color: 0xff77bb, size: 44, speed: 1.2 },
+  cast(ctx) {
+    addOrExtendStatus(
+      ctx.caster.statuses,
+      { key: 'phantomReach', name: 'Phantom Reach', kind: 'phantomReach', duration: critScale(ctx, 2) },
+      false
+    );
+    applyInvisibility(ctx, ctx.caster, { duration: 2, mode: 'partial' });
+    ctx.vfx?.godFx?.('warp', ctx.caster.pos, { size: ctx.caster.bodyRadius() * 5, color: 0xff77bb });
+    ctx.log(`${ctx.caster.name}'s reach slips its bounds.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + MIND + PIERCE
+//  Break a mind anywhere on the field, and the moment it loses is yours.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Seized Moment',
+  words: ['reality', 'mind', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'enemy',
+  ignoresStealth: true,
+  dc: 15,
+  description:
+    'Deal 2d6 pierce and 2d6 sanity to one enemy anywhere, ignoring concealment. If this leaves its sanity at or below half, you take an extra turn after this one.',
+  visual: { preset: 'beam', color: 0xe070c0, size: 6, speed: 1.6 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe) return;
+    ctx.vfx?.godFx?.('void', foe.pos, { size: foe.bodyRadius() * 5, color: 0xe070c0 });
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Seized Moment'), 'pierce'), { canMiss: false });
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Seized Moment: mind'), 'sanity'), { canMiss: false });
+    if (foe.sanity > foe.maxSanity / 2) return;
+    ctx.vfx?.godFx?.('rift', ctx.caster.pos, { size: R(6) });
+    grantExtraTurn(ctx, ctx.caster);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + SHATTER + PIERCE   (colourless majority: damage)
+//  A tear to the edge of the world. Reality's one job: walls do not hold it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Rift Lance',
+  words: ['reality', 'shatter', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'point',
+  dc: 15,
+  noCastSprite: true,
+  description:
+    'Tear a straight rift from you through a point to the edge of the field. Every enemy on it takes 3d6 pierce and 1d6 shatter, and every wall it crosses is destroyed.',
+  visual: { preset: 'beam', color: 0xff5599, size: 10, speed: 1.4 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    const from = ctx.caster.pos;
+    const to = rayToFieldEdge(from, ctx.targetPoint);
+    const length = dist(from, to);
+    const steps = Math.max(2, Math.ceil(length / 8));
+    const lane = Array.from({ length: steps + 1 }, (_, i) => stepTowards(from, to, (length * i) / steps));
+    ctx.vfx?.godFx?.('rift', stepTowards(from, to, length / 2), { size: Math.max(R(6), length) });
+    const struck = bodiesOnLane(ctx, from, to, R(0.5)).filter((m) => m.team !== ctx.caster.team);
+    if (struck.length > 0) {
+      const pierce = rollDice(ctx, '3d6', 'Rift Lance');
+      const shatter = rollDice(ctx, '1d6', 'Rift Lance: shatter');
+      for (const m of struck) {
+        if (!m.alive) continue;
+        dealDamage(ctx, m, dmg(pierce, 'pierce'), { canMiss: false, aoe: true });
+        if (m.alive) dealDamage(ctx, m, dmg(shatter, 'shatter'), { canMiss: false, aoe: true });
+      }
+    }
+    const broken = ctx.game.barriers.filter((wall) => lane.some((p) => barrierContains(wall, p)));
+    if (broken.length === 0) return;
+    ctx.game.barriers = ctx.game.barriers.filter((wall) => !broken.includes(wall));
+    for (const wall of broken) ctx.vfx?.shatterBurst?.({ x: wall.x, y: wall.y }, R(3));
+    ctx.log(`The rift tears down ${broken.length} wall${broken.length === 1 ? '' : 's'}.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + STOP + BIND
+//  A prison of stopped time. Whatever is done to the prisoner waits for it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Stasis Prison',
+  words: ['reality', 'stop', 'bind'],
+  set: 'finns',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'any',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    'Stop time for any unit anywhere for 2 of its turns. It cannot act, react or be moved, and nothing on it wears off. Damage it takes is held and lands all at once when time resumes. As a reaction, also cancel the answered action.',
+  visual: { preset: 'burst', color: 0x9ee7ff, size: 70, speed: 0.8 },
+  cast(ctx) {
+    const unit = ctx.target;
+    if (!unit) return;
+    if (ctx.game.stopTime(ctx.caster, unit, { turns: 2 })) {
+      ctx.vfx?.godFx?.('sphere', unit.pos, { size: unit.bodyRadius() * 6 });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + STOP + VEIL
+//  Time stops for everyone else. They cannot see it happen, so they cannot
+//  answer it, and everything done to them lands the moment it starts again.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'The World',
+  words: ['reality', 'stop', 'veil'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 16,
+  turnOnly: true,
+  description:
+    'Your turn only. Stop time for everyone but you and take an extra turn after this one. Until it ends, no one else can react, and damage they take is held and lands all at once when time resumes.',
+  visual: { preset: 'nova', color: 0xcfd8ff, size: 160, speed: 0.6 },
+  cast(ctx) {
+    ctx.vfx?.godFx?.('rift', ctx.caster.pos, { size: R(10) });
+    for (const m of ctx.game.mages) {
+      if (m.alive && m !== ctx.caster) {
+        ctx.game.stopTime(ctx.caster, m, { turns: 0, resumeAfterOwnerTurns: 2 });
+      }
+    }
+    grantExtraTurn(ctx, ctx.caster);
+    ctx.log('Time stops.');
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + STOP + MIND
+//  Its next decision is already known, and already undone.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Foreknowledge',
+  words: ['reality', 'stop', 'mind'],
+  set: 'finns',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'enemy',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    'Foresee one enemy anywhere. The next action it declares within 3 turns is stopped the moment it is declared, and it takes 2d6 sanity. As a reaction, also cancel the answered action.',
+  visual: { preset: 'beam', color: 0xb58bd8, size: 5, speed: 1.2 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe || mindShielded(ctx, foe)) return;
+    addOrExtendStatus(
+      foe.statuses,
+      {
+        key: 'foreknown',
+        name: 'Foreknown',
+        kind: 'foreknown',
+        duration: afflictDuration(ctx, foe, 3),
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+        spec: '2d6',
+      },
+      false
+    );
+    ctx.vfx?.godFx?.('sphere', foe.pos, { size: foe.bodyRadius() * 5, color: 0xb58bd8 });
+    ctx.log(`${ctx.caster.name} foresees ${foe.name}'s next move.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + STOP + SHATTER
+//  A circle of stopped time anywhere; it breaks over everything caught in it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Shattered Moment',
+  words: ['reality', 'stop', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: Infinity,
+  targeting: 'point',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(4) },
+  noCastSprite: true,
+  description:
+    'Stop time in a 4cm circle anywhere. Every enemy inside loses its next turn, damage it takes is held, and when time resumes it takes everything held plus 3d6 shatter.',
+  visual: { preset: 'burst', color: 0x9ee7ff, size: R(4), speed: 0.7 },
+  cast(ctx) {
+    if (!ctx.targetPoint) return;
+    ctx.vfx?.godFx?.('sphere', ctx.targetPoint, { size: R(4) * 2.2 });
+    for (const m of ctx.game.magesInRadius(ctx.targetPoint, R(4))) {
+      if (m.team === ctx.caster.team) continue;
+      ctx.game.stopTime(ctx.caster, m, { turns: 1, release: { spec: '3d6', type: 'shatter' } });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  REALITY + STOP + PIERCE
+//  Everything the enemy has in motion stops, and every hand behind it is hit.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Stopping Volley',
+  words: ['reality', 'stop', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  minStackDepth: 1,
+  nullifiesHostileStack: true,
+  description:
+    'Reaction only. Cancel every enemy action waiting on the stack. Each of their sources takes 2d6 pierce.',
+  visual: { preset: 'nova', color: 0x9ee7ff, size: 90, speed: 1.4 },
+  cast(ctx) {
+    const sources = new Set<Mage>();
+    const countered = ctx.game.counteredItem;
+    if (countered && countered.source.team !== ctx.caster.team) sources.add(countered.source);
+    for (const item of ctx.game.stack) {
+      if (item.source.team !== ctx.caster.team && !item.windowTrigger) sources.add(item.source);
+    }
+    if (sources.size === 0) {
+      ctx.log('No enemy action waits on the stack.');
+      return;
+    }
+    const volley = rollDice(ctx, '2d6', 'Stopping Volley');
+    for (const source of sources) {
+      if (!source.alive) continue;
+      ctx.vfx?.godFx?.('sphere', source.pos, { size: source.bodyRadius() * 4 });
+      dealDamage(ctx, source, dmg(volley, 'pierce'), { canMiss: false, aoe: true });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  STOP + BIND + VEIL
+//  Still water holds one blow back entirely, then hides what it protected.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Stillwater Ward',
+  words: ['stop', 'bind', 'veil'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'any',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    'Ward any unit within 15cm for 3 turns. The next damage it would take is stopped. When the ward breaks, the unit vanishes into a full veil for 1 turn and its attacker is rooted for 1 turn. As a reaction, also cancel the answered action.',
+  visual: { preset: 'heal', color: 0x9ee7ff, size: 44, speed: 1 },
+  cast(ctx) {
+    const unit = ctx.target;
+    if (!unit?.alive) return;
+    addOrExtendStatus(
+      unit.statuses,
+      {
+        key: 'stillWard',
+        name: 'Stillwater Ward',
+        kind: 'stillWard',
+        duration: critScale(ctx, 3),
+        ownerIndex: ctx.game.mages.indexOf(ctx.caster),
+      },
+      false
+    );
+    ctx.vfx?.godFx?.('sphere', unit.pos, { size: unit.bodyRadius() * 4 });
+    ctx.log(`Still water gathers around ${unit.name}.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  STOP + BIND + MIND
+//  An oath of stillness: one choice a turn, and the rest of the turn is gone.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Oath of Stillness',
+  words: ['stop', 'bind', 'mind'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'enemy',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    'Swear one enemy within 15cm to stillness for 3 turns: the first action it takes on a turn is the only one it gets. It takes 1d6 sanity now. As a reaction, also cancel the answered action.',
+  visual: { preset: 'beam', color: 0x8fb7d8, size: 6, speed: 1 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe || mindShielded(ctx, foe)) return;
+    addOrExtendStatus(
+      foe.statuses,
+      { key: 'stillOath', name: 'Oath of Stillness', kind: 'stillOath', duration: afflictDuration(ctx, foe, 3) },
+      false
+    );
+    ctx.log(`${foe.name} is sworn to stillness.`);
+    ctx.vfx?.godFx?.('sphere', foe.pos, { size: foe.bodyRadius() * 4, color: 0x8fb7d8 });
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Oath of Stillness'), 'sanity'));
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  STOP + BIND + SHATTER
+//  Everything in motion stops dead, and momentum breaks whatever carried it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Sudden Stop',
+  words: ['stop', 'bind', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: 0,
+  targeting: 'none',
+  dc: 15,
+  aoe: { kind: 'circle', radius: R(12) },
+  reaction: true,
+  counters: true,
+  description:
+    'Everything in motion stops at once. Every enemy within 12cm takes 1d6 shatter, plus 1d6 for every 2cm between where it stands and where its latest turn began (up to 6d6 in all), and is rooted for 1 turn. As a reaction, also cancel the answered action.',
+  visual: { preset: 'nova', color: 0x9ee7ff, size: R(12), speed: 1.2 },
+  cast(ctx) {
+    ctx.vfx?.godFx?.('sphere', ctx.caster.pos, { size: R(12) * 1.2 });
+    const foes = ctx.game
+      .magesInRadius(ctx.caster.pos, R(12), ctx.caster)
+      .filter((m) => m.team !== ctx.caster.team);
+    for (const foe of foes) {
+      if (!foe.alive) continue;
+      const start = foe.turnStartState;
+      const momentum = start ? Math.min(5, Math.floor(dist(start, foe.pos) / R(2))) : 0;
+      const amount = rollDice(ctx, `${1 + momentum}d6`, `Sudden Stop: ${foe.name}`, foe);
+      dealDamage(ctx, foe, dmg(amount, 'shatter'), { canMiss: false, aoe: true });
+      if (foe.alive) applyStun(ctx, foe, { duration: 2, type: 'movement' });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  STOP + BIND + PIERCE
+//  A needle through the clock itself: nothing on its bearer wears off.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Stopped Clock',
+  words: ['stop', 'bind', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(20),
+  targeting: 'any',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    "Stop one unit's clock within 20cm for 3 turns: nothing on it wears off, though its afflictions still bite. An enemy also takes 2d6 pierce. As a reaction, also cancel the answered action.",
+  visual: { preset: 'beam', color: 0xa8e0ff, size: 4, speed: 1.9 },
+  cast(ctx) {
+    const unit = ctx.target;
+    if (!unit?.alive) return;
+    if (unit.team !== ctx.caster.team) {
+      dealDamage(ctx, unit, dmg(rollDice(ctx, '2d6', 'Stopped Clock'), 'pierce'), { canMiss: false });
+    }
+    if (!unit.alive || ctx.game.isUnreachable(unit)) return;
+    addOrExtendStatus(
+      unit.statuses,
+      { key: 'clockStopped', name: 'Stopped Clock', kind: 'clockStopped', duration: 3 },
+      false
+    );
+    ctx.vfx?.godFx?.('sphere', unit.pos, { size: unit.bodyRadius() * 4, color: 0xa8e0ff });
+    ctx.log(`${unit.name}'s clock stops.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  STOP + VEIL + MIND
+//  Its picture of the field freezes. Anything that moves slips out of it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Frozen Perception',
+  words: ['stop', 'veil', 'mind'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    "Freeze one enemy's perception within 20cm for 3 turns: it sees the field as it is now, and cannot target anything that has since moved more than 2cm. It takes 1d6 sanity now. As a reaction, also cancel the answered action.",
+  visual: { preset: 'beam', color: 0xb8c8ff, size: 6, speed: 1 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe || mindShielded(ctx, foe)) return;
+    const positions: Record<number, { x: number; y: number }> = {};
+    ctx.game.mages.forEach((m, i) => {
+      if (m.alive) positions[i] = { x: m.x, y: m.y };
+    });
+    addOrExtendStatus(
+      foe.statuses,
+      {
+        key: 'frozenPerception',
+        name: 'Frozen Perception',
+        kind: 'frozenPerception',
+        duration: afflictDuration(ctx, foe, 3),
+        positions,
+      },
+      false
+    );
+    ctx.log(`${foe.name}'s picture of the field freezes.`);
+    ctx.vfx?.godFx?.('sphere', foe.pos, { size: foe.bodyRadius() * 4, color: 0xb8c8ff });
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '1d6', 'Frozen Perception'), 'sanity'));
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  STOP + VEIL + SHATTER
+//  A glass coffin: a turn lost, perfectly safe, and it breaks outward.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Glass Coffin',
+  words: ['stop', 'veil', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(15),
+  targeting: 'any',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    'Seal any unit within 15cm in glass until the end of its next turn: it loses that turn, but nothing can target or harm it. When the glass breaks, your enemies within 3cm of it take 3d6 shatter. As a reaction, also cancel the answered action.',
+  visual: { preset: 'burst', color: 0xd8f0ff, size: 60, speed: 1 },
+  cast(ctx) {
+    const unit = ctx.target;
+    if (!unit) return;
+    const coffin = ctx.game.stopTime(ctx.caster, unit, {
+      turns: 1,
+      sanctuary: true,
+      burst: { spec: '3d6', type: 'shatter', radius: R(3) },
+    });
+    if (coffin) ctx.vfx?.godFx?.('sphere', unit.pos, { size: unit.bodyRadius() * 5, color: 0xd8f0ff });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  STOP + VEIL + PIERCE
+//  A needle nobody sees coming, and after it, no reflex left to answer with.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Frozen Reflexes',
+  words: ['stop', 'veil', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 15,
+  unanswerable: true,
+  reaction: true,
+  counters: true,
+  description:
+    'Nothing can answer this spell. Deal 2d6 pierce that cannot be dodged to one enemy within 20cm. For 3 turns it cannot react at all. As a reaction, also cancel the answered action.',
+  visual: { preset: 'beam', color: 0xcfe8ff, size: 3, speed: 2.2 },
+  cast(ctx) {
+    const foe = ctx.target;
+    if (!foe) return;
+    ctx.vfx?.godFx?.('sphere', foe.pos, { size: foe.bodyRadius() * 4, color: 0xcfe8ff });
+    dealDamage(ctx, foe, dmg(rollDice(ctx, '2d6', 'Frozen Reflexes'), 'pierce'), { canMiss: false });
+    const frozen = afflict(ctx, foe, {
+      key: 'reflexStop',
+      name: 'Frozen Reflexes',
+      kind: 'reflexStop',
+      duration: afflictDuration(ctx, foe, 3),
+    });
+    if (frozen) ctx.log(`${foe.name}'s reflexes stop.`);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  STOP + MIND + SHATTER
+//  The bigger the spell you stop, the harder it breaks the mind behind it.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Shattered Will',
+  words: ['stop', 'mind', 'shatter'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    'Deal 2d6 sanity to one enemy within 20cm and stun it for 1 turn. As a reaction, cancel the answered action instead: its source takes 1d6 sanity plus 1d6 for every word the cancelled spell used, and is stunned for 1 turn.',
+  visual: { preset: 'beam', color: 0xb58bd8, size: 8, speed: 1.2 },
+  cast(ctx) {
+    const countered = ctx.game.counteredItem;
+    const victim = countered?.source ?? ctx.target;
+    if (!victim?.alive) return;
+    const words = countered?.spell ? splitModifiers(countered.spell.words).base.length : 0;
+    const dice = countered ? 1 + words : 2;
+    ctx.vfx?.godFx?.('void', victim.pos, { size: victim.bodyRadius() * 5, color: 0xb58bd8 });
+    dealDamage(ctx, victim, dmg(rollDice(ctx, `${dice}d6`, 'Shattered Will', victim), 'sanity'), {
+      canMiss: false,
+    });
+    if (victim.alive) applyStun(ctx, victim, { duration: 2, type: 'full' });
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  STOP + MIND + PIERCE
+//  A precise silence: the words it reached for are the words it loses.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Silencing Needle',
+  words: ['stop', 'mind', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    'Deal 1d6 pierce and 1d6 sanity to one enemy within 20cm; it forgets its two most charged words for 2 turns. As a reaction, cancel the answered action instead, and its source forgets every word of it, or the move or attack, for 3 turns.',
+  visual: { preset: 'beam', color: 0xd0c8ff, size: 3, speed: 2.1 },
+  cast(ctx) {
+    const countered = ctx.game.counteredItem;
+    const victim = countered?.source ?? ctx.target;
+    if (!victim?.alive) return;
+    ctx.vfx?.godFx?.('void', victim.pos, { size: victim.bodyRadius() * 4, color: 0xd0c8ff });
+    dealDamage(ctx, victim, dmg(rollDice(ctx, '1d6', 'Silencing Needle'), 'pierce'), { canMiss: false });
+    if (victim.alive) {
+      dealDamage(ctx, victim, dmg(rollDice(ctx, '1d6', 'Silencing Needle: mind'), 'sanity'), {
+        canMiss: false,
+      });
+    }
+    if (!victim.alive) return;
+    if (countered) {
+      const tokens = countered.spell
+        ? splitModifiers(countered.spell.words).base.map(String)
+        : countered.kind === 'melee'
+          ? ['melee']
+          : countered.kind === 'move'
+            ? ['move']
+            : [];
+      forgetTokens(ctx, victim, tokens, 3);
+      return;
+    }
+    const words = [...new Set(splitModifiers(victim.loadout).base)];
+    const richest = [...words]
+      .sort((a, b) => (victim.charges[b] ?? 0) - (victim.charges[a] ?? 0))
+      .slice(0, 2)
+      .map(String);
+    forgetTokens(ctx, victim, richest, 2);
+  },
+});
+
+// ---------------------------------------------------------------------------
+//  STOP + SHATTER + PIERCE   (colourless majority: damage)
+//  The answer to a blow is a bigger blow. Stop's one job is the cancel.
+// ---------------------------------------------------------------------------
+registerSpell({
+  name: 'Counterstrike',
+  words: ['stop', 'shatter', 'pierce'],
+  set: 'finns',
+  actionType: 'main',
+  range: R(20),
+  targeting: 'enemy',
+  dc: 15,
+  reaction: true,
+  counters: true,
+  description:
+    'Deal 2d6 pierce and 2d6 shatter to one enemy within 20cm. As a reaction, also cancel the answered action; if that action was aimed at you, its source is also stunned for 1 turn.',
+  visual: { preset: 'beam', color: 0xf0f4ff, size: 8, speed: 2 },
+  cast(ctx) {
+    const countered = ctx.game.counteredItem;
+    const foe = countered?.source ?? ctx.target;
+    if (!foe?.alive) return;
+    const pierce = rollDice(ctx, '2d6', 'Counterstrike');
+    const shatter = rollDice(ctx, '2d6', 'Counterstrike: shatter');
+    ctx.vfx?.godFx?.('cataclysm', foe.pos, { size: foe.bodyRadius() * 6, color: 0xf0f4ff });
+    dealDamage(ctx, foe, dmg(pierce, 'pierce'), { canMiss: false });
+    if (foe.alive) dealDamage(ctx, foe, dmg(shatter, 'shatter'), { canMiss: false });
+    if (foe.alive && countered?.target === ctx.caster) {
+      ctx.log(`${ctx.caster.name} turns the blow meant for them back on ${foe.name}.`);
+      applyStun(ctx, foe, { duration: 2, type: 'full' });
+    }
   },
 });

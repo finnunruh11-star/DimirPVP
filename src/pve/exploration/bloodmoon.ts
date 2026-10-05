@@ -5,6 +5,7 @@
 
 import type { ExplorationCombat } from '../../config/MatchConfig';
 import { Dice } from '../../core/Dice';
+import type { ItemId } from '../../core/Items';
 import type { EnemyKind } from '../swamprun';
 import { hashString } from './economy';
 import type { EncounterZone } from './encounters';
@@ -43,12 +44,37 @@ export function omenLabel(omen: BloodmoonOmen): string {
   return omen.tonight ? 'The bloodmoon rises tonight' : `Bloodmoon in ${omen.daysLeft} days`;
 }
 
+/** Which day of the bloodmoon's cycle `day` is: 1 on the day after one rose (or the first day of all). */
+export function cycleDay(day: number): number {
+  const cycle = bloodmoonCycle(day);
+  const start = cycle === 0 ? 1 : FIRST_BLOODMOON + (cycle - 1) * BLOODMOON_EVERY;
+  return day - start + 1;
+}
+
+const ORDINALS = ['First', 'Second', 'Third', 'Fourth', 'Fifth', 'Sixth', 'Seventh', 'Eighth', 'Ninth', 'Tenth', 'Eleventh', 'Twelfth'];
+
+/** "The Second Day", and on the day the bloodmoon rises that night, "The Final Day". */
+export function cycleDayTitle(day: number): string {
+  if (bloodmoonOmen(day).tonight) return 'The Final Day';
+  const n = cycleDay(day);
+  return `The ${ORDINALS[n - 1] ?? `${n}th`} Day`;
+}
+
 export type BossId =
   | 'goblins' | 'minion' | 'rock' | 'zargarg'
   | 'dragon' | 'crusade' | 'baral'
   | 'trickster' | 'planetar' | 'selga';
 
 export type BossColor = 'red' | 'black' | 'green' | 'blue' | 'white';
+
+/** What a bloodmoon boss leaves behind (1d3 of them): a moonshard of its colour, for the god-tier wands. */
+export const MOONSHARD: Record<BossColor, ItemId> = {
+  white: 'moonshardWhite',
+  blue: 'moonshardBlue',
+  black: 'moonshardBlack',
+  red: 'moonshardRed',
+  green: 'moonshardGreen',
+};
 
 export interface BossDef {
   id: BossId;
@@ -142,6 +168,12 @@ export interface BossFight {
 /** A bloodmoon has risen that the party has not yet fought through. */
 export function bloodmoonDue(run: ExplorationRun): boolean {
   return bloodmoonCycle(run.day) > run.bloodmoons;
+}
+
+/** How much of `hours` can pass before the bloodmoon rises: all of it if it does not, none once it has. */
+export function hoursBeforeBloodmoon(run: ExplorationRun, hours: number): number {
+  if (bloodmoonDue(run)) return 0;
+  return Math.max(0, Math.min(hours, hoursToBloodmoon(run.day, run.hour)));
 }
 
 export function bloodmoonFight(run: ExplorationRun): BossFight | null {

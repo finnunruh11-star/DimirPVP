@@ -10,8 +10,8 @@ import { getItem, type ItemId } from '../../core/Items';
 import type { Cell } from '../../world/pathfind';
 import { MINE_ENEMY_DEFS, type MineEnemyKind, type SentinelRole } from '../minerun';
 import { ENEMY_DEFS, type EnemyKind } from '../swamprun';
-import { grantToParty, hashString, money, moneyLabel } from './economy';
-import { describeSpawns, packPace, rollEncounter, spawnTint, type EncounterSpawn } from './encounters';
+import { grantToParty, hashString, haulLabel, money, moneyLabel } from './economy';
+import { describeSpawns, hasMonsters, packPace, rollEncounter, spawnTint, type EncounterSpawn } from './encounters';
 import { HERBS, rollCache } from './finds';
 import type { Sighting } from './journey';
 import type { Secret, SecretResult, WildPack } from './locales';
@@ -147,8 +147,11 @@ export function sitePlan(site: EncounterSite): SitePlan {
   const packs: SitePackPlan[] = [];
   const things: SiteThingPlan[] = [];
   let patrols = 0;
+  // Where nothing lives yet, nothing stands guard.
+  const wild = hasMonsters(site.zone);
   const minions = (): EncounterSpawn[] => rollEncounter(site.zone, 'monsters', Math.max(1, site.depth - 1), dice).slice(0, dice.chance(0.45) ? 2 : 1);
   const pack = (role: SitePackRole, spawns: EncounterSpawn[], asleep: boolean, near: number, far: number, wakeTiles = 2, sight = 6): void => {
+    if (!wild) return;
     packs.push({
       id: siteId(site, role === 'patrol' ? `patrol:${patrols++}` : role),
       role,
@@ -213,8 +216,7 @@ function ambushPack(site: EncounterSite, id: string, spawns: EncounterSpawn[], a
 }
 
 function grant(run: ExplorationRun, id: ItemId, count: number): string {
-  grantToParty(run, id, count);
-  return `${count > 1 ? `${count}x ` : ''}${getItem(id).name}`;
+  return haulLabel(id, count, grantToParty(run, id, count));
 }
 
 function purse(run: ExplorationRun, silver: number): string {
@@ -233,7 +235,7 @@ export function siteFind(run: ExplorationRun, site: EncounterSite, secret: Secre
     case 'herb': {
       const index = plan.things.filter((entry) => entry.role === 'herb').indexOf(thing);
       const snake = siteId(site, 'snake');
-      if (site.twist === 'snake' && index === snakeIndex(site, plan) && run.groupsBeaten[snake] == null) {
+      if (site.twist === 'snake' && hasMonsters(site.zone) && index === snakeIndex(site, plan) && run.groupsBeaten[snake] == null) {
         const spawns = rollEncounter(site.zone, 'monsters', Math.max(1, site.depth - 1), new Dice((site.seed ^ 0x51a7) >>> 0)).slice(0, 2);
         return { message: 'Something was coiled in the leaves!', fight: ambushPack(site, snake, spawns, secret, 'coiled in the herbs'), trap: true };
       }
@@ -245,7 +247,7 @@ export function siteFind(run: ExplorationRun, site: EncounterSite, secret: Secre
     }
     case 'cache': {
       const trap = siteId(site, 'trap');
-      if (site.twist === 'trap' && run.groupsBeaten[trap] == null) {
+      if (site.twist === 'trap' && hasMonsters(site.zone) && run.groupsBeaten[trap] == null) {
         const spawns = rollEncounter(site.zone, 'monsters', site.depth, new Dice((site.seed ^ 0x7a9) >>> 0));
         return { message: 'It was bait! They were lying in wait.', fight: ambushPack(site, trap, spawns, secret, 'lying in wait'), trap: true };
       }

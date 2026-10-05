@@ -2,19 +2,20 @@ import Phaser from 'phaser';
 import { playMusic, playSound } from '../audio';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from '../config/constants';
 import type { ExplorationOpening, MatchConfig } from '../config/MatchConfig';
-import { MAGE_CLASSES } from '../core/Classes';
+import { MAGE_CLASSES, type MageClass } from '../core/Classes';
 import type { ItemId } from '../core/Items';
 import { Mage } from '../core/Mage';
 import { recordKills } from '../pve/exploration/bounties';
 import { AREA_HOURS, enterArea, leaveArea, spendAreaTime } from '../pve/exploration/area';
 import { advanceHours, clockTime, durationLabel, isNight, spanLabel } from '../pve/exploration/clock';
-import { MAX_PARTY } from '../pve/exploration/coop';
-import { absoluteHour, isSandstorm, stormHoursLeft } from '../pve/exploration/desert';
+import { MAX_PARTY, livingMembers } from '../pve/exploration/coop';
+import { campOutcome, clearTravel, openPoll, pollOutcome, travelOutcome, type Spot, type TravelVote } from '../pve/exploration/council';
+import { absoluteHour, inDesert, isSandstorm, stormHoursLeft } from '../pve/exploration/desert';
 import { dungeonCombat, DUNGEONS } from '../pve/exploration/dungeons';
 import { grantToMage, money, moneyLabel, partyOf } from '../pve/exploration/economy';
 import { describeSpawns, rollEncounter, type EncounterKind, type EncounterSpawn, type EncounterZone } from '../pve/exploration/encounters';
-import { bloodmoonCombat, bloodmoonDue, bloodmoonFight, BOSSES, type BossFight } from '../pve/exploration/bloodmoon';
-import { pickEvent, ROAD_EVENTS, type RoadEvent } from '../pve/exploration/events';
+import { bloodmoonCombat, bloodmoonDue, bloodmoonFight, BOSSES, hoursToBloodmoon, type BossFight } from '../pve/exploration/bloodmoon';
+import { pickEvent, type EventScene } from '../pve/exploration/events';
 import { isExplored, unpackExplored } from '../pve/exploration/explored';
 import { rollFind } from '../pve/exploration/finds';
 import { localActions, type ExplorationActions } from '../pve/exploration/intents';
@@ -31,9 +32,10 @@ import {
 import { resolveLocale } from '../pve/exploration/locales';
 import { OPEN_WORLD_ID, openWorldCell, siteArrival } from '../pve/exploration/openWorld';
 import { capturePartySnapshot } from '../pve/exploration/party';
-import { questFightWon } from '../pve/exploration/quest';
 import { createRun, stepDice, type ExplorationRun, type LocaleState } from '../pve/exploration/run';
 import { clearRun, loadRun, saveRun } from '../pve/exploration/save';
+import type { SceneFight } from '../pve/exploration/sceneFight';
+import { SCENE_SALT, stageScene } from '../pve/exploration/scenes';
 import {
   bestSearcher,
   pickedOver,
@@ -44,7 +46,9 @@ import {
   type SearchResolution,
 } from '../pve/exploration/search';
 import { shortRestRisk, SHORT_REST_HOURS, takeShortRest } from '../pve/exploration/shortRest';
+import { WAYSIDE_KINDS, waysideShopId, type WaysideKind } from '../pve/exploration/shops';
 import { createSite, SITE_RADIUS, siteIntro, type EncounterSite } from '../pve/exploration/site';
+import { restThought } from '../pve/exploration/thoughts';
 import {
   dangerWord,
   exploreAlong,
@@ -77,11 +81,13 @@ import { CabinetButton, MenuFocusGroup } from '../ui/cabinet/controls';
 import { AdventureSession, HOST_SEAT } from '../net/AdventureSession';
 import { startAdventureFight } from '../net/adventureFight';
 import { claimTravellers } from '../net/partySetup';
+import { parseSpawn } from '../net/fightWire';
 import { SceneInput } from '../engine/SceneInput';
 import { MENU_FONT, MENU_HEX } from '../ui/cabinet/theme';
 import { darkness } from '../visuals/daylight';
+import { PlanMarks } from '../visuals/PlanMarks';
+import type { VoteBoardModel, VoteRow, VoteSeat } from '../ui/pve/VoteBoard';
 import { TravelFx } from '../visuals/TravelFx';
-import type { BreakSetting } from '../visuals/TravelBreak';
 import { createCreatureAnims, preloadCreatureSprites } from '../world/creatureSprite';
 import { preloadLocaleAssets } from '../world/localeRender';
 import { createMageAnims, MAGE_FIRST_FRAME, MAGE_IDLE, MAGE_RUN, preloadMageFrames } from '../world/mageSprite';
@@ -124,6 +130,8 @@ export interface ExplorationCombatResult {
   crushed?: boolean;
   /** The bloodmoon boss this fight was against. */
   boss?: BossFight;
+  /** A merchant saved in a won scene fight opens these wares. */
+  wares?: WaysideKind;
 }
 
 const ROBBERY_TOLL = 0.25;
@@ -132,8 +140,14 @@ const DRAG_SLOP = 8;
 const STEP_MS_PER_HOUR = 1250;
 const STEP_MS = { min: 270, max: 700 };
 const FAST_STEP_MS = { perHour: 420, min: 90, max: 200 };
+/** How long the party stands still on a quiet stop. */
+const QUIET_STOP_MS = 1400;
 /** How quickly the light over the map catches up with the clock. */
 const LIGHT_FOLLOW_MS = 170;
+
+/** How long the party's choice stays on screen once made; longer for a tie, while the lots are drawn. */
+const POLL_SHOW_MS = 1500;
+const POLL_TIE_MS = 4200;
 
 /** A share of the purse, rounded down to the silver. */
 const silverDown = (value: number): number => Math.floor(value * 10 + 1e-6) / 10;
@@ -145,6 +159,18 @@ interface Trip {
   left: number;
   tiles: number;
 }
+
+/** An effect over the party on the map, played on every screen of an online party. */
+type FxCall =
+  | { what: 'think'; text: string }
+  | { what: 'sparkle' }
+  | { what: 'rest' }
+  | { what: 'follow' }
+  | { what: 'cue'; symbol: string; color: string }
+  | { what: 'alarm'; foe?: EncounterSpawn }
+  | { what: 'mark'; id: number; kind: SightingKind; cell: Cell; foe?: EncounterSpawn }
+  | { what: 'unmark'; id: number }
+  | { what: 'frame'; cell: Cell };
 
 const SIGHTING_GO: Record<SightingKind, string> = {
   herbs: 'Go and pick it',
@@ -181,6 +207,23 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private settling = false;
   /** The bloodmoon's fight is on its way; nothing else starts. */
   private rising = false;
+  /** A merchant saved on the road opens their wares once the map is up. */
+  private pendingWares: WaysideKind | null = null;
+  /** Online: everyone's planned routes. */
+  private plans?: PlanMarks;
+  /** Guest: the party is on the road until then, as far as the host's steps say. */
+  private hostWalkingUntil = 0;
+  /** Guest: the host's trip under way, as the host last drew it. */
+  private guestTrip: Trip | null = null;
+  /** Host: a party vote waiting to be settled. */
+  private pollWaiter: { id: number; resolve: (choice: number) => void } | null = null;
+  /** Beacons over things spotted, by id, so a guest's go when the host's do. */
+  private beacons = new Map<number, { destroy(): void }>();
+  private beaconSeq = 0;
+  /** Guest: the token stops running once the host's steps stop coming. */
+  private guestIdle: Phaser.Time.TimerEvent | null = null;
+  /** Routes to each planned destination from where the party stands, found once. */
+  private routeCache = new Map<string, Cell[] | null>();
 
   constructor() {
     super('Exploration');
@@ -209,6 +252,14 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.lightHour = -1;
     this.settling = false;
     this.rising = false;
+    this.pendingWares = null;
+    this.plans = undefined;
+    this.hostWalkingUntil = 0;
+    this.guestTrip = null;
+    this.pollWaiter = null;
+    this.beacons = new Map();
+    this.guestIdle = null;
+    this.routeCache.clear();
     this.focus.clear();
     this.keys?.destroy();
     this.keys = new SceneInput(this);
@@ -236,6 +287,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       this.input.off(Phaser.Input.Events.POINTER_WHEEL);
       this.fx?.destroy();
       this.fx = undefined;
+      this.plans?.destroy();
+      this.plans = undefined;
       this.view?.destroy();
       this.view = undefined;
       this.scene.stop('LocaleHud');
@@ -274,7 +327,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     }
     if (this.run.area) leaveArea(this.run);
     this.openOverworld();
-    if (entry.replan) this.pickTile(entry.replan);
+    if (entry.replan) this.planAgain(entry.replan);
   }
 
   /** Set out on foot across the country round the tile the party stands on. */
@@ -341,7 +394,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.scene.start('Locale', {
       run: this.run,
       locale: town.locale ?? town.id,
-      notice: `Day 1 in ${town.name}. ${moneyLabel(this.run.gold)} between you, a torch and three potions each. The keeper of the Lodge has work.`,
+      notice: `Day 1 in ${town.name}. ${moneyLabel(this.run.gold)} between you, a torch and three potions each, and no weapons. The Lodge hands those out.`,
     } satisfies LocaleEntry);
   }
 
@@ -357,6 +410,21 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       }),
       session.on('x-run', () => this.onRunChanged()),
       session.on('x-changed', () => this.onRunChanged()),
+      session.on('x-council', () => this.onCouncil()),
+      session.on('x-ahead', (message) => this.followAhead(message)),
+      session.on('x-fx', (message) => {
+        const call = this.readFx(message);
+        if (call) void this.playFx(call);
+      }),
+      session.on('x-news', (message) => {
+        if (typeof message.text === 'string') this.hud?.toast(message.text, 3600);
+      }),
+      session.on('x-wares', (message) => {
+        const kind = WAYSIDE_KINDS.find((entry) => entry === message.kind);
+        if (!kind) return;
+        this.pendingWares = kind;
+        if (this.hud && !this.hud.modalOpen) void this.openWares();
+      }),
     ];
     session.bind(this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -384,7 +452,108 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const y = typeof message.y === 'number' ? Math.floor(message.y) : -1;
     if (x < 0 || y < 0 || x >= this.world.w || y >= this.world.h || !this.view) return;
     const ms = typeof message.ms === 'number' ? Math.min(2000, Math.max(0, message.ms)) : 300;
-    void this.stepToken({ x, y }, ms);
+    this.hostWalkingUntil = this.time.now + ms + 900;
+    this.time.delayedCall(ms + 950, () => {
+      if (this.view && !this.hostWalking()) this.refresh();
+    });
+    const token = this.token;
+    if (token) this.fx?.step({ x: token.x, y: token.y }, this.tileCenter({ x, y }), terrainAt(this.world, x, y));
+    this.walking(true);
+    this.guestIdle?.remove();
+    this.guestIdle = this.time.delayedCall(ms + 250, () => {
+      this.guestIdle = null;
+      this.walking(false);
+    });
+    const reveal = typeof message.reveal === 'number' ? Math.max(0, Math.min(8, Math.floor(message.reveal))) : 0;
+    const day = typeof message.day === 'number' && Number.isInteger(message.day) ? message.day : null;
+    const hour = typeof message.hour === 'number' && Number.isFinite(message.hour) ? Math.max(0, Math.min(24, message.hour)) : null;
+    void this.stepToken({ x, y }, ms).then(() => {
+      if (!this.view) return;
+      // The host's run follows soon; meanwhile this screen maps the ground and turns the clock as the host did.
+      this.run.pos = { x, y };
+      if (reveal > 0 && exploreAlong(this.run, [{ x, y }], reveal)) this.view.setExplored(unpackExplored(this.run.explored));
+      if (day != null && hour != null && (day > this.run.day || (day === this.run.day && hour >= this.run.hour)) && day < this.run.day + 30) {
+        this.run.day = day;
+        this.run.hour = hour;
+      }
+      this.refreshClock();
+    });
+  }
+
+  /** Play `call` here and, as host, on every guest's map too. */
+  private fxAll(call: FxCall): Promise<void> {
+    const session = AdventureSession.current;
+    if (session?.isHost) session.send({ k: 'x-fx', ...call });
+    return this.playFx(call);
+  }
+
+  private async playFx(call: FxCall): Promise<void> {
+    const fx = this.fx;
+    if (!fx) return;
+    switch (call.what) {
+      case 'think':
+        fx.think(call.text);
+        return;
+      case 'sparkle':
+        fx.sparkle();
+        return;
+      case 'cue':
+        return fx.cue(call.symbol, call.color);
+      case 'alarm':
+        return fx.alarm(call.foe);
+      case 'rest':
+        return fx.rest();
+      case 'mark':
+        this.beacons.get(call.id)?.destroy();
+        this.beacons.set(call.id, fx.mark(call.kind, this.tileCenter(call.cell), call.foe));
+        return;
+      case 'unmark':
+        this.beacons.get(call.id)?.destroy();
+        this.beacons.delete(call.id);
+        return;
+      case 'frame':
+        return this.frameBoth(this.tileCenter(call.cell));
+      case 'follow':
+        this.followParty();
+        return;
+    }
+  }
+
+  /** Guest: an effect the host played, off the wire. */
+  private readFx(message: Record<string, unknown>): FxCall | null {
+    const cell = (value: unknown): Cell | null => {
+      const raw = value && typeof value === 'object' ? value as Record<string, unknown> : null;
+      return raw && Number.isInteger(raw.x) && Number.isInteger(raw.y) ? { x: raw.x as number, y: raw.y as number } : null;
+    };
+    const foe = message.foe == null ? undefined : parseSpawn(message.foe) ?? undefined;
+    const id = Number.isInteger(message.id) ? message.id as number : -1;
+    switch (message.what) {
+      case 'think':
+        return typeof message.text === 'string' ? { what: 'think', text: message.text.slice(0, 120) } : null;
+      case 'sparkle':
+      case 'rest':
+      case 'follow':
+        return { what: message.what };
+      case 'cue':
+        return typeof message.symbol === 'string' && typeof message.color === 'string' && /^#[0-9a-f]{6}$/i.test(message.color)
+          ? { what: 'cue', symbol: message.symbol.slice(0, 2), color: message.color }
+          : null;
+      case 'alarm':
+        return { what: 'alarm', foe };
+      case 'mark': {
+        const at = cell(message.cell);
+        const kind = (['herbs', 'pack', 'cache', 'event'] as const).find((entry) => entry === message.kind);
+        return at && kind && id >= 0 ? { what: 'mark', id, kind, cell: at, foe } : null;
+      }
+      case 'unmark':
+        return id >= 0 ? { what: 'unmark', id } : null;
+      case 'frame': {
+        const at = cell(message.cell);
+        return at ? { what: 'frame', cell: at } : null;
+      }
+      default:
+        return null;
+    }
   }
 
   /** Another player changed the run, or the host sent it afresh. */
@@ -453,7 +622,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.scene.start('Locale', {
       run: this.run,
       locale: town.locale ?? town.id,
-      notice: `Day 1 in ${town.name}. ${moneyLabel(this.run.gold)} to your name, a torch and three potions. The keeper of the Lodge has work.`,
+      notice: `Day 1 in ${town.name}. ${moneyLabel(this.run.gold)} to your name, a torch and three potions, and no weapon. The Lodge hands those out.`,
     } satisfies LocaleEntry);
   }
 
@@ -506,7 +675,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     });
   }
 
-  /** Fresh travellers with a torch and a few potions each; classes and words are chosen in Kerusai. */
+  /** Fresh travellers with a torch and a few potions each, and no class: they name their words in Kerusai. */
   private buildParty(config?: MatchConfig): ReturnType<typeof capturePartySnapshot> {
     const seats = (config?.seats ?? []).slice(0, MAX_PARTY);
     const count = Math.max(1, seats.length);
@@ -520,6 +689,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         mageClass: MAGE_CLASSES[index],
       });
       mage.assignFlatStats(3);
+      // The class is only an id that tells the travellers apart.
+      mage.classless = true;
       for (const id of ['torch', 'healthPotion', 'healthPotion', 'manaPotion'] as ItemId[]) grantToMage(mage, id);
       return mage;
     });
@@ -588,8 +759,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (result.outcome === 'won' && result.tag) run.groupsBeaten[result.tag] = run.day;
     if (result.outcome === 'won' && result.boss) run.bloodmoons = Math.max(run.bloodmoons, result.boss.cycle);
     const felled = result.outcome === 'won' && result.boss ? `${BOSSES[result.boss.id].name} is defeated. The bloodmoon sets.` : null;
-    const quest = result.outcome === 'won' ? questFightWon(run, result.tag) : null;
-    const questNote = quest ? ` ${quest}` : '';
+    if (result.outcome === 'won' && result.wares) this.pendingWares = result.wares;
 
     const back = result.outcome === 'fled' ? result.fleeTo ?? result.returnTo : result.returnTo;
     // On foot a fight costs everyone in the party an hour.
@@ -597,7 +767,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (onFoot) spendAreaTime(run, run.party.entities.map((entity) => entity.mageClass), AREA_HOURS.fight);
     const took = onFoot ? ` (${spanLabel(AREA_HOURS.fight)})` : '';
     const dungeon = result.dungeon ? DUNGEONS[result.dungeon].name : null;
-    const won = dungeon ? `Out of ${dungeon}.${bountyNote}` : `${felled ?? 'The way is clear.'}${took}${bountyNote}${questNote}`;
+    const won = dungeon ? `Out of ${dungeon}.${bountyNote}` : `${felled ?? 'The way is clear.'}${took}${bountyNote}`;
     const fled = dungeon ? `You fled ${dungeon}.${note}` : `You broke away.${took}${note}`;
     if (back) {
       saveRun(run);
@@ -614,7 +784,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
 
     this.notice = dungeon
       ? result.outcome === 'fled' ? fled : won
-      : result.outcome === 'fled' ? `You broke away and caught your breath.${note}` : `${felled ?? 'The road is clear again.'}${bountyNote}${questNote}`;
+      : result.outcome === 'fled' ? `You broke away and caught your breath.${note}` : `${felled ?? 'The road is clear again.'}${bountyNote}`;
     saveRun(run);
     return false;
   }
@@ -628,7 +798,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.walking(false);
     this.route = null;
     this.trip = null;
-    this.fx?.clearRoute();
+    this.clearTripLine();
     saveRun(this.run);
     await this.hud?.bloodmoonRise();
     const zone: EncounterZone = regionAt(this.world, this.run.pos.x, this.run.pos.y);
@@ -642,6 +812,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     spawns?: EncounterSpawn[],
     label?: string,
     opening?: ExplorationOpening,
+    scene?: SceneFight,
   ): void {
     saveRun(this.run);
     startAdventureFight(this, {
@@ -656,6 +827,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         spawns,
         label,
         opening,
+        scene,
       },
     } satisfies MatchConfig);
   }
@@ -668,10 +840,10 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const dungeon = place.dungeon;
     const def = DUNGEONS[dungeon];
     this.busy = true;
-    const choice = await hud.choose(def.name.toUpperCase(), def.warning, [
-      { id: 'enter', label: 'Go in', detail: dungeon === 'mines' ? 'Into the tunnels.' : 'Depth 1.' },
-      { id: 'stay', label: 'Not yet', detail: 'Stay outside.' },
-    ], 'stay');
+    const choice = (await this.askParty(def.name.toUpperCase(), def.warning, [
+      { label: 'Go in', detail: dungeon === 'mines' ? 'Into the tunnels.' : 'Depth 1.', enabled: true },
+      { label: 'Not yet', detail: 'Stay outside.', enabled: true },
+    ])) === 0 ? 'enter' : 'stay';
     if (choice !== 'enter') {
       this.busy = false;
       this.refresh();
@@ -722,7 +894,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.hud = hud;
     hud.setMember(AdventureSession.current?.member ?? null);
     hud.setHint(this.spectating
-      ? 'The host leads the way     Drag: look around     Wheel: zoom     M: map     C: centre     I: pack     Esc: menu'
+      ? 'Click the map: plan a trip, or click a route to join it     Drag: look around     Wheel: zoom     M: map     C: centre     I: pack     Esc: menu'
       : 'Click the map: plan a trip     Drag: look around     Wheel: zoom     M: map     C: centre     I: pack     Esc: menu');
     this.refresh();
     if (this.notice) hud.toast(this.notice, 4200);
@@ -737,8 +909,27 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         this.refresh();
       }
       if (await hud.levelUps(this.run, this.actions())) saveRun(this.run);
+      await this.openWares();
       this.refresh();
     })();
+  }
+
+  /** A merchant saved on the road opens their wares, a little under price. Everyone gets a look. */
+  private async openWares(): Promise<void> {
+    const kind = this.pendingWares;
+    const hud = this.hud;
+    if (!kind || !hud || hud.modalOpen) return;
+    this.pendingWares = null;
+    const session = AdventureSession.current;
+    if (session?.isHost) session.send({ k: 'x-wares', kind });
+    const wasBusy = this.busy;
+    this.busy = true;
+    await hud.openShop(this.run, waysideShopId(kind), 'road', () => {
+      saveRun(this.run);
+      this.refresh();
+    }, this.actions());
+    this.busy = wasBusy;
+    this.refresh();
   }
 
   private tileCenter(cell: Cell): { x: number; y: number } {
@@ -780,7 +971,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.input.on(Phaser.Input.Events.POINTER_UP, (pointer: Phaser.Input.Pointer) => {
       const drag = this.drag;
       this.drag = null;
-      if (!drag || drag.moved || this.busy || this.hud?.modalOpen || this.spectating) return;
+      if (!drag || drag.moved || this.busy || this.hud?.modalOpen || this.hostWalking()) return;
       this.pickTile({ x: Math.floor(pointer.worldX / OW_CELL), y: Math.floor(pointer.worldY / OW_CELL) });
     });
     this.input.on(Phaser.Input.Events.POINTER_WHEEL, (_p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
@@ -813,8 +1004,16 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
 
   private pickTile(cell: Cell): void {
     if (cell.x < 0 || cell.y < 0 || cell.x >= this.world.w || cell.y >= this.world.h) return;
+    const session = AdventureSession.current;
     if (cell.x === this.run.pos.x && cell.y === this.run.pos.y) {
       this.clearRoute();
+      return;
+    }
+    const joined = session ? this.routeUnder(session, cell) : null;
+    if (session && joined) {
+      playSound('ui.click');
+      session.say({ op: 'route', dest: joined.dest });
+      this.hud?.toast(`You go ${session.nameOf(joined.seat)}'s way.`, 1800);
       return;
     }
     if (!isPassable(this.world, cell.x, cell.y)) {
@@ -827,12 +1026,21 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       return;
     }
     playSound('ui.click');
+    if (session) {
+      session.say({ op: 'route', dest: { x: cell.x, y: cell.y } });
+      return;
+    }
     this.route = route;
     this.drawRoute();
     this.refresh();
   }
 
   private clearRoute(): void {
+    const session = AdventureSession.current;
+    if (session) {
+      session.say({ op: 'route', dest: null });
+      return;
+    }
     this.route = null;
     this.fx?.clearRoute();
     this.refresh();
@@ -851,6 +1059,50 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private drawCells(cells: readonly Cell[], stops: readonly number[]): void {
     const mask = unpackExplored(this.run.explored);
     this.fx?.drawRoute(cells, stops, (cell) => this.tileCenter(cell), (cell) => isExplored(mask, cell.x, cell.y));
+    const session = AdventureSession.current;
+    const trip = this.trip;
+    if (session?.isHost && trip) {
+      session.send({
+        k: 'x-ahead',
+        cells: cells.map((cell) => [cell.x, cell.y]),
+        stops,
+        trip: { dest: trip.dest, mode: trip.mode, left: trip.left, tiles: trip.tiles },
+      });
+    }
+  }
+
+  /** The trip's line is gone: here, and on every guest's map. */
+  private clearTripLine(): void {
+    this.fx?.clearRoute();
+    const session = AdventureSession.current;
+    if (session?.isHost) session.send({ k: 'x-ahead', cells: [], stops: [] });
+  }
+
+  /** Guest: the host's trip, as far as it has still to go, with its stops. */
+  private followAhead(message: Record<string, unknown>): void {
+    const raw = Array.isArray(message.cells) ? message.cells.slice(0, 400) : [];
+    const cells = raw.flatMap((entry) => (Array.isArray(entry) && Number.isInteger(entry[0]) && Number.isInteger(entry[1])
+      ? [{ x: entry[0] as number, y: entry[1] as number }]
+      : []));
+    const stops = Array.isArray(message.stops) ? message.stops.filter((stop): stop is number => Number.isInteger(stop)).slice(0, 64) : [];
+    const trip = message.trip && typeof message.trip === 'object' ? message.trip as Record<string, unknown> : null;
+    const dest = trip?.dest && typeof trip.dest === 'object' ? trip.dest as Record<string, unknown> : null;
+    const mode = TRAVEL_ORDER.find((entry) => entry === trip?.mode);
+    if (!cells.length || !dest || !Number.isInteger(dest.x) || !Number.isInteger(dest.y) || !mode) {
+      this.guestTrip = null;
+      this.fx?.clearRoute();
+      this.refresh();
+      return;
+    }
+    const mask = unpackExplored(this.run.explored);
+    this.fx?.drawRoute(cells, stops, (cell) => this.tileCenter(cell), (cell) => isExplored(mask, cell.x, cell.y));
+    this.guestTrip = {
+      dest: { x: dest.x as number, y: dest.y as number },
+      mode,
+      left: typeof trip?.left === 'number' ? Math.max(0, trip.left) : 0,
+      tiles: typeof trip?.tiles === 'number' ? Math.max(0, trip.tiles) : cells.length,
+    };
+    this.refresh();
   }
 
   private hereTitle(): string {
@@ -859,7 +1111,361 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
 
   private refresh(): void {
     this.refreshClock();
-    this.hud?.setWorldPanel(this.worldPanel());
+    const session = AdventureSession.current;
+    const board = session ? this.councilBoard(session) : null;
+    if (session && board) {
+      this.hud?.setWorldBoard(board, {
+        pick: (id) => this.onPanelAction(id),
+        look: (id) => session.say({ op: 'hover', mode: id?.startsWith('mode:') ? id.slice(5) as TravelMode : null }),
+      });
+    } else {
+      this.hud?.setWorldPanel(this.worldPanel());
+    }
+    if (!session) return;
+    this.drawPlans(session);
+    this.hud?.setCouncil(this.councilLines(session));
+    this.showPoll(session);
+    this.settlePoll(session);
+    this.settleCouncil(session);
+  }
+
+  // ---------------------------------------------------------------------------
+  //  ONLINE: DECIDING TOGETHER
+  // ---------------------------------------------------------------------------
+
+  /** Guest: the host's party is walking right now. */
+  private hostWalking(): boolean {
+    return this.spectating && (!!this.guestTrip || this.time.now < this.hostWalkingUntil);
+  }
+
+  /** The way from where the party stands to `dest`, found once per spot. */
+  private routeTo(dest: Spot): Cell[] | null {
+    const key = `${this.run.pos.x},${this.run.pos.y}>${dest.x},${dest.y}`;
+    if (!this.routeCache.has(key)) {
+      if (this.routeCache.size > 64) this.routeCache.clear();
+      this.routeCache.set(key, findRoute(this.world, this.run, dest));
+    }
+    return this.routeCache.get(key) ?? null;
+  }
+
+  /** Another player's route running through `cell` (its end included), to be joined. */
+  private routeUnder(session: AdventureSession, cell: Cell): { seat: number; dest: Spot } | null {
+    const mine = session.council.travel[session.localSeat]?.dest;
+    for (const [seat, vote] of session.council.travel.entries()) {
+      const dest = vote.dest;
+      if (seat === session.localSeat || !dest || (mine && mine.x === dest.x && mine.y === dest.y)) continue;
+      if (this.routeTo(dest)?.some((step) => step.x === cell.x && step.y === cell.y)) return { seat, dest };
+    }
+    return null;
+  }
+
+  /** The council changed: follow this player's own plan, redraw everyone's, and act if it is settled. */
+  private onCouncil(): void {
+    const session = AdventureSession.current;
+    if (!session || !this.view) return;
+    // Plans made while the party walks are for a spot it has already left.
+    if (session.isHost && this.trip && session.council.travel.some((vote) => vote.dest)) {
+      clearTravel(session.council);
+      session.publishCouncil();
+      return;
+    }
+    if (!this.trip) {
+      const dest = session.council.travel[session.localSeat]?.dest;
+      this.route = dest ? this.routeTo(dest) : null;
+    }
+    this.refresh();
+  }
+
+  /** One line per destination, however many chose it, with a head for each of them at its end. */
+  private drawPlans(session: AdventureSession): void {
+    if (!this.view) return;
+    this.plans ??= new PlanMarks(this, 21.2);
+    const groups = new Map<string, { dest: Spot; seats: number[] }>();
+    if (!this.trip && !this.hostWalking()) {
+      session.council.travel.forEach((vote, seat) => {
+        if (!vote.dest) return;
+        const key = `${vote.dest.x},${vote.dest.y}`;
+        const group = groups.get(key) ?? { dest: vote.dest, seats: [] };
+        group.seats.push(seat);
+        groups.set(key, group);
+      });
+    }
+    const lines = [...groups.values()].flatMap(({ dest, seats }) => {
+      const cells = this.routeTo(dest);
+      if (!cells?.length) return [];
+      return [{
+        seat: seats[0],
+        cells,
+        stops: stopsAlong(this.run, cells.length),
+        mine: seats.includes(session.localSeat),
+        heads: seats.map((seat) => {
+          const vote = session.council.travel[seat];
+          return { seat, name: session.nameOf(seat), pace: vote.mode ? TRAVEL_MODES[vote.mode].label : vote.hover ? `${TRAVEL_MODES[vote.hover].label}?` : '...' };
+        }),
+      }];
+    });
+    this.plans.draw(lines, (cell) => this.tileCenter(cell));
+  }
+
+  /** The HUD's note of what is being decided, beside the board: whose plans are where. */
+  private councilLines(session: AdventureSession): string[] {
+    if (this.trip || this.hostWalking()) return [];
+    const council = session.council;
+    if (!council.travel.some((vote) => vote.dest)) return [];
+    return ['PLANS', ...council.travel.map((vote, seat) => {
+      const name = seat === session.localSeat ? 'You' : session.nameOf(seat);
+      if (!vote.dest) return `${name}: no plan yet`;
+      return `${name}: ${describeTile(this.world, vote.dest.x, vote.dest.y)}, ${vote.mode ? TRAVEL_MODES[vote.mode].label : 'no pace yet'}`;
+    })];
+  }
+
+  /** What still keeps the party from setting out, for the board's last line. */
+  private travelStatus(session: AdventureSession): string {
+    const council = session.council;
+    const me = session.localSeat;
+    const mine = council.travel[me];
+    const others = council.travel.flatMap((vote, seat) => (seat === me ? [] : [{ vote, name: session.nameOf(seat) }]));
+    if (!mine?.dest) {
+      const planned = others.filter(({ vote }) => vote.dest);
+      return planned.length
+        ? `${planned.map(({ name }) => name).join(' and ')} planned a trip: click a route on the map to go that way.`
+        : 'Nobody has planned a trip yet.';
+    }
+    const same = (vote: TravelVote): boolean => !!vote.dest && vote.dest.x === mine.dest!.x && vote.dest.y === mine.dest!.y;
+    const notes = others.flatMap(({ vote, name }) => {
+      if (!vote.dest) return [`${name} has no plan yet`];
+      if (!same(vote)) return [`${name} wants to go elsewhere`];
+      if (!vote.mode) return [`${name} is choosing a pace`];
+      if (mine.mode && vote.mode !== mine.mode) return [`${name} chose ${TRAVEL_MODES[vote.mode].label}`];
+      return [];
+    });
+    if (!mine.mode) return notes.length ? `Choose a pace. ${notes.join('; ')}.` : 'Choose a pace to set out.';
+    return notes.length ? `Waiting: ${notes.join('; ')}.` : 'Everyone agrees. Setting out...';
+  }
+
+  /** Host: act on whatever the party has settled. */
+  private settleCouncil(session: AdventureSession): void {
+    if (!session.isHost || this.busy || this.trip || this.rising || !this.view || this.hud?.modalOpen) return;
+    const council = session.council;
+    const resting = council.camp?.place === 'map' ? campOutcome(council) : null;
+    if (resting) {
+      council.camp = null;
+      session.publishCouncil();
+      const members = resting.flatMap((seat) => session.roster[seat] ?? []);
+      void this.shortRest(resting.length === session.size ? null : members, resting.map((seat) => session.nameOf(seat)));
+      return;
+    }
+    const outcome = travelOutcome(council);
+    if (outcome.t !== 'go') return;
+    clearTravel(council);
+    council.camp = null;
+    session.publishCouncil();
+    const route = findRoute(this.world, this.run, outcome.dest);
+    if (!route?.length) {
+      this.notify('There is no way there from here after all.', 2400);
+      return;
+    }
+    const allowed = (mode: TravelMode): boolean => planTrip(this.world, this.run, route, mode).allowed;
+    const mode = allowed(outcome.mode) ? outcome.mode : TRAVEL_ORDER.find(allowed) ?? 'sprint';
+    this.notify(`Setting out: ${TRAVEL_MODES[mode].label} to ${describeTile(this.world, outcome.dest.x, outcome.dest.y)}.`, 3200);
+    this.route = route;
+    void this.travel(mode);
+  }
+
+  /** Put a choice to the party and wait for its answer; alone, just ask. Returns the index chosen. */
+  private async askParty(title: string, text: string, options: { label: string; detail: string; enabled: boolean }[]): Promise<number> {
+    const session = AdventureSession.current;
+    const hud = this.hud;
+    if (!session || !hud) {
+      if (!hud) return options.length - 1;
+      const choice = await hud.choose(title, text, options.map((option, index) => ({ id: String(index), ...option })));
+      return Number(choice);
+    }
+    const id = session.nextPollId();
+    openPoll(session.council, id, title, text, options);
+    return new Promise((resolve) => {
+      this.pollWaiter = { id, resolve };
+      session.publishCouncil();
+    });
+  }
+
+  /** The party's open choice on this screen, votes and all; gone once it is settled. */
+  private showPoll(session: AdventureSession): void {
+    const poll = session.council.poll;
+    if (!poll) {
+      this.hud?.showPoll(null);
+      return;
+    }
+    const me = session.localSeat;
+    const picks: Record<string, VoteSeat[]> = {};
+    poll.votes.forEach((vote, seat) => {
+      if (vote == null) return;
+      (picks[String(vote)] ??= []).push({ seat, name: session.nameOf(seat) });
+    });
+    const waiting = poll.votes.flatMap((vote, seat) => (vote == null ? [seat === me ? 'you' : session.nameOf(seat)] : []));
+    this.hud?.showPoll({
+      title: poll.title,
+      text: poll.text,
+      rows: poll.options.map((option, index) => ({ id: String(index), label: option.label, detail: option.detail, enabled: option.enabled })),
+      picks,
+      looks: {},
+      mine: poll.votes[me] != null ? String(poll.votes[me]) : null,
+      mySeat: me,
+      status: waiting.length ? `Waiting for ${waiting.join(', ')}. The most votes win; a tie is drawn by lot.` : 'Everyone has voted.',
+      buttons: [],
+      reveal: poll.result ? { key: `${poll.id}`, among: poll.result.tied.map(String), final: String(poll.result.choice) } : null,
+    }, { pick: (id) => session.say({ op: 'vote', poll: poll.id, choice: Number(id) }) });
+  }
+
+  /** Host: once everyone has voted, the choice is shown on every screen (a tie drawn by lot), then made. */
+  private settlePoll(session: AdventureSession): void {
+    const waiter = this.pollWaiter;
+    const poll = session.council.poll;
+    if (!session.isHost || !waiter || !poll || poll.id !== waiter.id || poll.result) return;
+    const outcome = pollOutcome(session.council, (n) => Math.floor(Math.random() * n));
+    if (!outcome) return;
+    poll.result = outcome;
+    session.publishCouncil();
+    const tied = outcome.tied.length > 1;
+    this.time.delayedCall(tied ? POLL_TIE_MS : POLL_SHOW_MS, () => {
+      if (this.pollWaiter !== waiter) return;
+      this.pollWaiter = null;
+      if (session.council.poll === poll) {
+        session.council.poll = null;
+        session.publishCouncil();
+      }
+      waiter.resolve(outcome.choice);
+    });
+  }
+
+  /** Plan the way to `dest` again: alone for this player, online for everyone at once. */
+  private planAgain(dest: Cell): void {
+    const session = AdventureSession.current;
+    if (!session) {
+      this.pickTile(dest);
+      return;
+    }
+    if (!session.isHost) return;
+    session.council.travel = session.council.travel.map(() => ({ dest: { x: dest.x, y: dest.y }, mode: null, hover: null }));
+    session.publishCouncil();
+  }
+
+  /** Online: the board beside the map where everyone plans, joins, picks a pace, or answers a call to rest. */
+  private councilBoard(session: AdventureSession): VoteBoardModel | null {
+    if (this.trip || this.hostWalking()) return null;
+    const { run, world } = this;
+    const council = session.council;
+    const me = session.localSeat;
+    const free = !this.busy;
+    const who = (seat: number): VoteSeat => ({ seat, name: session.nameOf(seat) });
+    const pack = { id: 'pack', label: 'Pack', enabled: true };
+    const camp = council.camp?.place === 'map' && !council.camp.resting ? council.camp : null;
+    if (camp) {
+      const picks: Record<string, VoteSeat[]> = {};
+      camp.answers.forEach((answer, seat) => {
+        if (answer) (picks[answer === 'join' ? 'camp-join' : 'camp-refuse'] ??= []).push(who(seat));
+      });
+      const waiting = camp.answers.flatMap((answer, seat) => (answer ? [] : [seat === me ? 'you' : session.nameOf(seat)]));
+      return {
+        title: 'SHORT REST',
+        text: camp.by === me ? 'You sit down for a short rest. The others rest too, or keep watch.' : `${session.nameOf(camp.by)} wants a short rest here.`,
+        rows: [
+          { id: 'camp-join', label: 'Rest too', detail: `${SHORT_REST_HOURS.min}-${SHORT_REST_HOURS.max} h: a quarter of everything back`, enabled: camp.by !== me },
+          { id: 'camp-refuse', label: 'Keep watch', detail: 'Stay on your feet; no rest for you', enabled: camp.by !== me },
+        ],
+        picks,
+        looks: {},
+        mine: camp.answers[me] === 'join' ? 'camp-join' : camp.answers[me] === 'refuse' ? 'camp-refuse' : null,
+        mySeat: me,
+        status: waiting.length ? `Waiting for ${waiting.join(', ')}.` : 'Everyone has answered.',
+        buttons: camp.by === me ? [{ id: 'camp-cancel', label: 'Get back up', enabled: true }, pack] : [pack],
+      };
+    }
+    const vote = council.travel[me];
+    const route = vote?.dest ? this.route : null;
+    const place = placeAt(run.pos.x, run.pos.y);
+    const buttons: VoteRow[] = [];
+    let rows: VoteRow[] = [];
+    let text = 'Click the map to plan a trip, or click a route someone else planned to go their way.';
+    const picks: Record<string, VoteSeat[]> = {};
+    const looks: Record<string, VoteSeat[]> = {};
+    if (vote?.dest && route?.length) {
+      const plans = TRAVEL_ORDER.map((mode) => planTrip(world, run, route, mode));
+      const stops = stopsAlong(run, route.length).length;
+      text = `To ${describeTile(world, vote.dest.x, vote.dest.y)}: ${route.length} tiles, ${stops} stop${stops === 1 ? '' : 's'} on the way, ${Math.round(plans[0].known * 100)}% explored.`;
+      rows = plans.map((plan) => ({
+        id: `mode:${plan.mode}`,
+        label: TRAVEL_MODES[plan.mode].label,
+        detail: !plan.allowed
+          ? plan.reason ?? 'Not possible'
+          : plan.mode === 'fast'
+            ? `${durationLabel(plan.hours)}  /  one roll, danger ${dangerWord(plan.fights)}`
+            : `${durationLabel(plan.hours)}  /  danger ${dangerWord(plan.fights)}  /  finds ${findsWord(plan.finds)}`,
+        enabled: free && plan.allowed,
+      }));
+      council.travel.forEach((other, seat) => {
+        if (!other.dest || other.dest.x !== vote.dest!.x || other.dest.y !== vote.dest!.y) return;
+        if (other.mode) (picks[`mode:${other.mode}`] ??= []).push(who(seat));
+        else if (other.hover && seat !== me) (looks[`mode:${other.hover}`] ??= []).push(who(seat));
+      });
+      buttons.push({ id: 'clear', label: 'Clear my route', enabled: true });
+    } else {
+      if (place && session.isHost) {
+        buttons.push({
+          id: 'enter',
+          label: place.locale || place.dungeon ? `Enter ${place.name}` : `${place.name}: ${place.note ?? 'closed'}`,
+          enabled: free && !!(place.locale || place.dungeon),
+        });
+      }
+      if (session.isHost) {
+        buttons.push({ id: 'foot', label: 'Explore on Foot', enabled: free });
+        const picked = pickedOver(run, run.pos);
+        buttons.push({ id: 'search', label: `Search the Area  ${SEARCH_HOURS} h${picked ? `  /  +${picked} DC today` : ''}`, enabled: free });
+      }
+      const risk = shortRestRisk(run, { safe: false, tile: run.pos });
+      buttons.push({
+        id: 'rest',
+        label: `Short Rest  ${SHORT_REST_HOURS.min}-${SHORT_REST_HOURS.max} h  /  ${risk > 0 ? `${Math.round(risk * 100)}% ambush` : 'safe here'}`,
+        enabled: free && !council.camp,
+      });
+    }
+    buttons.push(pack);
+    return {
+      title: this.hereTitle(),
+      text,
+      rows,
+      picks,
+      looks,
+      mine: vote?.mode ? `mode:${vote.mode}` : null,
+      mySeat: me,
+      status: this.travelStatus(session),
+      buttons,
+    };
+  }
+
+  /** Online board actions: the say every player has. True when `id` was one of them. */
+  private councilAction(session: AdventureSession, id: string): boolean {
+    if (id.startsWith('mode:')) {
+      session.say({ op: 'mode', mode: id.slice(5) as TravelMode });
+      return true;
+    }
+    switch (id) {
+      case 'clear':
+        session.say({ op: 'route', dest: null });
+        return true;
+      case 'rest':
+        session.say({ op: 'camp', place: 'map', at: { x: this.run.pos.x, y: this.run.pos.y } });
+        return true;
+      case 'camp-join':
+      case 'camp-refuse':
+        session.say({ op: 'camp-answer', answer: id === 'camp-join' ? 'join' : 'refuse' });
+        return true;
+      case 'camp-cancel':
+        session.say({ op: 'camp-cancel' });
+        return true;
+      default:
+        return false;
+    }
   }
 
   /** The HUD and the weather only; cheap enough for every step of a trip. */
@@ -875,16 +1481,17 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
 
   private worldPanel(): WorldPanel {
     const { run, world } = this;
-    if (this.spectating) {
+    const trip = this.trip ?? this.guestTrip;
+    if (trip) return this.tripPanel(trip);
+    const session = AdventureSession.current;
+    if (session) {
       return {
-        title: this.hereTitle(),
-        lines: ['The host leads the way and makes the party\'s choices.'],
+        title: 'ON THE ROAD',
+        lines: ['The party is on its way.'],
         actions: [{ id: 'pack', label: 'Pack', enabled: true }],
         onAction: (id) => this.onPanelAction(id),
       };
     }
-    const trip = this.trip;
-    if (trip) return this.tripPanel(trip);
     const place = placeAt(run.pos.x, run.pos.y);
     const lines: string[] = [];
     const actions: WorldPanel['actions'] = [];
@@ -969,6 +1576,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       void this.openPack();
       return;
     }
+    const session = AdventureSession.current;
+    if (session && this.councilAction(session, id)) return;
     if (this.busy || this.spectating) return;
     if (id === 'enter') this.enterHere();
     else if (id === 'clear') this.clearRoute();
@@ -982,11 +1591,11 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   //  TRAVEL
   // ---------------------------------------------------------------------------
 
-  private stepToken(cell: Cell, ms: number): Promise<void> {
+  private stepToken(cell: Cell, ms: number, news?: { reveal: number; day: number; hour: number }): Promise<void> {
     const token = this.token;
     if (!token) return Promise.resolve();
     const session = AdventureSession.current;
-    if (session?.isHost) session.send({ k: 'x-step', x: cell.x, y: cell.y, ms });
+    if (session?.isHost) session.send({ k: 'x-step', x: cell.x, y: cell.y, ms, ...news });
     const at = this.tileCenter(cell);
     if (at.x !== token.x) token.setFlipX(at.x < token.x);
     return new Promise((resolve) => {
@@ -1024,9 +1633,9 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private halt(dest: Cell): void {
     saveRun(this.run);
     this.busy = false;
-    this.fx?.clearRoute();
+    this.clearTripLine();
     this.refresh();
-    this.pickTile(dest);
+    this.planAgain(dest);
     this.notify(`The way on to ${describeTile(this.world, dest.x, dest.y)} is planned again. Choose how to travel, or pick somewhere else.`, 4200);
   }
 
@@ -1082,13 +1691,20 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         if ((await this.handleStop(stop)) === 'away') return 'away';
         this.walking(true);
       } else if (due && !home) {
-        this.walking(false);
         const beat = rollBeat(this.world, this.run, step, trip.mode, plan.steps.slice(index + 1).map((next) => next.cell));
         saveRun(this.run);
-        const result = await this.playBeat(beat);
-        if (result !== 'done') return result;
-        this.refresh();
-        this.walking(true);
+        if (beat.kind === 'rest') {
+          this.walking(false);
+          this.think();
+          await this.pause(QUIET_STOP_MS);
+          this.walking(true);
+        } else {
+          this.walking(false);
+          const result = await this.playBeat(beat);
+          if (result !== 'done') return result;
+          this.refresh();
+          this.walking(true);
+        }
       }
       index += 1;
     }
@@ -1100,11 +1716,13 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private async advance(step: TripStep, mode: TravelMode): Promise<void> {
     const token = this.token;
     if (token) this.fx?.step({ x: token.x, y: token.y }, this.tileCenter(step.cell), terrainAt(this.world, step.cell.x, step.cell.y));
-    await this.stepToken(step.cell, this.stepMs(step, mode === 'fast'));
+    const reveal = step.storm ? 0 : TRAVEL_MODES[mode].reveal;
+    const after = { day: this.run.day, hour: this.run.hour };
+    advanceHours(after, step.hours);
+    await this.stepToken(step.cell, this.stepMs(step, mode === 'fast'), { reveal, ...after });
     this.run.pos = { x: step.cell.x, y: step.cell.y };
     const days = advanceHours(this.run, step.hours);
-    const reveal = TRAVEL_MODES[mode].reveal;
-    if (reveal > 0 && exploreAlong(this.run, [step.cell], step.storm ? 0 : reveal)) {
+    if (reveal > 0 && exploreAlong(this.run, [step.cell], reveal)) {
       this.view?.setExplored(unpackExplored(this.run.explored));
     }
     this.refreshClock();
@@ -1119,30 +1737,31 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     return new Promise((resolve) => this.time.delayedCall(ms, () => resolve()));
   }
 
-  /** What a break has to work with where the party stands. */
-  private breakSetting(): BreakSetting {
+  /** A thought over the party on a quiet stop, fitted to the ground, the hour and how the party is faring. */
+  private think(): void {
     const { x, y } = this.run.pos;
-    let water = false;
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      const terrain = terrainAt(this.world, x + dx, y + dy);
-      if (terrain === 'water' || terrain === 'ford') water = true;
-    }
-    return { water, night: isNight(this.run.hour) };
+    const standing = livingMembers(partyOf(this.run));
+    void this.fxAll({ what: 'think', text: restThought({
+      zone: regionAt(this.world, x, y),
+      terrain: terrainAt(this.world, x, y),
+      night: isNight(this.run.hour),
+      storm: inDesert(this.world, x, y) && isSandstorm(this.run),
+      health: Math.min(1, ...standing.map((mage) => mage.hp / Math.max(1, mage.maxHp))),
+      bloodmoonIn: hoursToBloodmoon(this.run.day, this.run.hour),
+      mode: this.trip?.mode ?? 'sprint',
+    }, Math.random) });
   }
 
   /** A stop on the way. 'replan' when the party went off to something and the trip is to be planned again. */
-  private async playBeat(beat: Beat): Promise<'away' | 'replan' | 'done'> {
+  private async playBeat(beat: Exclude<Beat, { kind: 'rest' }>): Promise<'away' | 'replan' | 'done'> {
     const fx = this.fx;
     if (!this.hud || !fx) return 'done';
     switch (beat.kind) {
-      case 'rest':
-        await fx.takeBreak(this.breakSetting());
-        return 'done';
       case 'loot':
         await this.find(rollFind(this.run, beat.zone, beat.depth, stepDice(this.run, this.run.steps * 7 + 5)));
         return 'done';
       case 'event':
-        await fx.cue('?', '#cdb2f2');
+        await this.fxAll({ what: 'cue', symbol: '?', color: '#cdb2f2' });
         return (await this.runEvent(beat.zone, beat.depth, stepDice(this.run, this.run.steps * 7 + 6))) === 'away' ? 'away' : 'done';
       case 'fight':
         await this.ambush(beat.encounter, beat.zone, beat.depth);
@@ -1156,7 +1775,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private async find(message: string): Promise<void> {
     const hud = this.hud;
     if (!hud) return;
-    this.fx?.sparkle();
+    void this.fxAll({ what: 'sparkle' });
     playSound('ui.confirm');
     this.notify(message, 3000);
     saveRun(this.run);
@@ -1165,13 +1784,16 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     await this.pause(650);
   }
 
-  /** Trouble on the road: the foe steps into view, then the fight begins. */
+  /** Trouble on the road: the foe steps into view, then the fight begins. Now and then it is a scene already under way. */
   private async ambush(encounter: EncounterKind, zone: EncounterZone, depth: number): Promise<void> {
     const foes = rollEncounter(zone, encounter, depth, stepDice(this.run, this.run.steps * 7 + 4));
-    this.notify(encounter === 'robbery' ? 'Ambushed on the road!' : `${describeSpawns(foes)} on the road!`, 1800);
+    const staged = stageScene(zone, encounter, depth, foes, stepDice(this.run, this.run.steps * 7 + 4 + SCENE_SALT), true);
+    if (staged) this.notify(staged.label, 2400);
+    else this.notify(encounter === 'robbery' ? 'Ambushed on the road!' : `${describeSpawns(foes)} on the road!`, 1800);
     saveRun(this.run);
-    await this.fx?.alarm(foes[0]);
-    this.startCombat(encounter, zone, depth, foes);
+    await this.fxAll({ what: 'alarm', foe: staged?.figure ?? foes[0] });
+    if (staged) this.startCombat(encounter, zone, depth, undefined, staged.label, undefined, staged.fight);
+    else this.startCombat(encounter, zone, depth, foes);
   }
 
   /** Swing the camera so the party and what they spotted both sit above the card. */
@@ -1196,26 +1818,32 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const trip = this.trip;
     const there = findRoute(this.world, this.run, sighting.cell);
     if (!hud || !fx || !trip || !there || there.length === 0) {
-      await fx?.takeBreak(this.breakSetting());
+      this.think();
       return 'done';
     }
     // A pack is crept up on from the next tile over, not stood upon.
     const path = sighting.kind === 'pack' && there.length > 1 ? there.slice(0, -1) : there;
     const toSpot = planTrip(this.world, this.run, path, trip.mode);
     const from = there.length > 1 ? there[there.length - 2] : { ...this.run.pos };
-    const beacon = fx.mark(sighting.kind, this.tileCenter(sighting.cell), sighting.spawns?.[0]);
+    const markId = ++this.beaconSeq;
+    await this.fxAll({ what: 'mark', id: markId, kind: sighting.kind, cell: sighting.cell, foe: sighting.spawns?.[0] });
+    const beacon = { destroy: (): void => void this.fxAll({ what: 'unmark', id: markId }) };
     playSound('travel.notice');
-    await this.frameBoth(this.tileCenter(sighting.cell));
-    this.notify(`Spotted: ${sighting.title}. The host decides whether to go.`, 3000);
-    const go = await hud.sighting({
-      kind: sighting.kind,
-      title: sighting.title,
-      bearing: sighting.bearing,
-      text: sighting.text,
-      go: SIGHTING_GO[sighting.kind],
-      pass: 'Keep going',
-    });
-    this.followParty();
+    await this.fxAll({ what: 'frame', cell: sighting.cell });
+    const go = AdventureSession.current
+      ? (await this.askParty(`SPOTTED: ${sighting.title.toUpperCase()}`, `${sighting.bearing}. ${sighting.text}`, [
+        { label: SIGHTING_GO[sighting.kind], detail: 'Leave the road and see to it.', enabled: true },
+        { label: 'Keep going', detail: 'Stay on the road.', enabled: true },
+      ])) === 0
+      : await hud.sighting({
+        kind: sighting.kind,
+        title: sighting.title,
+        bearing: sighting.bearing,
+        text: sighting.text,
+        go: SIGHTING_GO[sighting.kind],
+        pass: 'Keep going',
+      });
+    void this.fxAll({ what: 'follow' });
     if (!go) {
       beacon.destroy();
       return 'done';
@@ -1227,7 +1855,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       await this.advance(step, trip.mode);
       walkStep(this.run, step);
     }
-    this.fx?.clearRoute();
+    this.clearTripLine();
     this.walking(false);
     return this.visit(sighting, beacon, from);
   }
@@ -1241,9 +1869,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       this.enterSite(site, sighting.cell);
       return 'away';
     }
-    const event = ROAD_EVENTS.find((candidate) => candidate.id === sighting.eventId);
     const dice = stepDice(this.run, this.run.steps * 7 + 3);
-    return (await this.runEvent(sighting.zone, sighting.depth, dice, event)) === 'away' ? 'away' : 'replan';
+    return (await this.runEvent(sighting.zone, sighting.depth, dice, sighting.scene)) === 'away' ? 'away' : 'replan';
   }
 
   /** Walk in on foot round the spot: a small area holding what was seen, and whatever else is about. */
@@ -1275,7 +1902,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (place?.kind === 'city') this.run.road = emptyRoad();
     saveRun(this.run);
     this.busy = false;
-    this.fx?.clearRoute();
+    this.clearTripLine();
     if (place) this.notify(`You reach ${place.name}.`, 2000);
     this.refresh();
   }
@@ -1296,21 +1923,21 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   }
 
   /** A roadside happening with a choice; the trip's own dice decide it. */
-  private async runEvent(zone: EncounterZone, depth: number, dice: ReturnType<typeof stepDice>, chosen?: RoadEvent): Promise<'away' | 'done'> {
+  private async runEvent(zone: EncounterZone, depth: number, dice: ReturnType<typeof stepDice>, chosen?: EventScene): Promise<'away' | 'done'> {
     const hud = this.hud;
     if (!hud) return 'done';
-    const event = chosen ?? pickEvent(zone, dice);
+    const event = chosen ?? pickEvent(zone, dice, isNight(this.run.hour));
     const ctx = { run: this.run, zone, depth, dice };
-    this.notify(`${event.title}: the host is choosing.`, 3000);
-    const choice = await hud.choose(event.title, event.text, event.choices.map((c, i) => ({
-      id: String(i),
+    const choice = await this.askParty(event.title, event.text, event.choices.map((c) => ({
       label: c.label,
       detail: c.detail,
       enabled: !c.available || c.available(ctx),
     })));
-    const picked = event.choices[Number(choice)] ?? event.choices[event.choices.length - 1];
+    const picked = event.choices[choice] ?? event.choices[event.choices.length - 1];
+    const mapped = this.run.explored;
     const result = picked.resolve(ctx);
     saveRun(this.run);
+    if (this.run.explored !== mapped) this.view?.setExplored(unpackExplored(this.run.explored));
     this.notify(result.message, 4200);
     this.refresh();
     if (result.fight) {
@@ -1364,15 +1991,15 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.notify(`Search for ${done.choice.target.label}: ${resolution.message}`, 3600);
     const pack = resolution.pack;
     if (pack && done.go) {
-      await this.fx?.cue('!', '#ffd070');
+      await this.fxAll({ what: 'cue', symbol: '!', color: '#ffd070' });
       this.startCombat('monsters', pack.zone, pack.depth, pack.spawns, `${pack.label}. You fall on them first.`, { kind: 'weapon' });
       return;
     }
     if (resolution.event) {
-      await this.fx?.cue('?', '#cdb2f2');
+      await this.fxAll({ what: 'cue', symbol: '?', color: '#cdb2f2' });
       if ((await this.runEvent(site.zone, site.depth, stepDice(this.run, this.run.steps * 7 + 6))) === 'away') return;
     } else if (resolution.roll.outcome !== 'nothing') {
-      this.fx?.sparkle();
+      void this.fxAll({ what: 'sparkle' });
     }
     await hud.dayShown();
     if (this.run.pendingLevels > 0 && (await hud.levelUps(this.run, this.actions()))) saveRun(this.run);
@@ -1381,28 +2008,35 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.refresh();
   }
 
-  /** An hour or two off your feet where you stand: a quarter of everything back, unless something finds you first. */
-  private async shortRest(): Promise<void> {
+  /** An hour or two off your feet where you stand: a quarter of everything back, unless something finds you first. `members` null: everyone standing. */
+  private async shortRest(members: MageClass[] | null = null, names?: string[]): Promise<void> {
     const hud = this.hud;
     if (!hud || this.busy) return;
     this.busy = true;
     this.refresh();
     this.run.steps += 1;
-    const outcome = takeShortRest(this.run, null, { safe: false, tile: this.run.pos }, stepDice(this.run, this.run.steps * 7 + 2));
-    this.notify('The party makes camp for a short rest.', 1800);
-    await this.fx?.rest();
+    const outcome = takeShortRest(this.run, members, { safe: false, tile: this.run.pos }, stepDice(this.run, this.run.steps * 7 + 2));
+    this.notify(members && names ? `${names.join(' and ')} rest${names.length === 1 ? 's' : ''}; the others keep watch.` : 'The party makes camp for a short rest.', 1800);
+    await this.fxAll({ what: 'rest' });
     advanceHours(this.run, outcome.hours);
     saveRun(this.run);
     this.refresh();
     const ambush = outcome.ambush;
     if (ambush) {
       this.notify(`${spanLabel(outcome.hours)} in: ${outcome.message}`, 2600);
-      await this.fx?.alarm(ambush.spawns[0]);
+      await this.fxAll({ what: 'alarm', foe: ambush.spawns[0] });
       this.startCombat(ambush.kind, ambush.zone, ambush.depth, ambush.spawns, outcome.message);
       return;
     }
+    // Woken by the bloodmoon: it rises on the next free frame.
+    if (outcome.bloodmoon) {
+      this.notify(outcome.message, 3200);
+      this.busy = false;
+      this.refresh();
+      return;
+    }
     playSound('spell.heal');
-    this.fx?.sparkle();
+    void this.fxAll({ what: 'sparkle' });
     this.notify(`${spanLabel(outcome.hours)} of rest. ${outcome.message}`, 4200);
     await hud.dayShown();
     this.busy = false;

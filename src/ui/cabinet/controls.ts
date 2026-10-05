@@ -1,7 +1,6 @@
 import Phaser from 'phaser';
 import { playSound, unlockAudio } from '../../audio';
-import { MENU_COLOR, MENU_FONT, MENU_HEX, MENU_MOTION } from './theme';
-import { isReducedMotion } from './motion';
+import { MENU_COLOR, MENU_FONT, MENU_HEX } from './theme';
 
 export interface CabinetButtonOptions {
   width: number;
@@ -9,6 +8,10 @@ export interface CabinetButtonOptions {
   label: string;
   detail?: string;
   index?: string;
+  /** A 16x16 icon texture shown at twice its size in a dark well, in place of the index plate. */
+  icon?: string;
+  /** The colour of the icon well's rim (an item's rarity, say). */
+  iconFrame?: number;
   selected?: boolean;
   primary?: boolean;
   enabled?: boolean;
@@ -32,6 +35,7 @@ export class CabinetButton extends Phaser.GameObjects.Container implements MenuC
   private readonly indexText: Phaser.GameObjects.Text;
   private readonly arrowText: Phaser.GameObjects.Text;
   private readonly hit: Phaser.GameObjects.Zone;
+  private iconImage?: Phaser.GameObjects.Image;
   private focused = false;
   private selected: boolean;
   private enabled: boolean;
@@ -80,7 +84,13 @@ export class CabinetButton extends Phaser.GameObjects.Container implements MenuC
     }).setOrigin(0.5);
     this.hit = scene.add.zone(0, 0, options.width, this.controlHeight).setOrigin(0);
     this.hit.setInteractive({ useHandCursor: this.enabled });
-    this.add([this.face, this.labelText, this.detailText, this.indexText, this.arrowText, this.hit]);
+    this.add([this.face, this.labelText, this.detailText, this.indexText, this.arrowText]);
+    if (options.icon && scene.textures.exists(options.icon)) {
+      this.iconImage = scene.add.image(30, this.controlHeight / 2, options.icon).setScale(2);
+      this.indexText.setVisible(false);
+      this.add(this.iconImage);
+    }
+    this.add(this.hit);
 
     this.hit.on('pointerover', () => {
       if (this.enabled) this.focusRequest?.();
@@ -116,17 +126,6 @@ export class CabinetButton extends Phaser.GameObjects.Container implements MenuC
     if (this.focused === focused) return;
     this.focused = focused;
     this.redraw();
-    // The focused row leans in: its words slide a touch to the right.
-    const moves: [Phaser.GameObjects.Text, number][] = [
-      [this.labelText, 68 + (focused ? 6 : 0)],
-      [this.detailText, 68 + (focused ? 6 : 0)],
-      [this.arrowText, this.controlWidth - 28 + (focused ? 4 : 0)],
-    ];
-    for (const [text, x] of moves) {
-      this.scene.tweens.killTweensOf(text);
-      if (isReducedMotion()) text.x = x;
-      else this.scene.tweens.add({ targets: text, x, duration: MENU_MOTION.fast, ease: MENU_MOTION.ease });
-    }
     if (focused) this.options.onFocus?.();
   }
 
@@ -181,9 +180,17 @@ export class CabinetButton extends Phaser.GameObjects.Container implements MenuC
     this.face.fillStyle(fill, this.enabled ? 1 : 0.55).fillRect(0, 0, width, height);
     this.face.lineStyle(this.focused ? 2 : 1, border, 1).strokeRect(0.5, 0.5, width - 1, height - 1);
     this.face.fillStyle(this.selected ? MENU_COLOR.verdigris : MENU_COLOR.brass, 1).fillRect(0, 0, 6, height);
-    this.face.fillStyle(this.options.primary ? MENU_COLOR.brass : MENU_COLOR.bone, this.enabled ? 1 : 0.48)
-      .fillRect(13, 13, 34, height - 26);
-    this.face.lineStyle(1, MENU_COLOR.ink, 0.45).strokeRect(13.5, 13.5, 33, height - 27);
+    if (this.iconImage) {
+      const top = Math.round((height - 42) / 2);
+      this.face.fillStyle(MENU_COLOR.pitch, this.enabled ? 1 : 0.6).fillRect(9, top, 42, 42);
+      this.face.lineStyle(1, this.options.iconFrame ?? MENU_COLOR.brassDark, this.enabled ? 0.95 : 0.5).strokeRect(9.5, top + 0.5, 41, 41);
+      this.face.fillStyle(MENU_COLOR.charcoalRaised, 1).fillRect(11, top + 2, 38, 2);
+      this.iconImage.setAlpha(this.enabled ? 1 : 0.6);
+    } else {
+      this.face.fillStyle(this.options.primary ? MENU_COLOR.brass : MENU_COLOR.bone, this.enabled ? 1 : 0.48)
+        .fillRect(13, 13, 34, height - 26);
+      this.face.lineStyle(1, MENU_COLOR.ink, 0.45).strokeRect(13.5, 13.5, 33, height - 27);
+    }
     if (this.focused) {
       this.face.fillStyle(MENU_COLOR.brassLight, 1).fillRect(56, 10, 2, height - 20);
       this.face.fillStyle(MENU_COLOR.brassLight, 1).fillRect(width - 10, 8, 3, 14);
@@ -278,11 +285,6 @@ export class CabinetChip extends Phaser.GameObjects.Container implements MenuCon
     if (this.focused === focused) return;
     this.focused = focused;
     this.redraw();
-    if (focused && !isReducedMotion()) {
-      this.scene.tweens.killTweensOf(this.labelText);
-      this.labelText.setScale(1.06);
-      this.scene.tweens.add({ targets: this.labelText, scale: 1, duration: MENU_MOTION.base, ease: MENU_MOTION.ease });
-    }
     if (focused) this.options.onFocus?.();
   }
 

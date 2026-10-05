@@ -6,25 +6,39 @@ import { playSound } from '../../audio';
 import { MAGE_CLASS_DEFS, type MageClass } from '../../core/Classes';
 import { getItem, type ItemId } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
+import { packLabel, slotsForCount } from '../../core/Pack';
 import { isModifierWord, WORDS } from '../../core/Words';
+import { RANGE_UNIT } from '../../config/constants';
 import { SceneInput } from '../../engine/SceneInput';
-import { partyXpScale } from '../../pve/exploration/coop';
+import { levelsOwed, partyXpScale } from '../../pve/exploration/coop';
 import { memberIn, moneyLabel, partyOf } from '../../pve/exploration/economy';
+import { fieldSpellMana } from '../../pve/exploration/fieldWords';
 import type { ExplorationActions, ExplorationIntent } from '../../pve/exploration/intents';
 import type { ExplorationRun } from '../../pve/exploration/run';
 import { xpToNext } from '../../pve/progression';
+import { castOddsLabel } from '../../spells/castOdds';
+import { ALL_SPELL_SETS, allSpells, rackCoverage } from '../../spells/registry';
+import type { Spell } from '../../spells/Spell';
+import { itemRarityColor } from '../../visuals/itemIcons';
+import { itemIconTexture } from '../../visuals/itemIconTextures';
 import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
 import { addCabinetBackdrop, addRecess, addSectionRule, MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
+import { addJourneyStrip } from './JourneyStrip';
 import { itemDetail } from './ShopView';
 
 const PER_PAGE = 8;
+/** Adventure fights cast from every catalogue (LocaleScene / GameScene). */
+const ADVENTURE_SPELLS = ALL_SPELL_SETS;
 
 type PackMode = 'use' | 'drop' | 'give';
+
+interface PackEntry { label: string; detail: string; enabled: boolean; run: () => void; icon?: ItemId }
 
 export class PackView extends Phaser.GameObjects.Container {
   private readonly sceneInput: SceneInput;
   private focus = new MenuFocusGroup();
   private mode: PackMode = 'use';
+  private showSpells = false;
   /** Who a gift goes to. */
   private giveTo: MageClass | null = null;
   private page = 0;
@@ -121,6 +135,7 @@ export class PackView extends Phaser.GameObjects.Container {
       height: 42,
       label: this.mode === 'drop' ? 'Stop' : 'Drop...',
       tone: this.mode === 'drop' ? 'danger' : 'normal',
+      enabled: !this.showSpells,
       onActivate: () => { this.mode = this.mode === 'drop' ? 'use' : 'drop'; this.render(); },
     });
     const give = new CabinetChip(scene, 854, 606, {
@@ -128,19 +143,32 @@ export class PackView extends Phaser.GameObjects.Container {
       height: 42,
       label: this.mode === 'give' ? 'Stop' : 'Give...',
       tone: this.mode === 'give' ? 'primary' : 'normal',
-      enabled: others.length > 0,
+      enabled: others.length > 0 && !this.showSpells,
       onActivate: () => { this.mode = this.mode === 'give' ? 'use' : 'give'; this.render(); },
     });
-    const close = new CabinetChip(scene, 980, 606, {
-      width: 222,
+    const spells = new CabinetChip(scene, 968, 606, {
+      width: 106,
       height: 42,
-      label: 'Close Pack',
+      label: this.showSpells ? 'Gear' : 'Spells',
+      selected: this.showSpells,
+      onActivate: () => {
+        this.showSpells = !this.showSpells;
+        this.mode = 'use';
+        this.page = 0;
+        this.render();
+      },
+    });
+    const close = new CabinetChip(scene, 1082, 606, {
+      width: 120,
+      height: 42,
+      label: 'Close',
       tone: 'primary',
       onActivate: () => this.hooks.close(),
     });
-    this.add([mode, give, close]);
+    this.add([mode, give, spells, close]);
     this.focus.add(mode);
     this.focus.add(give);
+    this.focus.add(spells);
     this.focus.add(close);
     if (this.mode === 'give' && others.length > 1) {
       const target = others.find((mage) => mage.mageClass === this.giveTo) ?? others[0];
@@ -164,10 +192,24 @@ export class PackView extends Phaser.GameObjects.Container {
     const { scene, run } = this;
     const words = leader.loadout.filter((word) => !isModifierWord(word)).map((word) => WORDS[word].label);
     const modifier = leader.loadout.find(isModifierWord);
-    const who = partyOf(run).length > 1 ? `${leader.name}, ${MAGE_CLASS_DEFS[leader.mageClass].label}  /  ` : '';
-    this.add(scene.add.text(60, 82, [
-      `${who}Level ${run.level}  (${run.xp}/${xpToNext(run.level, partyXpScale(run))} XP)  /  ${moneyLabel(run.gold)}  /  ${leader.carriedWeight().toFixed(1)}/${leader.carryCap()}kg`,
-    ].join(''), { fontFamily: MENU_FONT.body, fontSize: '14px', color: MENU_HEX.boneDim }));
+    const who = partyOf(run).length > 1 ? `${leader.name}${leader.spellClass ? `, ${MAGE_CLASS_DEFS[leader.spellClass].label}` : ''}  /  ` : '';
+    const cap = leader.carryCap();
+    const load = !Number.isFinite(cap) ? ''
+      : leader.overloaded() ? '  /  OVERLOADED: cannot move in a fight'
+      : leader.carryEncumbranceMultiplier() < 1 ? '  /  Heavy: half movement in a fight' : '';
+    this.add(scene.add.text(60, 82, `${who}${moneyLabel(run.gold)}  /  Carrying ${leader.carriedWeight().toFixed(1)}/${Number.isFinite(cap) ? cap : '\u221E'} kg  /  ${packLabel(leader)}${load}`, {
+      fontFamily: MENU_FONT.body,
+      fontSize: '14px',
+      color: load ? '#e6b55a' : MENU_HEX.boneDim,
+    }));
+    addJourneyStrip(scene, this, 1222, 34, {
+      day: run.day,
+      hour: run.hour,
+      level: run.level,
+      xp: run.xp,
+      next: xpToNext(run.level, partyXpScale(run)),
+      pending: levelsOwed(run, leader.mageClass),
+    });
     addSectionRule(scene, this, 58, 116, 1164);
 
     // Left: the mage.
@@ -193,49 +235,9 @@ export class PackView extends Phaser.GameObjects.Container {
       lineSpacing: 4,
     }));
 
-    // Right: everything worn and carried.
+    // Right: everything worn and carried, or every spell on the rack.
     addRecess(scene, this, 438, 136, 784, 432);
-    const worn: { id: ItemId; where: string }[] = [
-      ...leader.hands.map((id) => ({ id, where: 'In hand' })),
-      ...(leader.head ? [{ id: leader.head, where: 'Head' }] : []),
-      ...(leader.torso ? [{ id: leader.torso, where: 'Torso' }] : []),
-      ...(leader.boots ? [{ id: leader.boots, where: 'Boots' }] : []),
-      ...leader.accessories.map((id) => ({ id, where: 'Accessory' })),
-    ];
-    const carried = [...leader.bag, ...leader.utility];
-    const counts = new Map<ItemId, number>();
-    for (const id of carried) counts.set(id, (counts.get(id) ?? 0) + 1);
-    const entries: { label: string; detail: string; enabled: boolean; run: () => void }[] = [];
-    for (const item of worn) {
-      const def = getItem(item.id);
-      entries.push({
-        label: `${item.where}: ${def.name}`,
-        detail: itemDetail(def),
-        enabled: this.mode === 'use',
-        run: () => void this.apply({ op: 'unequip', item: item.id }),
-      });
-    }
-    const target = this.giveTo ? partyOf(run).find((mage) => mage.mageClass === this.giveTo) : undefined;
-    for (const [id, count] of counts) {
-      const def = getItem(id);
-      const equippable = def.slot !== 'utility' && leader.canEquipFromBag(id);
-      const action = this.mode === 'drop' ? '  /  drop one'
-        : this.mode === 'give' ? `  /  give one to ${target?.name ?? 'nobody'}`
-        : equippable ? '  /  equip' : '';
-      entries.push({
-        label: `${def.name}${count > 1 ? ` x${count}` : ''}${action}`,
-        detail: itemDetail(def),
-        enabled: this.mode === 'drop' ? !def.permanentlyBinding : this.mode === 'give' ? !!target : equippable,
-        run: () => void this.apply(
-          this.mode === 'drop' ? { op: 'drop', item: id }
-            : this.mode === 'give' && this.giveTo ? { op: 'give', item: id, to: this.giveTo }
-            : { op: 'equip', item: id },
-        ),
-      });
-    }
-    if (leader.arrows > 0) {
-      entries.push({ label: `Arrows x${leader.arrows}`, detail: 'Ammunition for bows.', enabled: false, run: () => undefined });
-    }
+    const entries = this.showSpells ? this.spellEntries(leader) : this.gearEntries(leader);
     const pages = Math.max(1, Math.ceil(entries.length / PER_PAGE));
     this.page = Math.min(this.page, pages - 1);
     entries.slice(this.page * PER_PAGE, (this.page + 1) * PER_PAGE).forEach((entry, index) => {
@@ -245,6 +247,8 @@ export class PackView extends Phaser.GameObjects.Container {
         label: entry.label,
         detail: entry.detail.split('\n')[0],
         index: String(index + 1),
+        icon: entry.icon ? itemIconTexture(scene, entry.icon) : undefined,
+        iconFrame: entry.icon ? itemRarityColor(entry.icon) : undefined,
         enabled: entry.enabled,
         onActivate: entry.run,
         onFocus: () => this.inspect(entry.label, entry.detail),
@@ -267,8 +271,88 @@ export class PackView extends Phaser.GameObjects.Container {
     }
   }
 
+  private gearEntries(leader: Mage): PackEntry[] {
+    const worn: { id: ItemId; where: string }[] = [
+      ...leader.hands.map((id) => ({ id, where: 'In hand' })),
+      ...(leader.head ? [{ id: leader.head, where: 'Head' }] : []),
+      ...(leader.torso ? [{ id: leader.torso, where: 'Torso' }] : []),
+      ...(leader.boots ? [{ id: leader.boots, where: 'Boots' }] : []),
+      ...leader.accessories.map((id) => ({ id, where: 'Accessory' })),
+    ];
+    const carried = [...leader.bag, ...leader.utility];
+    const counts = new Map<ItemId, number>();
+    for (const id of carried) counts.set(id, (counts.get(id) ?? 0) + 1);
+    const entries: PackEntry[] = [];
+    for (const item of worn) {
+      const def = getItem(item.id);
+      entries.push({
+        label: `${item.where}: ${def.name}`,
+        detail: itemDetail(def),
+        enabled: this.mode === 'use',
+        icon: item.id,
+        run: () => void this.apply({ op: 'unequip', item: item.id }),
+      });
+    }
+    const target = this.giveTo ? partyOf(this.run).find((mage) => mage.mageClass === this.giveTo) : undefined;
+    for (const [id, count] of counts) {
+      const def = getItem(id);
+      const equippable = def.slot !== 'utility' && leader.canEquipFromBag(id);
+      const action = this.mode === 'drop' ? '  /  drop one'
+        : this.mode === 'give' ? `  /  give one to ${target?.name ?? 'nobody'}`
+        : equippable ? '  /  equip' : '';
+      const slots = slotsForCount(id, count);
+      entries.push({
+        label: `${def.name}${count > 1 ? ` x${count}` : ''}${slots > 1 ? ` (${slots} slots)` : ''}${action}`,
+        detail: itemDetail(def),
+        enabled: this.mode === 'drop' ? !def.permanentlyBinding && !def.keyItem : this.mode === 'give' ? !!target : equippable,
+        icon: id,
+        run: () => void this.apply(
+          this.mode === 'drop' ? { op: 'drop', item: id }
+            : this.mode === 'give' && this.giveTo ? { op: 'give', item: id, to: this.giveTo }
+            : { op: 'equip', item: id },
+        ),
+      });
+    }
+    if (leader.arrows > 0) {
+      entries.push({ label: `Arrows x${leader.arrows}`, detail: 'Ammunition for bows.', enabled: false, icon: 'arrow', run: () => undefined });
+    }
+    return entries;
+  }
+
   private inspect(title: string, body: string): void {
     this.inspectorTitle.setText(title.toUpperCase());
     this.inspectorBody.setText(body);
+  }
+
+  /** Each spell the rack casts, with its cost and odds; then the combinations that cast nothing. */
+  private spellEntries(leader: Mage): PackEntry[] {
+    const rack = new Set(leader.loadout.filter((word) => !isModifierWord(word)));
+    const spells = allSpells(leader.spellClass, ADVENTURE_SPELLS)
+      .filter((spell) => spell.words.every((word) => rack.has(word)))
+      .sort((a, b) => a.words.length - b.words.length || a.name.localeCompare(b.name));
+    const entries: PackEntry[] = spells.map((spell) => {
+      const facts = this.spellFacts(leader, spell);
+      return {
+        label: spell.name,
+        detail: `${facts}\n${spell.description}`,
+        enabled: true,
+        run: () => this.inspect(spell.name, `${facts}. ${spell.description}`),
+      };
+    });
+    for (const blank of rackCoverage([...rack], leader.spellClass, ADVENTURE_SPELLS).blanks) {
+      entries.push({
+        label: blank.map((word) => WORDS[word].label).join(' '),
+        detail: 'No spell for these words.',
+        enabled: false,
+        run: () => undefined,
+      });
+    }
+    return entries;
+  }
+
+  private spellFacts(leader: Mage, spell: Spell): string {
+    const reach = spell.targeting === 'self' ? 'self'
+      : Number.isFinite(spell.range) ? `range ${Math.round(spell.range / RANGE_UNIT)}` : 'any range';
+    return [spell.actionType, reach, `${fieldSpellMana(leader, spell.words)} mana`, castOddsLabel(spell, leader)].join('  /  ');
   }
 }

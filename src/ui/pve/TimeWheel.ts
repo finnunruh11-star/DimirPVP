@@ -150,29 +150,35 @@ export class TimeWheel extends Phaser.GameObjects.Container {
   private omenPulse?: Phaser.Tweens.Tween;
   private shown = -1;
   private target = 0;
+  /** The parts drawn outside the container, faded along with it. */
+  private readonly under: Phaser.GameObjects.GameObject[];
+  private showing = true;
 
-  constructor(scene: Phaser.Scene, x: number) {
-    super(scene, x, 0);
+  /** `x` is the dial's centre, `y` the top of the space it takes. */
+  constructor(scene: Phaser.Scene, x: number, y = 0) {
+    super(scene, x, y);
     scene.add.existing(this);
     this.setDepth(95);
     ensureGlowTextures(scene);
     paintDial(scene);
+    const wy = y + WHEEL_Y;
 
     // The masked dial stays out of the container: canvas rendering ignores masks on container children.
-    this.halo = scene.add.image(x, WHEEL_Y - 16, GLOW.soft).setScale(1.9, 1.3).setAlpha(0.3)
+    this.halo = scene.add.image(x, wy - 16, GLOW.soft).setScale(1.9, 1.3).setAlpha(0.3)
       .setBlendMode(Phaser.BlendModes.ADD).setDepth(94.6);
     const backing = scene.add.graphics().setDepth(94.7);
-    backing.fillStyle(MENU_COLOR.pitch, 0.92).fillCircle(x, WHEEL_Y, R + 7);
-    this.dial = scene.add.image(x, WHEEL_Y, TEXTURE).setDepth(94.8);
+    backing.fillStyle(MENU_COLOR.pitch, 0.92).fillCircle(x, wy, R + 7);
+    this.dial = scene.add.image(x, wy, TEXTURE).setDepth(94.8);
     const glass = scene.add.graphics().setDepth(94.9);
-    glass.lineStyle(5, 0xffffff, 0.07).beginPath().arc(x, WHEEL_Y, R - 9, Math.PI * 1.08, Math.PI * 1.48).strokePath();
-    glass.lineStyle(2, 0xffffff, 0.1).beginPath().arc(x, WHEEL_Y, R - 3, Math.PI * 1.55, Math.PI * 1.8).strokePath();
+    glass.lineStyle(5, 0xffffff, 0.07).beginPath().arc(x, wy, R - 9, Math.PI * 1.08, Math.PI * 1.48).strokePath();
+    glass.lineStyle(2, 0xffffff, 0.1).beginPath().arc(x, wy, R - 3, Math.PI * 1.55, Math.PI * 1.8).strokePath();
     this.maskShape = scene.make.graphics({}, false);
-    this.maskShape.fillStyle(0xffffff, 1).fillRect(x - R - 10, 0, R * 2 + 20, WHEEL_Y);
+    this.maskShape.fillStyle(0xffffff, 1).fillRect(x - R - 10, y, R * 2 + 20, WHEEL_Y);
     const mask = this.maskShape.createGeometryMask();
     this.dial.setMask(mask);
     glass.setMask(mask);
     const under: Phaser.GameObjects.GameObject[] = [this.halo, backing, this.dial, glass, this.maskShape];
+    this.under = [backing, this.dial, glass];
 
     const bezel = scene.add.graphics();
     bezel.lineStyle(5, MENU_COLOR.brassDark, 1).beginPath().arc(0, WHEEL_Y, R + 4, Math.PI, Math.PI * 2).strokePath();
@@ -265,6 +271,23 @@ export class TimeWheel extends Phaser.GameObjects.Container {
     }
   }
 
+  /** Show or hide the clock, fading; `instant` skips the fade. */
+  setShown(on: boolean, instant = false): void {
+    if (this.showing === on && !instant) return;
+    this.showing = on;
+    const parts = [this, ...this.under] as (Phaser.GameObjects.GameObject & Phaser.GameObjects.Components.Alpha)[];
+    this.scene.tweens.killTweensOf(parts);
+    this.scene.tweens.killTweensOf(this.halo);
+    const halo = on ? 0.18 + 0.2 * (1 - darkness(Math.max(0, this.shown) % 24)) : 0;
+    if (instant || isReducedMotion()) {
+      for (const part of parts) part.setAlpha(on ? 1 : 0);
+      this.halo.setAlpha(halo);
+      return;
+    }
+    this.scene.tweens.add({ targets: parts, alpha: on ? 1 : 0, duration: on ? 220 : 600, ease: 'Sine.InOut' });
+    this.scene.tweens.add({ targets: this.halo, alpha: halo, duration: on ? 220 : 600, ease: 'Sine.InOut' });
+  }
+
   /** A flash round the rim: the day has turned. */
   pulse(): void {
     const scene = this.scene;
@@ -292,7 +315,7 @@ export class TimeWheel extends Phaser.GameObjects.Container {
     const day = Math.floor(total / 24) + 1;
     this.dial.setRotation((hour / 24) * Math.PI * 2);
     this.halo.setTint(skyColor(hour));
-    this.halo.setAlpha(0.18 + 0.2 * (1 - darkness(hour)));
+    if (this.showing) this.halo.setAlpha(0.18 + 0.2 * (1 - darkness(hour)));
     const night = isNight(hour);
     const turn = hoursToTurn(hour);
     const dayLabel = `DAY ${day}`;

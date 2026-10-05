@@ -7,9 +7,8 @@ import { Dice } from '../../core/Dice';
 import type { Cell } from '../../world/pathfind';
 import { isNight } from './clock';
 import { hashString } from './economy';
-import { describeSpawns, packPace, rollEncounter, spawnTint, type EncounterKind } from './encounters';
+import { describeSpawns, hasMonsters, packPace, rollEncounter, spawnTint } from './encounters';
 import type { WildPack } from './locales';
-import { questCalm } from './quest';
 import type { ExplorationRun } from './run';
 import { createWorld, depthAt, PLACES, REGIONS, regionAt, TERRAIN, terrainAt } from './world';
 
@@ -33,10 +32,12 @@ export function ambushChance(run: ExplorationRun, tile: Cell, cover: AmbushCover
   const world = createWorld();
   if (PLACES.some((p) => p.x === tile.x && p.y === tile.y)) return 0;
   if (PLACES.some((p) => p.kind === 'city' && Math.max(Math.abs(p.x - tile.x), Math.abs(p.y - tile.y)) <= AMBUSH_PEACE)) return 0;
-  if (questCalm(run, tile.x, tile.y)) return 0;
   const terrain = TERRAIN[terrainAt(world, tile.x, tile.y)];
   if (!Number.isFinite(terrain.time)) return 0;
-  let chance = AMBUSH_BASE * REGIONS[regionAt(world, tile.x, tile.y)].danger * terrain.danger;
+  const zone = regionAt(world, tile.x, tile.y);
+  // Where nothing lives yet, only its robbers lie in wait.
+  const trouble = hasMonsters(zone) ? 1 : REGIONS[zone].robbery;
+  let chance = AMBUSH_BASE * REGIONS[zone].danger * terrain.danger * trouble;
   if (isNight(run.hour)) chance *= AMBUSH_NIGHT;
   if (cover.sneaking) chance *= AMBUSH_SNEAK;
   if (cover.veiled) chance *= AMBUSH_VEIL;
@@ -56,7 +57,7 @@ export function rollAmbush(run: ExplorationRun, tile: Cell, cover: AmbushCover, 
   if (dice.float() >= chance) return null;
   const world = createWorld();
   const zone = regionAt(world, tile.x, tile.y);
-  const kind: EncounterKind = dice.float() < REGIONS[zone].robbery ? 'robbery' : 'monsters';
+  const kind = hasMonsters(zone) && dice.float() >= REGIONS[zone].robbery ? 'monsters' : 'robbery';
   const depth = depthAt(world, tile.x, tile.y);
   const spawns = rollEncounter(zone, kind, depth, dice);
   return {

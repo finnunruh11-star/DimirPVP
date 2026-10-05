@@ -9,6 +9,7 @@ import {
   addRecess,
   addSectionRule,
 } from '../cabinet/theme';
+import { MineVoteStrip, type MineVoteDisplay, type MineVoteState } from './MineVoteStrip';
 
 export interface MineChoiceView {
   id: string;
@@ -29,17 +30,21 @@ export interface MinePromptSnapshot {
   body: string;
   visual?: MineVisualView;
   choices: MineChoiceView[];
+  /** The party votes on these choices (online). */
+  vote?: boolean;
 }
 
-export class MinePromptView extends Phaser.GameObjects.Container {
+export class MinePromptView extends Phaser.GameObjects.Container implements MineVoteDisplay {
   private readonly sceneInput: SceneInput;
   private readonly focus = new MenuFocusGroup();
+  private readonly voteStrip?: MineVoteStrip;
   private disposed = false;
 
   constructor(
     scene: Phaser.Scene,
     snapshot: MinePromptSnapshot,
-    choose: (id: string) => void
+    choose: (id: string) => void,
+    decide: () => void = () => undefined,
   ) {
     super(scene, 0, 0);
     scene.add.existing(this);
@@ -123,6 +128,9 @@ export class MinePromptView extends Phaser.GameObjects.Container {
         this.focus.add(button);
       });
     }
+    if (snapshot.vote) {
+      this.voteStrip = new MineVoteStrip(scene, this, { x: 640, y: 545, width: 1000, chip: { x: 1040, y: 584 } }, this.focus, decide);
+    }
 
     this.sceneInput = new SceneInput(scene);
     this.sceneInput.bindKeys([
@@ -134,6 +142,10 @@ export class MinePromptView extends Phaser.GameObjects.Container {
       { key: 'SPACE', capture: true, run: () => this.focus.activate() },
       { key: 'ENTER', capture: true, run: () => this.focus.activate() },
     ]);
+  }
+
+  setVotes(state: MineVoteState): void {
+    if (!this.disposed) this.voteStrip?.set(state);
   }
 
   override destroy(fromScene?: boolean): void {

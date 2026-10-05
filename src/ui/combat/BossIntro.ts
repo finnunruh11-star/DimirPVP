@@ -183,7 +183,8 @@ export function playBossIntro(scene: Phaser.Scene, model: BossIntroModel): Promi
   }
 
   // The boss, a black shape until the lightning.
-  const bossScale = Math.min(3.2, 400 / model.bossSheet.frameH, 560 / model.bossSheet.frameW);
+  // A whole-number scale, so every art pixel stays square.
+  const bossScale = Math.max(1, Math.floor(Math.min(400 / model.bossSheet.frameH, 560 / model.bossSheet.frameW)));
   const bossX = W * 0.76;
   const bossY = H * 0.8;
   const boss = scene.add.sprite(bossX + 220, bossY, model.bossAnim).setOrigin(0.5, model.bossSheet.originY).setScale(bossScale * 1.12);

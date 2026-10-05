@@ -92,8 +92,7 @@ export const SCARAB = {
   leash: 8 * RANGE_UNIT, // never stray further than this from the owner
   attachDist: 38, // how close counts as "reached" a mage
   maxPerEnemy: 3, // at most this many scarabs may hound one enemy
-  attackSpec: '1d3', // bite damage when attached
-  healSpec: '1d3', // healing delivered to the owner on return
+  attackSpec: '1d3', // bite damage when attached; the owner is healed for what it dealt
   radius: 8, // draw / hit radius
 };
 

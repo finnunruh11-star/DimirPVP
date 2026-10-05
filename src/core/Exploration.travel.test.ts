@@ -118,9 +118,9 @@ const tests: [name: string, run: () => void][] = [
     assert(planTrip(world, night, route, 'sneak').fights < planTrip(world, day, route, 'sneak').fights, 'sneaking by night is better');
   }],
 
-  ['rolls a trip the same way every time, stopping at the first fight', () => {
+  ['rolls a fast trip the same way every time, stopping at the first fight', () => {
     const run = freshRun(99);
-    const plan = planTrip(world, run, routeTo(run, 'hearthfire'), 'explore');
+    const plan = planTrip(world, run, routeTo(run, 'hearthfire'), 'fast');
     run.steps = 4;
     const first = rollTrip(run, plan);
     equal(rollTrip(run, plan), first, 'same step, same trip');
@@ -132,7 +132,7 @@ const tests: [name: string, run: () => void][] = [
       run.steps = step;
       if (rollTrip(run, plan).some((stop) => stop.kind === 'monsters' || stop.kind === 'robbery')) fights += 1;
     }
-    assert(fights > 20 && fights < 200, `a long explore usually but not always ends in a fight (${fights}/200)`);
+    assert(fights > 10 && fights < 150, `a fast trip now and then ends in a fight (${fights}/200)`);
   }],
 
   ['marks a walked route explored, wider when exploring', () => {

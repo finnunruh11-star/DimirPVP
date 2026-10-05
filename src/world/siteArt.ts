@@ -15,7 +15,7 @@ interface Art {
 }
 
 const HERB_ART: Record<string, Art> = {
-  herbMoonleaf: {
+  herbMoonglow: {
     palette: { g: 0x355636, G: 0x5f8f55, l: 0xa9c9dc, L: 0xe4f1f8, w: 0xffffff, y: 0xf2e39a },
     rows: [
       '......w.......',
@@ -31,22 +31,37 @@ const HERB_ART: Record<string, Art> = {
       '...gg.g.gg....',
     ],
   },
-  herbBogcap: {
-    palette: { b: 0x7a3e22, B: 0xb2643a, c: 0xf0e2c0, s: 0xe8dcc0, S: 0xb9aa8c, g: 0x3f5a2c, G: 0x6f8f45 },
+  herbDeathweed: {
+    palette: { d: 0x2e2234, p: 0x6a3a7a, P: 0xa070c0, t: 0x5a5060, g: 0x3a3a2a, G: 0x55503a },
     rows: [
-      '..............',
-      '...bbbb.......',
-      '..bBcBBb..bb..',
-      '.bBBBBcBbbBBb.',
-      '.bbbbbbbbBcBb.',
-      '...sS....bbb..',
-      '...sS.....sS..',
-      '..GsSG...GsSG.',
-      '.gGgGgGgGgGgG.',
-      '..g.g.g.g.g...',
+      '.......P......',
+      '......PpP.....',
+      '..P....p...P..',
+      '.PpP..tpt.PpP.',
+      '..p..t.p.t.p..',
+      '..pt.dtpd.tp..',
+      '..dpddpdpddp..',
+      '.gdpdtdpdtdpg.',
+      '..gGgGgGgGgG..',
+      '...gg.g.g.gg..',
     ],
   },
-  herbEmberroot: {
+  herbWaterleaf: {
+    palette: { b: 0x2f6fc0, B: 0x6fb0f0, w: 0xd8f0ff, g: 0x2f5a4a, G: 0x4f8a6a },
+    rows: [
+      '....B....B....',
+      '...BbB..BbB...',
+      '..BbwbB.BwbB..',
+      '...BbB..BbB...',
+      '....b.BB.b....',
+      '....g.BbB.g...',
+      '...ggBbwbBgg..',
+      '..gGgGbBgGgG..',
+      '...gggGgGggg..',
+      '....gg.g.gg...',
+    ],
+  },
+  herbFireblossom: {
     palette: { r: 0xa8321e, o: 0xf07a2a, y: 0xffd35a, g: 0x4a5a2a, G: 0x6c7c34, d: 0x4a3222 },
     rows: [
       '......y.......',
@@ -109,13 +124,20 @@ function paint(scene: Phaser.Scene, key: string, art: Art): string {
 /** The texture for a site thing, or null when it wears the plain glint. */
 export function siteTexture(scene: Phaser.Scene, look: SecretLook, herb?: string): string | null {
   if (look === 'trinket') return null;
-  if (look === 'herb') return paint(scene, `site-herb-${herb ?? 'herbMoonleaf'}`, HERB_ART[herb ?? ''] ?? HERB_ART.herbMoonleaf);
+  if (look === 'herb') return paint(scene, `site-herb-${herb ?? 'herbMoonglow'}`, HERB_ART[herb ?? ''] ?? HERB_ART.herbMoonglow);
   return paint(scene, `site-${look}`, LOOK_ART[look]);
 }
 
+const HERB_DEBRIS: Record<string, number> = {
+  herbMoonglow: 0xe4f1f8,
+  herbWaterleaf: 0x6fb0f0,
+  herbDeathweed: 0xa070c0,
+  herbFireblossom: 0xf07a2a,
+};
+
 /** The colour the leaves or splinters fly off in when it is taken. */
 export function siteDebris(look: SecretLook, herb?: string): number {
-  if (look === 'herb') return herb === 'herbBogcap' ? 0xb2643a : herb === 'herbEmberroot' ? 0xf07a2a : 0x9ec7a0;
+  if (look === 'herb') return HERB_DEBRIS[herb ?? ''] ?? 0x9ec7a0;
   if (look === 'cache') return 0x8d5c30;
   if (look === 'stash') return 0xd4b882;
   return 0xffe08a;

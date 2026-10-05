@@ -1,6 +1,6 @@
-// Level-ups earned outside a fight (bounties, the quest, levels a fallen member
-// missed). Same rewards and prompts as the arena: train a stat on odd levels,
-// learn a word on even ones, both on every fifth, then settle the colour order
+// Level-ups earned outside a fight (bounties, searches, levels a fallen member
+// missed). Same rewards and prompts as the arena: pick one stat on even levels,
+// learn a word on even levels and every fifth, then settle the colour order
 // when counts tie. The prompts only collect a choice; the run takes it through
 // the actions, so a guest's choice is checked by the host.
 
@@ -15,7 +15,7 @@ import type { ExplorationActions } from '../../pve/exploration/intents';
 import { colorTies, learnedLoadout, levelWordOffers, type LevelChoice } from '../../pve/exploration/levels';
 import type { ExplorationRun } from '../../pve/exploration/run';
 import { levelReward, rackIsFull } from '../../pve/progression';
-import { ChoiceMenuView, MultiSelectView } from '../combat/CombatMenus';
+import { ChoiceMenuView } from '../combat/CombatMenus';
 
 /** Walk the acting member (or, in solo, everyone) through every level still owed. True when anything changed. */
 export async function resolvePendingLevels(scene: Phaser.Scene, run: ExplorationRun, actions: ExplorationActions): Promise<boolean> {
@@ -38,7 +38,7 @@ export async function resolvePendingLevels(scene: Phaser.Scene, run: Exploration
 async function promptLevel(scene: Phaser.Scene, run: ExplorationRun, mage: Mage, level: number): Promise<LevelChoice> {
   const reward = levelReward(level);
   const choice: LevelChoice = { level, stats: [] };
-  if (reward.stats > 0) choice.stats = await promptStats(scene, level, reward.stats);
+  if (reward.stats > 0) choice.stats = [await promptStat(scene, level, reward.statGain)];
   let loadout = [...mage.loadout];
   if (reward.word) {
     const offers = levelWordOffers(run, mage.mageClass, level, loadout);
@@ -57,14 +57,13 @@ async function promptLevel(scene: Phaser.Scene, run: ExplorationRun, mage: Mage,
   return choice;
 }
 
-function promptStats(scene: Phaser.Scene, level: number, maxStats: number): Promise<StatKey[]> {
-  const subtitle = maxStats === 1 ? 'Raise one stat by 1' : `Raise up to ${maxStats} different stats by 1`;
+function promptStat(scene: Phaser.Scene, level: number, gain: number): Promise<StatKey> {
   return new Promise((resolve) => {
-    const panel = new MultiSelectView<StatKey>(scene, `LEVEL ${level} / TRAINING`, subtitle,
+    const panel = new ChoiceMenuView<StatKey>(scene, `LEVEL ${level} / TRAINING`, `Raise one stat by ${gain}.`,
       STAT_DEFS.map((definition) => ({ id: definition.key, label: definition.name, detail: definition.blurb })),
-      maxStats, (selected) => {
+      (stat) => {
         panel.destroy();
-        resolve([...selected]);
+        resolve(stat);
       });
   });
 }

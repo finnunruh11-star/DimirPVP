@@ -9,6 +9,8 @@
 // =============================================================================
 
 import type { DamageType } from './Damage';
+import type { HitEffect } from '../effects/classKit';
+import { isCraftedItemId, resolveCraftedItem, type CraftedInfo } from './crafting/item';
 import {
   BASE_CARRY_KG,
   MELEE_RANGE,
@@ -83,12 +85,12 @@ export type ItemId =
   | 'oreGold'
   | 'crudeTrinket'
   | 'chargedScale'
-  | 'golemCore'
+  | 'stoneHeart'
   | 'sentinelLens'
   | 'magmaCore'
-  | 'elementalGeode'
+  | 'redStone'
   | 'darkEye'
-  | 'echoMembrane'
+  | 'batLeather'
   | 'redDrakeScale'
   | 'blackDrakeScale'
   // ---- Finn's Additions ----
@@ -117,6 +119,22 @@ export type ItemId =
   // ---- Conjured (never drafted; created by Objects class spells) ----
   | 'conjuredVeilBow'
   | 'conjuredBlackBell'
+  | 'conjuredAcidJavelin'
+  | 'conjuredRotHammer'
+  | 'conjuredHarpoon'
+  | 'conjuredWrenchingBow'
+  | 'conjuredBreachingArbalest'
+  | 'conjuredHushVial'
+  | 'conjuredSnareBolas'
+  | 'conjuredHollowMaul'
+  | 'conjuredSiphonMaul'
+  | 'conjuredGlassLongbow'
+  | 'conjuredHushingHammer'
+  | 'conjuredCalcifiedBuckler'
+  | 'conjuredHollowDart'
+  | 'conjuredPlagueSpear'
+  | 'conjuredMarrowdrinker'
+  | 'conjuredGravebreaker'
   // ---- Mine creatures (never offered to players) ----
   | 'crudeSpear'
   | 'stoneSpear'
@@ -127,6 +145,7 @@ export type ItemId =
   // ---- Adventure gear (sold and forged in Exploration towns only) ----
   | 'travellersDagger'
   | 'quarterstaff'
+  | 'shortsword'
   | 'huntingBow'
   | 'ironShortsword'
   | 'apprenticeWand'
@@ -154,9 +173,11 @@ export type ItemId =
   | 'gemAmethyst'
   | 'gemOnyx'
   | 'gemDiamond'
-  | 'herbMoonleaf'
-  | 'herbEmberroot'
-  | 'herbBogcap'
+  | 'gemPearl'
+  | 'herbMoonglow'
+  | 'herbWaterleaf'
+  | 'herbDeathweed'
+  | 'herbFireblossom'
   // ---- Adventure drops: what fallen creatures leave, sold at guilds ----
   | 'manaStoneSmall'
   | 'manaStoneMedium'
@@ -172,8 +193,51 @@ export type ItemId =
   | 'wolfFang'
   | 'boarHide'
   | 'boarTusk'
+  | 'lionPelt'
+  | 'lionFang'
+  | 'koboldScale'
+  | 'demonHorn'
+  | 'badCharm'
+  | 'magmaShardTank'
+  | 'magmaShardHealer'
+  | 'magmaShardMage'
+  | 'gelRed'
+  | 'gelBlue'
+  | 'gelBlack'
+  | 'gelWhite'
+  | 'wood'
+  | 'voidShard'
+  | 'beastHorn'
+  | 'pebble'
+  | 'lostSoul'
   // ---- Adventure tools ----
-  | 'pickaxe';
+  | 'pickaxe'
+  // ---- Adventure bags and key items ----
+  | 'smallBag'
+  | 'goodBag'
+  | 'mineMap'
+  // ---- Bloodmoon boss materials ----
+  | 'moonshardWhite'
+  | 'moonshardBlue'
+  | 'moonshardBlack'
+  | 'moonshardRed'
+  | 'moonshardGreen'
+  // ---- Adventure staffs ----
+  | 'rubyStaff'
+  | 'sapphireStaff'
+  | 'emeraldStaff'
+  | 'amethystStaff'
+  | 'onyxStaff'
+  | 'diamondStaff'
+  | 'geodeStaff'
+  | 'lensStaff'
+  | 'surgeStaff'
+  | 'thriftStaff'
+  | 'farStaff'
+  | 'hexStaff'
+  | 'prismStaff'
+  // ---- Crafted at a bench: the id spells the whole item out (crafting/item.ts) ----
+  | `craft:${string}`;
 
 /**
  * Rarity tiers, ordered from most common to rarest. The shop draft rolls a
@@ -262,6 +326,10 @@ export interface WeaponMod {
   knockbackUnits?: number;
   /** After landing a strike, the attacker may dash this many range-units (Lunging Edge). */
   dashAfterHitUnits?: number;
+  /** +1 damage per `per` px the wielder moved this turn before the strike, up to `max`. */
+  charge?: { per: number; max: number };
+  /** +1 damage per this many px of the wielder's move range. */
+  moveScaled?: number;
   /**
    * Range-based accuracy (regular bow): a shot within `autoWithin` px always
    * hits; between there and `maxRange` px it hits with `farChance`; beyond
@@ -337,6 +405,40 @@ export interface StatMods {
   int?: number;
 }
 
+/** A staff's own bolt: a main action that costs mana and rolls no cast check. */
+export interface StaffBolt {
+  label: string;
+  mana: number;
+  sides: number;
+  /** Added to the Int-scaled dice count (never below one die). */
+  diceDelta?: number;
+  type: DamageType;
+  rangePx: number;
+  /** The aimed foe plus the nearest others in range, this many in all. Default 1. */
+  targets?: number;
+  /** What a landed bolt also does to the struck. */
+  onHit?: HitEffect[];
+}
+
+/** What holding a staff does to every word spell cast through it. */
+export interface CastThrough {
+  /** Multiplies the damage of each spell hit. */
+  damageMult?: number;
+  /** Added to every spell's mana cost (negative is cheaper; a cost never drops below 0). */
+  manaDelta?: number;
+  /** Added to every spell's reach, in px. */
+  rangePx?: number;
+  /** A spell hit leaves this on the struck: extra damage taken for a while. */
+  hex?: { name: string; damageTaken: number; duration: number };
+  /** This share of each spell hit lands as `type` instead. */
+  split?: { share: number; type: DamageType };
+}
+
+/** Dice in a staff bolt: one, plus one per 10 Int, plus the bolt's own adjustment; never fewer than one. */
+export function staffDice(int: number, bolt: StaffBolt): number {
+  return Math.max(1, 1 + Math.floor(Math.max(0, int) / 10) + (bolt.diceDelta ?? 0));
+}
+
 export interface ItemDef {
   id: ItemId;
   name: string;
@@ -351,7 +453,7 @@ export interface ItemDef {
   blurb: string;
   /** Wands don't block spellcasting even though they fill a hand slot. */
   isWand?: boolean;
-  /** Expedition companion weapon specialization. */
+  /** Weapon family (bow, hammer...), for anything that picks weapons by kind. */
   weaponFamily?: 'bow' | 'hammer';
   weapon?: WeaponMod;
   armor?: ArmorMod;
@@ -384,6 +486,18 @@ export interface ItemDef {
   material?: boolean;
   /** Gain this much mana whenever you take damage (Channeling Ring). */
   manaOnHit?: number;
+  /** Mana held in it, given to its bearer as an Exploration fight begins. */
+  fightStartMana?: number;
+  /** Stuns and disarms do not take hold on its bearer (roots still do). */
+  stunProof?: boolean;
+  /** Its bearer cannot be pushed, pulled, turned or knocked back. */
+  immovable?: boolean;
+  /** Extra dodges each fight. */
+  extraDodges?: number;
+  /** HP its bearer heals at the start of each of their turns. */
+  regen?: number;
+  /** Its bearer gathers a stone each turn, up to this many; their next landed strike hurls them, +1 damage each. */
+  gatherStones?: number;
   /** Sand Pocket: stores up to 3kg of loose sand. */
   sandPocket?: boolean;
   /** Multiplicative max-HP factor applied once on equip (0.8 = -20%). */
@@ -441,16 +555,32 @@ export interface ItemDef {
   millManaOnce?: boolean;
   /** Flat bonus to strength-based melee damage (Fighter's Gloves). */
   meleeDamageBonus?: number;
-  /** Carried items weigh nothing while this is equipped (Bag of Holding). */
-  bagOfHolding?: boolean;
+  /** A bag: the pack's slot count while carried, and what the things inside it weigh (Bag of Holding: 75%). */
+  pack?: { slots: number; weightMult?: number };
+  /** A key item: takes no pack slot, is never sold or dropped. */
+  keyItem?: boolean;
+  /** A tool (pickaxe): one to a pack slot. */
+  tool?: boolean;
+  /** Made at a crafting bench: how, of what, and with which roll. */
+  crafted?: CraftedInfo;
+  /** Staff bolts held in hand: each is one main-action choice. */
+  staffBolts?: StaffBolt[];
+  /** Changes every word spell cast while this is held. */
+  castThrough?: CastThrough;
   /** First spell each combat that contains a black word costs 0 mana (Dark Mage's Cape). */
   firstBlackSpellFree?: boolean;
   /** Casting through this wand doubles the spell's mana cost (Mutivarg's Rod). */
   doublesSpellCost?: boolean;
   /** Casting through this wand burns this fraction of the target's current mana (Mutivarg's Rod). */
   manaBurnPct?: number;
-  /** A thrown consumable: bonus action to hurl for `rollSpec` damage within `rangePx`, then consumed. */
-  throwable?: { rollSpec: string; rangePx: number };
+  /** A thrown consumable: bonus action to hurl at a unit within `rangePx`, then consumed. */
+  throwable?: {
+    rangePx: number;
+    /** Damage dice; a throw without them only carries its hit effects. */
+    rollSpec?: string;
+    type?: DamageType;
+    onHit?: HitEffect[];
+  };
   /** Grants the "Eldritch" main action (Mantle of Eldritch Truth). */
   eldritchMantle?: boolean;
   /** Grants kill Energy, temporary flight, a life-draining aura and execution. */
@@ -491,6 +621,12 @@ export interface ItemDef {
   cursed?: boolean;
   /** Once equipped, this item cannot be stowed or dropped. */
   permanentlyBinding?: boolean;
+  /** Conjured for one fight: it fades when the fight is over. */
+  fleeting?: boolean;
+  /** What a landed basic attack with this weapon also does to the struck. */
+  onHit?: HitEffect[];
+  /** What holding or wearing this does to anyone who lands a basic attack on you. */
+  onStruck?: HitEffect[];
 }
 
 const U = RANGE_UNIT;
@@ -540,6 +676,236 @@ export const ITEM_DEFS: ItemDef[] = [
       kind: 'dex',
       damageType: 'corrosive',
     },
+  },
+  // ---- Conjured for one fight by the Corrode class spells (Objects) --------
+  {
+    id: 'conjuredAcidJavelin',
+    name: 'Acid Javelin',
+    slot: 'utility',
+    set: 'conjured',
+    rarity: 'consumeable',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Bonus action: throw within 10cm for 1d6 pierce + 1d4 corrosive. Fades after the fight.',
+    fleeting: true,
+    throwable: { rollSpec: '1d6', rangePx: 10 * U, onHit: [{ k: 'damage', spec: '1d4', type: 'corrosive' }] },
+  },
+  {
+    id: 'conjuredHollowDart',
+    name: 'Hollow Dart',
+    slot: 'utility',
+    set: 'conjured',
+    rarity: 'consumeable',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Bonus action: throw within 10cm for 1d4 pierce, then drain 1d4 corrosive (heals you). Fades after the fight.',
+    fleeting: true,
+    throwable: { rollSpec: '1d4', rangePx: 10 * U, onHit: [{ k: 'drain', spec: '1d4' }] },
+  },
+  {
+    id: 'conjuredRotHammer',
+    name: 'Rot Hammer',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: '120% Strength shatter. On hit: +1d3 corrosive, +1 damage taken for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.2, damageType: 'shatter' },
+    onHit: [{ k: 'damage', spec: '1d3', type: 'corrosive' }, { k: 'pitted', amount: 1, turns: 2 }],
+  },
+  {
+    id: 'conjuredHarpoon',
+    name: 'Rusted Harpoon',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Dex pierce, range 8cm. On hit: +1d3 corrosive, the target is tethered to you (3cm) for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: 8 * U, kind: 'dex', damageType: 'pierce' },
+    onHit: [{ k: 'damage', spec: '1d3', type: 'corrosive' }, { k: 'tether', px: 3 * U, turns: 2 }],
+  },
+  {
+    id: 'conjuredWrenchingBow',
+    name: 'Wrenching Bow',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    weaponFamily: 'bow',
+    blurb: 'Dex pierce, range 15cm, needs no arrows. On hit: the target is turned a quarter circle around you; a wall or the field edge stopping it adds 1d6 corrosive. Fades after the fight.',
+    fleeting: true,
+    weapon: {
+      rangePx: 15 * U,
+      kind: 'dex',
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 15 * U, maxRange: 15 * U, farChance: 1 },
+    },
+    onHit: [{ k: 'orbit', slam: { spec: '1d6', type: 'corrosive' } }],
+  },
+  {
+    id: 'conjuredBreachingArbalest',
+    name: 'Breaching Arbalest',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Dex pierce +30% damage, range 12cm, ignores armour, needs no bolts. On hit: +1d4 corrosive, 20% chance to stun for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: {
+      rangePx: 12 * U,
+      kind: 'dex',
+      multiplier: 1.3,
+      damageType: 'pierce',
+      ignoreArmor: true,
+      rangeAccuracy: { autoWithin: 12 * U, maxRange: 12 * U, farChance: 1 },
+    },
+    onHit: [{ k: 'damage', spec: '1d4', type: 'corrosive' }, { k: 'stun', turns: 2, chance: 0.2 }],
+  },
+  {
+    id: 'conjuredCalcifiedBuckler',
+    name: 'Calcified Buckler',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Shield: 20% block, +1 armour. Melee attackers who hit you are rooted for 2 turns and take +1 damage for 2 turns. Fades after the fight.',
+    fleeting: true,
+    shield: { blockPct: 0.2, armorFlat: 1, bashMult: 0.6 },
+    onStruck: [{ k: 'root', turns: 2 }, { k: 'pitted', amount: 1, turns: 2 }],
+  },
+  {
+    id: 'conjuredPlagueSpear',
+    name: 'Plague Spear',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: '150% Strength pierce, range 2cm. On hit against units Desecrate harms: +2d4 corrosive, no healing for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: 2 * U, kind: 'strength', multiplier: 1.5, damageType: 'pierce' },
+    onHit: [{ k: 'affected', then: [{ k: 'damage', spec: '2d4', type: 'corrosive' }, { k: 'noHeal', turns: 2 }] }],
+  },
+  {
+    id: 'conjuredMarrowdrinker',
+    name: 'Marrowdrinker',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: '130% Strength shatter. On hit: drain 1d4 corrosive (heals you). Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.3, damageType: 'shatter' },
+    onHit: [{ k: 'drain', spec: '1d4' }],
+  },
+  {
+    id: 'conjuredGravebreaker',
+    name: 'Gravebreaker',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Two-handed, 160% Strength shatter. On hit against units Desecrate harms: +2d6 corrosive and the ground around them is fouled for 2 turns (1d6 corrosive, no healing). Fades after the fight.',
+    fleeting: true,
+    twoHanded: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.6, damageType: 'shatter' },
+    onHit: [{
+      k: 'affected',
+      then: [{ k: 'damage', spec: '2d6', type: 'corrosive' }, { k: 'foul', radius: 2 * U, turns: 2, spec: '1d6' }],
+    }],
+  },
+  // ---- Conjured for one fight by the Veil class spells (Objects) -----------
+  {
+    id: 'conjuredHushVial',
+    name: 'Hush Vial',
+    slot: 'utility',
+    set: 'conjured',
+    rarity: 'consumeable',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Bonus action: throw at a unit within 8cm. Drain 1d4 corrosive (heals you); its next action other than moving fails. Fades after the fight.',
+    fleeting: true,
+    throwable: { rangePx: 8 * U, onHit: [{ k: 'drain', spec: '1d4' }, { k: 'stifle' }] },
+  },
+  {
+    id: 'conjuredSnareBolas',
+    name: 'Snare Bolas',
+    slot: 'utility',
+    set: 'conjured',
+    rarity: 'consumeable',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Bonus action: throw at a unit within 8cm. It is rooted for 3 turns, and you gain a half veil for 2 turns. Fades after the fight.',
+    fleeting: true,
+    throwable: { rangePx: 8 * U, onHit: [{ k: 'root', turns: 3 }, { k: 'veilSelf', turns: 2 }] },
+  },
+  {
+    id: 'conjuredHollowMaul',
+    name: 'Hollow Maul',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: '120% Strength shatter. On hit: 1d3 shadow at the start of the target\'s turns for 4 turns; 20% chance to stun it for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.2, damageType: 'shatter' },
+    onHit: [{ k: 'dot', name: 'Hollow Curse', spec: '1d3', turns: 4, type: 'shadow' }, { k: 'stun', turns: 2, chance: 0.2 }],
+  },
+  {
+    id: 'conjuredSiphonMaul',
+    name: 'Siphoning Maul',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: '120% Strength shatter. On hit: drain 1d4 corrosive (heals you), then dash 2cm straight away from the target. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.2, damageType: 'shatter' },
+    onHit: [{ k: 'drain', spec: '1d4' }, { k: 'dashAway', px: 2 * U }],
+  },
+  {
+    id: 'conjuredGlassLongbow',
+    name: 'Glass Longbow',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    weaponFamily: 'bow',
+    blurb: 'Dex pierce, range 18cm, needs no arrows. 100% hit to 12cm, 75% to 18cm. On hit: +1d4 shatter. Fades after the fight.',
+    fleeting: true,
+    weapon: {
+      rangePx: 18 * U,
+      kind: 'dex',
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 12 * U, maxRange: 18 * U, farChance: 0.75 },
+    },
+    onHit: [{ k: 'damage', spec: '1d4', type: 'shatter' }],
+  },
+  {
+    id: 'conjuredHushingHammer',
+    name: 'Hushing Hammer',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    weaponFamily: 'hammer',
+    blurb: '120% Strength shatter. On hit: 30% chance that the target\'s next action other than moving fails. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.2, damageType: 'shatter' },
+    onHit: [{ k: 'stifle', chance: 0.3 }],
   },
   // ---- Legendary ----------------------------------------------------------
   {
@@ -654,7 +1020,7 @@ export const ITEM_DEFS: ItemDef[] = [
     slot: 'torso',
     set: 'dlc',
     rarity: 'mythical',
-    cost: g(0),
+    cost: g(25),
     weight: 6,
     blurb:
       'Immunity to all debuffs AND buffs. -20% max HP and sanity.',
@@ -668,7 +1034,7 @@ export const ITEM_DEFS: ItemDef[] = [
     slot: 'accessory',
     set: 'dlc',
     rarity: 'unreal',
-    cost: g(0),
+    cost: g(40),
     weight: 1,
     blurb:
       'Immunity to shadow. Weak to light. -50% debuff duration.',
@@ -680,9 +1046,9 @@ export const ITEM_DEFS: ItemDef[] = [
     name: 'Oathbound Mail',
     slot: 'torso',
     set: 'dlc',
-    rarity: 'epic',
-    cost: g(0),
-    weight: 16,
+    rarity: 'unreal',
+    cost: g(30),
+    weight: 10,
     blurb:
       '+2 armour. Resist pierce, slashing and shatter. Weak to corrosive. -25% move.',
     armor: { flat: 2 },
@@ -692,10 +1058,10 @@ export const ITEM_DEFS: ItemDef[] = [
   {
     id: 'chaliceOfClearWater',
     name: 'Chalice of Clear Water',
-    slot: 'utility',
+    slot: 'hand',
     set: 'dlc',
     rarity: 'epic',
-    cost: g(0),
+    cost: g(20),
     weight: 2,
     blurb:
       'Bonus action (6 mana): cleanse all debuffs. Unlimited uses.',
@@ -707,7 +1073,7 @@ export const ITEM_DEFS: ItemDef[] = [
     slot: 'accessory',
     set: 'dlc',
     rarity: 'rare',
-    cost: g(0),
+    cost: g(10),
     weight: 0,
     blurb: '-25% debuff duration.',
     debuffDurationMult: 0.75,
@@ -719,8 +1085,8 @@ export const ITEM_DEFS: ItemDef[] = [
     slot: 'hand',
     set: 'dlc',
     rarity: 'unreal',
-    cost: g(0),
-    weight: 22,
+    cost: g(20),
+    weight: 12,
     blurb:
       'Shield: +2 armour, +2 magic armour, block 60%, bash. 30% Strength shatter.',
     weapon: {
@@ -737,7 +1103,7 @@ export const ITEM_DEFS: ItemDef[] = [
     slot: 'hand',
     set: 'dlc',
     rarity: 'unreal',
-    cost: g(0),
+    cost: g(20),
     weight: 3,
     blurb:
       '+75% Strength slashing, +1cm range. On hit: dash 3cm.',
@@ -754,7 +1120,7 @@ export const ITEM_DEFS: ItemDef[] = [
     name: "Mutivarg's Rod",
     slot: 'hand',
     rarity: 'unreal',
-    cost: g(0),
+    cost: g(25),
     weight: 4,
     blurb:
       'Wand. Casts cost 200% mana and burn 20% of target mana. Weapon Action: spend 25% mana for a slow and root circle, 2 turns. Fails below 4 mana paid.',
@@ -768,7 +1134,7 @@ export const ITEM_DEFS: ItemDef[] = [
     name: "Fighter's Gloves",
     slot: 'accessory',
     rarity: 'unreal',
-    cost: g(0),
+    cost: g(20),
     weight: 2,
     blurb: '+1 armour. +1 melee damage.',
     armor: { flat: 1 },
@@ -779,7 +1145,7 @@ export const ITEM_DEFS: ItemDef[] = [
     name: 'Crossbow',
     slot: 'hand',
     rarity: 'epic',
-    cost: g(0),
+    cost: g(14),
     weight: 7,
     blurb:
       'Range 10cm. d20 vs DC = cm x 2. 2d10+1 pierce, +1d6 if the roll is under 10. Reload 2 turns.',
@@ -795,11 +1161,11 @@ export const ITEM_DEFS: ItemDef[] = [
     name: 'Bag of Holding',
     slot: 'utility',
     rarity: 'unreal',
-    cost: g(0),
+    cost: g(10),
     weight: 3,
     blurb:
-      'No weight, no carry limit.',
-    bagOfHolding: true,
+      'Bag. Unlimited pack slots. What is inside weighs 25% less.',
+    pack: { slots: Infinity, weightMult: 0.75 },
   },
   // ---- Epic ---------------------------------------------------------------
   {
@@ -825,8 +1191,8 @@ export const ITEM_DEFS: ItemDef[] = [
     id: 'woodenBow',
     name: 'Wooden Bow',
     slot: 'hand',
-    rarity: 'rare',
-    cost: g(0),
+    rarity: 'epic',
+    cost: g(10),
     weight: 1,
     weaponFamily: 'bow',
     blurb:
@@ -845,7 +1211,7 @@ export const ITEM_DEFS: ItemDef[] = [
     name: "Neforpubi's Headpiece",
     slot: 'head',
     rarity: 'epic',
-    cost: g(0),
+    cost: g(15),
     weight: 1,
     blurb: '-1 to all incoming sanity damage.',
     mentalReduce: 1,
@@ -855,7 +1221,7 @@ export const ITEM_DEFS: ItemDef[] = [
     name: 'Moonfire Bow',
     slot: 'hand',
     rarity: 'unreal',
-    cost: g(0),
+    cost: g(25),
     weight: 2,
     blurb: 'Dex attack +5, +50% damage, pierce, range 24cm. 100% hit to 20cm, 75% to 24cm. Uses arrows. Burning arrows.',
     weaponFamily: 'bow',
@@ -1111,12 +1477,12 @@ export const ITEM_DEFS: ItemDef[] = [
     material: true,
   },
   {
-    id: 'golemCore',
-    name: 'Golem Core',
+    id: 'stoneHeart',
+    name: 'Stone Heart',
     slot: 'utility',
     rarity: 'consumeable',
     cost: g(2),
-    weight: 2,
+    weight: 3,
     blurb: 'Material. Salvaged from a golem.',
     material: true,
   },
@@ -1141,8 +1507,8 @@ export const ITEM_DEFS: ItemDef[] = [
     material: true,
   },
   {
-    id: 'elementalGeode',
-    name: 'Elemental Geode',
+    id: 'redStone',
+    name: 'Red Stone',
     slot: 'utility',
     rarity: 'consumeable',
     cost: g(2),
@@ -1161,13 +1527,13 @@ export const ITEM_DEFS: ItemDef[] = [
     material: true,
   },
   {
-    id: 'echoMembrane',
-    name: 'Echo Membrane',
+    id: 'batLeather',
+    name: 'Bat Leather',
     slot: 'utility',
     rarity: 'consumeable',
     cost: g(0.5),
     weight: 0.5,
-    blurb: 'Material. Salvaged from a cavern bat.',
+    blurb: 'Material. Skinned from a cavern bat.',
     material: true,
   },
   {
@@ -1514,9 +1880,9 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: g(4),
     weight: 1,
-    blurb: 'Dex attack, pierce.',
+    blurb: 'Dex attack +6, pierce.',
     adventureOnly: true,
-    weapon: { rangePx: MELEE_RANGE, kind: 'dex', damageType: 'pierce' },
+    weapon: { rangePx: MELEE_RANGE, kind: 'dex', dexBonus: 6, damageType: 'pierce' },
   },
   {
     id: 'quarterstaff',
@@ -1525,9 +1891,20 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: g(3),
     weight: 2,
-    blurb: '90% Strength shatter, +0.5cm range.',
+    blurb: '90% Strength shatter, +2cm range.',
     adventureOnly: true,
-    weapon: { rangePx: MELEE_RANGE + U * 0.5, kind: 'strength', multiplier: 0.9, damageType: 'shatter' },
+    weapon: { rangePx: MELEE_RANGE + U * 2, kind: 'strength', multiplier: 0.9, damageType: 'shatter' },
+  },
+  {
+    id: 'shortsword',
+    name: 'Shortsword',
+    slot: 'hand',
+    rarity: 'common',
+    cost: g(4),
+    weight: 2,
+    blurb: '150% Strength slashing.',
+    adventureOnly: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.5, damageType: 'slashing' },
   },
   {
     id: 'huntingBow',
@@ -1768,8 +2145,9 @@ export const ITEM_DEFS: ItemDef[] = [
       ['gemSapphire', 'Sapphire', 3],
       ['gemEmerald', 'Emerald', 3],
       ['gemAmethyst', 'Amethyst', 2],
-      ['gemOnyx', 'Onyx', 2],
+      ['gemOnyx', 'Onyx', 3],
       ['gemDiamond', 'Diamond', 8],
+      ['gemPearl', 'Pearl', 3],
     ] as const
   ).map(([id, name, gold]): ItemDef => ({
     id,
@@ -1785,9 +2163,10 @@ export const ITEM_DEFS: ItemDef[] = [
   })),
   ...(
     [
-      ['herbMoonleaf', 'Moonleaf', 0.5],
-      ['herbEmberroot', 'Emberroot', 1],
-      ['herbBogcap', 'Bogcap', 0.5],
+      ['herbMoonglow', 'Moonglow', 0.5],
+      ['herbWaterleaf', 'Waterleaf', 0.5],
+      ['herbDeathweed', 'Deathweed', 0.5],
+      ['herbFireblossom', 'Fireblossom', 1],
     ] as const
   ).map(([id, name, gold]): ItemDef => ({
     id,
@@ -1808,15 +2187,32 @@ export const ITEM_DEFS: ItemDef[] = [
       ['manaStoneBig', 'Big Mana Stone', 12, 0.5, 'Left by the dead.'],
       ['ectoplasm', 'Ectoplasm', 1, 0.1, 'Left by wisps and specters.'],
       ['darksteelBar', 'Darksteel Bar', 30, 2, 'Salvaged from defenders and ghasts.'],
-      ['ghastEssence', 'Ghast Essence', 25, 0.3, 'Salvaged from a ghast.'],
+      ['ghastEssence', 'Ghast Pearl', 25, 0.3, 'Salvaged from a ghast.'],
       ['lichCore', 'Lich Core', 150, 1, 'Salvaged from a lich.'],
       ['reaperCore', 'Reaper Core', 200, 1, 'Salvaged from a reaper.'],
       ['rabbitPelt', 'Rabbit Pelt', 1, 0.3, 'Skinned from a rabbit.'],
-      ['slimeGel', 'Slime Gel', 1, 0.2, 'Scraped from a slime.'],
+      ['slimeGel', 'Green Gel', 1, 0.2, 'Scraped from a green slime.'],
+      ['gelRed', 'Red Gel', 1, 0.2, 'Scraped from a red slime.'],
+      ['gelBlue', 'Blue Gel', 1, 0.2, 'Scraped from a blue slime.'],
+      ['gelBlack', 'Black Gel', 1, 0.2, 'Scraped from a black slime.'],
+      ['gelWhite', 'White Gel', 1, 0.2, 'Scraped from a white slime.'],
       ['wolfPelt', 'Wolf Pelt', 3, 0.8, 'Skinned from a wolf.'],
       ['wolfFang', 'Wolf Fang', 4, 0.1, 'Pulled from a wolf.'],
       ['boarHide', 'Boar Hide', 4, 1.5, 'Skinned from a boar.'],
       ['boarTusk', 'Boar Tusk', 6, 0.4, 'Pulled from a boar.'],
+      ['lionPelt', 'Lion Pelt', 8, 1.2, 'Skinned from a lion.'],
+      ['lionFang', 'Lion Fang', 7, 0.2, 'Pulled from a lion.'],
+      ['koboldScale', 'Kobold Scale', 2, 0.3, 'Salvaged from a kobold.'],
+      ['demonHorn', 'Soldier Demon Horn', 20, 1, 'Broken from a soldier demon.'],
+      ['badCharm', 'Bad Charm', 15, 0.1, 'Dropped by an oni. It means ill.'],
+      ['magmaShardTank', 'Magma Shard (Tank)', 30, 1, 'Salvaged from a tank magma sentinel.'],
+      ['magmaShardHealer', 'Magma Shard (Healer)', 30, 1, 'Salvaged from a healer magma sentinel.'],
+      ['magmaShardMage', 'Magma Shard (Mage)', 30, 1, 'Salvaged from a mage magma sentinel.'],
+      ['wood', 'Wood', 1, 1, 'Cut timber.'],
+      ['voidShard', 'Void Shard', 120, 0.3, 'Left by a reaper.'],
+      ['beastHorn', 'Beast Demon Horn', 15, 0.8, 'Broken from a beast demon.'],
+      ['pebble', 'Pebble', 1, 0.3, 'Shed by a rockling.'],
+      ['lostSoul', 'Lost Soul', 250, 0.1, 'Freed from a deathknight.'],
     ] as const
   ).map(([id, name, silver, weight, source]): ItemDef => ({
     id,
@@ -1836,9 +2232,147 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'consumeable',
     cost: g(3),
     weight: 3,
-    blurb: 'Tool. In the Mines each one carried is a pickaxe with 10 durability. Lost when it breaks.',
+    blurb: 'Tool. Needed to mine ore. In the Mines each one carried is a pickaxe with 10 durability. Lost when it breaks.',
+    material: true,
+    tool: true,
+    adventureOnly: true,
+  },
+  // ---- Adventure bags and key items ----------------------------------------
+  {
+    id: 'smallBag',
+    name: 'Small Bag',
+    slot: 'utility',
+    rarity: 'common',
+    cost: 5,
+    weight: 1,
+    blurb: 'Bag. 15 pack slots.',
+    adventureOnly: true,
+    pack: { slots: 15 },
+  },
+  {
+    id: 'goodBag',
+    name: 'Good Bag',
+    slot: 'utility',
+    rarity: 'rare',
+    cost: g(2),
+    weight: 1,
+    blurb: 'Bag. 30 pack slots.',
+    adventureOnly: true,
+    pack: { slots: 30 },
+  },
+  {
+    id: 'mineMap',
+    name: 'Minemap',
+    slot: 'utility',
+    rarity: 'rare',
+    cost: g(3),
+    weight: 0,
+    blurb: 'Key item. The party keeps its map of the Mines between visits. Kept through every bloodmoon.',
+    adventureOnly: true,
+    keyItem: true,
+  },
+  ...(
+    [
+      ['moonshardWhite', 'White Moonshard'],
+      ['moonshardBlue', 'Blue Moonshard'],
+      ['moonshardBlack', 'Black Moonshard'],
+      ['moonshardRed', 'Red Moonshard'],
+      ['moonshardGreen', 'Green Moonshard'],
+    ] as const
+  ).map(([id, name]): ItemDef => ({
+    id,
+    name,
+    slot: 'utility',
+    rarity: 'legendary',
+    cost: g(8),
+    weight: 0.3,
+    blurb: 'Material. Left by a bloodmoon boss of its colour. The finest focus a crafting bench takes.',
     material: true,
     adventureOnly: true,
+  })),
+  // ---- Adventure staffs: forged; held in hand, they never block casting ----
+  ...(
+    [
+      ['rubyStaff', 'Ruby Staff', 'heat'],
+      ['sapphireStaff', 'Sapphire Staff', 'cold'],
+      ['emeraldStaff', 'Emerald Staff', 'corrosive'],
+      ['amethystStaff', 'Amethyst Staff', 'sanity'],
+      ['onyxStaff', 'Onyx Staff', 'shadow'],
+      ['diamondStaff', 'Diamond Staff', 'light'],
+      ['geodeStaff', 'Geode Staff', 'shatter'],
+      ['lensStaff', 'Lens Staff', 'pierce'],
+    ] as const
+  ).map(([id, name, type]): ItemDef => ({
+    id,
+    name,
+    slot: 'hand',
+    rarity: 'rare',
+    cost: g(8),
+    weight: 1.5,
+    blurb: `Staff. Main action, 3 mana: Xd6 ${type} to one foe within 10cm. X = 1 + Int/10.`,
+    adventureOnly: true,
+    isWand: true,
+    staffBolts: [{ label: 'Bolt', mana: 3, sides: 6, type, rangePx: 10 * U }],
+  })),
+  {
+    id: 'surgeStaff',
+    name: 'Overcharged Staff',
+    slot: 'hand',
+    rarity: 'epic',
+    cost: g(12),
+    weight: 1.5,
+    blurb: 'Staff. Spells cast through it: +50% damage, +2 mana.',
+    adventureOnly: true,
+    isWand: true,
+    castThrough: { damageMult: 1.5, manaDelta: 2 },
+  },
+  {
+    id: 'thriftStaff',
+    name: "Miser's Staff",
+    slot: 'hand',
+    rarity: 'epic',
+    cost: g(12),
+    weight: 1.5,
+    blurb: 'Staff. Spells cast through it: -2 mana.',
+    adventureOnly: true,
+    isWand: true,
+    castThrough: { manaDelta: -2 },
+  },
+  {
+    id: 'farStaff',
+    name: "Farcaster's Staff",
+    slot: 'hand',
+    rarity: 'epic',
+    cost: g(12),
+    weight: 1.5,
+    blurb: 'Staff. Spells cast through it: +5cm range.',
+    adventureOnly: true,
+    isWand: true,
+    castThrough: { rangePx: 5 * U },
+  },
+  {
+    id: 'hexStaff',
+    name: 'Hexwood Staff',
+    slot: 'hand',
+    rarity: 'epic',
+    cost: g(12),
+    weight: 1.5,
+    blurb: 'Staff. Spells cast through it hex the enemies they hit: +1 damage taken, 2 turns.',
+    adventureOnly: true,
+    isWand: true,
+    castThrough: { hex: { name: 'Hexed', damageTaken: 1, duration: 3 } },
+  },
+  {
+    id: 'prismStaff',
+    name: 'Prism Staff',
+    slot: 'hand',
+    rarity: 'epic',
+    cost: g(12),
+    weight: 1.5,
+    blurb: 'Staff. Spells cast through it: half of every hit is light damage.',
+    adventureOnly: true,
+    isWand: true,
+    castThrough: { split: { share: 0.5, type: 'light' } },
   },
 ];
 
@@ -1848,13 +2382,37 @@ const ITEM_BY_ID: Record<ItemId, ItemDef> = ITEM_DEFS.reduce((acc, def) => {
 }, {} as Record<ItemId, ItemDef>);
 
 export function getItem(id: ItemId): ItemDef {
+  if (isCraftedItemId(id)) return resolveCraftedItem(id) as ItemDef;
   return ITEM_BY_ID[id];
+}
+
+/** A catalogue id, or a crafted id that reads as a whole item. */
+export function isItemId(value: unknown): value is ItemId {
+  if (typeof value !== 'string') return false;
+  if (isCraftedItemId(value)) return !!resolveCraftedItem(value);
+  return Object.prototype.hasOwnProperty.call(ITEM_BY_ID, value);
+}
+
+/** Ids an item once had, read as the item it became (saves, snapshots, the wire). */
+const RENAMED: Readonly<Record<string, ItemId>> = {
+  herbMoonleaf: 'herbMoonglow',
+  herbEmberroot: 'herbFireblossom',
+  herbBogcap: 'herbDeathweed',
+  golemCore: 'stoneHeart',
+  elementalGeode: 'redStone',
+  echoMembrane: 'batLeather',
+  gemOpal: 'gemOnyx',
+};
+
+/** `id`, or what it was renamed to. */
+export function currentItemId(id: string): string {
+  return Object.prototype.hasOwnProperty.call(RENAMED, id) ? RENAMED[id] : id;
 }
 
 /** A list is a valid {@link ItemId} array (used to sanitise networked carts). */
 export function asItemIds(value: unknown): ItemId[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((v): v is ItemId => typeof v === 'string' && Object.prototype.hasOwnProperty.call(ITEM_BY_ID, v));
+  return value.map((entry) => (typeof entry === 'string' ? currentItemId(entry) : entry)).filter(isItemId);
 }
 
 /** Format a silver amount as a friendly gold/silver string. */
@@ -1878,13 +2436,11 @@ function emptySlotCounts(): Record<ItemSlot, number> {
 
 /**
  * Trim a desired cart down to a *legal* loadout: the per-slot capacities and
- * the carry capacity (weight). A Bag of Holding in the cart lifts the weight
- * limit entirely. Items are considered in order and each is kept only if it
- * still fits. Deterministic, so both peers sanitise a cart to the same result.
+ * the carry capacity (weight). Items are considered in order and each is kept
+ * only if it still fits. Deterministic, so both peers sanitise a cart to the same result.
  */
 export function sanitizeCart(items: ItemId[], strength: number, budget = Infinity): ItemId[] {
   const cap = carryCapacity(strength);
-  const hasBag = items.some((id) => !!ITEM_BY_ID[id]?.bagOfHolding);
   const kept: ItemId[] = [];
   const counts = emptySlotCounts();
   let spent = 0;
@@ -1893,7 +2449,7 @@ export function sanitizeCart(items: ItemId[], strength: number, budget = Infinit
     const def = ITEM_BY_ID[id];
     if (!def || def.enemyOnly) continue;
     if (spent + def.cost > budget) continue;
-    if (!hasBag && weight + def.weight > cap) continue;
+    if (weight + def.weight > cap) continue;
     // Hand items are never dropped for exceeding the slot cap: they all go into
     // the bag at equip time and are equipped/unequipped by hand during the duel.
     // Only worn/accessory slots enforce their capacity at purchase.

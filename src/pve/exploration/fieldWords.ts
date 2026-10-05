@@ -11,6 +11,7 @@ import { GameState } from '../../core/GameState';
 import type { ItemId } from '../../core/Items';
 import { Mage } from '../../core/Mage';
 import type { WordId } from '../../core/Words';
+import { casterReach } from '../../spells/registry';
 import type { Spell } from '../../spells/Spell';
 
 export type FieldEffect = 'veil' | 'bind' | 'mind' | 'heal';
@@ -79,8 +80,8 @@ const verdicts = new Map<string, Promise<boolean>>();
  * out; a spell that moves the caster, asks for another aim, or calls something
  * up is not one, nor is one that leaves the dummy unhurt. Cached per spell.
  */
-export function isStraightAttack(spell: Spell, mageClass: MageClass): Promise<boolean> {
-  const key = `${mageClass}:${spell.id}`;
+export function isStraightAttack(spell: Spell, mageClass: MageClass | null): Promise<boolean> {
+  const key = `${mageClass ?? 'none'}:${spell.id}`;
   let verdict = verdicts.get(key);
   if (!verdict) {
     verdict = trySpell(spell, mageClass).catch(() => false);
@@ -89,12 +90,13 @@ export function isStraightAttack(spell: Spell, mageClass: MageClass): Promise<bo
   return verdict;
 }
 
-async function trySpell(spell: Spell, mageClass: MageClass): Promise<boolean> {
+async function trySpell(spell: Spell, mageClass: MageClass | null): Promise<boolean> {
   if (spell.targeting !== 'enemy' && spell.targeting !== 'point' && spell.targeting !== 'any') return false;
   if (spell.twoPointAim || spell.rotatableWall || spell.minStackDepth || spell.delaysStackItem || spell.nullifiesStack) return false;
-  const caster = new Mage({ name: 'Caster', isAI: true, team: 1, position: { x: 400, y: 240 }, loadout: [...spell.words], mageClass });
+  const caster = new Mage({ name: 'Caster', isAI: true, team: 1, position: { x: 400, y: 240 }, loadout: [...spell.words], mageClass: mageClass ?? undefined });
+  caster.classless = !mageClass;
   caster.assignFlatStats(3);
-  const far = Number.isFinite(spell.range) ? spell.range : 400;
+  const far = Number.isFinite(casterReach(spell)) ? casterReach(spell) : 400;
   const gap = Math.max((spell.minRange ?? 0) + 6, Math.min(far * 0.8, far - 6, 400));
   const mark = new Mage({ name: 'Mark', isAI: true, team: 2, position: { x: 400 + gap, y: 240 }, loadout: [] });
   mark.maxHp = 999;

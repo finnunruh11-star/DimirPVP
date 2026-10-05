@@ -23,7 +23,6 @@ import {
   makeArcherSummon,
   makeBinderSummon,
   makeCorrosionSentry,
-  makeGhostSummon,
   makeNeuralLeech,
   makeThoughtLeech,
 } from '../core/summons';
@@ -41,6 +40,10 @@ import {
 import type { EffectContext } from '../effects/effects';
 import { attachSummonRider } from './summonRiders';
 import { registerClassSpell, registerClassSpellVariants } from './registry';
+import './waves/corrodeClass';
+import './waves/veilClass';
+import './waves/mindClass';
+import './waves/waterClass';
 
 /** Abstract range number (5 / 10 / 15) to pixels. */
 const R = (units: number): number => units * RANGE_UNIT;
@@ -101,77 +104,7 @@ function classLightningPower(ctx: EffectContext): number {
   return power;
 }
 
-// ===========================================================================
-//  MIND SHADOW   (mind + shadow — all nouns)
-//    Objects  : a conjured shadow-edge that mills the mind and stains the ground.
-//    Life     : raise a controllable "mill"-damage ghost that can hold an item.
-//    Hexcraft : wreathe a foe in a mind-eating shadow aura that bleeds those near it.
-// ===========================================================================
-registerClassSpell({
-  words: ['mind', 'shadow'],
-  variants: {
-    objects: {
-      name: 'Mind Shadow',
-      actionType: 'main',
-      range: 0,
-      targeting: 'self',
-      dc: 11,
-      noCrit: true,
-      noCastSprite: true,
-      description:
-        'Enchant your held weapon: for the rest of the fight its strikes deal ' +
-        'sanity damage instead of their normal damage.',
-      visual: { preset: 'conjure', color: 0x9b7bff, size: 22, speed: 1 },
-      cast(ctx) {
-        ctx.caster.weaponEnchant = 'mindShadow';
-        ctx.log(`${ctx.caster.name}'s weapon is sheathed in mind-eating shadow.`);
-      },
-    },
-    life: {
-      name: 'Mind Shadow',
-      actionType: 'main',
-      range: R(6),
-      targeting: 'point',
-      dc: 12,
-      noCrit: true,
-      noCastSprite: true,
-      manualCastVisual: true,
-      description:
-        'Summon a ghost (aimed within range 6). It deals "mill" (sanity) damage, ' +
-        'can hold and use one item, and obeys your Command bonus action. HP 7; ' +
-        'its str/dex/int scale with the cast roll and your intellect. Incorporeal ' +
-        'and undead, but weak to light - bad in daylight.',
-      visual: { preset: 'conjure', color: 0x9b7bff, size: 26, speed: 1 },
-      cast(ctx) {
-        if (!ctx.targetPoint) return;
-        const ghost = makeGhostSummon({
-          ownerInt: ctx.caster.effectiveInt(),
-          dcRoll: summonVigor(ctx),
-          ownerName: ctx.caster.name,
-          pos: ctx.targetPoint,
-          team: ctx.caster.team,
-        });
-        ctx.game.spawnSummon(ghost, ctx.caster, 'ghost');
-        ctx.log(`${ctx.caster.name} raises ${ghost.name} (HP ${ghost.hp}).`);
-      },
-    },
-    hexcraft: {
-      name: 'Mind Shadow',
-      actionType: 'main',
-      range: 0,
-      targeting: 'self',
-      dc: 12,
-      noCrit: true,
-      description:
-        'Deepen shadow across the entire battlefield for 8 rounds. Every instance of ' +
-        'shadow damage or mill (sanity) damage deals 2 additional damage, regardless of source.',
-      visual: { preset: 'nova', color: 0x9b7bff, size: 110, speed: 0.8 },
-      cast(ctx) {
-        ctx.game.addHexcraftGlobal('mindShadow', ctx.caster.team, HEXCRAFT_FIELD_DURATION);
-      },
-    },
-  },
-});
+// Mind Shadow's class variants live in waves/mindClass.ts.
 
 // ===========================================================================
 //  TARGETED CLASS OVERRIDES

@@ -3,18 +3,18 @@
 // dice the caller hands in, so a reload finds the same thing.
 
 import type { Dice } from '../../core/Dice';
-import { getItem, type ItemId } from '../../core/Items';
-import { grantToParty } from './economy';
+import type { ItemId } from '../../core/Items';
+import { grantToParty, haulLabel } from './economy';
 import type { ExplorationRun } from './run';
 import type { RegionId } from './world';
 
 export const HERBS: Record<RegionId, ItemId[]> = {
-  capitol: ['herbMoonleaf'],
-  forest: ['herbMoonleaf', 'herbBogcap'],
-  red: ['herbEmberroot'],
-  black: ['herbBogcap'],
-  lake: ['herbMoonleaf', 'herbBogcap'],
-  white: ['herbEmberroot'],
+  capitol: ['herbMoonglow'],
+  forest: ['herbMoonglow', 'herbWaterleaf'],
+  red: ['herbFireblossom'],
+  black: ['herbDeathweed'],
+  lake: ['herbWaterleaf', 'herbMoonglow'],
+  white: ['herbMoonglow', 'herbFireblossom'],
 };
 
 export const GEMS: Record<RegionId, ItemId[]> = {
@@ -22,8 +22,8 @@ export const GEMS: Record<RegionId, ItemId[]> = {
   forest: ['gemEmerald', 'gemAmethyst'],
   red: ['gemRuby', 'gemSapphire'],
   black: ['gemOnyx', 'gemAmethyst'],
-  lake: ['gemSapphire', 'gemEmerald'],
-  white: ['gemSapphire', 'gemAmethyst', 'gemDiamond'],
+  lake: ['gemSapphire', 'gemEmerald', 'gemPearl'],
+  white: ['gemSapphire', 'gemAmethyst', 'gemDiamond', 'gemPearl'],
 };
 
 /** Ore near enough the surface to dig out by hand. */
@@ -55,13 +55,11 @@ export function rollFind(run: ExplorationRun, zone: RegionId, depth: number, dic
   const pool = roll < 0.55 ? HERBS[zone] : roll < 0.75 ? SUPPLIES : roll < 0.93 || depth < 3 ? GEMS[zone] : LOST_KIT;
   const id = dice.pick(pool);
   const count = pool === HERBS[zone] ? dice.die(2) : id === 'arrow' ? 3 + dice.die(4) : 1;
-  grantToParty(run, id, count);
-  return `${where}: ${count > 1 ? `${count}x ` : ''}${getItem(id).name}.`;
+  return `${where}: ${grant(run, id, count)}.`;
 }
 
 function grant(run: ExplorationRun, id: ItemId, count: number): string {
-  grantToParty(run, id, count);
-  return `${count > 1 ? `${count}x ` : ''}${getItem(id).name}`;
+  return haulLabel(id, count, grantToParty(run, id, count));
 }
 
 /** Pick a patch clean: two to four of the herb. */

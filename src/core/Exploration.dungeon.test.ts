@@ -4,12 +4,39 @@ import { dungeonCombat, DUNGEON_REFIGHT, DUNGEONS } from '../pve/exploration/dun
 import { shopStock } from '../pve/exploration/economy';
 import { creaturePower, rollForestWave, spawnKindId } from '../pve/exploration/encounters';
 import { capturePartySnapshot } from '../pve/exploration/party';
-import { enterMines, mineCycle, minePassageDice, spendMineHours } from '../pve/exploration/mines';
+import { enterMines, mineCycle, minePassageDice, mineSeed, spendMineHours } from '../pve/exploration/mines';
 import { createRun } from '../pve/exploration/run';
 import { parseRun } from '../pve/exploration/save';
 import { shopById } from '../pve/exploration/shops';
 import { PLACES, placeById } from '../pve/exploration/world';
-import { createMineMaze, currentMineNode, MINE_DIRECTIONS, MINE_DIRECTION_VECTOR, MINE_OPPOSITE_DIRECTION, mineRoomNeedsInteraction, travelMineMaze } from '../pve/mineMaze';
+import {
+  MINE_TUNNEL_LONGEST,
+  MINE_TUNNEL_SHORTEST,
+  mineGap,
+  mineNodePoint,
+  mineTunnelHours,
+  mineTunnelLength,
+} from '../pve/mineLayout';
+import { createMineMaze, currentMineNode, MINE_DIRECTIONS, MINE_DIRECTION_VECTOR, MINE_OPPOSITE_DIRECTION, mineRoomNeedsInteraction, mineTrapHarm, travelMineMaze } from '../pve/mineMaze';
+
+type Pt = { x: number; y: number };
+
+function distanceToSegment(p: Pt, a: Pt, b: Pt): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+}
+
+/** Do segments ab and cd cross at a point inside both? */
+function segmentsCross(a: Pt, b: Pt, c: Pt, d: Pt): boolean {
+  const side = (o: Pt, p: Pt, q: Pt): number => (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+  const d1 = side(c, d, a);
+  const d2 = side(c, d, b);
+  const d3 = side(a, b, c);
+  const d4 = side(a, b, d);
+  return d1 * d2 < 0 && d3 * d4 < 0;
+}
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -224,6 +251,129 @@ const tests: [name: string, run: () => void][] = [
     const excess = JSON.parse(JSON.stringify(run));
     for (let index = 1; index < 520; index++) excess.mines.maze.nodes[index] = { id: index };
     equal(parseRun(JSON.stringify(excess))?.mines, null, 'oversized graphs are refused');
+  }],
+
+  ['stretches mine tunnels from a third to twice a standard tunnel, keeping every passage clear', () => {
+    const gaps: number[] = [];
+    for (let seed = 1; seed <= 12; seed++) {
+      for (let index = -40; index < 40; index++) gaps.push(mineGap(seed * 7919, 'x', index), mineGap(seed * 7919, 'y', index));
+    }
+    assert(gaps.every((gap) => gap >= MINE_TUNNEL_SHORTEST - 1e-9 && gap <= MINE_TUNNEL_LONGEST + 1e-9), 'every gap lies between a third and twice');
+    assert(Math.min(...gaps) < 0.4 && Math.max(...gaps) > 1.9, `the whole range turns up (${Math.min(...gaps).toFixed(2)}-${Math.max(...gaps).toFixed(2)})`);
+    const short = gaps.filter((gap) => gap < 0.75).length / gaps.length;
+    const long = gaps.filter((gap) => gap > 1.4).length / gaps.length;
+    assert(short > 0.2 && long > 0.2, `short and long tunnels are both common (${short.toFixed(2)} / ${long.toFixed(2)})`);
+    equal([mineGap(undefined, 'x', 3), mineTunnelHours({}, { mapX: 2, mapY: -1 }, 'NE')], [1, 0.05], 'a mine without a layout keeps standard tunnels');
+    for (let seed = 1; seed <= 20; seed++) {
+      const rng = new Dice(seed);
+      const maze = createMineMaze(rng, { shops: false, layoutSeed: seed * 104729 });
+      for (let step = 0; step < 120; step++) {
+        const frontier = Object.values(maze.nodes).flatMap((node) => MINE_DIRECTIONS
+          .filter((direction) => node.exits[direction] === null).map((direction) => ({ node, direction })));
+        if (!frontier.length) break;
+        const choice = frontier[rng.die(frontier.length) - 1];
+        maze.currentNodeId = choice.node.id;
+        travelMineMaze(maze, choice.direction, rng);
+      }
+      const tunnels: [Pt, Pt, number, number][] = [];
+      for (const node of Object.values(maze.nodes)) {
+        for (const direction of MINE_DIRECTIONS) {
+          if (!Object.prototype.hasOwnProperty.call(node.exits, direction)) continue;
+          const length = mineTunnelLength(maze, node, direction);
+          assert(length >= MINE_TUNNEL_SHORTEST - 1e-9 && length <= MINE_TUNNEL_LONGEST + 1e-9, `seed ${seed}: ${length} is a third to twice`);
+          const minutes = mineTunnelHours(maze, node, direction) * 60;
+          assert(minutes >= 1 - 1e-9 && minutes <= 6 + 1e-9 && Math.abs(minutes - Math.round(minutes)) < 1e-9,
+            `seed ${seed}: ${minutes} min is 1 to 6 whole minutes`);
+          const id = node.exits[direction];
+          if (id == null) continue;
+          const target = maze.nodes[id];
+          equal(mineTunnelLength(maze, target, MINE_OPPOSITE_DIRECTION[direction]).toFixed(9), length.toFixed(9), `seed ${seed}: as long walked back`);
+          if (node.id < id) tunnels.push([mineNodePoint(maze, node.mapX, node.mapY), mineNodePoint(maze, target.mapX, target.mapY), node.id, id]);
+        }
+      }
+      const junctions = Object.values(maze.nodes).map((node) => ({ id: node.id, ...mineNodePoint(maze, node.mapX, node.mapY) }));
+      for (const [a, b, from, to] of tunnels) {
+        for (const junction of junctions) {
+          if (junction.id === from || junction.id === to) continue;
+          assert(distanceToSegment(junction, a, b) >= 0.2, `seed ${seed}: tunnel ${from}-${to} keeps clear of junction ${junction.id}`);
+        }
+      }
+      for (let i = 0; i < tunnels.length; i++) {
+        for (let j = i + 1; j < tunnels.length; j++) {
+          const [a, b, f1, t1] = tunnels[i];
+          const [c, d, f2, t2] = tunnels[j];
+          if (f1 === f2 || f1 === t2 || t1 === f2 || t1 === t2) continue;
+          assert(!segmentsCross(a, b, c, d), `seed ${seed}: tunnels ${f1}-${t1} and ${f2}-${t2} do not cross`);
+        }
+      }
+    }
+  }],
+
+  ['keeps a mine\'s tunnel lengths through a save, and gives older mines lengths of their own', () => {
+    const mage = new Mage({ name: 'Miner', isAI: false, team: 1, position: { x: 0, y: 0 }, loadout: [] });
+    const run = createRun(77, capturePartySnapshot([mage]));
+    const maze = enterMines(run);
+    equal(maze.layoutSeed, mineSeed(run.seed, mineCycle(run.day), 0, 'layout'), 'drawn from the run and its bloodmoon cycle');
+    equal(parseRun(JSON.stringify(run))?.mines?.maze.layoutSeed, maze.layoutSeed, 'a save keeps them');
+    const old = JSON.parse(JSON.stringify(run));
+    delete old.mines.maze.layoutSeed;
+    const older = parseRun(JSON.stringify(old));
+    assert(older?.mines && older.mines.maze.layoutSeed === undefined, 'a mine saved before lengths varied has none');
+    equal(enterMines(older).layoutSeed, maze.layoutSeed, 'and gets the same ones on the way in');
+    const later = createRun(77, capturePartySnapshot([mage]));
+    later.day = 5;
+    assert(enterMines(later).layoutSeed !== maze.layoutSeed, 'the next bloodmoon reshapes them too');
+  }],
+
+  ['spends about half an hour on ten tunnels', () => {
+    let minutes = 0;
+    let tunnels = 0;
+    for (let seed = 1; seed <= 10; seed++) {
+      for (let x = -5; x < 5; x++) {
+        for (const direction of MINE_DIRECTIONS) {
+          minutes += mineTunnelHours({ layoutSeed: seed * 31 }, { mapX: x, mapY: x * 2 }, direction) * 60;
+          tunnels += 1;
+        }
+      }
+    }
+    const perTen = (minutes / tunnels) * 10;
+    assert(perTen > 25 && perTen < 40, `ten tunnels take ${perTen.toFixed(1)} minutes`);
+  }],
+
+  ['sets traps in about a tenth of the passages', () => {
+    let passages = 0;
+    let trapped = 0;
+    for (let seed = 1; seed <= 20; seed++) {
+      const rng = new Dice(seed * 17);
+      const maze = createMineMaze(rng, { shops: false });
+      for (let step = 0; step < 150; step++) {
+        const frontier = Object.values(maze.nodes).flatMap((node) => MINE_DIRECTIONS
+          .filter((direction) => node.exits[direction] === null).map((direction) => ({ node, direction })));
+        if (!frontier.length) break;
+        const choice = frontier[rng.die(frontier.length) - 1];
+        maze.currentNodeId = choice.node.id;
+        travelMineMaze(maze, choice.direction, rng);
+      }
+      for (const node of Object.values(maze.nodes)) {
+        for (const direction of MINE_DIRECTIONS) {
+          if (!Object.prototype.hasOwnProperty.call(node.exits, direction)) continue;
+          const id = node.exits[direction];
+          if (id != null && id < node.id) continue;
+          passages += 1;
+          if (node.traps[direction] || (id != null && maze.nodes[id].traps[MINE_OPPOSITE_DIRECTION[direction]])) trapped += 1;
+        }
+      }
+    }
+    const share = trapped / passages;
+    assert(share > 0.06 && share < 0.15, `${(share * 100).toFixed(1)}% of ${passages} passages are trapped`);
+  }],
+
+  ['lets a trap leave someone at full health on 1 HP, but kill anyone already hurt', () => {
+    equal(mineTrapHarm(4, 10, 10), { dealt: 4, fatal: false, clung: false }, 'a blow they survive lands in full');
+    equal(mineTrapHarm(17, 10, 10), { dealt: 9, fatal: false, clung: true }, 'at full health a killing blow leaves 1 HP');
+    equal(mineTrapHarm(10, 10, 10), { dealt: 9, fatal: false, clung: true }, 'so does an exact one');
+    equal(mineTrapHarm(17, 9, 10), { dealt: 9, fatal: true, clung: false }, 'one point short of full, it kills');
+    equal(mineTrapHarm(3, 1, 1), { dealt: 1, fatal: true, clung: false }, 'with 1 HP to begin with there is nothing to cling to');
   }],
 
   ['fields fiercer beasts deeper into the Small Forest', () => {

@@ -3,6 +3,7 @@ import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
 import { SceneInput } from '../../engine/SceneInput';
 import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
 import { MENU_COLOR, MENU_FONT, MENU_HEX, addRecess } from '../cabinet/theme';
+import { drawRule, drawWindow } from '../pve/HudParts';
 
 export interface CabinetActionEntry {
   id: string;
@@ -187,22 +188,7 @@ export class ChoiceMenuView<T extends string> extends Phaser.GameObjects.Contain
       .setOrigin(0);
     if (dismiss) dim.setInteractive().on('pointerdown', dismiss);
     const width = 620;
-    const height = 236 + options.length * 76;
-    const left = (GAME_WIDTH - width) / 2;
-    const top = (GAME_HEIGHT - height) / 2;
-    const frame = scene.add.graphics();
-    frame.fillStyle(MENU_COLOR.pitch, 1).fillRect(left - 8, top - 8, width + 16, height + 16);
-    frame.fillStyle(MENU_COLOR.woodDeep, 1).fillRect(left, top, width, height);
-    frame.fillStyle(MENU_COLOR.charcoal, 1).fillRect(left + 14, top + 14, width - 28, height - 28);
-    frame.lineStyle(2, MENU_COLOR.brassDark, 1).strokeRect(left + 14.5, top + 14.5, width - 29, height - 29);
-    frame.fillStyle(MENU_COLOR.amethyst, 1).fillRect(left + 14, top + 14, width - 28, 5);
-    const title = scene.add.text(GAME_WIDTH / 2, top + 38, titleText, {
-      fontFamily: MENU_FONT.display,
-      fontSize: '24px',
-      fontStyle: 'bold',
-      color: MENU_HEX.bone,
-    }).setOrigin(0.5, 0);
-    const subtitle = scene.add.text(GAME_WIDTH / 2, top + 72, subtitleText, {
+    const subtitle = scene.add.text(GAME_WIDTH / 2, 0, subtitleText, {
       fontFamily: MENU_FONT.body,
       fontSize: '13px',
       color: MENU_HEX.boneDim,
@@ -210,14 +196,35 @@ export class ChoiceMenuView<T extends string> extends Phaser.GameObjects.Contain
       align: 'center',
       wordWrap: { width: width - 70 },
     }).setOrigin(0.5, 0);
+    // The text sets how far down the options start, and the options share whatever height is left.
+    const textH = Math.max(34, Math.ceil(subtitle.height));
+    const footer = dismiss ? 108 : 56;
+    const room = GAME_HEIGHT - 40 - (98 + textH + footer);
+    const step = Math.max(50, Math.min(76, Math.floor(room / Math.max(1, options.length))));
+    const buttonH = step - 12;
+    const height = 98 + textH + options.length * step + footer;
+    const left = (GAME_WIDTH - width) / 2;
+    const top = Math.max(12, (GAME_HEIGHT - height) / 2);
+    const frame = scene.add.graphics();
+    drawWindow(frame, left, top, width, height, MENU_COLOR.amethyst);
+    drawRule(frame, GAME_WIDTH / 2, top + 70, 170);
+    const title = scene.add.text(GAME_WIDTH / 2, top + 30, titleText, {
+      fontFamily: MENU_FONT.display,
+      fontSize: '24px',
+      fontStyle: 'bold',
+      color: MENU_HEX.brassLight,
+    }).setOrigin(0.5, 0).setLetterSpacing(1);
+    subtitle.setY(top + 84);
     this.add([dim, frame, title, subtitle]);
 
+    const listTop = top + 98 + textH;
     options.forEach((option, index) => {
-      const button = new CabinetButton(scene, left + 38, top + 122 + index * 76, {
+      const button = new CabinetButton(scene, left + 38, listTop + index * step, {
         width: width - 76,
-        height: 64,
+        height: buttonH,
         label: option.label,
-        detail: option.detail,
+        // Squeezed rows keep just the label.
+        detail: buttonH >= 60 ? option.detail : undefined,
         index: String(index + 1),
         enabled: option.enabled ?? true,
         onActivate: () => choose(option.id),

@@ -2,7 +2,6 @@ import { Mage } from '../core/Mage';
 import { AMBUSH_PACE, AMBUSH_PEACE, ambushChance, rollAmbush } from '../pve/exploration/ambush';
 import { packPace, type EncounterSpawn } from '../pve/exploration/encounters';
 import { capturePartySnapshot } from '../pve/exploration/party';
-import { QUEST_OVER } from '../pve/exploration/quest';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import { createWorld, PLACES, placeById, terrainAt } from '../pve/exploration/world';
 
@@ -21,11 +20,10 @@ const WALK_SPEED = 4.4;
 const world = createWorld();
 const open = { sneaking: false, veiled: false };
 
-function freshRun(seed = 3, questDone = true): ExplorationRun {
+function freshRun(seed = 3): ExplorationRun {
   const mage = new Mage({ name: 'Walker', isAI: false, team: 1, position: { x: 0, y: 0 }, loadout: [] });
   mage.assignFlatStats(3);
   const run = createRun(seed, capturePartySnapshot([mage]));
-  if (questDone) run.quest = { job: QUEST_OVER, taken: false, progress: 0, opens: 1 };
   run.hour = 12;
   return run;
 }
@@ -44,14 +42,11 @@ function wildTile(terrain: string): { x: number; y: number } {
 const mine = (kind: string): EncounterSpawn => ({ family: 'mine', spec: { kind: kind as never, level: 1 } });
 
 const tests: [name: string, run: () => void][] = [
-  ['never lies in wait by a town, at a gate, or round Kerusai while the quest runs', () => {
+  ['never lies in wait by a town or at a gate', () => {
     const run = freshRun();
     const capitol = placeById('capitol')!;
     equal(ambushChance(run, capitol, open), 0, 'not at a gate');
     equal(ambushChance(run, { x: capitol.x + AMBUSH_PEACE, y: capitol.y }, open), 0, 'not in sight of the walls');
-    const kerusai = placeById('kerusai')!;
-    const marsh = { x: kerusai.x + 6, y: kerusai.y - 2 };
-    assert(ambushChance(freshRun(3, false), marsh, open) === 0, 'the quest keeps Kerusai quiet');
     assert(ambushChance(run, wildTile('plains'), open) > 0, 'open country is dangerous');
   }],
 

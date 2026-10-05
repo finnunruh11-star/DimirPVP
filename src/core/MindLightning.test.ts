@@ -5,6 +5,7 @@ import { dealDamage } from '../effects/effects';
 import { GameState } from './GameState';
 import { Mage } from './Mage';
 import '../spells/sampleSpells';
+import '../spells/classSpells';
 import { getSpell } from '../spells/registry';
 import {
   applyMindLightningStack,
@@ -110,7 +111,7 @@ assert.equal(pierceTarget.lightningMindStacks, 1);
 assert.deepEqual(boltTargets, ['Marked', 'Marked', 'Marked', 'Marked']);
 assert.deepEqual(pauses, [420, 420, 420, 240, 240, 240]);
 
-const enchant = getSpell(['lightning', 'mind']);
+const enchant = getSpell(['lightning', 'mind'], 'objects');
 assert(enchant, 'Lightning Mind must be registered.');
 const enchantCaster = mage('Conductor', 1, 100, 100);
 const enchantTarget = mage('Target', 2, 110, 100);

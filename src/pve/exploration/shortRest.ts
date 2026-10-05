@@ -6,10 +6,11 @@
 import type { MageClass } from '../../core/Classes';
 import type { Dice } from '../../core/Dice';
 import type { Cell } from '../../world/pathfind';
-import { isNight } from './clock';
+import { areaHours } from './area';
+import { bloodmoonDue, hoursBeforeBloodmoon } from './bloodmoon';
+import { isNight, spanLabel } from './clock';
 import { withParty } from './economy';
-import { rollEncounter, type EncounterKind, type EncounterSpawn } from './encounters';
-import { questCalm } from './quest';
+import { rollEncounter, troubleIn, type EncounterKind, type EncounterSpawn } from './encounters';
 import type { ExplorationRun } from './run';
 import { createWorld, depthAt, nearTown, REGIONS, regionAt, TERRAIN, terrainAt, type RegionId } from './world';
 
@@ -29,7 +30,7 @@ export type RestSite = { safe: true } | { safe: false; tile: Cell };
 export function shortRestRisk(run: ExplorationRun, site: RestSite): number {
   if (site.safe) return 0;
   const { x, y } = site.tile;
-  if (nearTown(x, y) || questCalm(run, x, y)) return 0;
+  if (nearTown(x, y)) return 0;
   const world = createWorld();
   const terrain = TERRAIN[terrainAt(world, x, y)];
   const ground = Number.isFinite(terrain.time) ? terrain.danger : 1;
@@ -45,12 +46,23 @@ export interface RestAmbush {
 }
 
 export interface ShortRestOutcome {
-  /** Hours it took; an ambush cuts it short. */
+  /** Hours it took; an ambush or the bloodmoon cuts it short. */
   hours: number;
   ambush: RestAmbush | null;
+  /** The bloodmoon rose before the rest was done. */
+  bloodmoon?: boolean;
   /** What each member who rested got back. */
   restored: { member: MageClass; name: string; hp: number; mana: number; sanity: number; charges: number }[];
   message: string;
+}
+
+/** Hours `members` (null: everyone) can rest before the bloodmoon rises. On foot, whoever is behind the party's clock has the difference in hand. */
+function hoursToRise(run: ExplorationRun, members: readonly MageClass[] | null): number {
+  const left = hoursBeforeBloodmoon(run, Infinity);
+  const area = run.area;
+  if (!area || !members?.length || bloodmoonDue(run)) return left;
+  const ahead = Math.max(...members.map((member) => area.spent[member] ?? 0));
+  return left + Math.max(0, areaHours(area) - ahead);
 }
 
 /**
@@ -60,25 +72,32 @@ export interface ShortRestOutcome {
 export function takeShortRest(run: ExplorationRun, members: readonly MageClass[] | null, site: RestSite, dice: Dice): ShortRestOutcome {
   const quarters = (SHORT_REST_HOURS.max - SHORT_REST_HOURS.min) * 4;
   const hours = SHORT_REST_HOURS.min + (dice.die(quarters + 1) - 1) / 4;
+  const rise = hoursToRise(run, members);
   const risk = shortRestRisk(run, site);
   if (!site.safe && risk > 0 && dice.float() < risk) {
     const world = createWorld();
     const { x, y } = site.tile;
     const zone = regionAt(world, x, y);
     const depth = Math.min(10, depthAt(world, x, y) + (isNight(run.hour) ? 1 : 0));
-    const kind: EncounterKind = dice.float() < REGIONS[zone].robbery ? 'robbery' : 'monsters';
+    const kind = troubleIn(zone, dice.float() < REGIONS[zone].robbery);
     // Found partway through: half the rest or so, and nothing to show for it.
     const cut = Math.max(0.25, Math.round(hours * (0.3 + 0.4 * dice.float()) * 4) / 4);
-    return {
-      hours: cut,
-      ambush: { kind, zone, depth, spawns: rollEncounter(zone, kind, depth, dice) },
-      restored: [],
-      message: kind === 'robbery' ? 'Bandits fall on the camp before anyone has rested.' : 'Something finds the camp before anyone has rested.',
-    };
+    const spawns = kind ? rollEncounter(zone, kind, depth, dice) : [];
+    if (kind && cut <= rise) {
+      return {
+        hours: cut,
+        ambush: { kind, zone, depth, spawns },
+        restored: [],
+        message: kind === 'robbery' ? 'Bandits fall on the camp before anyone has rested.' : 'Something finds the camp before anyone has rested.',
+      };
+    }
   }
-  const restored = withParty(run, (_leader, party) => party
+  // The bloodmoon ends it early: only the part rested counts.
+  const early = rise < hours;
+  const took = early ? rise : hours;
+  const restored = took <= 0 ? [] : withParty(run, (_leader, party) => party
     .filter((mage) => mage.alive && (!members || members.includes(mage.mageClass)))
-    .map((mage) => ({ member: mage.mageClass, name: mage.name, ...mage.restoreShare(SHORT_REST_SHARE) })));
+    .map((mage) => ({ member: mage.mageClass, name: mage.name, ...mage.restoreShare((SHORT_REST_SHARE * took) / hours) })));
   const gains = restored.map((entry) => {
     const parts = [
       entry.hp ? `+${entry.hp} HP` : '',
@@ -88,6 +107,15 @@ export function takeShortRest(run: ExplorationRun, members: readonly MageClass[]
     ].filter(Boolean);
     return `${restored.length > 1 ? `${entry.name} ` : ''}${parts.length ? parts.join(', ') : 'already rested'}`;
   });
+  if (early) {
+    return {
+      hours: took,
+      ambush: null,
+      bloodmoon: true,
+      restored,
+      message: `The bloodmoon rises ${took > 0 ? `${spanLabel(took)} in` : 'before anyone lies down'}.${gains.length ? ` ${gains.join('.  ')}.` : ''}`,
+    };
+  }
   return {
     hours,
     ambush: null,

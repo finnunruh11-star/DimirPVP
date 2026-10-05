@@ -15,7 +15,7 @@ import { ENEMY_DEFS, type EnemyKind } from '../swamprun';
 import { isNight } from './clock';
 import { bountyProgress } from './bounties';
 import { addRunXp, livingMembers, partyXpScale } from './coop';
-import { grantToParty, money, moneyLabel, partyOf, withMember } from './economy';
+import { grantToParty, haulLabel, money, moneyLabel, partyOf, withMember } from './economy';
 import {
   creatureName,
   creaturePower,
@@ -75,9 +75,9 @@ const MAX_BONUS = 6;
 const REGION_IDS: readonly RegionId[] = ['capitol', 'forest', 'red', 'black', 'lake', 'white'];
 const RESOURCE_TABLE: Record<ResourceKind, Record<RegionId, ItemId[]>> = { herb: HERBS, ore: ORES, gem: GEMS };
 const RESOURCES: readonly { id: ItemId; kind: ResourceKind }[] = [
-  ...(['herbMoonleaf', 'herbBogcap', 'herbEmberroot'] as const).map((id) => ({ id, kind: 'herb' as const })),
+  ...(['herbMoonglow', 'herbWaterleaf', 'herbDeathweed', 'herbFireblossom'] as const).map((id) => ({ id, kind: 'herb' as const })),
   ...(['oreCoal', 'oreCopper', 'oreIron', 'oreGold'] as const).map((id) => ({ id, kind: 'ore' as const })),
-  ...(['gemAmethyst', 'gemOnyx', 'gemEmerald', 'gemRuby', 'gemSapphire', 'gemDiamond'] as const).map((id) => ({ id, kind: 'gem' as const })),
+  ...(['gemAmethyst', 'gemOnyx', 'gemEmerald', 'gemRuby', 'gemSapphire', 'gemDiamond', 'gemPearl'] as const).map((id) => ({ id, kind: 'gem' as const })),
 ];
 
 /** Every creature some region of the map is home to. */
@@ -146,6 +146,7 @@ export function searchTargets(run: ExplorationRun, tile: Cell): Record<SearchCat
       home: regionList(REGION_IDS.filter((region) => RESOURCE_TABLE[kind][region].includes(id))),
     };
   }).sort(byStanding);
+  // A creature is only ever found where it lives.
   const creature = CREATURES.map((kind): SearchTarget => {
     const standing = creatureStanding(zone, kind, depth);
     return {
@@ -156,7 +157,7 @@ export function searchTargets(run: ExplorationRun, tile: Cell): Record<SearchCat
       dc: CREATURE_DC[standing] + extra,
       home: regionList(REGION_IDS.filter((region) => creatureStanding(region, kind, 10) !== 'foreign')),
     };
-  }).sort(byStanding);
+  }).filter((target) => target.standing !== 'foreign').sort(byStanding);
   const events: SearchTarget[] = [{
     category: 'events',
     id: 'events',
@@ -286,8 +287,7 @@ export function trackedPack(kind: string, depth: number, dice: Dice): EncounterS
 function gatherResource(run: ExplorationRun, target: SearchTarget, member: MageClass | null, dice: Dice): string {
   const id = target.id as ItemId;
   const count = target.resource === 'herb' ? dice.die(3) : target.resource === 'ore' ? dice.die(2) : 1;
-  grantToParty(run, id, count, member);
-  return `${count > 1 ? `${count}x ` : ''}${getItem(id).name}`;
+  return haulLabel(id, count, grantToParty(run, id, count, member));
 }
 
 const SUPPLY_FINDS: readonly ItemId[] = ['healthPotion', 'manaPotion', 'torch', 'arrow'];
@@ -299,14 +299,14 @@ function luckyTurn(run: ExplorationRun, member: MageClass | null, zone: RegionId
   if (roll < 0.3 && herbs.length) {
     const herb = dice.pick(herbs);
     const count = dice.die(2);
-    grantToParty(run, herb, count, member);
-    return { message: `Not what you were after, but a patch of ${getItem(herb).name}: ${count > 1 ? `${count}x ` : ''}${getItem(herb).name}.`, levels: 0 };
+    const left = grantToParty(run, herb, count, member);
+    return { message: `Not what you were after, but a patch of ${getItem(herb).name}: ${haulLabel(herb, count, left)}.`, levels: 0 };
   }
   if (roll < 0.55) {
     const id = dice.pick(SUPPLY_FINDS);
     const count = id === 'arrow' ? 2 + dice.die(3) : 1;
-    grantToParty(run, id, count, member);
-    return { message: `A pack someone dropped: ${count > 1 ? `${count}x ` : ''}${getItem(id).name}.`, levels: 0 };
+    const left = grantToParty(run, id, count, member);
+    return { message: `A pack someone dropped: ${haulLabel(id, count, left)}.`, levels: 0 };
   }
   if (roll < 0.75) {
     const gold = money((2 + dice.die(6)) / 10);

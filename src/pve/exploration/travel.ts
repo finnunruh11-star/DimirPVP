@@ -6,12 +6,14 @@
 import { findWeightedPath, type Cell } from '../../world/pathfind';
 import { isNight } from './clock';
 import { absoluteHour, inDesert, stormAt, STORM_DANGER, STORM_TIME } from './desert';
+import { hasMonsters, troubleIn } from './encounters';
 import { isExplored, packExplored, revealTiles, unpackExplored } from './explored';
 import { stepDice, type ExplorationRun } from './run';
 import {
   depthAt,
   MIN_TERRAIN_TIME,
   nearTown,
+  placeAt,
   REGIONS,
   regionAt,
   TERRAIN,
@@ -43,8 +45,10 @@ export const TRAVEL_MODES: Record<TravelMode, ModeRule> = {
 export const TRAVEL_ORDER: readonly TravelMode[] = ['sprint', 'sneak', 'explore', 'fast'];
 
 export const HOURS_PER_TILE = 0.25;
+/** Tiles walked between one stop and the next (see journey.ts). */
+export const LEG_TILES = 4;
 /** Chances per tile at a sprint over explored open country by day. */
-const TILE_ENEMY = 0.025;
+const TILE_ENEMY = 0.31;
 const TILE_FIND = 0.03;
 const UNEXPLORED_TIME = 1.5;
 const UNEXPLORED_DANGER = 1.5;
@@ -52,8 +56,11 @@ const UNEXPLORED_FINDS = 1.25;
 const NIGHT_DANGER = 1.4;
 const NIGHT_SNEAK = 0.8;
 /** One roll for a whole fast-travel trip, at roughly a league's worth of risk. */
-const FAST_ROLL = 0.1;
+const FAST_ROLL = 0.16;
 const MAX_CHANCE = 0.9;
+
+/** A tile's chance as a share of the risk a leg builds up: summed over a leg, 1 - exp(-sum) is the stop's chance. */
+export const legHazard = (chance: number): number => (chance > 0 ? -Math.log(1 - Math.min(0.95, chance)) : 0);
 
 export type StopKind = 'robbery' | 'monsters' | 'loot' | 'event';
 
@@ -177,12 +184,22 @@ export function planTrip(
     plan.fights = chance;
     return plan;
   }
-  let clear = 1;
-  for (const step of steps) {
-    plan.fights += clear * step.enemy;
-    plan.finds += clear * (1 - step.enemy) * step.find;
-    clear *= 1 - step.enemy;
-  }
+  // As walked: the danger of every leg is rolled once at its stop, and the walk goes on after a fight.
+  let danger = run.road.danger;
+  let walked = run.road.tiles;
+  steps.forEach((step, index) => {
+    danger += legHazard(step.enemy);
+    plan.finds += step.find;
+    walked += 1;
+    if (walked < LEG_TILES) return;
+    const home = index === steps.length - 1 && placeAt(step.cell.x, step.cell.y)?.kind === 'city';
+    if (home) return;
+    if (!nearTown(step.cell.x, step.cell.y)) {
+      plan.fights += (1 - Math.exp(-danger)) * (hasMonsters(step.zone) ? 1 : REGIONS[step.zone].robbery);
+    }
+    danger = 0;
+    walked = 0;
+  });
   return plan;
 }
 
@@ -196,9 +213,11 @@ export function rollTrip(run: ExplorationRun, plan: TripPlan): TripStop[] {
   for (let index = 0; index < plan.steps.length; index++) {
     const step = plan.steps[index];
     if (step.enemy > 0 && dice.float() < step.enemy) {
-      const robbery = dice.float() < REGIONS[step.zone].robbery;
-      stops.push({ index, kind: robbery ? 'robbery' : 'monsters', zone: step.zone, depth: step.depth });
-      break;
+      const kind = troubleIn(step.zone, dice.float() < REGIONS[step.zone].robbery);
+      if (kind) {
+        stops.push({ index, kind, zone: step.zone, depth: step.depth });
+        break;
+      }
     }
     if (step.find > 0 && dice.float() < step.find) {
       stops.push({ index, kind: dice.float() < 0.6 ? 'loot' : 'event', zone: step.zone, depth: step.depth });
@@ -215,11 +234,11 @@ export function exploreAlong(run: ExplorationRun, cells: readonly Cell[], radius
   return fresh;
 }
 
-/** A word for the preview: how likely the trip is to end in a fight. */
+/** A word for the preview: how many fights the trip is likely to bring. */
 export function dangerWord(fights: number): string {
-  if (fights < 0.05) return 'safe';
-  if (fights < 0.3) return 'low';
-  if (fights < 0.7) return 'moderate';
+  if (fights < 0.1) return 'safe';
+  if (fights < 0.6) return 'low';
+  if (fights < 1.5) return 'moderate';
   return 'high';
 }
 

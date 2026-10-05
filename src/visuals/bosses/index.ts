@@ -27,7 +27,7 @@ export interface BossSheet {
 /** A boss's art, or a unit of one's (a goblin raider): by art id. */
 export function bossSheet(id: string): BossSheet {
   const art = BOSS_ART[id];
-  return { frameW: art.w, frameH: art.h, originY: GROUND / art.h, pixel: art.pixel ?? BOSS_PIXEL };
+  return { frameW: art.w, frameH: art.h, originY: (art.ground ?? GROUND) / art.h, pixel: art.pixel ?? BOSS_PIXEL };
 }
 
 export function ensureBossSprites(scene: Phaser.Scene, id: string): BossSheet {

@@ -9,6 +9,7 @@ import { parseBossFight } from '../pve/exploration/bloodmoon';
 import type { EncounterSpawn, EncounterZone } from '../pve/exploration/encounters';
 import type { WildPack } from '../pve/exploration/locales';
 import type { LocaleState } from '../pve/exploration/run';
+import { parseSceneFight } from '../pve/exploration/sceneFight';
 import type { DungeonId } from '../pve/exploration/world';
 import { MINE_ENEMY_DEFS, type MineEnemyKind, type SentinelRole } from '../pve/minerun';
 import { ENEMY_DEFS, type EnemyKind } from '../pve/swamprun';
@@ -35,6 +36,11 @@ const int = (value: unknown, min: number, max: number): number | null =>
 export function toFightWire(combat: ExplorationCombat): FightWire {
   const { run: _run, ...wire } = combat;
   return wire;
+}
+
+/** One foe off the wire, or null. */
+export function parseSpawn(value: unknown): EncounterSpawn | null {
+  return spawn(value);
 }
 
 function spawn(value: unknown): EncounterSpawn | null {
@@ -130,5 +136,6 @@ export function parseFightWire(value: unknown): FightWire | null {
     dungeon: DUNGEON_IDS.includes(raw.dungeon as DungeonId) ? raw.dungeon as DungeonId : undefined,
     seats: readMemberSeats(raw.seats),
     boss: parseBossFight(raw.boss),
+    scene: parseSceneFight(raw.scene),
   };
 }

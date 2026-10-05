@@ -103,7 +103,7 @@ interface SecretPlan extends Secret {
 
 const SECRETS: readonly SecretPlan[] = [
   { id: 'wilds-strongbox', x: 10, y: 30, reveal: 2, label: 'Scorched strongbox', items: ['healthPotion', 'throwingDagger'], text: 'The lock melted shut, but the hinges did not.' },
-  { id: 'wilds-emberroot', x: 19, y: 10, reveal: 2, label: 'Roots by the spring', items: ['herbEmberroot', 'herbEmberroot'], text: 'Emberroot, thriving in the steam.' },
+  { id: 'wilds-emberroot', x: 19, y: 10, reveal: 2, label: 'Blossoms by the spring', items: ['herbFireblossom', 'herbFireblossom'], text: 'Fireblossom, thriving in the steam.' },
   { id: 'wilds-mine-cache', x: 9, y: 5, reveal: 2, label: "Miner's cache", items: ['lantern', 'gemRuby'], text: 'Someone meant to come back for this.' },
   {
     id: 'wilds-cellar', x: 24, y: 21, reveal: 2, label: 'Collapsed cellar', items: ['chainShirt'],
@@ -120,7 +120,7 @@ const SECRETS: readonly SecretPlan[] = [
   },
   { id: 'wilds-warren-hoard', x: 64, y: 47, reveal: 2, label: 'Kobold hoard', items: ['gemRuby', 'gemSapphire'], text: 'Shiny things, sorted by how shiny.' },
   { id: 'wilds-shrine', x: 60, y: 23, reveal: 3, label: 'Ember shrine', items: ['manaPotion'], text: 'The flame leans toward you, then settles.' },
-  { id: 'wilds-hollow', x: 66, y: 34, reveal: 2, label: 'Sunlit hollow', items: ['herbMoonleaf', 'herbMoonleaf', 'herbEmberroot'], text: 'Green, somehow, in the middle of all this ash.' },
+  { id: 'wilds-hollow', x: 66, y: 34, reveal: 2, label: 'Sunlit hollow', items: ['herbMoonglow', 'herbMoonglow', 'herbFireblossom'], text: 'Green, somehow, in the middle of all this ash.' },
   { id: 'wilds-glass', x: 47, y: 17, reveal: 2, label: 'Glassy bubble', items: ['gemAmethyst', 'magmaCore'], text: 'A blister of cooled lava, hollow and glittering.' },
 ];
 
@@ -389,8 +389,10 @@ function searchWilds(run: ExplorationRun, secret: Secret): SecretResult {
     };
   }
   const found: string[] = [];
-  for (const item of plan.items ?? []) grantToParty(run, item);
+  let left = 0;
+  for (const item of plan.items ?? []) left += grantToParty(run, item);
   if (plan.items?.length) found.push(plan.items.length === 1 ? 'a find' : `${plan.items.length} finds`);
+  if (left) found.push(`${left === plan.items?.length ? 'all' : left} too heavy to carry, left behind`);
   const tail = found.length ? ` (${found.join(', ')})` : '';
   return { message: `${plan.text}${tail}`, revealAll: plan.revealAll };
 }

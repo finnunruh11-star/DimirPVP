@@ -14,7 +14,9 @@
 //  Online Adventure adds a second lane: kinds starting with `x-` are the host's
 //  state and the guests' requests between fights. They never enter the FIFO;
 //  they go to the adventure handler, and wait in a backlog while none is set
-//  (a fight is running, or a scene is starting).
+//  (a fight is running, or a scene is starting). Party votes in the Mines ride a
+//  third lane of their own (SIDE_LANE): they can come at any time, so the FIFO
+//  never sees them.
 // =============================================================================
 
 export type NetRole = 'host' | 'guest';
@@ -27,6 +29,12 @@ export interface NetMessage {
 /** Streams where only the newest message per sender matters. */
 const LATEST_ONLY = new Set(['x-live', 'x-pos']);
 const MAX_BACKLOG = 512;
+/**
+ * Party votes: any player may send one (or change it) at any moment, so they
+ * never enter the lockstep FIFO, where a late one would be read as something else.
+ */
+const SIDE_LANE = new Set(['mine-vote']);
+const MAX_SIDE_BACKLOG = 64;
 
 export function isAdventureMessage(message: NetMessage): boolean {
   return typeof message.k === 'string' && message.k.startsWith('x-');
@@ -39,6 +47,8 @@ export class Net {
   private closed = false;
   private adventure: ((m: NetMessage) => void) | null = null;
   private backlog: NetMessage[] = [];
+  private side: ((m: NetMessage) => void) | null = null;
+  private sideBacklog: NetMessage[] = [];
 
   /** Called once when the connection drops (opponent left / network error). */
   onClose?: () => void;
@@ -95,6 +105,10 @@ export class Net {
     if (!data || typeof data !== 'object') return;
     if (isAdventureMessage(data)) {
       this.toAdventure(data);
+      return;
+    }
+    if (SIDE_LANE.has(data.k)) {
+      this.toSide(data);
       return;
     }
     // A departure matters to both lanes: a fight waiting on the queue and the session.
@@ -165,6 +179,26 @@ export class Net {
     const next = this.queue.shift();
     if (next !== undefined) return Promise.resolve(next);
     return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  /**
+   * Route party votes to `handler`, first replaying any that came early. Null
+   * holds them for the next vote, which drops those of a vote already over.
+   */
+  setSideHandler(handler: ((m: NetMessage) => void) | null): void {
+    this.side = handler;
+    while (this.side === handler && handler && this.sideBacklog.length) {
+      handler(this.sideBacklog.shift()!);
+    }
+  }
+
+  private toSide(data: NetMessage): void {
+    if (this.side) {
+      this.side(data);
+      return;
+    }
+    this.sideBacklog.push(data);
+    if (this.sideBacklog.length > MAX_SIDE_BACKLOG) this.sideBacklog.shift();
   }
 
   get isClosed(): boolean {

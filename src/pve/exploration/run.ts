@@ -31,17 +31,6 @@ export interface ActiveBounty {
   label: string;
 }
 
-/** Where the party stands in the Kerusai quest (see quest.ts). */
-export interface QuestState {
-  /** The job under way; past the last job once the quest is over. */
-  job: number;
-  /** The job has been taken at the Lodge. */
-  taken: boolean;
-  progress: number;
-  /** The Lodge offers the job from this day on. */
-  opens: number;
-}
-
 /** Where the party stands inside a walkable place (a town, the wilds, the open world). */
 export interface LocaleState {
   id: string;
@@ -61,6 +50,8 @@ export interface RoadState {
 export interface ExplorationMineState {
   cycle: number;
   maze: MineMazeState;
+  /** Junctions on the party's map. Without a Minemap only this visit's. */
+  known: number[];
 }
 
 /** Out on foot around one spot of the map (see area.ts). */
@@ -119,12 +110,13 @@ export interface ExplorationRun {
   groupsBeaten: Record<string, number>;
   /** On foot around a spot of the map; null on the map and inside places. */
   area: AreaState | null;
-  quest: QuestState;
   road: RoadState;
   /** Exploration Mines alone: the excavated layout until the next bloodmoon. */
   mines: ExplorationMineState | null;
   /** Bloodmoons the party has fought through (see bloodmoon.ts). */
   bloodmoons: number;
+  /** Things crafted so far; seeds each bench roll, so no two crafts roll alike. */
+  crafts: number;
 }
 
 export function createRun(seed: number, party: Scenario, options: { creating?: boolean } = {}): ExplorationRun {
@@ -157,10 +149,10 @@ export function createRun(seed: number, party: Scenario, options: { creating?: b
     wildsSeen: [],
     groupsBeaten: {},
     area: null,
-    quest: { job: 0, taken: false, progress: 0, opens: 1 },
     road: { tiles: 0, danger: 0, luck: 0 },
     mines: null,
     bloodmoons: 0,
+    crafts: 0,
   };
 }
 

@@ -27,6 +27,14 @@ export interface BossArt {
   ink: number;
   /** What the edges glow as the boss crumbles. */
   ember: number;
+  /** False when the art draws its own death instead of crumbling into embers. */
+  crumble?: boolean;
+  /** The first hurt frame as one solid colour (a cartoon hit flash) instead of a lightened copy. */
+  flash?: number;
+  /** The row the feet stand on, when it is not GROUND (small pixel-art frames). */
+  ground?: number;
+  /** True when the art inks its own outlines, so the rig adds none. */
+  outlined?: boolean;
   draw(c: Canvas, pose: Pose): void;
 }
 
@@ -46,9 +54,12 @@ export function renderAnim(art: BossArt, anim: BossAnim): Canvas[] {
     const t = LOOPS.has(anim) ? f / n : n > 1 ? f / (n - 1) : 0;
     const c = new Canvas(art.w, art.h);
     art.draw(c, { anim, t, f, n });
-    if (anim === 'death') c.dissolve(span(t, 0.22, 0.96), 9173, art.ember);
-    c.edge(art.ink);
-    if (anim === 'hurt' && f === 0) c.map((color) => lighten(color, 0.62));
+    if (anim === 'death' && art.crumble !== false) c.dissolve(span(t, 0.22, 0.96), 9173, art.ember);
+    if (!art.outlined) c.edge(art.ink);
+    if (anim === 'hurt' && f === 0) {
+      const flash = art.flash;
+      c.map((color) => flash ?? lighten(color, 0.62));
+    }
     frames.push(c);
   }
   return frames;

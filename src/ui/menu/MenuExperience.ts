@@ -11,7 +11,8 @@ import {
 } from '../../config/MatchConfig';
 import { MAGE_CLASSES, MAGE_CLASS_DEFS, type MageClass } from '../../core/Classes';
 import { RANGE_UNIT } from '../../config/constants';
-import { ALL_SPELL_SETS, allSpells } from '../../spells/registry';
+import { ALL_SPELL_SETS, allSpells, rackCoverage } from '../../spells/registry';
+import type { ItemSet } from '../../core/Items';
 import type { Spell } from '../../spells/Spell';
 import type { Scenario } from '../../core/Scenario';
 import { MODIFIER_WORDS, WORDS, type WordId } from '../../core/Words';
@@ -40,7 +41,7 @@ import {
 
 const CATEGORY_MODES: Record<MenuCategory, readonly MatchMode[]> = {
   versus: ['ai', 'hotseat', 'online'],
-  adventures: ['exploration', 'swamprun', 'expedition', 'minerun', 'raid'],
+  adventures: ['exploration', 'swamprun', 'minerun', 'raid'],
   workshop: ['tutorial', 'training', 'scenario', 'memory'],
 };
 
@@ -57,7 +58,6 @@ const NATIVE_MODES = new Set<MatchMode>([
   'tutorial',
   'training',
   'swamprun',
-  'expedition',
   'exploration',
   'minerun',
   'raid',
@@ -786,17 +786,18 @@ export class MenuExperience {
       },
       onFocus: () => this.stage.setCaption(
         returnToReview ? 'RETURN TO REVIEW' : nextSeat != null ? 'NEXT MAGE' : 'REVIEW SETUP',
-        returnToReview
+        this.blankCombosNote(seat) ?? (returnToReview
           ? 'Keep this build and return to the summary.'
           : nextSeat != null
             ? `Pass control to Player ${nextSeat + 1}.`
-            : this.rosterSummary()
+            : this.rosterSummary())
       ),
     });
     const status = this.scene.add.text(278, backY + 14, '', {
       fontFamily: MENU_FONT.body,
       fontSize: '14px',
       color: MENU_HEX.boneDim,
+      wordWrap: { width: 512 },
     });
     view.root.add([modifier, proceed, status]);
     view.focus.add(modifier);
@@ -820,10 +821,27 @@ export class MenuExperience {
       const finalLabel = returnToReview ? 'Return to Review' : nextSeat != null ? `Build Player ${nextSeat + 1}` : 'Review Setup';
       proceed.setCopy(ready ? finalLabel : `Choose ${missing} More`);
       proceed.setEnabled(ready);
-      status.setText(ready ? `${MAGE_CLASS_DEFS[draft.mageClass].label} build ready.` : `${missing} word${missing === 1 ? '' : 's'} still required.`);
+      const reach = this.buildCoverage(seat);
+      const casts = `${reach.spells}/${reach.combos} combinations cast a spell.`;
+      status.setText(ready ? `${MAGE_CLASS_DEFS[draft.mageClass].label} build ready. ${casts}` : `${missing} word${missing === 1 ? '' : 's'} still required.${reach.combos ? ` ${casts}` : ''}`);
+      status.setColor(reach.blanks.length ? MENU_HEX.brassLight : MENU_HEX.boneDim);
     };
     refresh();
     return view;
+  }
+
+  private buildCoverage(seat: number): ReturnType<typeof rackCoverage> {
+    const draft = this.model.draftFor(seat);
+    const sets = new Set<ItemSet>((Object.keys(this.model.itemSets) as (keyof ItemSetSelection)[]).filter((set) => this.model.itemSets[set]));
+    return rackCoverage(draft.words, draft.mageClass, sets);
+  }
+
+  /** Names the word combinations in this build that cast nothing, if any. */
+  private blankCombosNote(seat: number): string | null {
+    const { blanks } = this.buildCoverage(seat);
+    if (blanks.length === 0) return null;
+    const names = blanks.map((combo) => combo.map((word) => WORDS[word].label).join(' + '));
+    return `No spell for: ${names.join(', ')}.`;
   }
 
   private buildReview(): MenuScreenView {
@@ -1546,11 +1564,10 @@ export class MenuExperience {
   private rosterSummary(): string {
     const humans = this.model.humanCount();
     if (this.model.mode === 'training') return 'Solo sandbox with one configurable training opponent.';
-    if (this.model.mode === 'expedition') return 'One local explorer in a solo campaign.';
     if (this.model.mode === 'exploration') {
       return this.model.role === 'local'
-        ? 'One traveller, setting out from Kerusai. Class and words are chosen there.'
-        : `${humans} travellers online, setting out from Kerusai. Classes and words are chosen there.`;
+        ? 'One traveller, setting out from Kerusai. Words are named there, weapons handed out at the Lodge.'
+        : `${humans} travellers online, setting out from Kerusai. Words are named there, weapons handed out at the Lodge.`;
     }
     if (isPveRunMode(this.model.mode)) {
       return `${this.model.seatCount} explorer${this.model.seatCount === 1 ? '' : 's'}: ${humans} human, ${this.model.aiCount} AI.`;
@@ -1593,7 +1610,6 @@ export class MenuExperience {
 
   private launchLabel(): string {
     if (this.model.mode === 'training') return 'Start Training';
-    if (this.model.mode === 'expedition') return 'Begin Expedition';
     if (this.model.mode === 'exploration') return 'Set Out';
     if (this.model.mode === 'ai') return 'Start AI Duel';
     if (this.model.mode === 'hotseat') return 'Start Hotseat Match';

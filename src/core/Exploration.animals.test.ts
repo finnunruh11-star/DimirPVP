@@ -17,7 +17,7 @@ function equal(actual: unknown, expected: unknown, label: string): void {
   assert(a === e, `${label}: expected ${e}, received ${a}`);
 }
 
-const ANIMALS: readonly MineEnemyKind[] = ['rabbit', 'slime', 'boar', 'wolf'];
+const ANIMALS: readonly MineEnemyKind[] = ['rabbit', 'slime', 'boar', 'wolf', 'lion', 'lioness'];
 const MID_Y = FIELD.y + FIELD.h / 2;
 const LEFT = FIELD.x + 200;
 

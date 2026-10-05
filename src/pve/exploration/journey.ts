@@ -1,17 +1,17 @@
 // The travel map walked in legs. Every LEG_TILES tiles the party stops for a
 // beat: a fight, a find, a roadside event, something sighted off the way, or a
-// break. Danger and luck build up tile by tile and carry over between
+// quiet stretch. Danger and luck build up tile by tile and carry over between
 // trips, so a string of short hops meets the same road as one long walk. Pure
 // and seeded.
 
 import type { Dice } from '../../core/Dice';
 import { getItem, type ItemId } from '../../core/Items';
 import type { Cell } from '../../world/pathfind';
-import { describeSpawns, rollEncounter, type EncounterKind, type EncounterSpawn } from './encounters';
-import { ROAD_EVENTS } from './events';
+import { describeSpawns, hasMonsters, rollEncounter, troubleIn, type EncounterKind, type EncounterSpawn } from './encounters';
+import { pickSightedEvent, type EventScene } from './events';
 import { HERBS } from './finds';
 import { stepDice, type ExplorationRun, type RoadState } from './run';
-import { TRAVEL_MODES, type TravelMode, type TripStep } from './travel';
+import { legHazard as hazard, LEG_TILES, TRAVEL_MODES, type TravelMode, type TripStep } from './travel';
 import {
   depthAt,
   isPassable,
@@ -26,10 +26,9 @@ import {
   type WorldMap,
 } from './world';
 
-/** Tiles walked between one stop and the next. */
-export const LEG_TILES = 6;
+export { LEG_TILES };
 /** Chance a stop turns up something off the way, at a sprint by day. */
-const SIGHT_CHANCE = 0.3;
+const SIGHT_CHANCE = 0.24;
 /** By night the party spots less, and not as far. */
 const NIGHT_SIGHT = 0.65;
 const SIGHT_NEAR = 2;
@@ -37,6 +36,10 @@ const SIGHT_FAR = 5;
 const NIGHT_FAR = 3;
 /** Share of plain finds that are things rather than roadside events. */
 const LOOT_SHARE = 0.6;
+/** Chance a stop that turned up nothing else brings a roadside event, at a sprint. */
+const EVENT_CHANCE = 0.2;
+/** How much likelier a pack is among sightings than the ground's danger alone makes it. */
+const PACK_SIGHTING = 1.5;
 
 export type SightingKind = 'herbs' | 'pack' | 'cache' | 'event';
 
@@ -52,6 +55,8 @@ export interface Sighting {
   herb?: ItemId;
   spawns?: EncounterSpawn[];
   eventId?: string;
+  /** The event as it will play out when the party walks over to it. */
+  scene?: EventScene;
   /** What a cache is called, for the find it gives. */
   site?: string;
 }
@@ -61,12 +66,6 @@ export type Beat =
   | { kind: 'loot' | 'event'; zone: RegionId; depth: number }
   | { kind: 'sighting'; sighting: Sighting }
   | { kind: 'rest' };
-
-/** Events that sit somewhere the party can walk up to, rather than on top of it. */
-const SIGHTED_EVENTS: ReadonlySet<string> = new Set([
-  'carter', 'shrine', 'wounded', 'camp', 'caravan', 'mire-lights', 'ash-vent', 'bones',
-  'rockslide', 'wreck', 'nets', 'hermit', 'mirage', 'buried-ruin', 'pilgrims',
-]);
 
 const CACHE_SITES: Record<RegionId, readonly string[]> = {
   capitol: ['Burnt farmstead', 'Fallen watchtower'],
@@ -87,8 +86,6 @@ const COMPASS = ['east', 'south-east', 'south', 'south-west', 'west', 'north-wes
 const DIRS: readonly [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
 
 export const emptyRoad = (): RoadState => ({ tiles: 0, danger: 0, luck: 0 });
-
-const hazard = (chance: number): number => (chance > 0 ? -Math.log(1 - Math.min(0.95, chance)) : 0);
 
 /** Count one walked tile toward the next stop. True when the stop is due. */
 export function walkStep(run: ExplorationRun, step: TripStep): boolean {
@@ -125,7 +122,8 @@ export function rollBeat(world: WorldMap, run: ExplorationRun, step: TripStep, m
   const dice = stepDice(run, run.steps * 7 + 2);
   const { cell, zone, depth } = step;
   if (!nearTown(cell.x, cell.y) && dice.float() < 1 - Math.exp(-road.danger)) {
-    return { kind: 'fight', encounter: dice.float() < REGIONS[zone].robbery ? 'robbery' : 'monsters', zone, depth };
+    const encounter = troubleIn(zone, dice.float() < REGIONS[zone].robbery);
+    if (encounter) return { kind: 'fight', encounter, zone, depth };
   }
   const sight = SIGHT_CHANCE * Math.sqrt(TRAVEL_MODES[mode].finds) * (step.night ? NIGHT_SIGHT : 1);
   if (dice.float() < sight) {
@@ -133,6 +131,7 @@ export function rollBeat(world: WorldMap, run: ExplorationRun, step: TripStep, m
     if (sighting) return { kind: 'sighting', sighting };
   }
   if (dice.float() < 1 - Math.exp(-road.luck)) return { kind: dice.float() < LOOT_SHARE ? 'loot' : 'event', zone, depth };
+  if (dice.float() < EVENT_CHANCE * Math.sqrt(TRAVEL_MODES[mode].finds)) return { kind: 'event', zone, depth };
   return { kind: 'rest' };
 }
 
@@ -154,11 +153,8 @@ export function findSighting(world: WorldMap, step: TripStep, ahead: readonly Ce
     return { ...base, kind, site, title: site.toUpperCase(), text: 'Unsearched. It may hold supplies, stones or lost kit.' };
   }
   if (kind === 'event') {
-    const fits = ROAD_EVENTS.filter((event) => SIGHTED_EVENTS.has(event.id) && (!event.zones || event.zones.includes(zone)));
-    if (fits.length) {
-      const event = dice.pick(fits);
-      return { ...base, kind, eventId: event.id, title: event.title, text: event.text };
-    }
+    const scene = pickSightedEvent(zone, dice, step.night);
+    if (scene) return { ...base, kind, eventId: scene.id, scene, title: scene.title, text: scene.text };
   }
   const herb = dice.pick(HERBS[zone]);
   const name = getItem(herb).name;
@@ -167,7 +163,7 @@ export function findSighting(world: WorldMap, step: TripStep, ahead: readonly Ce
 
 function pickKind(zone: RegionId, terrain: Terrain, safe: boolean, night: boolean, dice: Dice): SightingKind {
   const weights: [SightingKind, number][] = [
-    ['pack', safe ? 0 : REGIONS[zone].danger * TERRAIN[terrain].danger * (night ? 1.4 : 1)],
+    ['pack', safe || !hasMonsters(zone) ? 0 : PACK_SIGHTING * REGIONS[zone].danger * TERRAIN[terrain].danger * (night ? 1.4 : 1)],
     ['herbs', HERB_GROUND[terrain] ?? 0.3],
     ['cache', zone === 'white' ? 0.8 : 0.45],
     ['event', 0.55],

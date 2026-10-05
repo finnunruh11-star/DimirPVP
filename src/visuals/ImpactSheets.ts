@@ -12,6 +12,16 @@ import symmetricalImpact006Url from '../../spritesheet/Impacts/symmetrical_impac
 import burstSplatter001Url from '../../spritesheet/Splatters/burst_splatter_001/burst_splatter_001_large_red/spritesheet.png';
 import burstSplatter003Url from '../../spritesheet/Splatters/burst_splatter_003/burst_splatter_003_large_green/spritesheet.png';
 import directionalSplatter001Url from '../../spritesheet/Splatters/directional_splatter_001/directional_splatter_001_large_red/spritesheet.png';
+// God-word flourishes. Unlike the impact sheets these keep their own colours.
+import deathKanjiUrl from '../../spritesheet/Fantasy Spells/spell_death_001/spell_death_001_large_red/spritesheet.png';
+import skullSmokeUrl from '../../spritesheet/Smoke Bursts/stylized_skull_smoke_burst_001/stylized_skull_smoke_burst_001_large_white/spritesheet.png';
+import warpPillarUrl from '../../spritesheet/Sci-fi/scifi_warp_003/scifi_warp_003_large_blue/spritesheet.png';
+import timeSphereUrl from '../../spritesheet/Explosions/stylized_explosion_002/stylized_explosion_002_large_violet/spritesheet.png';
+import implodeUrl from '../../spritesheet/Fantasy Spells/spell_absorb_001/spell_absorb_001_large_violet/spritesheet.png';
+import riftEyeUrl from '../../spritesheet/Magic Bursts/round_light_burst_001/round_light_burst_001_large_yellow/spritesheet.png';
+import warlockHexUrl from '../../Pixel Art VFX - Warlock - FREE Version/VFX1/sprite-sheet.png';
+import warlockReapUrl from '../../Pixel Art VFX - Warlock - FREE Version/VFX2/sprite-sheet.png';
+import warlockVoidUrl from '../../Pixel Art VFX - Warlock - FREE Version/VFX3/sprite-sheet.png';
 
 /** Quarter turn; the sheets whose art sprays upward need this added to the heading. */
 const UP = Math.PI / 2;
@@ -111,6 +121,72 @@ export const IMPACT_SHEETS = {
     frameHeight: 96,
     frames: 8,
     frameRate: 26,
+  },
+  // The death kanji is brushed on, becomes a screaming skull, and fades back.
+  'god-death': {
+    url: deathKanjiUrl,
+    frameWidth: 64,
+    frameHeight: 64,
+    frames: 50,
+    frameRate: 30,
+  },
+  'god-skull': {
+    url: skullSmokeUrl,
+    frameWidth: 64,
+    frameHeight: 64,
+    frames: 12,
+    frameRate: 18,
+  },
+  'god-warp': {
+    url: warpPillarUrl,
+    frameWidth: 128,
+    frameHeight: 128,
+    frames: 12,
+    frameRate: 20,
+  },
+  'god-sphere': {
+    url: timeSphereUrl,
+    frameWidth: 96,
+    frameHeight: 96,
+    frames: 10,
+    frameRate: 14,
+  },
+  'god-implode': {
+    url: implodeUrl,
+    frameWidth: 128,
+    frameHeight: 128,
+    frames: 31,
+    frameRate: 30,
+  },
+  'god-rift': {
+    url: riftEyeUrl,
+    frameWidth: 256,
+    frameHeight: 144,
+    frames: 9,
+    frameRate: 14,
+  },
+  // The Warlock sheets are 5-wide grids; only their first frames are drawn.
+  'god-hex': {
+    url: warlockHexUrl,
+    frameWidth: 128,
+    frameHeight: 128,
+    frames: 8,
+    frameRate: 14,
+  },
+  'god-reap': {
+    url: warlockReapUrl,
+    frameWidth: 192,
+    frameHeight: 128,
+    frames: 13,
+    frameRate: 20,
+    facing: 0,
+  },
+  'god-void': {
+    url: warlockVoidUrl,
+    frameWidth: 128,
+    frameHeight: 128,
+    frames: 8,
+    frameRate: 14,
   },
 } as const satisfies Record<string, ImpactSheetDef>;
 

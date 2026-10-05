@@ -1,7 +1,7 @@
-// What a fallen creature leaves on an Exploration field. Every row rolls on its
-// own, so most fodder leaves nothing and only bosses always pay. Harder kinds
-// carry better rows, and creatures met deeper in are a little more generous.
-// Pure and seeded.
+// What a fallen creature leaves on an Exploration field: its own material, and
+// many creatures nothing at all. Every row rolls on its own; the lich and the
+// reaper roll their hoards instead, d20 after d20. Creatures met deeper in are a
+// little more generous. Pure and seeded.
 
 import type { Dice } from '../../core/Dice';
 import type { ItemId } from '../../core/Items';
@@ -15,50 +15,104 @@ export interface DropRow {
 
 export const DROP_TABLES: Readonly<Record<string, readonly DropRow[]>> = {
   // ---- The dead ----
-  zombie: [{ item: 'manaStoneSmall', chance: 0.5 }, { item: 'manaStoneMedium', chance: 0.1 }],
-  acidZombie: [{ item: 'manaStoneSmall', chance: 0.5 }, { item: 'manaStoneMedium', chance: 0.15 }],
-  skeleton: [{ item: 'manaStoneSmall', chance: 0.4 }, { item: 'manaStoneMedium', chance: 0.25 }, { item: 'manaStoneBig', chance: 0.05 }],
+  zombie: [],
+  acidZombie: [],
+  skeleton: [],
   wisp: [{ item: 'ectoplasm', chance: 0.4 }],
   specter: [{ item: 'ectoplasm', chance: 0.6, extra: 1 }, { item: 'manaStoneMedium', chance: 0.15 }],
-  defender: [{ item: 'manaStoneBig', chance: 0.6 }, { item: 'darksteelBar', chance: 0.25 }],
-  ghast: [{ item: 'manaStoneBig', chance: 0.5 }, { item: 'darksteelBar', chance: 0.3 }, { item: 'ghastEssence', chance: 0.1 }],
-  soldierDemon: [{ item: 'manaStoneMedium', chance: 0.5 }, { item: 'darksteelBar', chance: 0.1 }],
-  beastDemon: [{ item: 'manaStoneMedium', chance: 0.5 }, { item: 'manaStoneBig', chance: 0.15 }],
-  oni: [{ item: 'manaStoneBig', chance: 0.6 }, { item: 'darksteelBar', chance: 0.3 }],
-  lich: [{ item: 'lichCore', chance: 1 }, { item: 'ectoplasm', chance: 1, extra: 3 }],
-  reaper: [{ item: 'reaperCore', chance: 1 }, { item: 'manaStoneBig', chance: 1, extra: 1 }],
-  deathknightSpear: [{ item: 'darksteelBar', chance: 1, extra: 1 }, { item: 'manaStoneBig', chance: 1 }],
+  defender: [],
+  ghast: [{ item: 'manaStoneBig', chance: 0.5 }, { item: 'ghastEssence', chance: 0.05 }],
+  soldierDemon: [{ item: 'manaStoneMedium', chance: 0.5 }, { item: 'demonHorn', chance: 0.35 }],
+  beastDemon: [{ item: 'beastHorn', chance: 0.35 }],
+  oni: [{ item: 'manaStoneBig', chance: 0.6 }, { item: 'badCharm', chance: 0.4 }],
+  // Their hoards: see HOARDS.
+  lich: [],
+  reaper: [],
+  // The only darksteel there is, for whoever rolls well.
+  deathknightSpear: [{ item: 'darksteelBar', chance: 0.35, extra: 1 }, { item: 'lostSoul', chance: 0.5 }],
   // ---- The goblin band ----
-  goblinChief: [{ item: 'crudeTrinket', chance: 1, extra: 2 }, { item: 'manaStoneMedium', chance: 1 }],
-  goblinRaider: [{ item: 'crudeTrinket', chance: 0.3 }],
-  goblinShaman: [{ item: 'manaStoneSmall', chance: 0.45 }],
+  goblinChief: [],
+  goblinRaider: [],
+  goblinShaman: [],
   // ---- Baral's workshop ----
   baral: [{ item: 'manaStoneBig', chance: 1, extra: 1 }, { item: 'crudeTrinket', chance: 1, extra: 2 }],
   denialArtifact: [{ item: 'sentinelLens', chance: 0.5 }],
   baralDrake: [{ item: 'crudeTrinket', chance: 0.15 }],
   // ---- Stone, scale and bandits ----
-  rockling: [],
-  kobold: [{ item: 'crudeTrinket', chance: 0.3 }],
+  rockling: [{ item: 'pebble', chance: 0.4 }],
+  kobold: [{ item: 'koboldScale', chance: 0.35 }, { item: 'crudeTrinket', chance: 0.1 }],
   'elite-kobold': [{ item: 'chargedScale', chance: 0.4 }, { item: 'crudeTrinket', chance: 0.2 }],
-  golem: [{ item: 'golemCore', chance: 0.5 }],
+  golem: [{ item: 'stoneHeart', chance: 0.25 }],
   sentinel: [{ item: 'sentinelLens', chance: 0.35 }],
-  'magma-sentinel': [{ item: 'magmaCore', chance: 0.35 }],
-  'earth-elemental': [{ item: 'elementalGeode', chance: 0.4 }],
+  // A magma sentinel leaves the shard of its role; one met without a role, any of them.
+  'magma-sentinel': [
+    { item: 'magmaShardTank', chance: 0.12 },
+    { item: 'magmaShardHealer', chance: 0.12 },
+    { item: 'magmaShardMage', chance: 0.12 },
+  ],
+  'magma-sentinel:tank': [{ item: 'magmaShardTank', chance: 0.35 }],
+  'magma-sentinel:healer': [{ item: 'magmaShardHealer', chance: 0.35 }],
+  'magma-sentinel:dps': [{ item: 'magmaShardMage', chance: 0.35 }],
+  'earth-elemental': [{ item: 'redStone', chance: 0.4 }],
   pftlhb: [{ item: 'darkEye', chance: 0.5 }],
-  'cavern-bat': [{ item: 'echoMembrane', chance: 0.35 }],
+  'cavern-bat': [{ item: 'batLeather', chance: 0.35 }],
   'red-dragonborn': [{ item: 'redDrakeScale', chance: 0.5 }],
   'black-dragonborn': [{ item: 'blackDrakeScale', chance: 0.5 }],
-  bandit: [{ item: 'crudeTrinket', chance: 0.25 }],
-  'bandit-archer': [{ item: 'crudeTrinket', chance: 0.3 }],
-  'bandit-captain': [{ item: 'crudeTrinket', chance: 0.6 }, { item: 'manaStoneMedium', chance: 0.2 }],
-  'sand-stalker': [{ item: 'manaStoneSmall', chance: 0.35 }],
-  sandworm: [{ item: 'manaStoneBig', chance: 0.5 }, { item: 'gemDiamond', chance: 0.35 }],
+  bandit: [],
+  'bandit-archer': [],
+  'bandit-captain': [],
+  'sand-stalker': [],
+  sandworm: [],
   // ---- Beasts ----
   rabbit: [{ item: 'rabbitPelt', chance: 0.4 }],
   slime: [{ item: 'slimeGel', chance: 0.5 }],
+  'slime-red': [{ item: 'gelRed', chance: 0.5 }],
+  'slime-blue': [{ item: 'gelBlue', chance: 0.5 }],
+  'slime-black': [{ item: 'gelBlack', chance: 0.5 }],
+  'slime-white': [{ item: 'gelWhite', chance: 0.5 }],
   wolf: [{ item: 'wolfPelt', chance: 0.45 }, { item: 'wolfFang', chance: 0.1 }],
   boar: [{ item: 'boarHide', chance: 0.55 }, { item: 'boarTusk', chance: 0.25 }],
+  lion: [{ item: 'lionPelt', chance: 0.6 }, { item: 'lionFang', chance: 0.3 }],
+  lioness: [{ item: 'lionPelt', chance: 0.45 }, { item: 'lionFang', chance: 0.2 }],
 };
+
+/**
+ * A boss's hoard, rolled d20 after d20: 1-6 ends it, 7-17 gives the common find
+ * and rolls again, 18-19 gives the core and ends it, 20 gives the core and rolls
+ * again with every later roll 3 lower (so no second core). A `thirteen` replaces
+ * the common find on a 13 and ends the hoard.
+ */
+export interface Hoard {
+  core: ItemId;
+  common: ItemId;
+  thirteen?: ItemId;
+}
+
+export const HOARDS: Readonly<Record<string, Hoard>> = {
+  reaper: { core: 'reaperCore', common: 'ectoplasm', thirteen: 'voidShard' },
+  lich: { core: 'lichCore', common: 'ectoplasm' },
+};
+
+export function rollHoard(hoard: Hoard, rng: Dice): ItemId[] {
+  const out: ItemId[] = [];
+  let penalty = 0;
+  for (let guard = 0; guard < 200; guard++) {
+    const face = rng.die(20) - penalty;
+    if (face <= 6) break;
+    if (face === 13 && hoard.thirteen) {
+      out.push(hoard.thirteen);
+      break;
+    }
+    if (face <= 17) {
+      out.push(hoard.common);
+      continue;
+    }
+    out.push(hoard.core);
+    if (face < 20) break;
+    penalty = 3;
+  }
+  return out;
+}
 
 /** How much likelier every row is at `depth`: +2% per depth past the first, at most +50%. */
 export function depthLuck(depth: number): number {
@@ -66,7 +120,14 @@ export function depthLuck(depth: number): number {
 }
 
 export function dropTable(kind: string): readonly DropRow[] {
-  return Object.prototype.hasOwnProperty.call(DROP_TABLES, kind) ? DROP_TABLES[kind] : [];
+  if (Object.prototype.hasOwnProperty.call(DROP_TABLES, kind)) return DROP_TABLES[kind];
+  const family = kind.split(':')[0];
+  return family !== kind ? dropTable(family) : [];
+}
+
+/** The table a creature rolls on: its kind, or its kind and role (`magma-sentinel:dps`). */
+export function dropKind(kind: string, role?: string): string {
+  return role ? `${kind}:${role}` : kind;
 }
 
 /** Roll what one fallen creature of `kind` leaves at `depth`. Usually little, often nothing. */
@@ -78,5 +139,7 @@ export function rollDrops(kind: string, depth: number, rng: Dice): ItemId[] {
     const copies = 1 + (row.extra ? rng.die(row.extra + 1) - 1 : 0);
     for (let i = 0; i < copies; i++) out.push(row.item);
   }
+  const family = kind.split(':')[0];
+  if (Object.prototype.hasOwnProperty.call(HOARDS, family)) out.push(...rollHoard(HOARDS[family], rng));
   return out;
 }

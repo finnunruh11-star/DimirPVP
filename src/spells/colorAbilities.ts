@@ -381,12 +381,13 @@ const ABILITIES_BY_COLOR: Record<ColorName, ColorAbilitySet> = {
 /**
  * The two colour abilities granted by a primary colour, for a given class. The
  * first is fixed; the second depends on the class (see {@link ABILITIES_BY_COLOR}).
+ * A classless caster (null) has only the first.
  */
 export function getColorAbilitiesFor(
   color: ColorName | null,
-  mageClass: MageClass = DEFAULT_MAGE_CLASS
+  mageClass: MageClass | null = DEFAULT_MAGE_CLASS
 ): ColorAbility[] {
   if (!color) return [];
   const set = ABILITIES_BY_COLOR[color];
-  return [set.first, set.second[mageClass]];
+  return mageClass ? [set.first, set.second[mageClass]] : [set.first];
 }

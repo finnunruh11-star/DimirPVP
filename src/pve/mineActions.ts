@@ -10,6 +10,7 @@ import { mineAbilityPower } from './minerun';
 export type MineActionId =
   | 'rockling-launch'
   | 'rabbit-charge'
+  | 'lion-pounce'
   | 'bat-shriek'
   | 'golem-wake'
   | 'golem-roll'
@@ -102,6 +103,19 @@ export function canRabbitChargeHit(game: GameState, source: Mage, target: Mage |
   return dist(landing, target!.pos) <= source.bodyRadius() + target!.bodyRadius() + 0.5;
 }
 
+/** A lioness leaps this far (cm) onto her prey, once a fight, and strikes half again as hard. */
+export const LION_POUNCE = 5;
+export const LION_POUNCE_MULT = 1.5;
+
+/** True when an unmoved lioness that has not pounced yet would land in contact with `target`. */
+export function canLionPounceHit(game: GameState, source: Mage, target: Mage | undefined): boolean {
+  if (source.movedThisTurn || mineKind(source) !== 'lioness' || source.mine?.pounced || !source.intrinsicMelee) return false;
+  const reach = LION_POUNCE * RANGE_UNIT + source.bodyRadius();
+  if (!enemyInRange(game, source, target, reach)) return false;
+  const landing = game.leapDestination(source, stepTowards(source.pos, target!.pos, LION_POUNCE * RANGE_UNIT));
+  return dist(landing, target!.pos) <= source.bodyRadius() + target!.bodyRadius() + 0.5;
+}
+
 function rolledDamage(
   game: GameState,
   source: Mage,
@@ -161,6 +175,31 @@ const ACTIONS: Record<MineActionId, MineActionDef> = {
       }
       rolledDamage(game, source, target, '1d4', 1 + power(source), 'shatter', 'Rabbit charge');
       game.vfxSink?.shatterBurst?.(target.pos, 48, source.pos);
+    },
+  },
+  'lion-pounce': {
+    id: 'lion-pounce',
+    label: 'Pounce',
+    cost: 'main',
+    hostile: true,
+    visual: 'shatter',
+    available: (source) => mineKind(source) === 'lioness' && !source.mine?.pounced,
+    canCommit: (source) => !source.movedThisTurn,
+    isStillValid: (game, source, choice) => canLionPounceHit(game, source, choice.target),
+    resolve: (game, source, choice) => {
+      const target = choice.target!;
+      const melee = source.intrinsicMelee!;
+      if (source.mine) source.mine.pounced = true;
+      game.leapMove(source, stepTowards(source.pos, target.pos, LION_POUNCE * RANGE_UNIT));
+      source.actions.move = 0;
+      const contactDistance = source.bodyRadius() + target.bodyRadius();
+      if (!source.alive || !target.alive || dist(source.pos, target.pos) > contactDistance + 0.5) {
+        game.log(`${source.name} lands short.`);
+        return;
+      }
+      const ctx = game.effectContext(source, target, null);
+      const amount = Math.round(rollDice(ctx, melee.spec, 'Pounce') * LION_POUNCE_MULT);
+      dealDamage(ctx, target, dmg(amount, melee.type));
     },
   },
   'bat-shriek': {

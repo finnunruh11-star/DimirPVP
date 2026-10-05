@@ -57,7 +57,15 @@ export const MINE_ORE_DEFS: Record<MineOreKind, MineOreDef> = {
 
 export const MINE_TRAP_DAMAGE = ['1d3', '2d4', '3d3', '2d6', '1d20'] as const;
 export type MineTrapDamage = (typeof MINE_TRAP_DAMAGE)[number];
-export const MINE_TRAP_CHANCE = 0.08;
+/** What each trap is, by the damage it deals. */
+export const MINE_TRAP_NAME: Record<MineTrapDamage, string> = {
+  '1d3': 'Dart trap',
+  '2d4': 'Spike plate',
+  '3d3': 'Swinging blade',
+  '2d6': 'Rockfall',
+  '1d20': 'Cave-in',
+};
+export const MINE_TRAP_CHANCE = 0.1;
 export const MINE_ROOM_EXTRA_EXIT_CHANCE = 0.25;
 export const MINE_LIGHT_TRAP_SPOT_CHANCE = 0.2;
 export const MINE_TRAP_DODGE_CHANCE = 0.1;
@@ -80,6 +88,21 @@ export function rollMineTrapAvoidance(hasActiveLight: boolean, rng: Dice): MineT
   const spotted = hasActiveLight && rng.chance(MINE_LIGHT_TRAP_SPOT_CHANCE);
   const dodgeChance = spotted ? MINE_SPOTTED_TRAP_DODGE_CHANCE : MINE_TRAP_DODGE_CHANCE;
   return { spotted, dodgeChance, dodged: rng.chance(dodgeChance) };
+}
+
+export interface MineTrapHarm {
+  /** HP the trap takes. */
+  dealt: number;
+  fatal: boolean;
+  /** Full health saved them from a killing blow: they are left at 1 HP. */
+  clung: boolean;
+}
+
+/** What a trap's roll does to someone at `hp` of `maxHp`: at full health it cannot kill, only leave them at 1 HP. */
+export function mineTrapHarm(amount: number, hp: number, maxHp: number): MineTrapHarm {
+  if (amount < hp) return { dealt: amount, fatal: false, clung: false };
+  if (hp >= maxHp && hp > 1) return { dealt: hp - 1, fatal: false, clung: true };
+  return { dealt: hp, fatal: true, clung: false };
 }
 
 export interface MineRoomState {
@@ -118,6 +141,8 @@ export interface MineMazeState {
   arrivedVia?: MineDirection;
   /** No supply rooms: the Mines as an Exploration run finds them. */
   noShops?: boolean;
+  /** Seeds how far apart the grid's columns and rows stand (mineLayout.ts); absent, evenly. */
+  layoutSeed?: number;
 }
 
 export interface MineTravelResult {
@@ -233,7 +258,7 @@ function makeNode(
 }
 
 /** Start at a junction with unexplored passages in 1-4 of the eight directions. */
-export function createMineMaze(rng: Dice, options: { shops?: boolean } = {}): MineMazeState {
+export function createMineMaze(rng: Dice, options: { shops?: boolean; layoutSeed?: number } = {}): MineMazeState {
   const layout = makeExits(rng);
   const start: MineMazeNode = {
     id: 0,
@@ -243,7 +268,10 @@ export function createMineMaze(rng: Dice, options: { shops?: boolean } = {}): Mi
     exits: layout.exits,
     traps: layout.traps,
   };
-  return { nodes: { 0: start }, currentNodeId: 0, nextNodeId: 1, steps: 0, noShops: options.shops === false || undefined };
+  return {
+    nodes: { 0: start }, currentNodeId: 0, nextNodeId: 1, steps: 0,
+    noShops: options.shops === false || undefined, layoutSeed: options.layoutSeed,
+  };
 }
 
 export function currentMineNode(maze: MineMazeState): MineMazeNode {
@@ -313,6 +341,7 @@ export function parseMineMaze(value: unknown): MineMazeState | null {
   const maze: MineMazeState = {
     nodes, currentNodeId: 0, nextNodeId: raw.nextNodeId as number,
     steps: integer(raw.steps, 0, 1_000_000) ?? 0, noShops: true,
+    layoutSeed: integer(raw.layoutSeed, 0, 0xffffffff) ?? undefined,
   };
   const reached = new Set<number>([0]);
   const queue = [0];
@@ -475,6 +504,66 @@ export function revealMineOre(room: MineRoomState, rng: Dice): number {
 const haul = (ore: MineOreDef, extracted: number): ItemId[] =>
   Array.from({ length: extracted }, () => ore.item);
 
+/** A vein being worked: the d20s struck into it so far. */
+export interface MineVein {
+  progress: number;
+  strikes: number;
+  outcome?: 'extracted' | 'collapsed';
+}
+
+export interface MineStrike {
+  roll: number;
+  progress: number;
+  strike: number;
+  /** A natural 1 or 2 chipped the pickaxe in use. */
+  durabilityLost: boolean;
+  /** And that was its last point: it broke. */
+  broke: boolean;
+  outcome?: 'extracted' | 'collapsed';
+}
+
+/**
+ * One d20 strike at `vein`: the roll adds to its progress, a natural 1 or 2 costs
+ * the first pickaxe a point, reaching the ore's value extracts it and running out
+ * of strikes first brings it down. Changes the vein and the pickaxes; null when
+ * the vein is done or there is no pickaxe to strike with.
+ */
+export function strikeMineVein(ore: MineOreDef, vein: MineVein, pickaxes: number[], rng: Dice): MineStrike | null {
+  if (vein.outcome || pickaxes.length === 0) return null;
+  const roll = rng.die(20);
+  vein.strikes += 1;
+  vein.progress += roll;
+  const durabilityLost = roll <= 2;
+  let broke = false;
+  if (durabilityLost) {
+    pickaxes[0] -= 1;
+    if (pickaxes[0] <= 0) {
+      pickaxes.shift();
+      broke = true;
+    }
+  }
+  if (vein.progress >= ore.miningValue) vein.outcome = 'extracted';
+  else if (vein.strikes >= ore.failCount) vein.outcome = 'collapsed';
+  return { roll, progress: vein.progress, strike: vein.strikes, durabilityLost, broke, outcome: vein.outcome };
+}
+
+/**
+ * Whether `choice` is open at a deposit while vein `active` is the one picked:
+ * 'vein:N' picks another untouched vein, 'strike' swings at the picked one, and
+ * 'leave' walks away. A vein once struck is seen through to the end while a
+ * pickaxe lasts: no switching away from it, no leaving it half dug.
+ */
+export function mineDepositAllows(choice: string, veins: readonly MineVein[], active: number, pickaxes: number): boolean {
+  const current = veins[active];
+  const working = !!current && !current.outcome && current.strikes > 0;
+  if (choice === 'leave') return !working || pickaxes === 0;
+  if (choice === 'strike') return !!current && !current.outcome && pickaxes > 0;
+  const match = /^vein:(\d+)$/.exec(choice);
+  if (!match) return false;
+  const slot = Number(match[1]);
+  return slot !== active && slot < veins.length && !veins[slot].outcome && !working;
+}
+
 /** Resolve every vein, including d20 progress, collapse limits, and tool wear. */
 export function resolveMineOre(
   oreKind: MineOreKind,
@@ -489,34 +578,24 @@ export function resolveMineOre(
   let collapsed = 0;
 
   for (let vein = 1; vein <= amount; vein++) {
-    let progress = 0;
-    for (let strike = 1; strike <= ore.failCount; strike++) {
-      if (pickaxes.length === 0) {
-        rolls.push({ vein, strike, roll: 0, progress, durabilityLost: false, outcome: 'no-pickaxe' });
+    const state: MineVein = { progress: 0, strikes: 0 };
+    while (!state.outcome) {
+      const strike = strikeMineVein(ore, state, pickaxes, rng);
+      if (!strike) {
+        rolls.push({ vein, strike: state.strikes + 1, roll: 0, progress: state.progress, durabilityLost: false, outcome: 'no-pickaxe' });
         return { extracted, collapsed, materials: haul(ore, extracted), pickaxes, rolls };
       }
-
-      const roll = rng.die(20);
-      progress += roll;
-      const durabilityLost = roll <= 2;
-      if (durabilityLost) {
-        pickaxes[0] -= 1;
-        if (pickaxes[0] <= 0) pickaxes.shift();
-      }
-
-      const record: MineRollRecord = { vein, strike, roll, progress, durabilityLost };
-      if (progress >= ore.miningValue) {
-        extracted += 1;
-        record.outcome = 'extracted';
-        rolls.push(record);
-        break;
-      }
-      if (strike === ore.failCount) {
-        collapsed += 1;
-        record.outcome = 'collapsed';
-      }
-      rolls.push(record);
+      rolls.push({
+        vein,
+        strike: strike.strike,
+        roll: strike.roll,
+        progress: strike.progress,
+        durabilityLost: strike.durabilityLost,
+        ...(strike.outcome ? { outcome: strike.outcome } : {}),
+      });
     }
+    if (state.outcome === 'extracted') extracted += 1;
+    else collapsed += 1;
   }
 
   return { extracted, collapsed, materials: haul(ore, extracted), pickaxes, rolls };

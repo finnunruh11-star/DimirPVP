@@ -1,14 +1,16 @@
 import { Dice } from '../core/Dice';
 import { MAGE_CLASSES, type MageClass } from '../core/Classes';
 import { Mage } from '../core/Mage';
-import { areaBounds, areaHours, areaLead, enterArea, inAreaBounds, leaveArea, spendAreaTime } from '../pve/exploration/area';
+import {
+  areaBounds, areaHours, areaInStep, areaLead, enterArea, gapLabel, hoursBehind, inAreaBounds, leaveArea, memberHours, restOver, restTogether,
+  spendAreaTime, waitInArea,
+} from '../pve/exploration/area';
 import { memberIn, partyOf, withParty } from '../pve/exploration/economy';
 import type { EncounterSpawn } from '../pve/exploration/encounters';
 import { ORES } from '../pve/exploration/finds';
 import { resolveLocale } from '../pve/exploration/locales';
 import { cellWorldTile, OPEN_WORLD_ID, openWorldDef } from '../pve/exploration/openWorld';
 import { capturePartySnapshot } from '../pve/exploration/party';
-import { QUEST_OVER } from '../pve/exploration/quest';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import {
   bestSearcher,
@@ -49,9 +51,7 @@ function traveller(mageClass: MageClass, name: string, stat = 3): Mage {
 }
 
 function partyRun(size = 1, seed = 11): ExplorationRun {
-  const run = createRun(seed, capturePartySnapshot(MAGE_CLASSES.slice(0, size).map((mageClass, i) => traveller(mageClass, `Player ${i + 1}`))));
-  run.quest.job = QUEST_OVER;
-  return run;
+  return createRun(seed, capturePartySnapshot(MAGE_CLASSES.slice(0, size).map((mageClass, i) => traveller(mageClass, `Player ${i + 1}`))));
 }
 
 function kindOf(spawn: EncounterSpawn): string {
@@ -109,7 +109,8 @@ const tests: [name: string, run: () => void][] = [
     equal(targets.resource[0].standing, 'native', 'what belongs is listed first');
     const creatures = targets.creature;
     assert(creatures[0].standing === 'native' && creatures[0].dc === 11, 'a native creature is DC 11');
-    assert(creatures.some((target) => target.standing === 'foreign' && target.dc === 19), 'a foreign one is DC 19');
+    assert(creatures.every((target) => target.standing !== 'foreign'), 'nothing that lives elsewhere can be found here');
+    assert(creatures.every((target) => target.id.startsWith('bandit')), `the capitol has only its robbers (${creatures.map((target) => target.id).join(', ')})`);
     equal(targets.events.map((target) => target.dc), [8], 'anything nearby is DC 8');
   }],
 
@@ -225,9 +226,6 @@ const tests: [name: string, run: () => void][] = [
     const day = shortRestRisk(run, { safe: false, tile });
     run.hour = 23;
     assert(shortRestRisk(run, { safe: false, tile }) > day, 'night is riskier');
-    const kerusai = placeById('kerusai')!;
-    const quest = createRun(5, capturePartySnapshot([traveller('objects', 'New')]));
-    equal(shortRestRisk(quest, { safe: false, tile: { x: kerusai.x + 3, y: kerusai.y - 2 } }), 0, 'the country round Kerusai is calm while the quest runs');
   }],
 
   ['cuts an ambushed rest short, and gives nothing back', () => {
@@ -266,6 +264,36 @@ const tests: [name: string, run: () => void][] = [
     run.hour = 23;
     equal(spendAreaTime(run, ['objects'], 2), 1, 'a midnight passes');
     equal(spendAreaTime(run, [], 2) + spendAreaTime(run, ['life'], 0), 0, 'nothing done, no time');
+  }],
+
+  ['on foot, each traveller keeps their own time: pick, rest, wait, and move on only in step', () => {
+    const run = partyRun(3);
+    run.hour = 8;
+    enterArea(run);
+    const area = run.area!;
+    // Five herbs, half an hour each: two pick two, one picks one.
+    spendAreaTime(run, ['objects'], 1);
+    spendAreaTime(run, ['life'], 1);
+    spendAreaTime(run, ['hexcraft'], 0.5);
+    equal(run.hour, 9, 'five herbs take one hour between three');
+    assert(!areaInStep(area, ['objects', 'life', 'hexcraft']), 'one is behind');
+    equal([hoursBehind(area, 'hexcraft'), gapLabel(hoursBehind(area, 'hexcraft'))], [0.5, '30m'], 'half an hour behind');
+    equal(gapLabel(1.5), '1:30h', 'longer gaps in hours');
+    equal(waitInArea(run, 'hexcraft').hours, 0.5, 'waiting catches up');
+    assert(areaInStep(area, ['objects', 'life', 'hexcraft']), 'in step again');
+    equal(run.hour, 9, 'catching up moves no clock');
+    // Two rest 1.5 h; the third keeps picking.
+    const rest = restTogether(run, ['life', 'hexcraft'], 1.5);
+    equal([rest.until, memberHours(area, 'life'), memberHours(area, 'hexcraft')], [2.5, 2.5, 2.5], 'both get up at the same time');
+    assert(!restOver(area, ['objects'], rest.until), 'still resting');
+    spendAreaTime(run, ['objects'], 0.5);
+    spendAreaTime(run, ['objects'], 0.5);
+    assert(!restOver(area, ['objects'], rest.until), 'two herbs in');
+    spendAreaTime(run, ['objects'], 0.5);
+    assert(restOver(area, ['objects'], rest.until), 'the third herb and they get up');
+    assert(restOver(area, [], 9), 'with nobody keeping on, a rest is over at once');
+    equal(waitInArea(run, 'objects').hours, 0.5, 'in front, a wait is half an hour');
+    equal(run.hour, 11, 'and that one moves the clock');
   }],
 
   ['on foot, walks only the country round where the party set out', () => {

@@ -1,4 +1,4 @@
-import type { DamageInstance } from './Damage';
+import type { DamageInstance, DamageType } from './Damage';
 
 // Status effects placed on a mage. Durations are measured in "turn cycles":
 // a status' duration is decremented at the start of the affected mage's turn,
@@ -40,7 +40,26 @@ export type StatusKind =
   | 'stormConduit'
   | 'lightningStorm'
   | 'faradayVeil'
-  | 'deathCurse';
+  | 'deathCurse'
+  | 'mirrorImages'
+  | 'petrify'
+  | 'rivet'
+  | 'blindSpot'
+  | 'timeStop'
+  | 'doom'
+  | 'deathMark'
+  | 'soulPact'
+  | 'fixedPoint'
+  | 'phantomReach'
+  | 'foreknown'
+  | 'stillWard'
+  | 'stillOath'
+  | 'clockStopped'
+  | 'frozenPerception'
+  | 'reflexStop'
+  | 'imbue'
+  | 'tether'
+  | 'stifle';
 export type StunType = 'main' | 'movement' | 'full';
 export type InvisMode = 'full' | 'partial';
 /** Kinds of mental compulsion the Mind word can inflict. */
@@ -143,6 +162,149 @@ export interface DotStatus extends BaseStatus {
   };
   /** When a tick empties the bearer's sanity, jump to the nearest unit in this radius. */
   jumpOnMindBreakRadius?: number;
+  /** Only ticks while the mage that applied it is hidden; dormant ticks do not escalate. */
+  whileSourceVeiled?: boolean;
+  /** Death Corrode Pierce: every heal the bearer would receive becomes that much Reap. */
+  healBecomesReap?: boolean;
+  /** Each tick spins the bearer 90 degrees around the DoT's source. */
+  orbitSource?: boolean;
+  /** Each tick carries the bearer `px`: toward `to` when set, else away from the source (negative: toward it). */
+  drift?: { px: number; to?: { x: number; y: number } };
+  /** Each tick stifles the bearer's next action. */
+  stifleOnTick?: boolean;
+}
+
+/** One hit held back by stopped time, landing when time resumes. */
+export interface HeldHit {
+  amount: number;
+  type: DamageType;
+  sourceIndex: number;
+}
+
+/**
+ * Stop: the bearer is frozen in time. It skips `turns` of its own turn starts,
+ * cannot act, react or be moved, nothing on it wears off, and every hit it takes
+ * is held and lands all at once when time resumes. Aged by its own hooks.
+ */
+export interface TimeStopStatus extends BaseStatus {
+  kind: 'timeStop';
+  ownerIndex: number;
+  /** Own turn starts still to be skipped. */
+  turns: number;
+  held: HeldHit[];
+  /** True during a turn the bearer is sitting out; time resumes as it ends. */
+  skipping?: boolean;
+  /** Everyone-else freeze: resumes once this many more of the owner's turns end. */
+  resumeAfterOwnerTurns?: number;
+  /** Glass: nothing may target or harm the bearer, so hits are voided, not held. */
+  sanctuary?: boolean;
+  /** Dealt to the bearer on top of the held hits when time resumes. */
+  release?: { spec: string; type: DamageType };
+  /** Dealt to the owner's enemies around the bearer when time resumes. */
+  burst?: { spec: string; type: DamageType; radius: number };
+}
+
+/**
+ * Death Curse Shatter: a doom that draws closer at every turn start of its
+ * bearer and with every shatter wound. `duration` is the countdown.
+ */
+export interface DoomStatus extends BaseStatus {
+  kind: 'doom';
+  ownerIndex: number;
+  spec: string;
+  executeAmount: number;
+  radius: number;
+}
+
+/** Death Curse Pierce: the bearer cannot hide and every wound feeds its Reap. */
+export interface DeathMarkStatus extends BaseStatus {
+  kind: 'deathMark';
+  ownerIndex: number;
+  executeAmount: number;
+}
+
+/** Reality Bind Mind: every wound the bearer deals is repaid as sanity damage. */
+export interface SoulPactStatus extends BaseStatus {
+  kind: 'soulPact';
+  ownerIndex: number;
+}
+
+/** Reality Bind Pierce: nailed in place; nothing moves it and it cannot dodge. */
+export interface FixedPointStatus extends BaseStatus {
+  kind: 'fixedPoint';
+}
+
+/** Reality Veil Pierce: the bearer's targeted spells reach anywhere, seen or not. */
+export interface PhantomReachStatus extends BaseStatus {
+  kind: 'phantomReach';
+}
+
+/** Reality Stop Mind: the next action the bearer declares is stopped outright. */
+export interface ForeknownStatus extends BaseStatus {
+  kind: 'foreknown';
+  ownerIndex: number;
+  spec: string;
+}
+
+/** Stop Bind Veil: the next damage the bearer would take is stopped. */
+export interface StillWardStatus extends BaseStatus {
+  kind: 'stillWard';
+  ownerIndex: number;
+}
+
+/** Stop Bind Mind: once the bearer acts on a turn, the rest of that turn is gone. */
+export interface StillOathStatus extends BaseStatus {
+  kind: 'stillOath';
+}
+
+/** Stop Bind Pierce: nothing else on the bearer wears off. Aged by its own hook. */
+export interface ClockStoppedStatus extends BaseStatus {
+  kind: 'clockStopped';
+}
+
+/**
+ * Stop Veil Mind: the bearer sees the field as it stood when this landed and
+ * cannot target anything that has since moved. Keyed by mage index.
+ */
+export interface FrozenPerceptionStatus extends BaseStatus {
+  kind: 'frozenPerception';
+  positions: Record<number, { x: number; y: number }>;
+}
+
+/** Stop Veil Pierce: the bearer cannot react at all. */
+export interface ReflexStopStatus extends BaseStatus {
+  kind: 'reflexStop';
+}
+
+/** Bind Veil Shatter: glass doubles that catch targeted attacks meant for the bearer. */
+export interface MirrorImagesStatus extends BaseStatus {
+  kind: 'mirrorImages';
+  images: number;
+}
+
+/**
+ * Bind Shatter Curse: the bearer turns to stone one stage per turn it ends.
+ * `duration` counts the turns left until it shatters and is aged by its own hook.
+ */
+export interface PetrifyStatus extends BaseStatus {
+  kind: 'petrify';
+  /** 1 slowed, 2 rooted, 3 stone. */
+  stage: number;
+  ownerIndex: number;
+}
+
+/** Bind Corrode Pierce: riveted to another body; moving one drags the other. */
+export interface RivetStatus extends BaseStatus {
+  kind: 'rivet';
+  partnerIndex: number;
+  /** Furthest the two bodies may drift apart, centre to centre. */
+  leashPx: number;
+}
+
+/** Veil Mind Corrode: the bearer cannot perceive (target) one particular mage. */
+export interface BlindSpotStatus extends BaseStatus {
+  kind: 'blindSpot';
+  hiddenIndex: number;
 }
 
 /**
@@ -466,6 +628,35 @@ export interface FireVeilAuraStatus extends BaseStatus {
   ownerIndex: number;
 }
 
+/** Objects class: an enchantment on the bearer's weapon, armour or trinket for the fight. */
+export interface ImbueStatus extends BaseStatus {
+  kind: 'imbue';
+  /** Key into IMBUES (effects/classKit.ts). */
+  imbue: string;
+  ownerIndex: number;
+  /** Uses left; absent means it lasts the whole fight. */
+  charges?: number;
+  /** A hungry weapon drew blood since the bearer's last turn. */
+  fed?: boolean;
+}
+
+/** Bound to an anchor: the bearer cannot walk further than `leash` from it. */
+export interface TetherStatus extends BaseStatus {
+  kind: 'tether';
+  anchorIndex: number;
+  ownerIndex: number;
+  leash: number;
+}
+
+/** Twist: the next action the bearer declares, other than moving, fails. */
+export interface StifleStatus extends BaseStatus {
+  kind: 'stifle';
+  ownerIndex: number;
+  /** Dice the bearer takes when its action fails. */
+  spec?: string;
+  type?: DamageType;
+}
+
 export type Status =
   | InvisibilityStatus
   | StunStatus
@@ -502,7 +693,26 @@ export type Status =
   | StormConduitStatus
   | LightningStormStatus
   | FaradayVeilStatus
-  | DeathCurseStatus;
+  | DeathCurseStatus
+  | MirrorImagesStatus
+  | PetrifyStatus
+  | RivetStatus
+  | BlindSpotStatus
+  | TimeStopStatus
+  | DoomStatus
+  | DeathMarkStatus
+  | SoulPactStatus
+  | FixedPointStatus
+  | PhantomReachStatus
+  | ForeknownStatus
+  | StillWardStatus
+  | StillOathStatus
+  | ClockStoppedStatus
+  | FrozenPerceptionStatus
+  | ReflexStopStatus
+  | ImbueStatus
+  | TetherStatus
+  | StifleStatus;
 
 /**
  * Add a status, or refresh/extend an existing one that shares the same key.

@@ -11,10 +11,9 @@ import { buildLocaleModel, type BuildingPlacement, type ExitDef, type LocaleDef,
 import { floodReach, type Cell } from '../../world/pathfind';
 import { areaBounds, areaBoundsOf, inAreaBounds } from './area';
 import { hashString } from './economy';
-import { describeSpawns, packPace, rollEncounter, spawnTint } from './encounters';
+import { describeSpawns, packPace, rollEncounter, spawnTint, troubleIn } from './encounters';
 import { rollFind } from './finds';
 import type { Landmark, LocaleTravel, ResolvedLocale, Secret, SecretResult, WildPack } from './locales';
-import { questCacheSpecs, questCalm, questPackSpecs, searchQuestCache } from './quest';
 import type { ExplorationRun } from './run';
 import { SITE_RADIUS, siteFind, sitePlan, siteWokeFlag, type EncounterSite } from './site';
 import {
@@ -512,7 +511,7 @@ export function openWorldPacks(run: ExplorationRun): WildPack[] {
   const model = openWorldModel();
   const packs: WildPack[] = [];
   const settles = (tx: number, ty: number): boolean =>
-    tx < world.w && ty < world.h && !townClose(tx, ty) && !questCalm(run, tx, ty) && !PLACES.some((p) => p.x === tx && p.y === ty);
+    tx < world.w && ty < world.h && !townClose(tx, ty) && !PLACES.some((p) => p.x === tx && p.y === ty);
   for (let by = 0; by * PACK_BLOCK < world.h; by++) {
     for (let bx = 0; bx * PACK_BLOCK < world.w; bx++) {
       const dice = new Dice((hashString(`ow2:${bx},${by}:${run.day}`) ^ run.seed) >>> 0);
@@ -523,11 +522,11 @@ export function openWorldPacks(run: ExplorationRun): WildPack[] {
       let tx = bx * PACK_BLOCK + dice.die(PACK_BLOCK) - 1;
       let ty = by * PACK_BLOCK + dice.die(PACK_BLOCK) - 1;
       let at: Cell | null = null;
-      let kind: 'robbery' | 'monsters';
+      let kind: 'robbery' | 'monsters' | null;
       if (roads.length && dice.float() < ROAD_PACK_CHANCE) {
         // Roads are travelled, so something always lies in wait along them.
         ({ x: tx, y: ty } = roads[dice.die(roads.length) - 1]);
-        kind = dice.float() < REGIONS[regionAt(world, tx, ty)].robbery * ROAD_ROBBERY ? 'robbery' : 'monsters';
+        kind = troubleIn(regionAt(world, tx, ty), dice.float() < REGIONS[regionAt(world, tx, ty)].robbery * ROAD_ROBBERY);
         at = roadCellIn(model, tx, ty, dice);
       } else {
         if (!settles(tx, ty)) continue;
@@ -536,10 +535,10 @@ export function openWorldPacks(run: ExplorationRun): WildPack[] {
         const region = regionAt(world, tx, ty);
         const chance = Math.min(0.85, 0.32 * REGIONS[region].danger * terrain.danger);
         if (dice.float() >= chance) continue;
-        kind = dice.float() < REGIONS[region].robbery ? 'robbery' : 'monsters';
+        kind = troubleIn(region, dice.float() < REGIONS[region].robbery);
         at = openCellIn(model, tx, ty, dice);
       }
-      if (!at) continue;
+      if (!at || !kind) continue;
       const zone = regionAt(world, tx, ty);
       const depth = depthAt(world, tx, ty);
       const spawns = rollEncounter(zone, kind, depth, dice);
@@ -582,7 +581,6 @@ export function openWorldSecrets(run: ExplorationRun): Secret[] {
 }
 
 function searchCache(run: ExplorationRun, secret: Secret): SecretResult {
-  if (secret.id.startsWith('quest:')) return searchQuestCache(run);
   const site = run.area?.site;
   if (site && secret.id.startsWith('site:')) return siteFind(run, site, secret);
   const world = createWorld();
@@ -610,39 +608,6 @@ export const OPEN_WORLD_LANDMARKS: readonly Landmark[] = PLACES.map((place) => (
   name: place.name,
 }));
 
-/** The ground tile nearest the middle of world tile `tile` that can be walked to from the start. */
-function walkableCellNear(tile: Cell): Cell | null {
-  const model = openWorldModel();
-  const land = openWorldMainland();
-  const want = worldTileCell(tile);
-  for (let r = 0; r <= K + 2; r++) {
-    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
-      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-      const x = want.x + dx;
-      const y = want.y + dy;
-      if (x < 0 || y < 0 || x >= model.w || y >= model.h) continue;
-      if (land[y * model.w + x] && !model.exitAt(x, y)) return { x, y };
-    }
-  }
-  return null;
-}
-
-function questPacks(run: ExplorationRun): WildPack[] {
-  return questPackSpecs(run).flatMap((spec) => {
-    const at = walkableCellNear(spec.tile);
-    return at
-      ? [{ id: spec.id, x: at.x, y: at.y, sight: spec.sight, depth: 1, spawns: spec.spawns, label: spec.label, tint: spawnTint(spec.spawns), zone: spec.zone, pace: packPace(spec.spawns) }]
-      : [];
-  });
-}
-
-function questSecrets(run: ExplorationRun): Secret[] {
-  return questCacheSpecs(run).flatMap((spec) => {
-    const at = walkableCellNear(spec.tile);
-    return at ? [{ id: spec.id, x: at.x, y: at.y, reveal: 3, label: spec.label }] : [];
-  });
-}
-
 export function resolveOpenWorld(run: ExplorationRun, id: string): ResolvedLocale | null {
   if (id !== OPEN_WORLD_ID) return null;
   const area = run.area;
@@ -657,8 +622,8 @@ export function resolveOpenWorld(run: ExplorationRun, id: string): ResolvedLocal
     kind: 'world',
     zone: 'capitol',
     depth: 1,
-    packs: content ? content.packs : [...openWorldPacks(run), ...questPacks(run)].filter(here),
-    secrets: content ? content.secrets : [...openWorldSecrets(run), ...questSecrets(run)].filter(here),
+    packs: content ? content.packs : openWorldPacks(run).filter(here),
+    secrets: content ? content.secrets : openWorldSecrets(run).filter(here),
     search: searchCache,
     travel: enterPlace,
     fogChunk: K,

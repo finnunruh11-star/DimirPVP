@@ -1,7 +1,7 @@
 import { FIELD, RANGE_UNIT } from '../config/constants';
 import { FLEE_EDGE_MARGIN, fleeEdgeAt } from './Flee';
 import { getItem, ITEM_DEFS, itemsOfRarity, RARITY_ORDER } from './Items';
-import { MINE_ORE_DEFS, resolveMineOre } from '../pve/mineMaze';
+import { MINE_ORE_DEFS, mineDepositAllows, resolveMineOre, strikeMineVein, type MineVein } from '../pve/mineMaze';
 import { MINE_SPAWN_KINDS, OVERWORLD_SPAWN_KINDS, rollMineLoot } from '../pve/minerun';
 import { Dice } from './Dice';
 
@@ -70,6 +70,63 @@ const tests: [name: string, run: () => void][] = [
     }
   }],
 
+  ['works a vein a d20 at a time until it comes free or gives way', () => {
+    const ore = MINE_ORE_DEFS.iron;
+    const rng = new Dice(11);
+    const outcomes = new Set<string>();
+    for (let trial = 0; trial < 60; trial++) {
+      const vein: MineVein = { progress: 0, strikes: 0 };
+      const pickaxes = [10, 10, 10];
+      while (!vein.outcome) {
+        const strike = strikeMineVein(ore, vein, pickaxes, rng);
+        assert(strike, 'a pickaxe in hand always strikes');
+        assert(strike.roll >= 1 && strike.roll <= 20, 'every strike is a d20');
+        equal(strike.progress, vein.progress, 'the strike reports the dig');
+        equal(strike.strike, vein.strikes, 'the strike reports its count');
+      }
+      outcomes.add(vein.outcome);
+      if (vein.outcome === 'extracted') assert(vein.progress >= ore.miningValue, 'the ore comes free at its value');
+      else equal(vein.strikes, ore.failCount, 'the seam gives way after the last strike');
+      equal(strikeMineVein(ore, vein, pickaxes, rng), null, 'a finished vein takes no more strikes');
+    }
+    assert(outcomes.has('extracted'), 'iron comes free sometimes');
+  }],
+
+  ['chips the pick in hand on a natural 1 or 2 and drops it when it breaks', () => {
+    const rolls = [2, 1];
+    const dice = { die: () => rolls.shift() ?? 10 } as unknown as Dice;
+    const vein: MineVein = { progress: 0, strikes: 0 };
+    const pickaxes = [1, 10];
+    const first = strikeMineVein(MINE_ORE_DEFS.gold, vein, pickaxes, dice);
+    assert(first?.durabilityLost && first.broke, 'its last point breaks the pick');
+    equal(pickaxes, [10], 'the broken pick is gone');
+    const second = strikeMineVein(MINE_ORE_DEFS.gold, vein, pickaxes, dice);
+    assert(second?.durabilityLost && !second.broke, 'the next one only chips');
+    equal(pickaxes, [9], 'one point off');
+    equal(strikeMineVein(MINE_ORE_DEFS.gold, vein, [], dice), null, 'no pickaxe, no strike');
+  }],
+
+  ['sees a struck vein through before switching away or leaving', () => {
+    const veins: MineVein[] = [{ progress: 0, strikes: 0 }, { progress: 0, strikes: 0 }];
+    assert(mineDepositAllows('vein:0', veins, -1, 1), 'any untouched vein can be picked');
+    assert(!mineDepositAllows('vein:2', veins, -1, 1), 'but not one that is not there');
+    assert(!mineDepositAllows('strike', veins, -1, 1), 'nothing to strike before picking');
+    assert(mineDepositAllows('leave', veins, -1, 1), 'the party may walk away from untouched rock');
+    veins[0].strikes = 1;
+    veins[0].progress = 7;
+    assert(mineDepositAllows('strike', veins, 0, 1), 'keep striking');
+    assert(!mineDepositAllows('vein:1', veins, 0, 1), 'no switching away from a half-dug vein');
+    assert(!mineDepositAllows('leave', veins, 0, 1), 'no leaving it half dug');
+    assert(mineDepositAllows('leave', veins, 0, 0), 'unless the last pickaxe broke');
+    assert(!mineDepositAllows('strike', veins, 0, 0), 'and nothing strikes without one');
+    veins[0].outcome = 'extracted';
+    assert(!mineDepositAllows('strike', veins, 0, 1), 'a freed vein is done');
+    assert(!mineDepositAllows('vein:0', veins, 0, 1), 'and cannot be picked again');
+    assert(mineDepositAllows('vein:1', veins, 0, 1), 'on to the next');
+    assert(mineDepositAllows('leave', veins, 0, 1), 'or out');
+    assert(!mineDepositAllows('dig', veins, 0, 1), 'nothing else');
+  }],
+
   ['drops salvage as carried items, never as folded-in gold', () => {
     const rng = new Dice(3);
     let seen = 0;
@@ -84,11 +141,12 @@ const tests: [name: string, run: () => void][] = [
     assert(seen > 0, 'salvage drops at least sometimes');
   }],
 
-  ['keeps sentinels and dragonborn out of the tunnels', () => {
+  ['keeps the red surface in the tunnels too, but its slimes stay above', () => {
     for (const kind of ['sentinel', 'magma-sentinel', 'red-dragonborn', 'black-dragonborn'] as const) {
-      assert(!MINE_SPAWN_KINDS.includes(kind), `${kind} no longer spawns in the mines`);
+      assert(MINE_SPAWN_KINDS.includes(kind), `${kind} spawns in the mines`);
       assert(OVERWORLD_SPAWN_KINDS.includes(kind), `${kind} spawns on the surface`);
     }
+    assert(!MINE_SPAWN_KINDS.includes('slime-red'), 'no slimes underground');
   }],
 
   ['keeps kobolds in both rosters', () => {

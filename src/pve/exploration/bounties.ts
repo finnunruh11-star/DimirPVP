@@ -30,26 +30,27 @@ const TOWN_NAMES: Record<string, string> = {
   theocracy: 'the Theocracy',
 };
 
+// Each town posts what lives in its own country; where nothing lives yet, its robbers.
 const SLAY_TARGETS: Record<string, string[]> = {
-  capitol: ['bandit', 'kobold', 'cavern-bat', 'bandit-archer'],
+  capitol: ['bandit', 'bandit-archer', 'bandit-captain'],
   kerusai: ['zombie', 'skeleton', 'wisp', 'acidZombie', 'bandit'],
   hearthfire: ['sentinel', 'kobold', 'rockling', 'elite-kobold', 'magma-sentinel'],
   oakhaven: ['wolf', 'boar', 'rabbit', 'slime', 'bandit'],
   pennybruck: ['kobold', 'rockling', 'sentinel', 'bandit', 'elite-kobold'],
-  thassa: ['wisp', 'bandit', 'zombie', 'bandit-archer', 'cavern-bat'],
-  nerogril: ['sand-stalker', 'bandit', 'skeleton', 'rockling', 'bandit-archer'],
-  theocracy: ['sand-stalker', 'skeleton', 'specter', 'earth-elemental', 'bandit-captain'],
+  thassa: ['bandit', 'bandit-archer', 'bandit-captain'],
+  nerogril: ['bandit', 'bandit-archer', 'bandit-captain'],
+  theocracy: ['bandit', 'bandit-archer', 'bandit-captain'],
 };
 
 const GATHER_TARGETS: Record<string, ItemId[]> = {
-  capitol: ['crudeTrinket', 'herbMoonleaf', 'gemAmethyst', 'echoMembrane'],
-  kerusai: ['herbBogcap', 'herbMoonleaf', 'echoMembrane', 'gemOnyx'],
-  hearthfire: ['sentinelLens', 'herbEmberroot', 'oreIron', 'gemRuby'],
-  oakhaven: ['herbMoonleaf', 'herbBogcap', 'gemEmerald', 'wolfPelt'],
-  pennybruck: ['oreIron', 'oreCopper', 'gemRuby', 'herbEmberroot'],
-  thassa: ['herbMoonleaf', 'gemSapphire', 'crudeTrinket', 'echoMembrane'],
-  nerogril: ['herbEmberroot', 'gemSapphire', 'crudeTrinket', 'gemAmethyst'],
-  theocracy: ['gemSapphire', 'herbEmberroot', 'elementalGeode', 'gemAmethyst'],
+  capitol: ['crudeTrinket', 'herbMoonglow', 'gemAmethyst', 'batLeather'],
+  kerusai: ['herbDeathweed', 'herbMoonglow', 'batLeather', 'gemOnyx'],
+  hearthfire: ['sentinelLens', 'herbFireblossom', 'oreIron', 'gemRuby'],
+  oakhaven: ['herbMoonglow', 'herbWaterleaf', 'gemEmerald', 'wolfPelt'],
+  pennybruck: ['oreIron', 'oreCopper', 'gemRuby', 'herbFireblossom'],
+  thassa: ['herbWaterleaf', 'gemSapphire', 'crudeTrinket', 'batLeather'],
+  nerogril: ['herbFireblossom', 'gemSapphire', 'crudeTrinket', 'gemAmethyst'],
+  theocracy: ['gemSapphire', 'herbFireblossom', 'redStone', 'gemAmethyst'],
 };
 
 const plural = (name: string, n: number): string => (n === 1 ? name : name.endsWith('s') ? name : `${name}s`);

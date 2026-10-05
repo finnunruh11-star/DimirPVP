@@ -311,6 +311,27 @@ export const RECIPES = {
     k.tone({ type: 'sawtooth', freq: 233, freqTo: 155, dur: 0.55, gain: 0.07, attack: 0.01, reverb: 0.35 });
     k.tone({ type: 'sine', freq: 98, freqTo: 49, dur: 0.5, gain: 0.35 });
   },
+  'rest.sleep': (k: SynthKit) => {
+    // A music box winding down: a slow falling lullaby over a soft low pad.
+    [784, 659.3, 587.3, 523.3, 587.3, 659.3, 523.3, 392].forEach((freq, i) => {
+      k.tone({ type: 'sine', freq, start: 0.2 + i * 0.36, dur: 1, gain: 0.065, attack: 0.004, reverb: 0.7 });
+      k.tone({ type: 'sine', freq: freq * 2.01, start: 0.2 + i * 0.36, dur: 0.45, gain: 0.018, attack: 0.004, reverb: 0.75 });
+    });
+    k.tone({ type: 'sine', freq: 130.8, dur: 3.6, gain: 0.05, attack: 0.9, reverb: 0.6 });
+    k.tone({ type: 'sine', freq: 196, dur: 3.4, gain: 0.03, attack: 1.1, reverb: 0.6 });
+  },
+  'rest.snuff': (k: SynthKit) => {
+    // A breath across a candle.
+    k.noise({ dur: 0.28, gain: 0.07, filter: 'bandpass', freq: 1600, freqTo: 500, q: 0.8, attack: 0.03 });
+  },
+  'rest.wake': (k: SynthKit) => {
+    // Morning: two bright bells over a warm chord opening under them.
+    k.tone({ type: 'sine', freq: 1046.5, dur: 1.5, gain: 0.07, attack: 0.004, reverb: 0.7 });
+    k.tone({ type: 'sine', freq: 1568, start: 0.16, dur: 1.3, gain: 0.05, attack: 0.004, reverb: 0.7 });
+    for (const [freq, gain] of [[261.6, 0.06], [329.6, 0.045], [392, 0.04]] as const) {
+      k.tone({ type: 'triangle', freq, dur: 1.8, gain, attack: 0.35, reverb: 0.5 });
+    }
+  },
 
   // ---- Bloodmoon ----
   'boss.omen': (k: SynthKit) => {

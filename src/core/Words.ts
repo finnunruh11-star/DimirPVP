@@ -23,7 +23,9 @@ export type WordId =
   | 'subtle'
   | 'delay'
   | 'channel'
-  | 'stop';
+  | 'stop'
+  | 'water'
+  | 'pain';
 
 export interface WordDef {
   id: WordId;
@@ -100,6 +102,22 @@ export const WORDS: Record<WordId, WordDef> = {
     charges: 4,
     color: 0xfffbe0,
     blurb: 'Pierce damage, dashes and single-target precision.',
+  },
+  water: {
+    id: 'water',
+    label: 'Water',
+    grantsReaction: true,
+    charges: 4,
+    color: 0x4f9be8,
+    blurb: 'Water damage and forced movement: pushes, pulls, sweeps and flings.',
+  },
+  pain: {
+    id: 'pain',
+    label: 'Pain',
+    grantsReaction: false,
+    charges: 4,
+    color: 0xd1475c,
+    blurb: 'Sanity damage of its own, added to whatever it joins.',
   },
   // --- Secret words (NAD easter-egg loadout only; hidden from the menu grid) ---
   twist: {
@@ -228,6 +246,8 @@ export const WORD_ORDER: WordId[] = [
   'corrode',
   'curse',
   'pierce',
+  'water',
+  'pain',
 ];
 
 export const REACTION_WORDS: WordId[] = WORD_ORDER.filter((w) => WORDS[w].grantsReaction);
@@ -265,14 +285,16 @@ export const WORD_KIND: Record<WordId, WordKind> = {
   twist: 'verb',
   heal: 'verb',
   sand: 'verb',
+  desecrate: 'verb',
   // Nouns — a thing.
   lightning: 'noun',
   mind: 'noun',
   fire: 'noun',
   death: 'noun',
-  desecrate: 'noun',
   shadow: 'noun',
   reality: 'noun',
+  water: 'noun',
+  pain: 'noun',
   storm: 'other',
   // Modifiers attach to another spell rather than forming one.
   subtle: 'modifier',
@@ -314,13 +336,13 @@ export function splitModifiers(words: readonly WordId[]): {
 }
 
 /**
- * Whether a word-combo is a "class spell": every word shares one grammatical
- * kind — all nouns or all verbs. Such spells resolve
- * their effect toward the caster's class. Mixed noun/verb combos (e.g. Shadow
- * Bind) are ordinary spells.
+ * Whether a word-combo is a "class spell": two or more words that share one
+ * grammatical kind — all nouns or all verbs. Such spells resolve
+ * their effect toward the caster's class. A word alone and mixed noun/verb
+ * combos (e.g. Shadow Bind) are ordinary spells.
  */
 export function isClassSpell(words: WordId[]): boolean {
-  if (words.length === 0) return false;
+  if (words.length < 2) return false;
   const allNouns = words.every((w) => WORD_KIND[w] === 'noun');
   const allVerbs = words.every((w) => WORD_KIND[w] === 'verb');
   return allNouns || allVerbs;

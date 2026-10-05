@@ -43,7 +43,7 @@ const SPOTS = (() => {
 function sighting(kind: Sighting['kind'], cell: { x: number; y: number }): Sighting {
   return {
     kind, cell, zone: 'forest', depth: 3, title: 'TEST', bearing: '3 tiles east', text: '',
-    herb: kind === 'herbs' ? 'herbMoonleaf' : undefined,
+    herb: kind === 'herbs' ? 'herbMoonglow' : undefined,
     site: kind === 'cache' ? "Woodcutter's hut" : undefined,
   };
 }

@@ -13,13 +13,19 @@ import { getItem, isRangedWeapon, type ItemId } from '../core/Items';
 import type { Mage } from '../core/Mage';
 import { comboKey, isModifierWord, spellDisplayName, WORDS, type WordId } from '../core/Words';
 import { rollAmbush } from '../pve/exploration/ambush';
-import { AREA_HOURS, areaBoundsOf, areaHours, areaLead, inAreaBounds, leaveArea, spendAreaTime } from '../pve/exploration/area';
+import {
+  AREA_HOURS, areaBoundsOf, areaHours, areaLead, gapLabel, hoursBehind, inAreaBounds, leaveArea, memberHours, restOver, restTogether,
+  spendAreaTime, waitInArea,
+} from '../pve/exploration/area';
 import { advanceHours, isNight, spanLabel } from '../pve/exploration/clock';
 import { MAX_PARTY } from '../pve/exploration/coop';
-import { applyCreation, type CreationPick } from '../pve/exploration/creation';
+import { applyCreation, STARTER_WEAPONS, type CreationPick } from '../pve/exploration/creation';
+import { ARMS_LODGE, armsPending, enterLodge, gateRefusal, lodgeWaiting, starterPicks, takeStarterWeapon, weaponsShared } from '../pve/exploration/arms';
 import { inDesert, isSandstorm, STORM_SIGHT, stormHoursLeft } from '../pve/exploration/desert';
 import { dungeonCombat, DUNGEONS } from '../pve/exploration/dungeons';
-import { hashString, memberIn, partyOf, withMember } from '../pve/exploration/economy';
+import { hashString, memberIn, moneyLabel, partyOf, rest, roomPrice, withMember } from '../pve/exploration/economy';
+import { campOutcome, innOutcome, leaveOutcome, type CampCall } from '../pve/exploration/council';
+import { shopById } from '../pve/exploration/shops';
 import { describeSpawns, packPace, rollEncounter, spawnTint, type EncounterKind } from '../pve/exploration/encounters';
 import { pickEvent } from '../pve/exploration/events';
 import { isExplored, packExplored, unpackExplored } from '../pve/exploration/explored';
@@ -32,6 +38,7 @@ import { resolveLocale, type ResolvedLocale, type Secret, type WildPack } from '
 import { cellWorldTile, OPEN_WORLD_ID, openWorldCell, openWorldMainland, openWorldPace, WORLD_SCALE } from '../pve/exploration/openWorld';
 import { stepDice, type ExplorationRun } from '../pve/exploration/run';
 import { saveRun } from '../pve/exploration/save';
+import { sceneSalt, stageScene } from '../pve/exploration/scenes';
 import {
   findSearchTarget,
   pickedOver,
@@ -46,9 +53,10 @@ import {
 import { shortRestRisk, SHORT_REST_HOURS, takeShortRest, type RestSite, type ShortRestOutcome } from '../pve/exploration/shortRest';
 import { siteDone, siteWokeFlag } from '../pve/exploration/site';
 import { bloodmoonCombat, bloodmoonDue, bloodmoonFight } from '../pve/exploration/bloodmoon';
-import { createWorld, describeTile, placeById, type Place } from '../pve/exploration/world';
+import { parseRestNap, type RestNap } from '../pve/exploration/nap';
+import { createWorld, describeTile, placeById, START_PLACE, type Place } from '../pve/exploration/world';
 import { ENEMY_DEFS } from '../pve/swamprun';
-import { getSpell, setActiveSpellSets } from '../spells/registry';
+import { ADVENTURE_SPELL_SETS, casterReach, getSpell, setActiveSpellSets } from '../spells/registry';
 import {
   createCreatureAnims, CREATURE_FRAME_RATIO, creatureFacesRight, creatureSpriteFor, creatureTexture, preloadCreatureSprites,
 } from '../world/creatureSprite';
@@ -59,7 +67,9 @@ import { createMageAnims, MAGE_FIRST_FRAME, MAGE_IDLE, MAGE_RUN, preloadMageFram
 import type { Cell } from '../world/pathfind';
 import { PixelBuffer } from '../world/pixels';
 import { feetFit, Walker, WALK_SPEED } from '../world/walker';
-import { chooseClass, chooseKit } from '../ui/pve/CreationFlow';
+import { awaken } from '../ui/pve/CreationFlow';
+import type { ArmoryState } from '../ui/pve/ArmoryHall';
+import type { InnHooks } from '../ui/pve/ShopView';
 import type { SearchRollResult } from '../ui/pve/SearchView';
 import { isReducedMotion } from '../ui/cabinet/motion';
 import { ensureGlowTextures, GLOW } from '../visuals/glowTextures';
@@ -69,7 +79,7 @@ import { Dice } from '../core/Dice';
 import { AdventureSession, HOST_SEAT } from '../net/AdventureSession';
 import { startAdventureFight } from '../net/adventureFight';
 import { parseWildPack } from '../net/fightWire';
-import { chooseKits, claimTravellers } from '../net/partySetup';
+import { awakenParty, claimTravellers } from '../net/partySetup';
 import type { ExplorationEntry } from './ExplorationScene';
 import type { HudOwner, LocaleHudScene } from './LocaleHudScene';
 
@@ -165,6 +175,8 @@ const EDGE_TILES = 1.4;
 
 /** A guest's ambush reaches no further than this, tiles (the longest spell reach with room to spare). */
 const GUEST_REACH_TILES = 16;
+/** Online: how close to someone's rest a traveller must stand to join it, tiles. */
+const CAMP_REACH_TILES = 2.5;
 
 const INTERACT_RANGE = 1.45;
 const PACK_SPEED = 2.8;
@@ -209,7 +221,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   private fogCell = '';
   /** On foot across the world: the run's explored map, kept unpacked while walking. */
   private exploredMask?: Uint8Array;
-  private keys?: Record<'up' | 'down' | 'left' | 'right' | 'w' | 'a' | 's' | 'd' | 'e' | 'space' | 'enter' | 'i' | 'esc' | 'f' | 'c' | 'g' | 'r' | 'z', Phaser.Input.Keyboard.Key>;
+  private keys?: Record<'up' | 'down' | 'left' | 'right' | 'w' | 'a' | 's' | 'd' | 'e' | 'space' | 'enter' | 'i' | 'esc' | 'f' | 'c' | 'g' | 'r' | 'z' | 'x' | 't' | 'm', Phaser.Input.Keyboard.Key>;
   private wordKeys: Phaser.Input.Keyboard.Key[] = [];
   /** The leader as last read, for charges, mana and class. */
   private leader?: Mage;
@@ -242,6 +254,12 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   /** The classes that have fallen. */
   private fallen = new Set<MageClass>();
   private leveling = false;
+  /** Times the gate guard has turned an unarmed party back, for his next line. */
+  private gateTries = 0;
+  /** The rest last seen starting, so it starts once on this screen. */
+  private campSeen = '';
+  /** A small fire where someone sat down to rest. */
+  private campMark?: { key: string; fire: Phaser.GameObjects.Image; label: Phaser.GameObjects.Text };
   /** Host: choices put to guests, by id, waiting on the answer of the guest in `seat`. */
   private asks = new Map<number, { seat: number; settle: (choice: number) => void }>();
   private askSeq = 0;
@@ -343,10 +361,12 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.siteFinished = false;
     this.taps = new Set();
     this.touchHold = false;
+    this.campSeen = '';
+    this.campMark = undefined;
     ensureGlowTextures(this);
     this.particles = new ParticleFx(this, () => isReducedMotion());
-    // Exploration fights cast from the original catalogue; the field offers the same spells.
-    setActiveSpellSets({ original: true });
+    // Exploration fights cast from every catalogue; the field offers the same spells.
+    setActiveSpellSets(ADVENTURE_SPELL_SETS);
     // On foot the party walks the country round where it set out.
     if (entry.locale === OPEN_WORLD_ID && !this.run.area) {
       const from = entry.at ?? (this.run.locale?.id === OPEN_WORLD_ID ? this.run.locale : null);
@@ -421,7 +441,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       this.keys = kb.addKeys({
         up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT',
         w: 'W', a: 'A', s: 'S', d: 'D',
-        e: 'E', space: 'SPACE', enter: 'ENTER', i: 'I', esc: 'ESC', f: 'F', c: 'C', g: 'G', r: 'R', z: 'Z',
+        e: 'E', space: 'SPACE', enter: 'ENTER', i: 'I', esc: 'ESC', f: 'F', c: 'C', g: 'G', r: 'R', z: 'Z', x: 'X', t: 'T', m: 'M',
       }) as LocaleScene['keys'];
       this.wordKeys = WORD_KEYS.map((key) => kb.addKey(key));
     }
@@ -456,9 +476,10 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.refreshHud();
     const words = this.words.length ? `1-${this.words.length}: pick words  R: cast     ` : '';
     const ambush = this.packs.length ? 'F: ambush     C: sneak     ' : '';
-    const search = this.place.world ? 'G: search     ' : '';
+    const search = this.place.world ? 'G: search     T: wait     M: travel map     ' : '';
     const lead = this.guest && !this.place.world ? 'The host leads the way     ' : '';
     hud.setHint(`${lead}WASD / arrows or click: walk     E: act     ${words}${ambush}${search}Z: rest     I: pack     Esc: menu`);
+    hud.setMapExit(!!this.place.world);
     this.refreshWordBar();
     void (async () => {
       if (this.session) await this.setUpOnline(hud, this.session);
@@ -468,6 +489,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       await this.settleLevels();
       this.session?.reportArrival();
       this.ready = true;
+      if (this.session) this.onCouncil();
       void this.answerAsks();
     })();
   }
@@ -483,6 +505,10 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const offs = [
       session.on('x-run', () => this.onRunChanged()),
       session.on('x-changed', () => this.onRunChanged()),
+      session.on('x-council', () => this.onCouncil()),
+      session.on('x-news', (message) => {
+        if (typeof message.text === 'string') this.hud?.toast(message.text, 3600);
+      }),
       ...(session.isHost
         ? [
           session.on('x-pos', (message) => this.onCompanionMoved(message)),
@@ -496,6 +522,12 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
             if (typeof message.text === 'string') this.hud?.toast(message.text.slice(0, 240), 3200);
           }),
           session.on('x-pause', (message) => this.hud?.setPrompt(message.on === true ? 'The host paused the game.' : null)),
+          session.on('x-sleep', (message) => {
+            const nap = parseRestNap(message.nap);
+            if (!nap) return;
+            this.hud?.closeWindow();
+            void this.hud?.sleep(nap);
+          }),
           session.on('x-note', (message) => {
             if (message.to === session.localSeat && typeof message.text === 'string') this.hud?.toast(message.text.slice(0, 240), 4200);
           }),
@@ -539,7 +571,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.member = session.member;
     hud.setMember(this.member);
     this.readLeader();
-    if (this.run.creating) await chooseKits(session, this.run, choose, prompt);
+    if (this.run.creating) await awakenParty(session, this.run, hud.awaken.bind(hud), isReducedMotion(), prompt);
     this.readLeader();
     this.refreshHud();
     if (session.isHost) await session.arrivals(this.sceneTag);
@@ -550,16 +582,14 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     return this.session?.actions() ?? localActions(this.run, this.member);
   }
 
-  /** A fresh run: every traveller claims a class in turn, then picks words, a modifier and a weapon. */
+  /** A fresh run: the voice in each traveller's head asks for two words and a way of doing things. */
   private async createParty(): Promise<void> {
     const hud = this.hud;
     if (!hud) return;
-    const choose = hud.choose.bind(hud);
     const picks: CreationPick[] = [];
-    for (const [index, mage] of partyOf(this.run).entries()) {
-      const who = this.run.party.entities.length > 1 ? `${mage.name}: ` : '';
-      const mageClass = await chooseClass(choose, picks.map((pick) => pick.mageClass), who);
-      picks[index] = { mageClass, ...(await chooseKit(choose, this.run, mageClass, who)) };
+    for (const mage of partyOf(this.run)) {
+      const who = this.run.party.entities.length > 1 ? mage.name : undefined;
+      picks.push(await awaken(hud.awaken.bind(hud), this.run, mage.mageClass, isReducedMotion(), who));
     }
     if (!applyCreation(this.run, picks)) return;
     this.readLeader();
@@ -567,16 +597,18 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   }
 
   private refreshHud(): void {
+    if (this.session) {
+      this.paintCompanions();
+      this.hud?.setCouncil(this.councilLines(this.session));
+    }
     if (this.place.world) {
       const { x, y } = this.run.pos;
       const storm = isSandstorm(this.run) && inDesert(this.world, x, y);
       const weather = storm ? `Sandstorm (${Math.ceil(stormHoursLeft(this.run))} h)` : '';
-      this.hud?.refresh(this.run, describeTile(this.world, x, y), [weather, this.areaLine(), `Mapped ${this.mappedPercent()}%`].filter(Boolean).join('  ·  '));
+      this.hud?.refresh(this.run, describeTile(this.world, x, y), [weather, this.areaLine()].filter(Boolean).join('  ·  '));
       return;
     }
-    const mapped = this.fog ? `Mapped ${this.mappedPercent()}%` : '';
-    const subtitle = [this.place.subtitle, mapped].filter(Boolean).join('  ·  ');
-    this.hud?.refresh(this.run, this.place.def.name, subtitle);
+    this.hud?.refresh(this.run, this.place.def.name, this.place.subtitle ?? '');
   }
 
   /** On foot: how long the party has been out, and who has kept it out longest. */
@@ -587,7 +619,19 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     if (hours <= 0) return 'On foot: no time spent';
     const lead = this.run.party.entities.length > 1 ? areaLead(area) : null;
     const who = lead ? memberIn(this.run, lead.member)?.name : undefined;
-    return `On foot ${spanLabel(hours)}${who ? ` (${who})` : ''}`;
+    const me = this.leader?.mageClass;
+    const behind = me && lead ? hoursBehind(area, me) : 0;
+    return `On foot ${spanLabel(hours)}${who ? ` (${who})` : ''}${behind > 0 ? `  ·  You: ${gapLabel(behind)} behind (T: wait)` : ''}`;
+  }
+
+  /** On foot, online: who is behind the one furthest ahead on their own time, and by how much. */
+  private laggards(session: AdventureSession): { seat: number; hours: number }[] {
+    const area = this.place.world ? this.run.area : null;
+    if (!area) return [];
+    return session.roster.flatMap((member, seat) => {
+      const hours = member ? hoursBehind(area, member) : 0;
+      return hours > 1e-6 ? [{ seat, hours }] : [];
+    });
   }
 
   private changed(): void {
@@ -619,6 +663,9 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       search: !!keys && Phaser.Input.Keyboard.JustDown(keys.g),
       cast: !!keys && Phaser.Input.Keyboard.JustDown(keys.r),
       rest: !!keys && Phaser.Input.Keyboard.JustDown(keys.z),
+      refuse: !!keys && Phaser.Input.Keyboard.JustDown(keys.x),
+      wait: !!keys && Phaser.Input.Keyboard.JustDown(keys.t),
+      map: !!keys && Phaser.Input.Keyboard.JustDown(keys.m),
       word: this.wordKeys.findIndex((key) => Phaser.Input.Keyboard.JustDown(key)),
     };
     this.view?.stream(this.cameras.main.worldView);
@@ -645,7 +692,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       return;
     }
     if (settling) {
-      pressed.act = pressed.pack = pressed.menu = pressed.strike = pressed.sneak = pressed.search = pressed.cast = pressed.rest = false;
+      pressed.act = pressed.pack = pressed.menu = pressed.strike = pressed.sneak = pressed.search = pressed.cast = pressed.rest = pressed.refuse = pressed.wait = pressed.map = false;
       pressed.word = -1;
     }
     // The touch controls press the same buttons the keys do.
@@ -657,11 +704,19 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     if (this.taps.has('search')) pressed.search = true;
     if (this.taps.has('cast')) pressed.cast = true;
     if (this.taps.has('rest')) pressed.rest = true;
+    if (this.taps.has('map')) pressed.map = true;
     this.taps.clear();
     const steer = {
       x: (keys && (keys.right.isDown || keys.d.isDown) ? 1 : 0) - (keys && (keys.left.isDown || keys.a.isDown) ? 1 : 0),
       y: (keys && (keys.down.isDown || keys.s.isDown) ? 1 : 0) - (keys && (keys.up.isDown || keys.w.isDown) ? 1 : 0),
     };
+    // Sitting down for a rest: nobody walks off mid-rest.
+    const sitting = this.sitting();
+    if (sitting) {
+      steer.x = 0;
+      steer.y = 0;
+      walker.stop();
+    }
     walker.update(delta, steer);
     this.simulate(delta);
     this.updateLink(delta);
@@ -669,6 +724,26 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.updateSleepers();
     this.kickDust(delta);
     if (this.leaving || this.busy) return;
+    if (sitting) {
+      this.hud?.setPrompt(this.sitPrompt());
+      if (this.holdId) this.endHold();
+      if (pressed.rest) void this.shortRest();
+      else if (pressed.refuse) this.refuseCamp();
+      else if (pressed.pack) void this.openPack();
+      else if (pressed.menu) void this.openMenu();
+      this.persistPosition();
+      return;
+    }
+    if (pressed.refuse && this.refuseCamp()) pressed.act = false;
+    const camp = this.campToJoin();
+    if (camp) {
+      this.hud?.setPrompt(`[E] Join ${camp}'s rest     [X] Keep going`);
+      if (pressed.act) {
+        this.session?.say({ op: 'camp-answer', answer: 'join' });
+        playSound('travel.rest');
+        return;
+      }
+    }
     this.updateSecrets();
     this.updateStealth();
     this.updateMindView();
@@ -685,22 +760,22 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const holding = !!holdable && !settling && steer.x === 0 && steer.y === 0
       && (this.touchHold || (!!keys && (keys.e.isDown || keys.space.isDown)));
     this.updateHold(holding ? holdable : null, delta);
-    this.hud?.setPrompt(
+    if (!camp) this.hud?.setPrompt(
       keeper ? `[E] Talk: ${keeper.name}`
         : holdable ? `[Hold E] ${HOLD_VERB[holdable.look ?? 'trinket']}: ${holdable.label}`
         : secret ? `[E] Search: ${secret.label}`
-        : exit ? `[E] ${exit.label}`
+        : exit ? this.leavePrompt(exit.label)
         : target ? `[R] ${spellDisplayName(this.picked)}: ${target.pack.label}`
         : prey ? `[F] Ambush: ${prey.pack.label}`
-        : edge ? (this.guest ? 'The edge of the area: the host leads the party back to the map.' : '[E] Back to the travel map')
-        : home ? (this.guest ? 'All done here: the host leads the party back to the map.' : '[E] Head back to the travel map')
+        : edge ? this.leavePrompt('Back to the travel map')
+        : home ? this.leavePrompt('Head back to the travel map')
         : null,
     );
     if (pressed.act) {
       if (keeper) void this.openShop(keeper);
       else if (secret && !secret.hold) void this.search(secret);
       else if (exit) void this.useExit(exit);
-      else if ((edge || home) && !this.guest) this.leaveOnFoot();
+      else if (edge || home) this.wantToLeaveOnFoot();
     } else if (pressed.strike) {
       this.strike();
     } else if (pressed.word >= 0) {
@@ -711,6 +786,10 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       this.toggleSneak();
     } else if (pressed.search && this.place.world) {
       void this.openSearch();
+    } else if (pressed.wait && this.place.world) {
+      this.waitAbout();
+    } else if (pressed.map && this.place.world) {
+      this.wantToLeaveOnFoot();
     } else if (pressed.rest) {
       void this.shortRest();
     } else if (pressed.pack) {
@@ -774,16 +853,97 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
 
   private async openShop(keeper: Keeper): Promise<void> {
     if (!this.hud) return;
+    if (keeper.shop === ARMS_LODGE && armsPending(this.run)) {
+      await this.openArmory(keeper);
+      return;
+    }
     // Alone the world waits while you shop; online it goes on around you.
     const hold = !this.session;
     if (hold) this.busy = true;
     this.walker?.stop();
     this.hud.setPrompt(null);
-    await this.hud.openShop(this.run, keeper.shop, this.place.def.id, () => this.changed(), this.actions());
+    const rested = (nap: RestNap): void => {
+      if (this.session?.isHost) this.session.send({ k: 'x-sleep', nap });
+    };
+    await this.hud.openShop(this.run, keeper.shop, this.place.def.id, () => this.changed(), this.actions(), rested, this.innHooks(keeper), () => this.innShortRest());
+    if (this.run.day !== this.packDay) this.newDay();
     await this.settleLevels();
     this.readLeader();
     this.changed();
     if (hold) this.busy = false;
+  }
+
+  /** Online: rooms at `keeper`'s counter are called for and joined, never simply booked. */
+  private innHooks(keeper: Keeper): InnHooks | undefined {
+    const session = this.session;
+    if (!session) return undefined;
+    return {
+      call: () => {
+        const inn = session.council.inn;
+        if (!inn) return null;
+        return {
+          by: inn.by === session.localSeat ? 'You' : session.nameOf(inn.by),
+          here: inn.shop === keeper.shop,
+          joined: inn.answers[session.localSeat] === 'join',
+          waitingFor: inn.answers.flatMap((answer, seat) => (answer === 'join' ? [] : [session.nameOf(seat)])),
+        };
+      },
+      propose: () => session.say({ op: 'inn', shop: keeper.shop }),
+      answer: (join) => session.say({ op: 'inn-answer', answer: join ? 'join' : 'refuse' }),
+    };
+  }
+
+  /** The first day at the Lodge: a weapon each, off the pedestals, once the whole party has come in. */
+  private async openArmory(keeper: Keeper): Promise<void> {
+    const hud = this.hud;
+    if (!hud) return;
+    const hold = !this.session;
+    if (hold) this.busy = true;
+    this.walker?.stop();
+    hud.setPrompt(null);
+    if (this.session) {
+      void this.actions().apply({ op: 'lodge' });
+    } else {
+      for (const entity of this.run.party.entities) enterLodge(this.run, entity.mageClass);
+    }
+    await hud.openArmory({
+      keeperName: keeper.name,
+      reducedMotion: isReducedMotion(),
+      state: () => this.armoryState(),
+      take: async (weapon) => {
+        if (this.session) return this.actions().apply({ op: 'arm', weapon });
+        const result = takeStarterWeapon(this.run, this.armoryPicker(), weapon);
+        if (result.ok) this.changed();
+        return result;
+      },
+    });
+    this.readLeader();
+    this.changed();
+    if (hold) this.busy = false;
+  }
+
+  /** Who picks a weapon on this screen next: this player's traveller online, else the first one unarmed. */
+  private armoryPicker(): MageClass | null {
+    const picks = starterPicks(this.run);
+    if (this.session) return this.member && !picks[this.member] ? this.member : null;
+    return this.run.party.entities.find((entity) => !picks[entity.mageClass])?.mageClass ?? null;
+  }
+
+  private armoryState(): ArmoryState {
+    const run = this.run;
+    const picks = starterPicks(run);
+    const nameOf = (member: MageClass): string => memberIn(run, member)?.name ?? 'someone';
+    const picker = armsPending(run) ? this.armoryPicker() : null;
+    return {
+      pedestals: STARTER_WEAPONS.map(({ id }) => ({
+        id,
+        takenBy: run.party.entities.filter((entity) => picks[entity.mageClass] === id).map((entity) => nameOf(entity.mageClass)),
+      })),
+      shared: weaponsShared(run),
+      picker: picker ? nameOf(picker) : null,
+      waitingFor: lodgeWaiting(run).map(nameOf),
+      done: !armsPending(run),
+    };
   }
 
   private async openPack(): Promise<void> {
@@ -1027,16 +1187,32 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
 
   /** On foot, `members` spend `hours`. Returns the midnights that passed. Elsewhere nothing is counted. */
   private spendTime(members: readonly MageClass[], hours: number): number {
-    return this.place.world && this.run.area ? spendAreaTime(this.run, members, hours) : 0;
+    if (!this.place.world || !this.run.area) return 0;
+    const days = spendAreaTime(this.run, members, hours);
+    this.afterAreaTime();
+    return days;
   }
 
   private async useExit(exit: ExitDef): Promise<void> {
     if (this.leaving) return;
-    if (this.guest) {
+    const refusal = gateRefusal(this.run, this.place.def.id, START_PLACE, this.gateTries);
+    if (refusal) {
+      this.gateTries += 1;
       playSound('ui.deny');
-      this.hud?.toast('The host leads the party on.', 2400);
+      this.hud?.toast(refusal, 5200);
       return;
     }
+    const walker = this.walker;
+    if (this.session && walker) {
+      this.wantToLeave({ x: walker.cell.x, y: walker.cell.y });
+      return;
+    }
+    await this.goThrough(exit);
+  }
+
+  /** Through `exit`: the whole party goes, wherever it leads. */
+  private async goThrough(exit: ExitDef): Promise<void> {
+    if (this.leaving) return;
     const travel = exit.to && exit.to !== 'world' && this.place.travel
       ? this.place.travel(this.run, exit)
       : { t: 'world' as const, notice: `You leave ${this.place.def.name}.` };
@@ -1073,7 +1249,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   }
 
   private onPointer(pointer: Phaser.Input.Pointer): void {
-    if (!this.ready || this.busy || this.leaving || this.hud?.modalOpen || !this.walker) return;
+    if (!this.ready || this.busy || this.leaving || this.hud?.modalOpen || !this.walker || this.sitting()) return;
     const rect = this.areaRect;
     const x = Math.floor(pointer.worldX / TILE_PX);
     const y = Math.floor(pointer.worldY / TILE_PX);
@@ -1608,8 +1784,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     for (const words of fieldCombos(this.words)) {
       const key = comboKey(words);
       if (this.attacks.has(key)) continue;
-      const spell = getSpell(words, leader.mageClass);
-      this.attacks.set(key, !!spell && (await isStraightAttack(spell, leader.mageClass)));
+      const spell = getSpell(words, leader.spellClass);
+      this.attacks.set(key, !!spell && (await isStraightAttack(spell, leader.spellClass)));
     }
     this.refreshWordBar();
   }
@@ -1644,11 +1820,11 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const cost = mana > 0 ? `, ${mana} mana` : '';
     const rule = words.length === 1 ? FIELD_RULES[words[0]] : undefined;
     if (rule) return `${name}: ${RULE_TEXT[rule.effect]}${cost}`;
-    const spell = getSpell(words, leader.mageClass);
+    const spell = getSpell(words, leader.spellClass);
     if (!spell) return `${name}: no such spell`;
     const attack = this.attacks.get(comboKey(words));
     if (attack !== true) return attack === false ? `${name}: no effect outside a fight` : name;
-    return `${name}: attack, reach ${Math.round(reachTiles(spell.range))}${cost}`;
+    return `${name}: attack, reach ${Math.round(reachTiles(casterReach(spell)))}${cost}`;
   }
 
   /** Fade the leader while veiled or sneaking, and keep the veil's countdown fresh. */
@@ -1730,8 +1906,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   private spellTarget(): PackState | null {
     const leader = this.leader;
     if (!leader || !this.picked.length || this.attacks.get(comboKey(this.picked)) !== true) return null;
-    const spell = getSpell(this.picked, leader.mageClass);
-    return spell ? this.preyWithin(reachTiles(spell.range), false) : null;
+    const spell = getSpell(this.picked, leader.spellClass);
+    return spell ? this.preyWithin(reachTiles(casterReach(spell)), false) : null;
   }
 
   /** R: speak the picked words. An attack opens a fight with a free strike, seen or not. */
@@ -1753,12 +1929,12 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     if (!leader.hasMana(mana)) return refuse(`${name}: needs ${mana} mana.`);
     const rule = words.length === 1 ? FIELD_RULES[words[0]] : undefined;
     if (rule) return this.useRule(rule, words[0], mana);
-    const spell = getSpell(words, leader.mageClass);
+    const spell = getSpell(words, leader.spellClass);
     if (!spell) return refuse(`${name}: no such spell.`);
-    if (!(await isStraightAttack(spell, leader.mageClass))) {
+    if (!(await isStraightAttack(spell, leader.spellClass))) {
       return refuse(`${name}: no effect outside a fight. Only straight attacks work here.`);
     }
-    const prey = this.preyWithin(reachTiles(spell.range), false);
+    const prey = this.preyWithin(reachTiles(casterReach(spell)), false);
     if (!prey) return refuse(`${name}: no pack in reach with a clear line.`);
     // A guest's spell is paid by the host, which opens the fight.
     if (!this.guest) this.pay(words, mana);
@@ -2289,7 +2465,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     if (!hud) return;
     const { zone, depth } = searchSite(this.run, tile);
     const dice = stepDice(this.run, this.run.steps * 7 + 6);
-    const event = pickEvent(zone, dice);
+    const event = pickEvent(zone, dice, isNight(this.run.hour));
     const ctx = { run: this.run, zone, depth, dice };
     const options = event.choices.map((choice, index) => ({
       id: String(index),
@@ -2382,39 +2558,191 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     return `${who} ${SHORT_REST_HOURS.min}-${SHORT_REST_HOURS.max} h: a quarter of HP, mana, sanity and charges back. ${risk > 0 ? `${Math.round(risk * 100)}% chance of an ambush here.` : 'Safe here.'}`;
   }
 
-  /** Z: a short rest. On foot each traveller rests alone; elsewhere the party rests together, and online the host decides. */
+  /** Z: a short rest. Alone it happens at once; online this traveller sits down and the others are asked to join. */
   private async shortRest(): Promise<void> {
     const hud = this.hud;
     const walker = this.walker;
     if (!hud || !walker || this.busy || this.leaving) return;
     const onFoot = !!this.place.world;
     const me = this.leader;
-    if (onFoot && me?.alive === false) {
+    const session = this.session;
+    const mine = session?.council.camp?.by === session?.localSeat;
+    if (onFoot && me?.alive === false && !mine) {
       playSound('ui.deny');
       hud.toast('The fallen cannot rest. Only a night at an inn gets them up.', 2400);
       return;
     }
     walker.stop();
-    if (this.guest) {
-      if (!onFoot) {
-        playSound('ui.deny');
-        hud.toast('The host decides when the party rests.', 2400);
-        return;
-      }
-      this.session?.send({ k: 'x-act', what: 'rest' });
-      playSound('travel.rest');
-      this.ring(walker.x, walker.y, 1.1, 0xffa04a);
-      hud.toast('You make camp for a short rest...', 1800);
+    if (session) {
+      this.callCamp(session, walker.cell);
       return;
     }
     this.restAt(onFoot && me ? [me.mageClass] : null, null, walker.cell);
   }
 
-  /** Host: `members` (null: everyone standing) rest at `cell`; `seat` is the guest who asked, if one did. */
-  private restAt(members: MageClass[] | null, seat: number | null, cell: Cell): void {
+  /**
+   * The inn's free short rest, from its counter. Alone it happens at once and the
+   * counter hears how it went; online the counter closes and this traveller sits
+   * down for the others to join, as with any rest.
+   */
+  private innShortRest(): string | null {
+    const walker = this.walker;
+    if (!walker || this.leaving) return null;
+    const session = this.session;
+    if (session) {
+      this.hud?.closeWindow();
+      this.callCamp(session, walker.cell);
+      return null;
+    }
+    let said: string | null = null;
+    this.restAt(null, null, walker.cell, undefined, (text) => { said = text; });
+    return said;
+  }
+
+  /** Online Z: sit down and call the others, get back up, or hear that someone else already sat down. */
+  private callCamp(session: AdventureSession, cell: Cell): void {
+    const camp = session.council.camp;
+    const me = session.localSeat;
+    if (!camp) {
+      playSound('travel.rest');
+      session.say({ op: 'camp', place: this.place.def.id, at: { x: cell.x, y: cell.y } });
+      return;
+    }
+    if (camp.by === me && !camp.resting) {
+      playSound('ui.back');
+      session.say({ op: 'camp-cancel' });
+      return;
+    }
+    playSound('ui.deny');
+    this.hud?.toast(camp.resting
+      ? 'A rest is already under way.'
+      : `${session.nameOf(camp.by)} is already resting: walk over and press E to join.`, 2600);
+  }
+
+  /** Online: this traveller is sitting down, waiting for the others or resting. */
+  private sitting(): boolean {
+    const session = this.session;
+    const camp = session?.council.camp;
+    if (!session || !camp || camp.place !== this.place.def.id) return false;
+    const me = session.localSeat;
+    if (camp.resting) return camp.resting.includes(me);
+    return camp.by === me || camp.answers[me] === 'join';
+  }
+
+  private sitPrompt(): string {
+    const session = this.session;
+    const camp = session?.council.camp;
+    if (!session || !camp) return '';
+    if (camp.resting) {
+      const area = this.run.area;
+      const others = this.othersThan(session, camp.resting);
+      const ahead = area && others.length ? Math.max(0, camp.until - Math.max(...others.map((member) => memberHours(area, member)))) : 0;
+      return ahead > 0 ? `Resting. You get up once the others have spent another ${gapLabel(ahead)}.` : 'Getting up...';
+    }
+    const waiting = camp.answers.flatMap((answer, seat) => (answer ? [] : [session.nameOf(seat)]));
+    const wait = waiting.length ? `Waiting for ${waiting.join(', ')}...` : 'Settling in...';
+    return camp.by === session.localSeat ? `Resting here. ${wait}   [Z] Get back up` : `Resting with ${session.nameOf(camp.by)}. ${wait}   [X] Get up`;
+  }
+
+  /** The party members not sitting in `seats`. */
+  private othersThan(session: AdventureSession, seats: readonly number[]): MageClass[] {
+    return session.roster.flatMap((member, seat) => (member && !seats.includes(seat) ? [member] : []));
+  }
+
+  /** The name of whoever sat down within reach, when this traveller has not joined them yet. */
+  private campToJoin(): string | null {
+    const session = this.session;
+    const camp = session?.council.camp;
+    if (!session || !camp || camp.resting || camp.place !== this.place.def.id) return null;
+    const me = session.localSeat;
+    if (camp.by === me || camp.answers[me] === 'join' || this.leader?.alive === false) return null;
+    return this.distanceTo(camp.at.x, camp.at.y) <= CAMP_REACH_TILES ? session.nameOf(camp.by) : null;
+  }
+
+  /** X: keep going instead of resting (or get up again). True when it was said. */
+  private refuseCamp(): boolean {
+    const session = this.session;
+    const camp = session?.council.camp;
+    if (!session || !camp || camp.resting || camp.by === session.localSeat || camp.answers[session.localSeat] === 'refuse') return false;
+    playSound('ui.back');
+    session.say({ op: 'camp-answer', answer: 'refuse' });
+    return true;
+  }
+
+  /**
+   * Host: everyone has answered. The ones who sat down rest; on foot they stay
+   * sitting until someone who kept going has spent as long as the rest took.
+   */
+  private campRest(session: AdventureSession, camp: CampCall, seats: number[]): void {
+    const members = seats.flatMap((seat) => session.roster[seat] ?? []);
+    const rested = this.restAt(members, null, camp.at, seats.map((seat) => session.nameOf(seat)));
+    if (!rested || session.council.camp !== camp) {
+      if (session.council.camp === camp) {
+        session.council.camp = null;
+        session.publishCouncil();
+      }
+      return;
+    }
+    camp.resting = seats;
+    camp.until = rested.until;
+    session.publishCouncil();
+    this.checkRestOver(session);
+  }
+
+  /** Host: the rest is over once one of those who kept going has caught up with it; the resters get up. */
+  private checkRestOver(session: AdventureSession): void {
+    const camp = session.council.camp;
+    if (!camp?.resting) return;
+    const area = this.place.world ? this.run.area : null;
+    if (area && !restOver(area, this.othersThan(session, camp.resting), camp.until)) return;
+    session.council.camp = null;
+    session.publishCouncil();
+    if (camp.resting.length < session.size) this.notify(`${camp.resting.map((seat) => session.nameOf(seat)).join(' and ')} get back up.`, 2600);
+  }
+
+  /** Host: someone's time on foot moved on; a rest may be over, and the party may now be able to move on. */
+  private afterAreaTime(): void {
+    const session = this.session;
+    if (!session?.isHost) return;
+    this.time.delayedCall(0, () => {
+      if (this.leaving || this.session !== session) return;
+      this.checkRestOver(session);
+      this.settleCouncil(session);
+    });
+  }
+
+  /** T: stand about. Behind the others, catch up with them; in front, let half an hour go by. */
+  private waitAbout(): void {
+    const walker = this.walker;
+    const member = this.leader?.mageClass;
+    if (!walker || !member || !this.place.world || !this.run.area) return;
+    walker.stop();
+    playSound('ui.click');
+    if (this.guest) {
+      this.session?.send({ k: 'x-act', what: 'wait' });
+      return;
+    }
+    this.waitFor(member, null);
+  }
+
+  /** Host: `member` waits; `seat` is the guest who did, if one did. */
+  private waitFor(member: MageClass, seat: number | null): void {
+    const waited = waitInArea(this.run, member);
+    if (waited.hours <= 0) return;
+    if (waited.days) this.newDay();
+    this.changed();
+    this.afterAreaTime();
+    this.noteFor(seat, `You wait ${gapLabel(waited.hours)}.`);
+  }
+
+  /** Host: `members` (null: everyone standing) rest at `cell`; `seat` is the guest who asked, if one did; `names` rested together; `say` takes the closing line instead of a toast. Returns the hours rested and, on foot, the area time the resters get up at; null when the rest was cut short. */
+  private restAt(members: MageClass[] | null, seat: number | null, cell: Cell, names?: string[], say?: (text: string) => void): { hours: number; until: number } | null {
     this.run.steps += 1;
     const outcome: ShortRestOutcome = takeShortRest(this.run, members, this.restSite(cell), stepDice(this.run, this.run.steps * 7 + 2));
-    const days = members ? this.spendTime(members, outcome.hours) : advanceHours(this.run, outcome.hours);
+    // On foot each traveller keeps their own hours; anywhere else the day moves on for everyone.
+    const onFoot = !!members && !!this.place.world && !!this.run.area;
+    const together = onFoot && names ? restTogether(this.run, members!, outcome.hours) : null;
+    const days = together ? together.days : onFoot ? this.spendTime(members!, outcome.hours) : advanceHours(this.run, outcome.hours);
     if (days) this.newDay();
     if (seat == null) {
       playSound('travel.rest');
@@ -2428,12 +2756,199 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
         id: `once:rest:${this.run.steps}`, x: cell.x, y: cell.y, sight: 0, depth: ambush.depth,
         spawns: ambush.spawns, label: outcome.message, tint: spawnTint(ambush.spawns), zone: ambush.zone,
       }, undefined, undefined, undefined, ambush.kind);
-      return;
+      return null;
     }
     this.readLeader();
     this.changed();
+    // Woken by the bloodmoon: it rises on the next free frame.
+    if (outcome.bloodmoon) {
+      if (say) say(outcome.message);
+      else if (names) this.notify(outcome.message, 3200);
+      else this.noteFor(seat, outcome.message);
+      return null;
+    }
     if (seat == null) playSound('spell.heal');
-    this.noteFor(seat, `${spanLabel(outcome.hours)} of rest. ${outcome.message}`);
+    if (say) say(`${spanLabel(outcome.hours)} of rest. ${outcome.message}`);
+    else if (names) this.notify(`${names.join(' and ')} rest${names.length === 1 ? 's' : ''} ${spanLabel(outcome.hours)}. ${outcome.message}`, 4200);
+    else this.noteFor(seat, `${spanLabel(outcome.hours)} of rest. ${outcome.message}`);
+    return { hours: outcome.hours, until: together?.until ?? 0 };
+  }
+
+  // ---------------------------------------------------------------------------
+  //  ONLINE: DECIDING TOGETHER
+  // ---------------------------------------------------------------------------
+
+  /** [E] at a way out, online: how many are ready to move on. */
+  private leavePrompt(label: string): string {
+    const session = this.session;
+    if (!session) return `[E] ${label}`;
+    const call = session.council.leave;
+    const wants = call?.place === this.place.def.id ? call.wants : null;
+    const ready = wants ? wants.filter((wish) => !!wish).length : 0;
+    if (wants?.[session.localSeat]) return `[E] Stay after all   (${ready}/${session.size} want to move on)`;
+    return `[E] ${label}   (${ready}/${session.size}: everyone has to want to go)`;
+  }
+
+  /** Online: say this traveller wants to move on by `exit` (null: back to the map), or take it back. */
+  private wantToLeave(exit: { x: number; y: number } | null): void {
+    const session = this.session;
+    if (!session) return;
+    const call = session.council.leave;
+    if (call?.place === this.place.def.id && call.wants[session.localSeat]) {
+      playSound('ui.back');
+      session.say({ op: 'stay' });
+      return;
+    }
+    playSound('ui.confirm');
+    session.say({ op: 'leave', place: this.place.def.id, exit });
+  }
+
+  private wantToLeaveOnFoot(): void {
+    if (this.session) this.wantToLeave(null);
+    else this.leaveOnFoot();
+  }
+
+  /** The council changed: show it, sit down or get up, and (host) act on whatever is settled. */
+  private onCouncil(): void {
+    const session = this.session;
+    if (!session || !this.walker) return;
+    const me = session.localSeat;
+    const camp = session.council.camp?.place === this.place.def.id ? session.council.camp : null;
+    // The fallen cannot rest; they keep going.
+    if (camp && !camp.resting && camp.by !== me && !camp.answers[me] && this.leader?.alive === false) {
+      session.say({ op: 'camp-answer', answer: 'refuse' });
+    }
+    if (camp?.resting) {
+      const key = `${camp.by}:${camp.at.x},${camp.at.y}:${camp.resting.join(',')}`;
+      // Everyone rested: skip ahead in a blink.
+      if (this.campSeen !== key && camp.resting.length === session.size) this.cameras.main.flash(900, 0, 0, 0);
+      this.campSeen = key;
+    }
+    this.drawCamp(session, camp);
+    this.hud?.setCouncil(this.councilLines(session));
+    this.hud?.refreshWindow();
+    if (session.isHost) this.settleCouncil(session);
+  }
+
+  /** A small fire where someone sat down, with whose rest it is. */
+  private drawCamp(session: AdventureSession, camp: CampCall | null): void {
+    const key = camp ? `${camp.by}:${camp.at.x},${camp.at.y}` : '';
+    if ((this.campMark?.key ?? '') === key) return;
+    if (this.campMark) {
+      this.tweens.killTweensOf(this.campMark.fire);
+      this.campMark.fire.destroy();
+      this.campMark.label.destroy();
+      this.campMark = undefined;
+    }
+    if (!camp) return;
+    const x = (camp.at.x + 0.5) * TILE_PX;
+    const y = (camp.at.y + 0.8) * TILE_PX;
+    const fire = this.add.image(x, y - 4, GLOW.soft).setTint(0xff9a3c).setBlendMode(Phaser.BlendModes.ADD).setScale(1.5).setAlpha(0.75).setDepth(y + 1);
+    if (!isReducedMotion()) this.tweens.add({ targets: fire, alpha: 0.45, scale: 1.3, duration: 220, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
+    const label = this.add.text(x, y - TILE_PX * 1.9, `${session.nameOf(camp.by)}'s rest`, {
+      fontFamily: 'Georgia, serif',
+      fontSize: '13px',
+      color: '#ffcf8a',
+      stroke: '#1a0e08',
+      strokeThickness: 3,
+    }).setOrigin(0.5, 1).setDepth(100000);
+    this.campMark = { key, fire, label };
+  }
+
+  /** The HUD's note of what the party is deciding here. */
+  private councilLines(session: AdventureSession): string[] {
+    const council = session.council;
+    const me = session.localSeat;
+    const place = this.place.def.id;
+    const lines: string[] = [];
+    const names = (seats: number[]): string => seats.map((seat) => (seat === me ? 'you' : session.nameOf(seat))).join(', ');
+    const seatsWhere = <T>(list: readonly T[], test: (entry: T) => boolean): number[] => list.flatMap((entry, seat) => (test(entry) ? [seat] : []));
+    const camp = council.camp?.place === place ? council.camp : null;
+    if (camp?.resting) {
+      const area = this.run.area;
+      const others = this.othersThan(session, camp.resting);
+      const left = area && others.length ? camp.until - Math.max(...others.map((member) => memberHours(area, member))) : 0;
+      lines.push(`RESTING  ${names(camp.resting)}${left > 0 ? `, up in ${gapLabel(left)} of the others' time` : ''}`);
+    } else if (camp) {
+      const waiting = seatsWhere(camp.answers, (answer) => !answer);
+      lines.push(`SHORT REST  ${camp.by === me ? 'You sat' : `${session.nameOf(camp.by)} sat`} down.`);
+      if (camp.by !== me && !camp.answers[me]) lines.push('Walk over and press E to join, or X to keep going.');
+      if (waiting.length) lines.push(`Waiting for ${names(waiting)}.`);
+    }
+    const leave = council.leave?.place === place ? council.leave : null;
+    if (leave) {
+      const ready = seatsWhere(leave.wants, (wish) => !!wish);
+      const waiting = seatsWhere(leave.wants, (wish) => !wish);
+      lines.push(`MOVING ON  ${names(ready)} (${ready.length}/${session.size})`);
+      lines.push(leave.wants[me]
+        ? `Waiting for ${names(waiting)}.`
+        : this.place.world ? 'Walk to the edge and press E to go too.' : 'Walk to a way out and press E to go too.');
+      const behind = this.laggards(session);
+      if (behind.length) {
+        lines.push(`First everyone must catch up: ${behind.map(({ seat, hours }) => `${seat === me ? 'you are' : `${session.nameOf(seat)} is`} ${gapLabel(hours)} behind`).join(', ')}. [T] waits.`);
+      }
+    }
+    const inn = council.inn;
+    if (inn) {
+      const waiting = seatsWhere(inn.answers, (answer) => answer !== 'join');
+      lines.push(`A NIGHT AT ${(shopById(inn.shop)?.name ?? 'the inn').toUpperCase()}  (${session.nameOf(inn.by)} asked)`);
+      lines.push(inn.answers[me] === 'join' ? `Waiting for ${names(waiting)}.` : 'Talk to the keeper there to join for free, or turn it down.');
+    }
+    return lines;
+  }
+
+  /** Host: act on whatever the party has settled here. */
+  private settleCouncil(session: AdventureSession): void {
+    if (!this.ready || this.leaving || !this.walker) return;
+    const council = session.council;
+    const camp = council.camp?.place === this.place.def.id ? council.camp : null;
+    const resting = camp ? campOutcome(council) : null;
+    if (camp && resting) {
+      this.campRest(session, camp, resting);
+      return;
+    }
+    const inn = innOutcome(council);
+    if (inn) {
+      void this.innNight(session, inn);
+      return;
+    }
+    const leave = leaveOutcome(council);
+    if (!leave || leave.place !== this.place.def.id) return;
+    // Nobody moves on while someone is still behind on their own time.
+    if (this.laggards(session).length) return;
+    council.leave = null;
+    session.publishCouncil();
+    if (!leave.exit) {
+      this.leaveOnFoot();
+      return;
+    }
+    const exit = this.model.exitAt(leave.exit.x, leave.exit.y);
+    if (exit) void this.goThrough(exit);
+  }
+
+  /** Host: everyone joined the night. The one who asked pays for the rooms, and the whole party sleeps. */
+  private async innNight(session: AdventureSession, shopId: string): Promise<void> {
+    const inn = session.council.inn;
+    if (!inn) return;
+    const payer = session.nameOf(inn.by);
+    session.council.inn = null;
+    session.publishCouncil();
+    const price = roomPrice(this.run, shopById(shopId)) ?? 0;
+    const from = { day: this.run.day, hour: this.run.hour };
+    const result = rest(this.run, shopId);
+    if (!result.ok) {
+      this.notify(result.message, 3200);
+      return;
+    }
+    session.news(`${payer} paid ${moneyLabel(price)} for the rooms. Purse: ${moneyLabel(this.run.gold)}.`);
+    const nap: RestNap = { from, to: { day: this.run.day, hour: this.run.hour }, bloodmoon: bloodmoonDue(this.run), message: result.message };
+    session.send({ k: 'x-sleep', nap });
+    this.hud?.closeWindow();
+    this.walker?.stop();
+    await this.hud?.sleep(nap, { black: () => this.changed() });
+    if (this.run.day !== this.packDay) this.newDay();
+    this.readLeader();
+    this.changed();
   }
 
   /** The bloodmoon has risen: whatever the party was doing, its boss is upon it here. */
@@ -2473,6 +2988,11 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const at = then?.at ?? walker.cell;
     const locale = then?.locale ?? this.place.def.id;
     const fleeAt = fleeTo?.at ?? walker.cell;
+    const zone = pack.zone ?? this.place.zone;
+    // Elites stay what they are; anything else may be a scene under way.
+    const staged = zone && pack.spawns && !pack.elite
+      ? stageScene(zone, encounter, pack.depth, pack.spawns, stepDice(this.run, sceneSalt(pack.id) + this.run.day * 24 + Math.floor(this.run.hour)), false)
+      : null;
     this.run.locale = { id: locale, x: at.x, y: at.y };
     if (this.place.world) this.syncWorldTile();
     saveRun(this.run);
@@ -2488,13 +3008,14 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
           encounter,
           depth: pack.depth,
           cameFrom: null,
-          zone: pack.zone ?? this.place.zone,
-          spawns: pack.spawns,
+          zone,
+          spawns: staged ? undefined : pack.spawns,
           returnTo: { id: locale, x: at.x, y: at.y },
           fleeTo: fleeTo ? { id: fleeTo.locale, x: fleeAt.x, y: fleeAt.y } : undefined,
           tag: pack.id.startsWith('once:') ? undefined : pack.id,
-          label: pack.label,
+          label: staged?.label ?? pack.label,
           opening,
+          scene: staged?.fight,
         },
       } satisfies MatchConfig);
     });
@@ -2607,17 +3128,21 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     }
   }
 
-  /** Each companion in their class's colour, faded while sneaking and more so while fallen. */
+  /** Each companion in their class's colour, faded while sneaking and more so while fallen; on foot, how far ahead or behind they are. */
   private paintCompanions(): void {
     const session = this.session;
     if (!session) return;
+    const area = this.place.world ? this.run.area : null;
+    const mine = area && this.leader ? memberHours(area, this.leader.mageClass) : 0;
     for (const companion of this.companions.values()) {
       const member = session.roster[companion.seat];
       const down = !!member && this.fallen.has(member);
       companion.sprite.setAlpha(down ? 0.35 : companion.sneaking ? 0.7 : 1);
       if (member) companion.sprite.setTint(CLASS_TINT[member]);
       else companion.sprite.clearTint();
-      const name = down ? `${session.nameOf(companion.seat)} (fallen)` : session.nameOf(companion.seat);
+      const gap = area && member ? memberHours(area, member) - mine : 0;
+      const time = Math.abs(gap) > 1e-6 ? `\n${gapLabel(gap)} ${gap > 0 ? 'ahead' : 'behind'}` : '';
+      const name = `${session.nameOf(companion.seat)}${down ? ' (fallen)' : ''}${time}`;
       if (companion.label.text !== name) companion.label.setText(name);
     }
   }
@@ -2875,6 +3400,11 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       const resolution = this.searchFor(tile, target, member, searchBonus(mage, target.category));
       reply({ ok: true, roll: resolution.roll, message: resolution.message });
       this.afterSearch(resolution, tile, cell, seat);
+      return;
+    }
+    // Waiting is open to the fallen too, so nobody is ever stuck behind.
+    if (message.what === 'wait') {
+      if (this.ready && !this.leaving && this.place.world && this.run.area) this.waitFor(member, seat);
       return;
     }
     if (!able || !mage) return;

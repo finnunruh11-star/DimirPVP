@@ -9,13 +9,13 @@ import { MAGE_CLASS_DEFS, type MageClass } from '../core/Classes';
 import { SceneInput } from '../engine/SceneInput';
 import { bountyProgress } from '../pve/exploration/bounties';
 import { dayNews } from '../pve/exploration/calendar';
-import { levelsOwed, partyXpScale } from '../pve/exploration/coop';
-import { memberIn, moneyLabel, partyOf } from '../pve/exploration/economy';
+import { levelsOwed } from '../pve/exploration/coop';
+import { memberIn, money, partyOf } from '../pve/exploration/economy';
 import type { ExplorationActions } from '../pve/exploration/intents';
-import { questLines } from '../pve/exploration/quest';
+import { armsLines } from '../pve/exploration/arms';
 import type { ExplorationRun } from '../pve/exploration/run';
+import { saveRun } from '../pve/exploration/save';
 import { shopById } from '../pve/exploration/shops';
-import { xpToNext } from '../pve/progression';
 import { CabinetChip, MenuFocusGroup } from '../ui/cabinet/controls';
 import { MENU_COLOR, MENU_FONT, MENU_HEX, MENU_MOTION } from '../ui/cabinet/theme';
 import { isReducedMotion } from '../ui/cabinet/motion';
@@ -25,13 +25,20 @@ import { drawPlate, EasedBar, KeyLegend, PromptPlate, ToastRail } from '../ui/pv
 import { bloodmoonDue, bloodmoonOmen } from '../pve/exploration/bloodmoon';
 import { playBloodmoonRise } from '../ui/combat/BossIntro';
 import { ChoiceMenuView } from '../ui/combat/CombatMenus';
-import { playDayCard, type DayCard } from '../ui/pve/DayAnnouncement';
+import { playDayCard, type DayCard } from '../ui/pve/DawnCard';
 import { resolvePendingLevels } from '../ui/pve/LevelUpFlow';
 import { PackView } from '../ui/pve/PackView';
+import { playRestCinematic } from '../ui/pve/RestCinematic';
+import type { RestNap } from '../pve/exploration/nap';
 import { SearchView, type SearchViewHooks, type SearchViewModel, type SearchViewResult } from '../ui/pve/SearchView';
-import { ShopView } from '../ui/pve/ShopView';
+import { ShopView, type InnHooks } from '../ui/pve/ShopView';
 import { SightingCard, type SightingCardModel } from '../ui/pve/SightingCard';
 import { TimeWheel } from '../ui/pve/TimeWheel';
+import { TextEntry } from '../ui/cabinet/TextEntry';
+import { ArmoryHall, type ArmoryHooks } from '../ui/pve/ArmoryHall';
+import { VoteBoard, type VoteBoardHooks, type VoteBoardModel } from '../ui/pve/VoteBoard';
+import { playAwakening, type AwakeningModel } from '../ui/pve/Awakening';
+import type { CreationPick } from '../pve/exploration/creation';
 
 export interface HudOwner {
   onHudReady(hud: LocaleHudScene): void;
@@ -54,14 +61,19 @@ export interface WorldPanel {
   lines: string[];
   actions: WorldPanelAction[];
   onAction: (id: string) => void;
+  /** The pointer or the keys rest on an action (online, the others see what you are looking at). */
+  onHover?: (id: string) => void;
 }
 
 const DIGITS = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'];
 
-const OMEN_WARNINGS: readonly [number, string][] = [
-  [18, 'The sky reddens. The bloodmoon rises at midnight, and its boss with it.'],
-  [22, 'Two hours until the bloodmoon.'],
-];
+/** On the bloodmoon's day, the hours at which its countdown comes back on screen. */
+const FINAL_HOURS: readonly number[] = [12, 18, 22];
+/** How long the clock, or mana and sanity, stay up after they last changed, ms. */
+const CLOCK_MS = 4500;
+const MINOR_MS = 4000;
+/** The full key legend shows by itself once a session; after that it waits for H. */
+let legendSeen = false;
 
 export class LocaleHudScene extends Phaser.Scene {
   private frame?: Phaser.GameObjects.Graphics;
@@ -74,7 +86,19 @@ export class LocaleHudScene extends Phaser.Scene {
   private journalBack?: Phaser.GameObjects.Graphics;
   private partyBack?: Phaser.GameObjects.Graphics;
   private partyRows: Phaser.GameObjects.Text[] = [];
+  private councilBack?: Phaser.GameObjects.Graphics;
+  private councilText?: Phaser.GameObjects.Text;
   private vitals: EasedBar[] = [];
+  /** Mana and sanity: out of sight until they change. */
+  private minorBars: EasedBar[] = [];
+  private minorG?: Phaser.GameObjects.Graphics;
+  private minorLabels: Phaser.GameObjects.Text[] = [];
+  private minorKey = '';
+  private minorTimer?: Phaser.Time.TimerEvent;
+  private clockKey = -1;
+  private clockTimer?: Phaser.Time.TimerEvent;
+  private hint = '';
+  private legendOpen = false;
   private prompt?: PromptPlate;
   private toasts?: ToastRail;
   private legend?: KeyLegend;
@@ -93,8 +117,25 @@ export class LocaleHudScene extends Phaser.Scene {
   private member: MageClass | null = null;
   /** The shop or pack window on screen, redrawn when the run changes under it. */
   private window: ShopView | PackView | null = null;
+  private windowClose: (() => void) | null = null;
+  /** Online: the travel plans beside the map, in place of the world panel. */
+  private worldBoard: VoteBoard | null = null;
+  private boardHooks: VoteBoardHooks | null = null;
+  /** Online: something the whole party is voting on, over everything. */
+  private pollBoard: VoteBoard | null = null;
+  private pollHooks: VoteBoardHooks | null = null;
+  /** The Lodge's armoury, while it is open. */
+  private armory: ArmoryHall | null = null;
   /** The clock as last seen, so a warning fires once as its hour is passed. */
   private omenSeen: { day: number; hour: number } | null = null;
+  private readonly cheatEntry = new TextEntry();
+  private cheatClose: (() => void) | null = null;
+  private currentRun?: ExplorationRun;
+  private currentPlace = '';
+  private currentExtra = '';
+  private owner: HudOwner | null = null;
+  /** On foot: the button straight back to the travel map. */
+  private mapExit?: CabinetChip;
 
   constructor() {
     super('LocaleHud');
@@ -113,9 +154,21 @@ export class LocaleHudScene extends Phaser.Scene {
     this.pendingCard = null;
     this.cardPlaying = null;
     this.window = null;
+    this.windowClose = null;
+    this.worldBoard = null;
+    this.boardHooks = null;
+    this.pollBoard = null;
+    this.pollHooks = null;
+    this.armory = null;
     this.omenSeen = null;
+    this.cheatClose = null;
+    this.currentRun = undefined;
+    this.owner = data.owner;
+    this.mapExit = undefined;
+    this.cheatEntry.finish(false);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.cheatEntry.destroy());
     const panelKey = (run: () => void) => (): void => {
-      if (this.worldPanel && !this.modalOpen) run();
+      if ((this.worldPanel || this.worldBoard) && !this.modalOpen) run();
     };
     new SceneInput(this).bindKeys([
       { key: 'UP', capture: true, run: panelKey(() => this.worldFocus.move(-1)) },
@@ -123,18 +176,24 @@ export class LocaleHudScene extends Phaser.Scene {
       { key: 'ENTER', capture: true, run: panelKey(() => this.worldFocus.activate()) },
       { key: 'SPACE', capture: true, run: panelKey(() => this.worldFocus.activate()) },
       ...DIGITS.map((key, index) => ({ key, run: panelKey(() => this.worldAction(index)) })),
+      { key: 'F2', run: () => this.toggleCheatConsole() },
+      { key: 'H', run: () => this.toggleLegend() },
     ]);
+    this.minorKey = '';
+    this.clockKey = -1;
     this.frame = this.add.graphics();
-    drawPlate(this.frame, 12, 10, 372, 104);
-    this.title = this.add.text(26, 18, '', { fontFamily: MENU_FONT.display, fontSize: '20px', fontStyle: 'bold', color: MENU_HEX.brassLight });
-    this.line = this.add.text(26, 46, '', { fontFamily: MENU_FONT.control, fontSize: '13px', color: MENU_HEX.bone });
+    drawPlate(this.frame, 12, 10, 310, 100);
+    this.title = this.add.text(26, 18, '', { fontFamily: MENU_FONT.display, fontSize: '18px', fontStyle: 'bold', color: MENU_HEX.brassLight });
+    this.line = this.add.text(26, 42, '', { fontFamily: MENU_FONT.control, fontSize: '12px', color: MENU_HEX.boneDim, fixedWidth: 282 });
     this.bars = this.add.graphics();
-    this.vitals = [
-      new EasedBar(26, 86, 108, 10, 0xb8453c),
-      new EasedBar(142, 86, 108, 10, 0x4a7fd0),
-      new EasedBar(258, 86, 108, 10, 0x8a5fb8),
+    this.vitals = [new EasedBar(26, 64, 196, 12, 0xb8453c)];
+    this.barText = this.add.text(232, 61, '', { fontFamily: MENU_FONT.control, fontSize: '13px', fontStyle: 'bold', color: MENU_HEX.bone });
+    this.minorBars = [new EasedBar(26, 96, 132, 6, 0x4a7fd0), new EasedBar(168, 96, 132, 6, 0x8a5fb8)];
+    this.minorG = this.add.graphics().setAlpha(0);
+    this.minorLabels = [
+      this.add.text(26, 82, '', { fontFamily: MENU_FONT.control, fontSize: '10px', fontStyle: 'bold', color: '#8fb4f0' }).setAlpha(0),
+      this.add.text(168, 82, '', { fontFamily: MENU_FONT.control, fontSize: '10px', fontStyle: 'bold', color: '#c3a0e8' }).setAlpha(0),
     ];
-    this.barText = this.add.text(26, 66, '', { fontFamily: MENU_FONT.control, fontSize: '11px', color: MENU_HEX.boneDim });
     this.partyBack = this.add.graphics();
     this.partyRows = [];
     this.journalBack = this.add.graphics();
@@ -147,7 +206,16 @@ export class LocaleHudScene extends Phaser.Scene {
       wordWrap: { width: 460 },
     }).setOrigin(1, 0);
     this.legend = new KeyLegend(this, 24, GAME_HEIGHT - 30);
-    this.legend.set('WASD / arrows or click: walk     E: talk     I: pack     Esc: menu');
+    this.hint = 'WASD / arrows or click: walk     E: talk     I: pack     Esc: menu     F2: cheats';
+    this.legendOpen = !legendSeen;
+    this.applyLegend();
+    if (!legendSeen) {
+      legendSeen = true;
+      this.time.delayedCall(12_000, () => {
+        this.legendOpen = false;
+        this.applyLegend();
+      });
+    }
     this.wordBar = this.add.text(16, GAME_HEIGHT - 46, '', {
       fontFamily: MENU_FONT.control,
       fontSize: '13px',
@@ -160,14 +228,42 @@ export class LocaleHudScene extends Phaser.Scene {
     const touch = prefersTouchLayout() && !!data.owner.tap;
     this.legend.setVisible(!touch);
     if (touch) this.buildDock(data.owner);
-    this.wheel = new TimeWheel(this, GAME_WIDTH / 2);
+    // The clock keeps to the lower left corner and only shows while time goes by.
+    this.wheel = new TimeWheel(this, 16 + 91, GAME_HEIGHT - 240);
+    this.wheel.setShown(false, true);
+    this.councilBack = this.add.graphics().setDepth(11);
+    this.councilText = this.add.text(26, 0, '', {
+      fontFamily: MENU_FONT.control,
+      fontSize: '13px',
+      color: MENU_HEX.bone,
+      lineSpacing: 3,
+      wordWrap: { width: 344 },
+    }).setDepth(11).setVisible(false);
     data.owner.onHudReady(this);
+  }
+
+  /** What the party is deciding together, under the party rows; empty hides it. */
+  setCouncil(lines: readonly string[]): void {
+    const text = this.councilText;
+    const back = this.councilBack;
+    if (!text || !back) return;
+    const body = lines.join('\n');
+    if (text.visible && text.text === body) return;
+    back.clear();
+    text.setText(body).setVisible(lines.length > 0);
+    if (!lines.length) return;
+    const others = this.partyRows.length;
+    const top = others ? 142 + others * 24 : 122;
+    text.setY(top + 10);
+    drawPlate(back, 12, top, 372, Math.ceil(text.height) + 20);
   }
 
   update(_time: number, delta: number): void {
     this.wheel?.update(delta);
+    // Under an open window the map button neither shows nor takes clicks.
+    this.mapExit?.setVisible(!this.modalOpen);
     let moved = false;
-    for (const bar of this.vitals) moved = bar.step(delta) || moved;
+    for (const bar of [...this.vitals, ...this.minorBars]) moved = bar.step(delta) || moved;
     if (moved) this.drawVitals();
   }
 
@@ -176,6 +272,37 @@ export class LocaleHudScene extends Phaser.Scene {
     if (!g) return;
     g.clear();
     for (const bar of this.vitals) bar.draw(g);
+    const minor = this.minorG?.clear();
+    if (minor) for (const bar of this.minorBars) bar.draw(minor);
+  }
+
+  /** H: the whole key legend, or just the hint that it is there. */
+  private toggleLegend(): void {
+    this.legendOpen = !this.legendOpen;
+    this.applyLegend();
+  }
+
+  private applyLegend(): void {
+    this.legend?.set(this.legendOpen ? `${this.hint}     H: hide keys` : 'H: keys');
+  }
+
+  /** Mana and sanity rise into view when they change, and fade once they settle. */
+  private flashMinor(): void {
+    const parts = [this.minorG, ...this.minorLabels].filter((part): part is Phaser.GameObjects.Graphics | Phaser.GameObjects.Text => !!part);
+    this.tweens.killTweensOf(parts);
+    this.tweens.add({ targets: parts, alpha: 1, duration: 180 });
+    this.minorTimer?.remove();
+    this.minorTimer = this.time.delayedCall(MINOR_MS, () => this.tweens.add({ targets: parts, alpha: 0, duration: 700 }));
+  }
+
+  /** The clock comes up while time passes, and goes again once it has stood still a while. */
+  private showClock(): void {
+    this.wheel?.setShown(true);
+    this.clockTimer?.remove();
+    this.clockTimer = this.time.delayedCall(CLOCK_MS, () => {
+      // On the bloodmoon's day the clock stays up to the end.
+      if (!this.currentRun || !bloodmoonOmen(this.currentRun.day).tonight) this.wheel?.setShown(false);
+    });
   }
 
   /** Touch: big act button (held for finds that take a moment) and the other keys beside it. */
@@ -227,42 +354,69 @@ export class LocaleHudScene extends Phaser.Scene {
     this.member = member;
   }
 
+  /** On foot: a button at the top that heads straight back to the travel map, as M does. */
+  setMapExit(on: boolean): void {
+    this.mapExit?.destroy();
+    this.mapExit = undefined;
+    const owner = this.owner;
+    if (!on || !owner?.tap) return;
+    this.mapExit = new CabinetChip(this, GAME_WIDTH / 2 - 105, 14, {
+      width: 210,
+      height: 36,
+      label: 'Travel Map   [M]',
+      onActivate: () => {
+        if (!this.modalOpen) owner.tap?.('map');
+      },
+    });
+  }
+
   refresh(run: ExplorationRun, place: string, extra = ''): void {
+    this.currentRun = run;
+    this.currentPlace = place;
+    this.currentExtra = extra;
     const leader = memberIn(run, this.member);
     this.title?.setText(place.toUpperCase());
-    this.line?.setText(`${moneyLabel(run.gold)}   Level ${run.level}  (${run.xp}/${xpToNext(run.level, partyXpScale(run))} XP)${extra ? `   ${extra}` : ''}`);
+    const note = extra.length > 50 ? `${extra.slice(0, 48).trimEnd()}...` : extra;
+    if (this.line && this.line.text !== note) this.line.setText(note);
     this.wheel?.setTime(run.day, run.hour);
+    const clock = (run.day - 1) * 24 + run.hour;
+    if (this.clockKey >= 0 && Math.abs(clock - this.clockKey) > 1e-3) this.showClock();
+    else if (this.clockKey < 0 && bloodmoonOmen(run.day).tonight) this.showClock();
+    this.clockKey = clock;
     // The bloodmoon's own arrival replaces its day's card.
     const due = bloodmoonDue(run);
     if (this.shownDay && run.day > this.shownDay && !due) {
-      this.announceDay({ day: run.day, hour: run.hour, news: dayNews(run), omen: bloodmoonOmen(run.day) });
+      this.announceDay({ day: run.day, hour: run.hour, news: dayNews(run) });
     }
     this.warnBloodmoon(run, due);
     this.shownDay = run.day;
     const g = this.bars;
     if (g && leader) {
       this.vitals[0]?.set(leader.hp, leader.maxHp);
-      this.vitals[1]?.set(leader.mana, leader.maxMana);
-      this.vitals[2]?.set(leader.sanity, leader.maxSanity);
+      this.minorBars[0]?.set(leader.mana, leader.maxMana);
+      this.minorBars[1]?.set(leader.sanity, leader.maxSanity);
       this.drawVitals();
-      this.barText?.setText(leader.alive
-        ? `HP ${leader.hp}/${leader.maxHp}                      Mana ${leader.mana}/${leader.maxMana}                   Sanity ${leader.sanity}/${leader.maxSanity}`
-        : 'FALLEN. Back on your feet after a night at an inn.');
+      this.barText?.setText(leader.alive ? `${leader.hp} / ${leader.maxHp}` : 'FALLEN').setColor(leader.alive ? MENU_HEX.bone : '#e0806e');
+      this.minorLabels[0]?.setText(`MANA  ${leader.mana}/${leader.maxMana}`);
+      this.minorLabels[1]?.setText(`SANITY  ${leader.sanity}/${leader.maxSanity}`);
+      const minor = `${leader.mageClass}:${leader.mana}/${leader.maxMana}:${leader.sanity}/${leader.maxSanity}`;
+      if (this.minorKey && minor !== this.minorKey && minor.split(':')[0] === this.minorKey.split(':')[0]) this.flashMinor();
+      this.minorKey = minor;
     }
     const party = partyOf(run);
     const others = party.length > 1 ? party.filter((mage) => mage.mageClass !== leader?.mageClass) : [];
     this.drawParty(run, others);
     const lines = run.bounties.map((b) => `${b.label}  ${bountyProgress(run, b)}/${b.count}`);
-    const quest = questLines(run);
+    const arms = armsLines(run);
     const site = run.area?.site;
     const goals = site
       ? [site.title.toUpperCase(), ...siteGoals(run, site).map((goal) => `${goal.label}${goal.optional ? '  (optional)' : ''}  ${goal.done ? '\u25A0' : '\u25A1'}`)]
       : [];
     const panel = [
       ...goals,
-      ...(goals.length && quest.length ? [''] : []),
-      ...quest,
-      ...((goals.length || quest.length) && lines.length ? [''] : []),
+      ...(goals.length && arms.length ? [''] : []),
+      ...arms,
+      ...((goals.length || arms.length) && lines.length ? [''] : []),
       ...(lines.length ? ['BOUNTIES', ...lines] : []),
     ];
     const text = this.bountyText;
@@ -274,7 +428,105 @@ export class LocaleHudScene extends Phaser.Scene {
     }
   }
 
-  /** The rest of the party: a name and three thin bars each. */
+  private toggleCheatConsole(): void {
+    if (this.cheatClose) {
+      this.cheatClose();
+      return;
+    }
+    if (this.modalOpen || !this.currentRun) return;
+
+    void this.hold<void>((done) => {
+      const run = this.currentRun;
+      if (!run) {
+        done();
+        return;
+      }
+      const root = this.add.container(0, 0).setDepth(90);
+      const close = (): void => {
+        this.cheatEntry.finish(false);
+        root.destroy(true);
+        this.cheatClose = null;
+        done();
+      };
+      this.cheatClose = close;
+
+      const left = GAME_WIDTH / 2 - 220;
+      const top = GAME_HEIGHT / 2 - 132;
+      const dim = this.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, MENU_COLOR.pitch, 0.76).setOrigin(0).setInteractive();
+      const frame = this.add.graphics();
+      drawPlate(frame, left, top, 440, 264);
+      const title = this.add.text(GAME_WIDTH / 2, top + 26, 'ADVENTURE CHEATS', {
+        fontFamily: MENU_FONT.display, fontSize: '22px', fontStyle: 'bold', color: MENU_HEX.brassLight,
+      }).setOrigin(0.5);
+      const subtitle = this.add.text(GAME_WIDTH / 2, top + 55, 'Select a value to edit', {
+        fontFamily: MENU_FONT.control, fontSize: '13px', color: MENU_HEX.boneDim,
+      }).setOrigin(0.5);
+      root.add([dim, frame, title, subtitle]);
+
+      const addField = (label: string, y: number, value: string, onEdit: (text: Phaser.GameObjects.Text) => void): void => {
+        const labelText = this.add.text(left + 30, y + 13, label, {
+          fontFamily: MENU_FONT.control, fontSize: '15px', fontStyle: 'bold', color: MENU_HEX.bone,
+        }).setOrigin(0, 0.5);
+        const field = this.add.graphics();
+        field.fillStyle(MENU_COLOR.charcoal, 1).fillRect(left + 196, y, 210, 42);
+        field.lineStyle(1, MENU_COLOR.brassDark, 1).strokeRect(left + 196.5, y + 0.5, 209, 41);
+        const valueText = this.add.text(left + 301, y + 21, value, {
+          fontFamily: MENU_FONT.control, fontSize: '16px', fontStyle: 'bold', color: MENU_HEX.brassLight,
+        }).setOrigin(0.5);
+        const zone = this.add.zone(left + 196, y, 210, 42).setOrigin(0).setInteractive();
+        zone.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, () => onEdit(valueText));
+        root.add([labelText, field, valueText, zone]);
+      };
+
+      addField('Day', top + 86, String(run.day), (text) => this.editCheatValue(run, 'day', text));
+      addField('Gold', top + 142, run.gold.toFixed(1), (text) => this.editCheatValue(run, 'gold', text));
+
+      const closeText = this.add.text(GAME_WIDTH / 2, top + 224, 'CLOSE  [F2]', {
+        fontFamily: MENU_FONT.control, fontSize: '14px', fontStyle: 'bold', color: MENU_HEX.bone,
+      }).setOrigin(0.5);
+      const closeZone = this.add.zone(GAME_WIDTH / 2 - 70, top + 207, 140, 36).setInteractive();
+      closeZone.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, close);
+      root.add([closeText, closeZone]);
+    });
+  }
+
+  private editCheatValue(run: ExplorationRun, field: 'day' | 'gold', text: Phaser.GameObjects.Text): void {
+    const original = field === 'day' ? String(run.day) : run.gold.toFixed(1);
+    this.cheatEntry.begin({
+      value: original,
+      maxLength: field === 'day' ? 7 : 12,
+      inputMode: 'numeric',
+      ariaLabel: `Adventure ${field}`,
+      onChange: (value) => text.setText(value || ' '),
+      onDone: (committed) => {
+        if (!committed) {
+          text.setText(original);
+          return;
+        }
+        const value = text.text.trim().replace(',', '.');
+        const parsed = Number(value);
+        const valid = field === 'day'
+          ? /^\d+$/.test(value) && Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 1_000_000
+          : /^\d+(?:\.\d+)?$/.test(value) && Number.isFinite(parsed) && parsed <= 1_000_000_000;
+        if (!valid) {
+          text.setText(original);
+          this.toast(field === 'day' ? 'Day must be a whole number from 1 to 1,000,000.' : 'Gold must be between 0 and 1,000,000,000.');
+          return;
+        }
+        if (field === 'day') {
+          run.day = parsed;
+          this.shownDay = parsed;
+        } else {
+          run.gold = money(Math.max(0, parsed));
+        }
+        saveRun(run);
+        text.setText(field === 'day' ? String(run.day) : run.gold.toFixed(1));
+        this.refresh(run, this.currentPlace, this.currentExtra);
+      },
+    });
+  }
+
+  /** The rest of the party: a name and a health bar each. */
   private drawParty(run: ExplorationRun, others: ReturnType<typeof partyOf>): void {
     const g = this.partyBack;
     if (!g) return;
@@ -284,41 +536,39 @@ export class LocaleHudScene extends Phaser.Scene {
       this.partyRows.push(this.add.text(24, 0, '', { fontFamily: MENU_FONT.control, fontSize: '12px', color: MENU_HEX.bone }));
     }
     if (!others.length) return;
-    drawPlate(g, 12, 120, 372, 14 + others.length * 24);
+    drawPlate(g, 12, 120, 310, 14 + others.length * 24);
     others.forEach((mage, index) => {
       const y = 130 + index * 24;
       const owed = levelsOwed(run, mage.mageClass) > 0 ? '  +LV' : '';
-      const name = `${mage.name} (${MAGE_CLASS_DEFS[mage.mageClass].label})`.slice(0, 26);
+      const name = (mage.spellClass ? `${mage.name} (${MAGE_CLASS_DEFS[mage.spellClass].label})` : mage.name).slice(0, 22);
       this.partyRows[index].setPosition(24, y).setText(`${name}${owed}`).setColor(mage.alive ? MENU_HEX.bone : MENU_HEX.disabled);
+      const x = 178;
+      const w = 130;
+      g.fillStyle(MENU_COLOR.ink, 1).fillRect(x, y + 4, w, 8);
       if (!mage.alive) {
-        g.fillStyle(MENU_COLOR.blood, 1).fillRect(210, y + 5, 158, 6);
+        g.fillStyle(MENU_COLOR.blood, 0.6).fillRect(x, y + 4, w, 8);
         return;
       }
-      const bar = (x: number, value: number, max: number, color: number): void => {
-        g.fillStyle(MENU_COLOR.ink, 1).fillRect(x, y + 5, 50, 6);
-        g.fillStyle(color, 1).fillRect(x, y + 5, Math.round(50 * Math.max(0, Math.min(1, max > 0 ? value / max : 0))), 6);
-      };
-      bar(210, mage.hp, mage.maxHp, 0xb8453c);
-      bar(264, mage.mana, mage.maxMana, 0x4a7fd0);
-      bar(318, mage.sanity, mage.maxSanity, 0x8a5fb8);
+      const share = Math.max(0, Math.min(1, mage.maxHp > 0 ? mage.hp / mage.maxHp : 0));
+      g.fillStyle(0xb8453c, 1).fillRect(x, y + 4, Math.round(w * share), 8);
+      g.lineStyle(1, MENU_COLOR.brassDark, 1).strokeRect(x + 0.5, y + 4.5, w - 1, 7);
     });
   }
 
   setHint(text: string): void {
-    this.legend?.set(text);
+    this.hint = text;
+    this.applyLegend();
   }
 
-  /** On the bloodmoon's last day, a warning at dusk and another two hours before it rises. */
+  /** On the bloodmoon's day its countdown comes back at noon, at dusk and two hours before midnight. */
   private warnBloodmoon(run: ExplorationRun, due: boolean): void {
     const seen = this.omenSeen;
     this.omenSeen = { day: run.day, hour: run.hour };
     if (!seen || seen.day !== run.day || due || !bloodmoonOmen(run.day).tonight) return;
-    for (const [hour, text] of OMEN_WARNINGS) {
-      if (seen.hour >= hour || run.hour < hour) continue;
-      this.toast(text, 5600);
-      playSound('boss.omen');
-      this.wheel?.pulse();
-    }
+    const crossed = FINAL_HOURS.filter((hour) => seen.hour < hour && run.hour >= hour);
+    if (!crossed.length) return;
+    this.announceDay({ day: run.day, hour: run.hour, news: [], countdown: true });
+    this.showClock();
   }
 
   /** The bloodmoon rises over whatever is on screen; resolves on black. */
@@ -345,6 +595,7 @@ export class LocaleHudScene extends Phaser.Scene {
     this.worldModel = model;
     this.worldFocus = new MenuFocusGroup();
     if (!model) return;
+    this.setWorldBoard(null);
     const width = 400;
     const chipH = 32;
     const gap = 6;
@@ -374,6 +625,8 @@ export class LocaleHudScene extends Phaser.Scene {
       }));
     });
     const chipsTop = top + 44 + model.lines.length * lineH;
+    // The first chip takes focus as it is built: that is not the player looking at it.
+    let building = true;
     model.actions.forEach((action, index) => {
       const chip = new CabinetChip(this, left + 12, chipsTop + index * (chipH + gap), {
         width: width - 24,
@@ -384,14 +637,22 @@ export class LocaleHudScene extends Phaser.Scene {
         onActivate: () => {
           if (!this.modalOpen) model.onAction(action.id);
         },
+        onFocus: () => {
+          if (!building) model.onHover?.(action.id);
+        },
       });
       root.add(chip);
       this.worldFocus.add(chip);
     });
+    building = false;
     this.worldPanel = root;
   }
 
   private worldAction(index: number): void {
+    if (this.worldBoard) {
+      this.worldBoard.pickIndex(index);
+      return;
+    }
     const action = this.worldModel?.actions[index];
     if (!action?.enabled) return;
     playSound('ui.click');
@@ -420,18 +681,40 @@ export class LocaleHudScene extends Phaser.Scene {
       this.time.delayedCall(0, () => {
         const before = new Set(this.children.list);
         open((value) => {
-          this.modal = Math.max(0, this.modal - 1);
+          this.release();
           playSound('ui.close');
-          if (!this.modalOpen && this.pendingCard) {
-            const card = this.pendingCard;
-            this.pendingCard = null;
-            this.announceDay(card);
-          }
           resolve(value);
         });
         if (animate && !isReducedMotion()) this.enter(this.children.list.filter((child) => !before.has(child)));
       });
     });
+  }
+
+  /** A window (or the night) is over: once nothing is left open, the day's card that waited plays. */
+  private release(): void {
+    this.modal = Math.max(0, this.modal - 1);
+    if (!this.modalOpen && this.pendingCard) {
+      const card = this.pendingCard;
+      this.pendingCard = null;
+      this.announceDay(card);
+    }
+  }
+
+  /**
+   * The party sleeps: the night plays over everything, and the day's card and the
+   * world wait until it is over. `black` runs once the screen has gone dark,
+   * `dark` once it is dark again after waking, before it fades back in.
+   */
+  async sleep(nap: RestNap, at: { black?: () => void; dark?: () => void } = {}): Promise<void> {
+    this.modal += 1;
+    this.prompt?.set(null, false);
+    const film = playRestCinematic(this, nap, isReducedMotion());
+    await film.black;
+    at.black?.();
+    await film.dark;
+    at.dark?.();
+    await film.done;
+    this.release();
   }
 
   /** A window just built settles in: it fades up and its panels rise into place. */
@@ -456,7 +739,7 @@ export class LocaleHudScene extends Phaser.Scene {
       this.pendingCard = card;
       return;
     }
-    const playing = playDayCard(this, card, () => this.wheel?.pulse()).then(() => {
+    const playing = playDayCard(this, card).then(() => {
       if (this.cardPlaying === playing) this.cardPlaying = null;
     });
     this.cardPlaying = playing;
@@ -478,22 +761,37 @@ export class LocaleHudScene extends Phaser.Scene {
     }, false);
   }
 
-  openShop(run: ExplorationRun, shopId: string, townId: string, changed: () => void, actions: ExplorationActions): Promise<void> {
+  /** A shop's counter. A night at its inn plays out over everything and takes the window with it; `rested` hears of it first. */
+  openShop(run: ExplorationRun, shopId: string, townId: string, changed: () => void, actions: ExplorationActions, rested?: (nap: RestNap) => void, inn?: InnHooks, shortRest?: () => string | null): Promise<void> {
     const shop = shopById(shopId);
     if (!shop) return Promise.resolve();
     return this.hold<void>((done) => {
+      let closed = false;
+      const close = (): void => {
+        if (closed) return;
+        closed = true;
+        if (this.window === view) {
+          this.window = null;
+          this.windowClose = null;
+        }
+        view.destroy();
+        done();
+      };
       const view: ShopView = new ShopView(this, run, shop, {
         townId,
         portrait: `keeper:${shop.keeper}`,
         changed,
         actions,
-        close: () => {
-          if (this.window === view) this.window = null;
-          view.destroy();
-          done();
+        inn,
+        shortRest,
+        slept: (nap) => {
+          rested?.(nap);
+          void this.sleep(nap, { black: changed, dark: close });
         },
+        close,
       });
       this.window = view;
+      this.windowClose = close;
     });
   }
 
@@ -503,18 +801,95 @@ export class LocaleHudScene extends Phaser.Scene {
         changed,
         actions,
         close: () => {
-          if (this.window === view) this.window = null;
+          if (this.window === view) {
+            this.window = null;
+            this.windowClose = null;
+          }
           view.destroy();
           done();
         },
       });
       this.window = view;
+      this.windowClose = () => {
+        if (this.window !== view) return;
+        this.window = null;
+        this.windowClose = null;
+        view.destroy();
+        done();
+      };
     });
+  }
+
+  /** Shut the shop or pack on screen, if any (the party is going to sleep). */
+  closeWindow(): void {
+    this.windowClose?.();
   }
 
   /** Redraw an open shop or pack after the run changed under it. */
   refreshWindow(): void {
     this.window?.refresh();
+    this.armory?.refresh();
+  }
+
+  /** Online: the party's travel plans beside the map, repainted in place; null removes them. */
+  setWorldBoard(model: VoteBoardModel | null, hooks?: VoteBoardHooks): void {
+    if (!model) {
+      this.worldBoard?.destroy();
+      this.worldBoard = null;
+      this.boardHooks = null;
+      return;
+    }
+    if (this.worldPanel) this.setWorldPanel(null);
+    this.boardHooks = hooks ?? null;
+    this.worldBoard ??= new VoteBoard(this, false, {
+      pick: (id) => {
+        if (!this.modalOpen) this.boardHooks?.pick(id);
+      },
+      look: (id) => this.boardHooks?.look?.(id),
+    });
+    this.worldBoard.show(model);
+  }
+
+  /** Online: a choice the whole party votes on, over everything, kept up to date; null takes it away. */
+  showPoll(model: VoteBoardModel | null, hooks?: VoteBoardHooks): void {
+    if (!model) {
+      if (!this.pollBoard) return;
+      this.pollBoard.destroy();
+      this.pollBoard = null;
+      this.pollHooks = null;
+      playSound('ui.close');
+      this.release();
+      return;
+    }
+    this.pollHooks = hooks ?? null;
+    if (!this.pollBoard) {
+      this.modal += 1;
+      this.prompt?.setVisible(false);
+      playSound('ui.open');
+      this.pollBoard = new VoteBoard(this, true, {
+        pick: (id) => this.pollHooks?.pick(id),
+        look: (id) => this.pollHooks?.look?.(id),
+      });
+    }
+    this.pollBoard.show(model);
+  }
+
+  /** The voice in your head asks for two words and a way of doing things. */
+  awaken(model: AwakeningModel): Promise<CreationPick> {
+    return this.hold<CreationPick>((done) => {
+      void playAwakening(this, model).then(done);
+    }, false);
+  }
+
+  /** The Lodge's pedestals of starter weapons; resolves once the player walks off. */
+  openArmory(hooks: ArmoryHooks): Promise<void> {
+    return this.hold<void>((done) => {
+      const hall: ArmoryHall = new ArmoryHall(this, hooks, () => {
+        if (this.armory === hall) this.armory = null;
+        done();
+      });
+      this.armory = hall;
+    }, false);
   }
 
   /** The search window: pick a target, roll for it. Null when the player backs out. */

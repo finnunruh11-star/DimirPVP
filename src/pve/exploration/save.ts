@@ -3,6 +3,7 @@
 // or dropped rather than trusted.
 
 import { MAGE_CLASSES, type MageClass } from '../../core/Classes';
+import { currentItemId } from '../../core/Items';
 import { parseScenario, type Scenario } from '../../core/Scenario';
 import { AREA_RADIUS } from './area';
 import { BOUNTY_CAP } from './bounties';
@@ -12,8 +13,7 @@ import { isPackedExplored, packExplored, revealTiles, unpackExplored, widenExplo
 import { cellWorldTile, OPEN_WORLD_ID, worldTileCell } from './openWorld';
 import { parseExplorationMines } from './mines';
 import { bloodmoonCycle } from './bloodmoon';
-import { QUEST_JOBS, QUEST_OVER } from './quest';
-import { EXPLORATION_VERSION, type ActiveBounty, type AreaState, type ExplorationRun, type LocaleState, type QuestState, type RoadState } from './run';
+import { EXPLORATION_VERSION, type ActiveBounty, type AreaState, type ExplorationRun, type LocaleState, type RoadState } from './run';
 import { parseSite } from './site';
 import { createWorld, DESERT_COLUMNS, isPassable, placeById, PLACES, START_PLACE, WORLD_H, WORLD_W } from './world';
 
@@ -171,7 +171,6 @@ export function parseRun(raw: string): ExplorationRun | null {
         beaten[key] = Math.max(0, int(day, 0));
       }
     }
-    // Runs from before maps were sold never saw the quest.
     const localeState = parseLocale(locale, version);
     const day = clamp(parsed.day, 1, 1_000_000, 1);
     // A save from before the bosses does not owe the bloodmoons it already slept through.
@@ -205,10 +204,10 @@ export function parseRun(raw: string): ExplorationRun | null {
       wildsSeen: strings(parsed.wildsSeen, 8192),
       groupsBeaten: beaten,
       area: parseArea(parsed.area, party, localeState),
-      quest: version < 5 ? { job: QUEST_OVER, taken: false, progress: 0, opens: 1 } : parseQuest(parsed.quest),
       road: parseRoad(parsed.road),
       mines: parseExplorationMines(parsed.mines),
       bloodmoons,
+      crafts: clamp(parsed.crafts, 0, 1_000_000, 0),
     };
   } catch {
     return null;
@@ -273,17 +272,6 @@ function parseArea(value: unknown, party: Scenario, locale: LocaleState | null):
   };
 }
 
-function parseQuest(value: unknown): QuestState {
-  const q = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
-  const job = clamp(q.job, 0, QUEST_OVER, 0);
-  return {
-    job,
-    taken: q.taken === true,
-    progress: clamp(q.progress, 0, QUEST_JOBS[job]?.need ?? 0, 0),
-    opens: clamp(q.opens, 1, 1_000_000, 1),
-  };
-}
-
 function parseBounties(value: unknown, version: number): ActiveBounty[] {
   if (!Array.isArray(value)) return [];
   const out: ActiveBounty[] = [];
@@ -299,7 +287,7 @@ function parseBounties(value: unknown, version: number): ActiveBounty[] {
       id: b.id.slice(0, 64),
       town: b.town,
       kind,
-      target: b.target.slice(0, 64),
+      target: kind === 'gather' ? currentItemId(b.target.slice(0, 64)) : b.target.slice(0, 64),
       count: clamp(b.count, 1, 99, 1),
       progress: clamp(b.progress, 0, 99, 0),
       rewardGold: typeof b.rewardGold === 'number' && Number.isFinite(b.rewardGold)

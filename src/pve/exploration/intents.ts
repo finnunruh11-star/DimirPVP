@@ -3,14 +3,17 @@
 // checks and applies them. Pure: no Phaser.
 
 import { MAGE_CLASSES, type MageClass } from '../../core/Classes';
+import { CRAFT_TEMPLATE_IDS, MAX_CRAFT_MANA, type CraftForm, type CraftTemplateId } from '../../core/crafting/data';
+import type { CraftDesign } from '../../core/crafting/item';
 import { asItemIds, type ItemId } from '../../core/Items';
 import { abandonBounty, acceptBounty, claimBounty } from './bounties';
+import { enterLodge, takeStarterWeapon } from './arms';
 import { memberOf } from './coop';
 import {
   buyItem,
+  craftItem,
   dropItem,
   equipItem,
-  forge,
   giveItem,
   memberIn,
   moneyLabel,
@@ -21,14 +24,13 @@ import {
   type ShopResult,
 } from './economy';
 import { applyLevelChoice, parseLevelChoice, type LevelChoice } from './levels';
-import { reportQuestJob, takeQuestJob } from './quest';
 import type { ExplorationRun } from './run';
 
 export type ExplorationIntent =
   | { op: 'buy'; shop: string; key: string }
   | { op: 'sell'; shop: string; item: ItemId }
   | { op: 'sell-all'; shop: string; items: ItemId[] }
-  | { op: 'forge'; shop: string; recipe: string }
+  | { op: 'craft'; shop: string; design: CraftDesign; crafter?: MageClass }
   | { op: 'rest'; shop: string }
   | { op: 'equip'; item: ItemId }
   | { op: 'unequip'; item: ItemId }
@@ -37,8 +39,8 @@ export type ExplorationIntent =
   | { op: 'bounty-accept'; town: string; id: string }
   | { op: 'bounty-abandon'; id: string }
   | { op: 'bounty-claim'; town: string; id: string }
-  | { op: 'quest-take' }
-  | { op: 'quest-report' }
+  | { op: 'arm'; weapon: ItemId }
+  | { op: 'lodge' }
   | { op: 'level'; choice: LevelChoice };
 
 export type IntentOp = ExplorationIntent['op'];
@@ -46,6 +48,8 @@ export type IntentOp = ExplorationIntent['op'];
 export interface IntentResult extends ShopResult {
   /** Levels the party gained by it. */
   levels?: number;
+  /** What a craft made. */
+  item?: ItemId;
 }
 
 /** Things done for the whole party at once; only the host decides them online. */
@@ -59,7 +63,7 @@ export function applyIntent(run: ExplorationRun, member: MageClass | null, inten
       case 'buy': return buyItem(run, intent.shop, intent.key, member);
       case 'sell': return sellItem(run, intent.shop, intent.item, false, member);
       case 'sell-all': return sellAll(run, intent.shop, intent.items, member);
-      case 'forge': return forge(run, intent.shop, intent.recipe, member);
+      case 'craft': return craftItem(run, intent.shop, intent.design, member, intent.crafter);
       case 'rest': return rest(run, intent.shop);
       case 'equip': return equipItem(run, intent.item, member);
       case 'unequip': return unequipItem(run, intent.item, member);
@@ -68,8 +72,8 @@ export function applyIntent(run: ExplorationRun, member: MageClass | null, inten
       case 'bounty-accept': return acceptBounty(run, intent.town, intent.id);
       case 'bounty-abandon': return abandonBounty(run, intent.id);
       case 'bounty-claim': return claimBounty(run, intent.town, intent.id);
-      case 'quest-take': return takeQuestJob(run);
-      case 'quest-report': return reportQuestJob(run);
+      case 'arm': return takeStarterWeapon(run, member, intent.weapon);
+      case 'lodge': return enterLodge(run, member);
       case 'level': {
         const who = member ?? memberIn(run)?.mageClass;
         return who ? applyLevelChoice(run, who, intent.choice) : { ok: false, message: 'No such party member.' };
@@ -98,6 +102,24 @@ const itemId = (value: unknown): ItemId | null => asItemIds([value])[0] ?? null;
 const mageClass = (value: unknown): MageClass | null =>
   MAGE_CLASSES.includes(value as MageClass) ? value as MageClass : null;
 
+/** A bench design off the wire: its shape only; the bench itself judges the materials. */
+function parseDesign(value: unknown): CraftDesign | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const template = CRAFT_TEMPLATE_IDS.find((id) => id === raw.template) as CraftTemplateId | undefined;
+  const ids = (list: unknown): ItemId[] | null => {
+    if (!Array.isArray(list) || list.length > 4) return null;
+    const valid = asItemIds(list);
+    return valid.length === list.length ? valid : null;
+  };
+  const parts = ids(raw.parts);
+  const sockets = ids(raw.sockets);
+  const mana = raw.mana;
+  if (!template || typeof raw.form !== 'string' || raw.form.length > 16 || !parts || !sockets) return null;
+  if (typeof mana !== 'number' || !Number.isInteger(mana) || mana < 0 || mana > MAX_CRAFT_MANA) return null;
+  return { template, form: raw.form as CraftForm, parts, sockets, mana };
+}
+
 /** Read an intent that came over the wire. Anything malformed is null. */
 export function parseIntent(value: unknown): ExplorationIntent | null {
   if (!value || typeof value !== 'object') return null;
@@ -118,10 +140,11 @@ export function parseIntent(value: unknown): ExplorationIntent | null {
       const items = Array.isArray(raw.items) ? raw.items.slice(0, 64).map(itemId) : null;
       return shop && items && items.every((id): id is ItemId => !!id) ? { op: 'sell-all', shop, items: items as ItemId[] } : null;
     }
-    case 'forge': {
+    case 'craft': {
       const shop = text(raw.shop);
-      const recipe = text(raw.recipe);
-      return shop && recipe ? { op: 'forge', shop, recipe } : null;
+      const design = parseDesign(raw.design);
+      const crafter = raw.crafter == null ? undefined : mageClass(raw.crafter) ?? null;
+      return shop && design && crafter !== null ? { op: 'craft', shop, design, crafter } : null;
     }
     case 'rest': {
       const shop = text(raw.shop);
@@ -148,9 +171,12 @@ export function parseIntent(value: unknown): ExplorationIntent | null {
       const id = text(raw.id, 96);
       return id ? { op: 'bounty-abandon', id } : null;
     }
-    case 'quest-take':
-    case 'quest-report':
+    case 'lodge':
       return { op: raw.op };
+    case 'arm': {
+      const weapon = itemId(raw.weapon);
+      return weapon ? { op: 'arm', weapon } : null;
+    }
     case 'level': {
       const choice = parseLevelChoice(raw.choice);
       return choice ? { op: 'level', choice } : null;
