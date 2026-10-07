@@ -59,7 +59,7 @@ export const ZONE_ROSTERS: Record<EncounterZone, ZoneRoster> = {
     elites: [mine('sentinel', 1), mine('red-dragonborn', 6)],
   },
   forest: {
-    monsters: [mine('slime', 1), mine('rabbit', 1), mine('wolf', 2), mine('boar', 3), mine('lioness', 4), mine('lion', 5)],
+    monsters: [mine('slime', 1), mine('rabbit', 1), mine('small-spider', 1), mine('wolf', 2), mine('marsh-toad', 2), mine('boar', 3), mine('lioness', 4), mine('lion', 5), mine('thornback', 5), mine('huge-spider', 5), mine('hydra', 8), mine('gigantuan-spider', 9)],
     robbery: BANDITS,
     elites: [mine('boar', 1)],
   },
@@ -76,9 +76,8 @@ export const ZONE_ROSTERS: Record<EncounterZone, ZoneRoster> = {
     robbery: [...BANDITS, mine('elite-kobold', 3)],
     elites: [mine('magma-sentinel', 1), mine('black-dragonborn', 5)],
   },
-  // Nothing lives by the lake or in the desert yet.
   lake: {
-    monsters: [],
+    monsters: [mine('crab', 1), mine('faeri', 3), mine('crocodile', 4), mine('water-spirit', 4), mine('siren', 5), mine('spellcaster-spirit', 6)],
     robbery: [mine('bandit', 1), mine('bandit-archer', 1), mine('bandit-captain', 3)],
     elites: [],
   },

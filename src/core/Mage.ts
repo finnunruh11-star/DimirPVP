@@ -222,6 +222,8 @@ export class Mage {
   lightningMindCritical = false;
   lightningMindRange = 0;
   lightningMindCharges = 0;
+  /** A Lightning minion raised on a natural 18 or more: its bursts reach twice as far. */
+  lightningSurge = false;
   /** Red boon: whether this combat's first weapon attack bonus has been spent. */
   redFirstWeaponAttackUsed = false;
   /** Red Hexcraft primary ability: generate one extra color charge each turn. */
@@ -260,6 +262,11 @@ export class Mage {
 
   /** Swamprun creature identity (undefined for player mages). */
   enemyKind?: string;
+  crocodileGrip?: Mage;
+  venomStacks = 0;
+  venomDistance = 0;
+  venomSource?: Mage;
+  sirenCharm?: Mage;
   /** Mine Run state for level-scaled creatures and their per-combat resources. */
   mine?: {
     kind: string;
@@ -272,6 +279,13 @@ export class Mage {
     charges?: number;
     /** A lioness pounces once a fight. */
     pounced?: boolean;
+    aggressive?: boolean;
+    heads?: number;
+    headThresholds?: number;
+    eggLayRound?: number;
+    hatchRound?: number;
+    hatchHuge?: boolean;
+    lastBurnRound?: number;
   };
   /** Airborne creatures cannot be hit by ordinary close-range attacks. */
   intrinsicAirborne = false;
@@ -710,6 +724,11 @@ export class Mage {
     this.delayedCast = undefined;
     this.delayedItems = [];
     this.fleeChannel = undefined;
+    this.crocodileGrip = undefined;
+    this.venomStacks = 0;
+    this.venomDistance = 0;
+    this.venomSource = undefined;
+    this.sirenCharm = undefined;
     if (!options.preserveLanternState) this.edgelordCapturedBy = undefined;
     this.damageBySourceThisCycle.clear();
     this.bannedItemIds.clear();

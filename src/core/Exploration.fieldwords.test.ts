@@ -22,7 +22,7 @@ const tests: [name: string, run: () => Promise<void>][] = [
   ['lets plain attacks open a fight from the field', async () => {
     const attacks: WordId[][] = [
       ['pierce'], ['shatter'], ['corrode'], ['curse'], ['drain'], ['death'], ['fire'], ['lightning'],
-      ['mind', 'shatter'], ['shatter', 'pierce'], ['curse', 'fire'],
+      ['mind', 'shatter'], ['curse', 'fire'],
     ];
     for (const words of attacks) assert(await straight(words), `${words.join(' ')} is a straight attack`);
   }],
@@ -38,6 +38,8 @@ const tests: [name: string, run: () => Promise<void>][] = [
   ['judges each class by its own spell', async () => {
     assert(await straight(['mind', 'corrode'], 'objects'), 'the ordinary Mind Corrode bites');
     assert(!(await straight(['mind', 'corrode'], 'life')), 'the Life Mind Corrode calls a leech up instead');
+    assert(await straight(['shatter', 'pierce'], null), 'the ordinary Shatter Pierce strikes');
+    assert(!(await straight(['shatter', 'pierce'], 'objects')), 'the Objects Shatter Pierce hands out javelins instead');
     const spell = getSpell(['pierce'], 'objects')!;
     assert(isStraightAttack(spell, 'objects') === isStraightAttack(spell, 'objects'), 'the verdict is worked out once');
   }],

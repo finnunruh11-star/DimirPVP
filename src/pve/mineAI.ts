@@ -1,4 +1,4 @@
-import { MELEE_RANGE, RANGE_UNIT } from '../config/constants';
+import { FIELD, MELEE_RANGE, RANGE_UNIT } from '../config/constants';
 import type { GameState } from '../core/GameState';
 import type { Mage } from '../core/Mage';
 import { dist, stepTowards, type Vec2 } from '../core/utils';
@@ -79,6 +79,66 @@ export function chooseMineAction(game: GameState, source: Mage): MineAIDecision 
     enemies,
     (target) => -Math.round(dist(source.pos, target.pos) * 1000)
   )!;
+
+  if (mine.kind === 'faeri') return { type: 'end' };
+  if (mine.kind === 'water-spirit') {
+    if (source.actions.main <= 0) return { type: 'end' };
+    const targets = enemies.filter((target) => canUseMineAction(game, source, { id: 'water-surge', target }));
+    const target = chooseTied(game, targets, (candidate) => -dist(source.pos, candidate.pos));
+    if (!target) return null;
+    const away = Math.atan2(target.y - source.y, target.x - source.x);
+    const directions = [away, 0, Math.PI / 2, Math.PI, -Math.PI / 2];
+    const push = 5 * RANGE_UNIT;
+    const point = directions.map((angle) => ({
+      x: target.x + Math.cos(angle) * push, y: target.y + Math.sin(angle) * push,
+    })).sort((first, second) => {
+      const score = (at: Vec2): number => {
+        const border = at.x < FIELD.x || at.x > FIELD.x + FIELD.w ||
+          at.y < FIELD.y || at.y > FIELD.y + FIELD.h;
+        const slam = border || game.clampToBarriers(target.pos, at).blocked;
+        return (slam ? (game.barriers.length > 0 ? 100 : -100) : 0) - dist(at, target.pos) * 0.001;
+      };
+      return score(second) - score(first);
+    })[0];
+    return { type: 'mine-action', choice: { id: 'water-surge', target, point } };
+  }
+  if (mine.kind === 'gigantuan-spider') {
+    if (source.hp < source.maxHp * 0.67) {
+      const egg = game.mages.find((candidate) => canUseMineAction(game, source, { id: 'spider-eat-egg', target: candidate }));
+      if (egg) return { type: 'mine-action', choice: { id: 'spider-eat-egg', target: egg } };
+    }
+    return null;
+  }
+  if (mine.kind === 'hydra') {
+    if (source.hp < source.maxHp * 0.45) {
+      const restore = tryAction(game, source, { id: 'hydra-regenerate' });
+      if (restore) return restore;
+    }
+    const target = chooseTied(game, enemies.filter((candidate) =>
+      canUseMineAction(game, source, { id: 'hydra-bite', target: candidate })), (candidate) => -candidate.hp);
+    if (target) return { type: 'mine-action', choice: { id: 'hydra-bite', target } };
+    return tryAction(game, source, { id: 'hydra-regenerate' });
+  }
+  if (mine.kind === 'spider-egg') return { type: 'end' };
+  if (mine.kind === 'crab') {
+    if (source.actions.main > 0) return tryAction(game, source, { id: 'crab-dance' });
+    return source.actions.move > 0 && dist(source.pos, nearest.pos) > 4 * RANGE_UNIT
+      ? { type: 'move', point: { x: source.x + (nearest.x >= source.x ? 1 : -1) * source.moveRange(), y: source.y } }
+      : { type: 'end' };
+  }
+  if (mine.kind === 'siren') {
+    if (source.actions.main <= 0) return { type: 'end' };
+    const id = mine.aggressive ? 'siren-rend' : 'siren-charm';
+    const targets = enemies.filter((target) => canUseMineAction(game, source, { id, target }));
+    const target = chooseTied(game, targets, (candidate) => -dist(source.pos, candidate.pos));
+    return target ? { type: 'mine-action', choice: { id, target } } : { type: 'end' };
+  }
+  if (mine.kind === 'marsh-toad' || mine.kind === 'thornback') {
+    const id = mine.kind === 'marsh-toad' ? 'toad-tongue' : 'thorn-volley';
+    const target = chooseTied(game, enemies.filter((candidate) => canUseMineAction(game, source, { id, target: candidate })),
+      (candidate) => -dist(source.pos, candidate.pos));
+    if (target) return { type: 'mine-action', choice: { id, target } };
+  }
 
   if (mine.kind === 'rockling') {
     if (source.movedThisTurn) return { type: 'end' };

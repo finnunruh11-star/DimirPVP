@@ -60,6 +60,21 @@ For online, LAN, Creative Swamprun, and Campaign hosting instructions, see
 
 ## Interface
 
+### Creature art
+
+Enemies and Life summons without authored sheets use shared pixel-art families.
+The assignments live in [creatureLooks.ts](src/visuals/creatureLooks.ts), with
+body shapes and animation poses in [creatures.ts](src/visuals/creatures.ts).
+Existing authored sprites take precedence. Generated sheets are cached by
+appearance and built only when needed, without changing combat or save data.
+Hydra artwork follows its current head count, and Sentinel accents show its role.
+
+Run `npm run test:creatures` to check roster coverage, frame bounds, loop seams,
+attack/hurt recovery, and completed death animations. This also runs before
+`npm test`. New creature kinds should receive an explicit family assignment.
+
+### Menus
+
 The frontend uses one Phaser-native cabinet system across setup and play: dark
 timber frames, brass fittings, bone word plates, felt recesses, shared focus
 states, and bounded paged catalogues. Pointer/touch, arrows, `Tab`/

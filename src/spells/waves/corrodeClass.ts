@@ -158,7 +158,8 @@ variants(
     bonus: true,
     color: 0x57d6a0,
     text:
-      'For the rest of the fight, your landed basic attacks drain 1d3 corrosive: you heal for the damage dealt. ' +
+      'For the rest of the fight, your landed basic attacks drain corrosive equal to half the damage they dealt (rounded ' +
+      'up); you heal for it. ' +
       'If it landed nothing since your last turn, you take 1 corrosive at your turn start.',
   }),
   law('bloodtide', {
@@ -310,8 +311,8 @@ variants(
     dc: 13,
     color: 0x60d8b0,
     text:
-      `For the rest of the fight, a target of your landed basic attacks ${TURN} you and is drained for 1d4 corrosive: ` +
-      'you heal for the damage dealt.',
+      `For the rest of the fight, a target of your landed basic attacks ${TURN} you and is drained for corrosive equal ` +
+      'to half the damage dealt (rounded up); you heal for it.',
   }),
   law('spiralFeast', {
     dc: 13,
@@ -431,7 +432,8 @@ variants(
     dc: 14,
     color: 0x58c8a8,
     text:
-      'For the rest of the fight, your landed basic attacks drain 1d4 corrosive (you heal for the damage dealt), ' +
+      'For the rest of the fight, your landed basic attacks drain corrosive equal to half the damage they dealt (rounded ' +
+      'up; you heal for it), ' +
       'and you and the target are tethered to each other for 2 turns (3cm).',
   }),
   law('chainHunger', {
@@ -645,7 +647,7 @@ variants(
     color: 0x90d0a0,
     text:
       `Conjure a Marrowdrinker into your hand until the fight ends. ${HELD} 130% Strength shatter. ` +
-      'On hit: drains 1d4 corrosive, and you heal for the drained damage.',
+      'On hit: drains corrosive equal to half the damage dealt (rounded up), and you heal for it.',
   }),
   law('shatteringHunger', {
     dc: 13,
@@ -728,8 +730,8 @@ variants(
     dc: 13,
     color: 0x57d6a0,
     text:
-      'For the rest of the fight, your landed basic attacks inflict Drinking Curse: 1d3 corrosive at the start of the ' +
-      'target\'s turns for 3 turns; you heal for the damage dealt.',
+      'For the rest of the fight, your landed basic attacks inflict Drinking Curse: a third of the damage they dealt ' +
+      '(rounded up) as corrosive at the start of the target\'s turns for 3 turns; you heal for it.',
   }),
   law('feedingRot', {
     dc: 13,
@@ -751,8 +753,8 @@ variants(
     dc: 15,
     color: 0x5f7d4d,
     text:
-      `For the rest of the fight, landing a basic attack on one of the ${AFFECTED} drains 2d6 corrosive (you heal for the ` +
-      'damage dealt) and strips 2 of its maximum health, up to 8 in total; it returns when the fight ends.',
+      `For the rest of the fight, landing a basic attack on one of the ${AFFECTED} drains corrosive equal to the damage ` +
+      'it dealt (you heal for it) and strips 2 of its maximum health, up to 8 in total; it returns when the fight ends.',
   }),
   law('worldFeeds', {
     dc: 15,

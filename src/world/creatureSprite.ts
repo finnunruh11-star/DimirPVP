@@ -3,6 +3,10 @@
 // without a sheet of their own wear the tinted mage.
 
 import Phaser from 'phaser';
+import { bufferTexture } from './localeRender';
+import { creatureArt } from '../visuals/creatures';
+import { PLACEHOLDER_LOOKS, placeholderSpriteFor, type PlaceholderSpriteKind } from '../visuals/creatureLooks';
+import { BOSS_ANIMS, renderStrip } from '../visuals/bosses/rig';
 import zombieAttackSheetUrl from '../Sprites/Zombie/Zombie_Default_Attack1 (1).png';
 import zombieDeathSheetUrl from '../Sprites/Zombie/Zombie_Default_Dead (1).png';
 import zombieHurtSheetUrl from '../Sprites/Zombie/Zombie_Default_Hurt (1).png';
@@ -21,7 +25,7 @@ import reaperHitSheetUrl from '../Sprites/Reaper/wraith_original_hit_sheet.png';
 import reaperDeathSheetUrl from '../Sprites/Reaper/wraith_original_death_sheet.png';
 
 /** The authored sheets, plus a bloodmoon boss's painted ones (see visuals/bosses). */
-export type CreatureSpriteKind = 'zombie' | 'skeleton' | 'wisp' | 'defender' | 'reaper' | `boss-${string}`;
+export type CreatureSpriteKind = 'zombie' | 'skeleton' | 'wisp' | 'defender' | 'reaper' | `boss-${string}` | PlaceholderSpriteKind;
 
 /** Creature frames carry more empty margin than the mage's, so they are drawn this much taller. */
 export const CREATURE_FRAME_RATIO = 4.5 / 2.8;
@@ -135,12 +139,31 @@ const DEFENDER_ANIM_SETS: SheetFrameAnimSet[] = [
 ];
 
 /** The sheet an enemy kind wears, or null for one drawn as the tinted mage. */
-export function creatureSpriteFor(enemyKind: string | null | undefined): CreatureSpriteKind | null {
+export function creatureSpriteFor(enemyKind: string | null | undefined, heads?: number, role?: string): CreatureSpriteKind | null {
   if (enemyKind === 'zombie' || enemyKind === 'acidZombie') return 'zombie';
   if (enemyKind === 'skeleton' || enemyKind === 'wisp' || enemyKind === 'defender' || enemyKind === 'reaper') {
     return enemyKind;
   }
-  return null;
+  return placeholderSpriteFor(enemyKind, heads, role);
+}
+
+export function ensureCreatureSprites(scene: Phaser.Scene, kind: CreatureSpriteKind | null): void {
+  if (!kind?.startsWith('pixel-')) return;
+  const look = PLACEHOLDER_LOOKS[kind as PlaceholderSpriteKind];
+  if (!look) return;
+  const art = creatureArt(look);
+  for (const anim of BOSS_ANIMS) {
+    const key = `enemy-${kind}-${anim}`;
+    if (!scene.textures.exists(key)) bufferTexture(scene, key, renderStrip(art, anim), art.w);
+    if (!scene.anims.exists(key)) {
+      scene.anims.create({
+        key,
+        frames: Array.from({ length: art.frames[anim] }, (_, frame) => ({ key, frame })),
+        frameRate: art.rate[anim],
+        repeat: anim === 'idle' || anim === 'walk' ? -1 : 0,
+      });
+    }
+  }
 }
 
 /** The wisp and defender sheets face right; the rest face left. */

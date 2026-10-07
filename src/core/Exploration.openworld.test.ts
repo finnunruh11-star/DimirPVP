@@ -53,10 +53,11 @@ const tests: [name: string, run: () => void][] = [
     equal(model.exitAt(inside.x, inside.y - 1)?.place, 'capitol', 'just below the Capitol gate');
   }],
 
-  ['puts neighbouring towns most of a minute apart on the road, and every gate on the mainland', () => {
+  ['puts neighbouring towns most of a minute apart on the road, behind no wall', () => {
     const model = openWorldModel();
     const land = openWorldMainland();
     for (const p of PLACES) {
+      if (regionAt(world, p.x, p.y) === 'white') continue;
       const at = openWorldCell(p);
       assert(land[at.y * model.w + at.x], `${p.name} can be walked to from the start`);
     }
@@ -72,6 +73,15 @@ const tests: [name: string, run: () => void][] = [
     }
     const seconds = cells / WALK_SPEED;
     assert(seconds > 35 && seconds < 60, `Kerusai to the Capitol takes about 45 s at full pace (${seconds.toFixed(0)} s)`);
+  }],
+
+  ['keeps every white-region cell beyond the solid wall', () => {
+    const model = openWorldModel();
+    const land = openWorldMainland();
+    for (let y = 0; y < model.h; y++) for (let x = 0; x < model.w; x++) {
+      if (regionAt(world, Math.floor(x / WORLD_SCALE), Math.floor(y / WORLD_SCALE)) !== 'white') continue;
+      assert(!land[y * model.w + x], `white ground at ${x},${y} cannot be reached`);
+    }
   }],
 
   ['walks full pace on the road and slower in rough country', () => {
@@ -91,13 +101,17 @@ const tests: [name: string, run: () => void][] = [
     assert(openWorldPace(tree.x, tree.y + 1) < 1, 'off the road is slower');
   }],
 
-  ['makes every place a gate, and says so when it is closed', () => {
+  ['makes reachable places gates, and leaves desert gates behind the wall', () => {
     const def = openWorldDef();
     const run = freshRun();
     const place = resolveLocale(run, OPEN_WORLD_ID);
     assert(place?.world && place.travel, 'the world resolves as a walkable place');
     for (const p of PLACES) {
       const exit = def.exits.find((e) => e.place === p.id);
+      if (regionAt(world, p.x, p.y) === 'white') {
+        assert(!exit, `${p.name} has no accessible gate before the wall falls`);
+        continue;
+      }
       assert(exit, `${p.name} has a gate`);
       equal(cellWorldTile(exit), { x: p.x, y: p.y }, `${p.name}'s gate stands on its tile`);
       const travel = place.travel(run, exit);
@@ -130,7 +144,7 @@ const tests: [name: string, run: () => void][] = [
       assert(towns.every((t) => Math.max(Math.abs(t.x - tile.x), Math.abs(t.y - tile.y)) > 4), `${pack.id} keeps away from towns`);
       equal(pack.zone, regionAt(world, tile.x, tile.y), `${pack.id} fights like its region`);
     }
-    assert(today.some((pack) => pack.zone === 'white'), 'the desert has its hunters');
+    assert(today.every((pack) => pack.zone !== 'white'), 'hunters stay outside the wall');
   }],
 
   ['hides caches for the whole run and hands out a find: things, never coin or experience', () => {

@@ -638,6 +638,12 @@ export interface ImbueStatus extends BaseStatus {
   charges?: number;
   /** A hungry weapon drew blood since the bearer's last turn. */
   fed?: boolean;
+  /** Lightning power it was laid with (Lightning imbues). */
+  power?: number;
+  /** Charge a capacitor holds. */
+  stored?: number;
+  /** The unit a bound weapon answers to (index into GameState.mages). */
+  boundIndex?: number;
 }
 
 /** Bound to an anchor: the bearer cannot walk further than `leash` from it. */
@@ -655,6 +661,8 @@ export interface StifleStatus extends BaseStatus {
   /** Dice the bearer takes when its action fails. */
   spec?: string;
   type?: DamageType;
+  /** Whoever stifled it heals for those dice. */
+  drink?: boolean;
 }
 
 export type Status =

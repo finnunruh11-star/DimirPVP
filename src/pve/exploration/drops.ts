@@ -9,6 +9,7 @@ import type { ItemId } from '../../core/Items';
 export interface DropRow {
   item: ItemId;
   chance: number;
+  min?: number;
   /** Up to this many extra copies when the row hits. */
   extra?: number;
 }
@@ -74,6 +75,19 @@ export const DROP_TABLES: Readonly<Record<string, readonly DropRow[]>> = {
   boar: [{ item: 'boarHide', chance: 0.55 }, { item: 'boarTusk', chance: 0.25 }],
   lion: [{ item: 'lionPelt', chance: 0.6 }, { item: 'lionFang', chance: 0.3 }],
   lioness: [{ item: 'lionPelt', chance: 0.45 }, { item: 'lionFang', chance: 0.2 }],
+  crab: [],
+  faeri: [{ item: 'ectoplasm', chance: 0.3 }],
+  crocodile: [],
+  siren: [{ item: 'ectoplasm', chance: 0.4 }],
+  'spellcaster-spirit': [{ item: 'ectoplasm', chance: 0.5 }, { item: 'manaStoneMedium', chance: 0.2 }],
+  'water-spirit': [{ item: 'ectoplasm', chance: 0.4 }],
+  'small-spider': [{ item: 'spiderLeg', chance: 1 }, { item: 'silk', chance: 1, min: 3, extra: 2 }, { item: 'fineSilk', chance: 0.15 }],
+  'huge-spider': [{ item: 'hugeSpiderLeg', chance: 1 }],
+  'gigantuan-spider': [{ item: 'gigantuanSpiderLeg', chance: 1 }],
+  'spider-egg': [],
+  hydra: [],
+  thornback: [],
+  'marsh-toad': [],
 };
 
 /**
@@ -136,7 +150,7 @@ export function rollDrops(kind: string, depth: number, rng: Dice): ItemId[] {
   const out: ItemId[] = [];
   for (const row of dropTable(kind)) {
     if (!rng.chance(Math.min(1, row.chance * luck))) continue;
-    const copies = 1 + (row.extra ? rng.die(row.extra + 1) - 1 : 0);
+    const copies = (row.min ?? 1) + (row.extra ? rng.die(row.extra + 1) - 1 : 0);
     for (let i = 0; i < copies; i++) out.push(row.item);
   }
   const family = kind.split(':')[0];

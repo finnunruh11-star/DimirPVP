@@ -94,6 +94,11 @@ import './waves/veilOrdinary';
 import './waves/mindOrdinary';
 import './waves/waterOrdinary';
 import './waves/painOrdinary';
+import './waves/shadowOrdinary';
+import './waves/lightningOrdinary';
+import './waves/pierceOrdinary';
+import './waves/drainOrdinary';
+import './waves/bindOrdinary';
 import { aimSpell } from './aimSpell';
 
 /** Convert an abstract range number (5 / 10 / 15) to pixels. */
@@ -147,8 +152,11 @@ function lightningPower(ctx: EffectContext): number {
   const natural = ctx.spellRoll ?? 1;
   const intellect = Math.max(0, ctx.caster.statInt - 1);
   const luck = Math.max(0, ctx.caster.luck - 1);
-  const power = natural + intellect + luck;
-  ctx.log(`Lightning power: ${natural} + ${intellect} INT + ${luck} Luck = ${power}.`);
+  const amplified = ctx.game.lightningAmplifier(ctx.caster);
+  const power = natural + intellect + luck + amplified;
+  ctx.log(
+    `Lightning power: ${natural} + ${intellect} INT + ${luck} Luck${amplified ? ` + ${amplified} dark` : ''} = ${power}.`
+  );
   return power;
 }
 
@@ -2681,7 +2689,7 @@ registerSpell({
   targeting: 'self',
   dc: 14,
   description:
-    'A stronger Lightning Pierce: chain up to power/3 times (rounded down) into random other allies or enemies with 5 additional range and no misfire, dealing 2d6 Fire each hit. The reach halves after every jump. The bolt always prefers a fresh body; when it has to strike the same mage twice in a row that repeat hit only deals 2d3. The caster cannot be hit. Then roll d6, dash that far, and become invisible for 6 minus the roll turns.',
+    'A stronger Lightning Pierce: chain up to power/3 times (rounded down) into random enemies with 5 additional range and no misfire, dealing 2d6 Fire each hit. The reach halves after every jump. The bolt always prefers a fresh body; when it has to strike the same mage twice in a row that repeat hit only deals 2d3. It never strikes you or your allies. Then roll d6, dash that far, and become invisible for 6 minus the roll turns.',
   visual: { preset: 'nova', color: 0xffc95c, size: 78, speed: 1.5 },
   async cast(ctx) {
     const power = lightningPower(ctx);
@@ -2692,6 +2700,7 @@ registerSpell({
       const candidates = ctx.game.mages.filter(
         (entity) =>
           entity !== ctx.caster &&
+          entity.team !== ctx.caster.team &&
           entity.alive &&
           Math.hypot(entity.x - ctx.caster.x, entity.y - ctx.caster.y) <= range
       );
@@ -5552,7 +5561,7 @@ registerSpell({
     } else {
       const mine = { x: ctx.caster.x, y: ctx.caster.y };
       const theirs = { x: foe.x, y: foe.y };
-      teleport(ctx, ctx.caster, theirs);
+      teleport(ctx, ctx.caster, theirs, foe);
       teleport(ctx, foe, mine);
     }
     applyStun(ctx, foe, { duration: 2, type: 'movement' });

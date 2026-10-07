@@ -221,6 +221,7 @@ import {
   creatureFacesRight,
   creatureSpriteFor,
   creatureTexture,
+  ensureCreatureSprites,
   preloadCreatureSprites,
   type CreatureSpriteKind,
 } from '../world/creatureSprite';
@@ -669,7 +670,7 @@ function bossSpawnPoint(unit: BossUnit, index: number): Vec2 {
 }
 
 const creatureSpriteKind = (mage: Mage): CreatureSpriteKind | null =>
-  mage.bossArt ? bossSpriteKind(mage.bossArt) : creatureSpriteFor(mage.enemyKind);
+  mage.bossArt ? bossSpriteKind(mage.bossArt) : creatureSpriteFor(mage.summonKind ?? mage.mine?.kind ?? mage.enemyKind, mage.mine?.heads, mage.mine?.role);
 
 /** Creatures that wear painted art when a roadside scene brings them. */
 const SCENE_ART: Partial<Record<string, string>> = {
@@ -1568,6 +1569,7 @@ export class GameScene extends Phaser.Scene {
       }
       this.updateWaveHud();
     };
+    this.gs.spawnMineCreature = (kind, level, at) => this.spawnMineEnemy({ kind, level }, at);
     this.gs.vfxSink = {
       diceRoll: (spec, total, rolls, label, target) =>
         this.pendingDice.push({ spec, total, rolls, label, mage: target, seq: this.vfxSeq++ }),
@@ -3694,12 +3696,16 @@ export class GameScene extends Phaser.Scene {
     const rec = this.mageAnims.get(m);
     if (!rec) return;
     const visual = mineEnemyVisual(m);
-    const key = `${visual.tint}:${visual.scale}`;
+    const kind = creatureSpriteKind(m);
+    const key = `${kind}:${visual.tint}:${visual.scale}`;
     if (rec.mineVisualKey === key) return;
     rec.mineVisualKey = key;
-    rec.sprite.setTint(visual.tint);
+    if (kind) {
+      rec.sprite.clearTint();
+      if (m.mine?.golemState === 'dormant') rec.sprite.setTint(0x999999);
+    } else rec.sprite.setTint(visual.tint);
     const srcH = rec.sprite.height || 1;
-    rec.sprite.setScale(((MAGE_RADIUS * 2.8) / srcH) * visual.scale);
+    rec.sprite.setScale(((kind ? CREATURE_SPRITE_HEIGHT : MAGE_RADIUS * 2.8) / srcH) * visual.scale);
   }
 
   /** Briefly expand each Sentinel from a role-coloured forge orb. */
@@ -5325,7 +5331,7 @@ export class GameScene extends Phaser.Scene {
       if (this.gs.current !== turnOwner) return;
     }
     // A withdrawal begun last turn completes now, before anything else can stop it.
-    if (turnOwner.fleeChannel && this.releaseFlee(turnOwner)) return;
+    if (turnOwner.fleeChannel && !turnOwner.crocodileGrip?.alive && this.releaseFlee(turnOwner)) return;
     // A creature spawned mid-combat (a wisp split) sits out its first turn, so a
     // fresh copy cannot immediately split again the moment it appears.
     if (this.gs.current.justSpawned) {
@@ -5353,6 +5359,12 @@ export class GameScene extends Phaser.Scene {
     if (this.gameEnded) return;
     if (this.gs.isOver) return this.endGame();
     if (this.swamprun && !this.gs.current.alive) return this.nextTurn();
+
+    if (this.gs.current.alive && this.gs.resolveCreatureCompulsion(this.gs.current)) {
+      if (this.gs.isOver) return this.endGame();
+      await this.nextTurn();
+      return;
+    }
 
     // A mind-bound mage is compelled to repeat its last action and forfeits
     // any choice this turn.
@@ -6444,7 +6456,7 @@ export class GameScene extends Phaser.Scene {
       }
       case 'flee': {
         const edge = fleeEdgeAt(me.pos);
-        if (!this.fleeAllowed || !edge) break;
+        if (!this.fleeAllowed || !edge || me.crocodileGrip?.alive) break;
         spend('main');
         me.fleeChannel = edge;
         this.gs.log(`${me.name} starts backing toward the ${FLEE_EDGE_LABEL[edge]} edge.`);
@@ -14361,6 +14373,7 @@ export class GameScene extends Phaser.Scene {
     // taller frames simply extend their staff-swing headroom upward.
     const footY = MAGE_RADIUS * 1.4;
     for (const m of this.gs.mages) {
+      ensureCreatureSprites(this, creatureSpriteKind(m));
       let rec = this.mageAnims.get(m);
       if (!rec) {
         const customCreature = creatureSpriteKind(m) !== null;

@@ -387,6 +387,17 @@ export function openWorldDef(): LocaleDef {
   const props: PropPlacement[] = [];
   for (const place of PLACES) dressPlace(d, place, buildings, props);
 
+  for (let ty = 0; ty < world.h; ty++) for (let tx = 0; tx < world.w; tx++) {
+    if (regionAt(world, tx, ty) !== 'white') continue;
+    let edge = false;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (tx + dx >= 0 && ty + dy >= 0 && tx + dx < world.w && ty + dy < world.h && regionAt(world, tx + dx, ty + dy) !== 'white') edge = true;
+    }
+    if (!edge) continue;
+    for (let y = ty * K; y < (ty + 1) * K; y++) for (let x = tx * K; x < (tx + 1) * K; x++) d.rows[y][x] = 'W';
+  }
+  trimStrays(d);
+
   // Palms round the oasis, clear of anything already standing there.
   const taken = new Set<number>();
   const claim = (x: number, y: number, cw: number, ch: number): void => {
@@ -403,7 +414,7 @@ export function openWorldDef(): LocaleDef {
     claim(x, y - 1, 1, 2);
   }
 
-  const exits: ExitDef[] = PLACES.map((place) => {
+  const exits: ExitDef[] = PLACES.filter((place) => regionAt(world, place.x, place.y) !== 'white').map((place) => {
     const { x, y } = gateCell(place);
     return {
       x,

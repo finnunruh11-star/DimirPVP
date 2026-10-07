@@ -368,7 +368,7 @@ export function regionAt(world: WorldMap, x: number, y: number): RegionId {
 }
 
 export function isPassable(world: WorldMap, x: number, y: number): boolean {
-  return Number.isFinite(TERRAIN[terrainAt(world, x, y)].time);
+  return regionAt(world, x, y) !== 'white' && Number.isFinite(TERRAIN[terrainAt(world, x, y)].time);
 }
 
 export function placeAt(x: number, y: number): Place | undefined {

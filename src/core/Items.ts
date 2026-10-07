@@ -135,6 +135,27 @@ export type ItemId =
   | 'conjuredPlagueSpear'
   | 'conjuredMarrowdrinker'
   | 'conjuredGravebreaker'
+  | 'conjuredArcBrand'
+  | 'conjuredTwinblades'
+  | 'conjuredGrapnel'
+  | 'conjuredSplinterJavelin'
+  | 'conjuredThornbow'
+  | 'conjuredLeechingRapier'
+  | 'conjuredBoneLongbow'
+  | 'conjuredSilencerCrossbow'
+  | 'conjuredCorkscrewLance'
+  | 'conjuredLeechingChakram'
+  | 'conjuredHookblade'
+  | 'conjuredStakeCrossbow'
+  | 'conjuredBloodhookHarpoon'
+  | 'conjuredThornwhip'
+  | 'conjuredSplinterbow'
+  | 'conjuredBonebreakerPike'
+  | 'conjuredHarvestersGlaive'
+  | 'conjuredThornspitter'
+  | 'conjuredBloodhammer'
+  | 'conjuredLeechingBuckler'
+  | 'conjuredGravedrinker'
   // ---- Mine creatures (never offered to players) ----
   | 'crudeSpear'
   | 'stoneSpear'
@@ -195,6 +216,11 @@ export type ItemId =
   | 'boarTusk'
   | 'lionPelt'
   | 'lionFang'
+  | 'spiderLeg'
+  | 'hugeSpiderLeg'
+  | 'gigantuanSpiderLeg'
+  | 'silk'
+  | 'fineSilk'
   | 'koboldScale'
   | 'demonHorn'
   | 'badCharm'
@@ -801,10 +827,10 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: g(0),
     weight: 0,
-    blurb: '130% Strength shatter. On hit: drain 1d4 corrosive (heals you). Fades after the fight.',
+    blurb: '130% Strength shatter. On hit: drain 50% of the damage dealt as corrosive (heals you). Fades after the fight.',
     fleeting: true,
     weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.3, damageType: 'shatter' },
-    onHit: [{ k: 'drain', spec: '1d4' }],
+    onHit: [{ k: 'siphon', pct: 0.5 }],
   },
   {
     id: 'conjuredGravebreaker',
@@ -869,10 +895,10 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: g(0),
     weight: 0,
-    blurb: '120% Strength shatter. On hit: drain 1d4 corrosive (heals you), then dash 2cm straight away from the target. Fades after the fight.',
+    blurb: '120% Strength shatter. On hit: drain 50% of the damage dealt as corrosive (heals you), then dash 2cm straight away from the target. Fades after the fight.',
     fleeting: true,
     weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.2, damageType: 'shatter' },
-    onHit: [{ k: 'drain', spec: '1d4' }, { k: 'dashAway', px: 2 * U }],
+    onHit: [{ k: 'siphon', pct: 0.5 }, { k: 'dashAway', px: 2 * U }],
   },
   {
     id: 'conjuredGlassLongbow',
@@ -906,6 +932,353 @@ export const ITEM_DEFS: ItemDef[] = [
     fleeting: true,
     weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.2, damageType: 'shatter' },
     onHit: [{ k: 'stifle', chance: 0.3 }],
+  },
+  // ---- Conjured for one fight by the Lightning class spells (Objects) -------
+  {
+    id: 'conjuredArcBrand',
+    name: 'Arc Brand',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb:
+      'Dex heat. On hit, roll 1d6. 1: you take 1d6 heat. 2-5: +1 Fire, and lightning arcs to the nearest other unit within 3cm of the target (friend or foe, never you) for 1d6 heat. 6: +2 Fire, the arc, and you dash 2cm away. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'dex', damageType: 'heat' },
+    onHit: [{
+      k: 'gamble',
+      low: [{ k: 'self', then: [{ k: 'damage', spec: '1d6', type: 'heat' }] }],
+      mid: [{ k: 'fire', stacks: 1 }, { k: 'arc', radius: 3 * U, hits: [{ spec: '1d6', type: 'heat' }] }],
+      high: [
+        { k: 'fire', stacks: 2 },
+        { k: 'arc', radius: 3 * U, hits: [{ spec: '1d6', type: 'heat' }] },
+        { k: 'dashAway', px: 2 * U },
+      ],
+    }],
+  },
+  // ---- Conjured for one fight by the Pierce class spells (Objects) ---------
+  {
+    id: 'conjuredTwinblades',
+    name: 'Twinblades',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Dex pierce, strikes twice. On hit: you slip a quarter circle around the target. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'dex', damageType: 'pierce', hits: 2 },
+    onHit: [{ k: 'flank' }],
+  },
+  {
+    id: 'conjuredGrapnel',
+    name: 'Grapnel',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Dex pierce, range 8cm. On hit: the target is rooted for 2 turns and you dash to its side. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: 8 * U, kind: 'dex', damageType: 'pierce' },
+    onHit: [{ k: 'root', turns: 2 }, { k: 'closeIn' }],
+  },
+  {
+    id: 'conjuredSplinterJavelin',
+    name: 'Splinter Javelin',
+    slot: 'utility',
+    set: 'conjured',
+    rarity: 'consumeable',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Bonus action: throw within 10cm for 1d6 pierce; every other enemy within 2cm of the target takes 1d4 shatter. Fades after the fight.',
+    fleeting: true,
+    throwable: {
+      rollSpec: '1d6',
+      rangePx: 10 * U,
+      onHit: [{ k: 'shrapnel', radius: 2 * U, hits: [{ spec: '1d4', type: 'shatter' }], foes: true }],
+    },
+  },
+  {
+    id: 'conjuredThornbow',
+    name: 'Thornbow',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    weaponFamily: 'bow',
+    blurb: 'Dex pierce, range 12cm, needs no arrows. On hit: bleeding, 1d4 pierce for 3 turns; each pierce hit on it adds a turn, up to 4. Fades after the fight.',
+    fleeting: true,
+    weapon: {
+      rangePx: 12 * U,
+      kind: 'dex',
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 12 * U, maxRange: 12 * U, farChance: 1 },
+    },
+    onHit: [{ k: 'dot', name: 'Bleeding', spec: '1d4', turns: 3, type: 'pierce', barbed: true }],
+  },
+  {
+    id: 'conjuredLeechingRapier',
+    name: 'Leeching Rapier',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Dex attack +2, pierce. On hit: drain 50% of the damage dealt as corrosive (heals you), then dash up to 2cm. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'dex', dexBonus: 2, damageType: 'pierce', dashAfterHitUnits: 2 },
+    onHit: [{ k: 'siphon', pct: 0.5 }],
+  },
+  {
+    id: 'conjuredBoneLongbow',
+    name: 'Bone Longbow',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    weaponFamily: 'bow',
+    blurb: 'Dex attack +2, pierce, range 16cm, needs no arrows. 100% hit to 12cm, 75% to 16cm. On hit against affected units: +2d6 pierce, no healing for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: {
+      rangePx: 16 * U,
+      kind: 'dex',
+      dexBonus: 2,
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 12 * U, maxRange: 16 * U, farChance: 0.75 },
+    },
+    onHit: [{ k: 'affected', then: [{ k: 'damage', spec: '2d6', type: 'pierce' }, { k: 'noHeal', turns: 2 }] }],
+  },
+  {
+    id: 'conjuredSilencerCrossbow',
+    name: 'Silencer Crossbow',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Dex pierce, range 12cm, needs no bolts. On hit: rooted for 2 turns, 34% chance that its next action other than moving fails. Fades after the fight.',
+    fleeting: true,
+    weapon: {
+      rangePx: 12 * U,
+      kind: 'dex',
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 12 * U, maxRange: 12 * U, farChance: 1 },
+    },
+    onHit: [{ k: 'root', turns: 2 }, { k: 'stifle', chance: 0.34 }],
+  },
+  {
+    id: 'conjuredCorkscrewLance',
+    name: 'Corkscrew Lance',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: '140% Strength pierce, reach 3cm. On hit: the target is turned a quarter circle around you; stopped by a wall or the field edge: +2d6 shatter. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: 3 * U, kind: 'strength', multiplier: 1.4, damageType: 'pierce' },
+    onHit: [{ k: 'orbit', slam: { spec: '2d6', type: 'shatter' } }],
+  },
+  {
+    id: 'conjuredLeechingChakram',
+    name: 'Leeching Chakram',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Dex pierce, range 8cm. On hit: drain 50% of the damage dealt as corrosive (heals you); the target is turned a quarter circle around you. Fades after the fight.',
+    fleeting: true,
+    weapon: {
+      rangePx: 8 * U,
+      kind: 'dex',
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 8 * U, maxRange: 8 * U, farChance: 1 },
+    },
+    onHit: [{ k: 'siphon', pct: 0.5 }, { k: 'orbit' }],
+  },
+  {
+    id: 'conjuredHookblade',
+    name: 'Hookblade',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: '120% Strength pierce. On hit: the target is turned a quarter circle around you (stopped by a wall or the field edge: +1d6 pierce) and takes 1d4 pierce at the start of its turns for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.2, damageType: 'pierce' },
+    onHit: [
+      { k: 'orbit', slam: { spec: '1d6', type: 'pierce' } },
+      { k: 'dot', name: 'Hook Wound', spec: '1d4', turns: 2, type: 'pierce' },
+    ],
+  },
+  {
+    id: 'conjuredStakeCrossbow',
+    name: 'Stake Crossbow',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Dex pierce, range 10cm, needs no bolts. On hit: rooted for 2 turns; if it already was, +1d6 shatter instead. Fades after the fight.',
+    fleeting: true,
+    weapon: {
+      rangePx: 10 * U,
+      kind: 'dex',
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 10 * U, maxRange: 10 * U, farChance: 1 },
+    },
+    onHit: [{ k: 'ifRooted', then: [{ k: 'damage', spec: '1d6', type: 'shatter' }], else: [{ k: 'root', turns: 2 }] }],
+  },
+  {
+    id: 'conjuredBloodhookHarpoon',
+    name: 'Bloodhook Harpoon',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Dex pierce, range 8cm. On hit: drain 50% of the damage dealt as corrosive (heals you), and the target is rooted for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: 8 * U, kind: 'dex', damageType: 'pierce' },
+    onHit: [{ k: 'siphon', pct: 0.5 }, { k: 'root', turns: 2 }],
+  },
+  {
+    id: 'conjuredThornwhip',
+    name: 'Thornwhip',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: '110% Strength pierce, reach 4cm. On hit: rooted for 2 turns; if it already was, thorns instead: 1d4 pierce for 3 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: 4 * U, kind: 'strength', multiplier: 1.1, damageType: 'pierce' },
+    onHit: [{
+      k: 'ifRooted',
+      then: [{ k: 'dot', name: 'Thorns', spec: '1d4', turns: 3, type: 'pierce' }],
+      else: [{ k: 'root', turns: 2 }],
+    }],
+  },
+  {
+    id: 'conjuredSplinterbow',
+    name: 'Splinterbow',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    weaponFamily: 'bow',
+    blurb: 'Dex pierce, range 14cm, needs no arrows. On hit: splinters, 1d3 shatter for 3 turns, and every other unit within 1.5cm of the target, yours included, takes 1d3 shatter. Fades after the fight.',
+    fleeting: true,
+    weapon: {
+      rangePx: 14 * U,
+      kind: 'dex',
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 14 * U, maxRange: 14 * U, farChance: 1 },
+    },
+    onHit: [
+      { k: 'dot', name: 'Splinters', spec: '1d3', turns: 3, type: 'shatter' },
+      { k: 'shrapnel', radius: 1.5 * U, hits: [{ spec: '1d3', type: 'shatter' }] },
+    ],
+  },
+  {
+    id: 'conjuredBonebreakerPike',
+    name: 'Bonebreaker Pike',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: '150% Strength pierce, reach 3cm. On hit against affected units: +2d6 shatter, stunned for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: 3 * U, kind: 'strength', multiplier: 1.5, damageType: 'pierce' },
+    onHit: [{ k: 'affected', then: [{ k: 'damage', spec: '2d6', type: 'shatter' }, { k: 'stun', turns: 2 }] }],
+  },
+  {
+    id: 'conjuredHarvestersGlaive',
+    name: "Harvester's Glaive",
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: '140% Strength pierce, reach 3cm. On hit: drain 50% of the damage dealt as corrosive (heals you); against affected units drain 100% more, no healing for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: 3 * U, kind: 'strength', multiplier: 1.4, damageType: 'pierce' },
+    onHit: [{ k: 'siphon', pct: 0.5 }, { k: 'affected', then: [{ k: 'siphon', pct: 1 }, { k: 'noHeal', turns: 2 }] }],
+  },
+  {
+    id: 'conjuredThornspitter',
+    name: 'Thornspitter',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Dex attack +2, pierce, range 12cm, needs no bolts. On hit: bleeding, 1d4 pierce for 3 turns; on affected units every damage over time lasts 2 turns longer. Fades after the fight.',
+    fleeting: true,
+    weapon: {
+      rangePx: 12 * U,
+      kind: 'dex',
+      dexBonus: 2,
+      damageType: 'pierce',
+      rangeAccuracy: { autoWithin: 12 * U, maxRange: 12 * U, farChance: 1 },
+    },
+    onHit: [
+      { k: 'dot', name: 'Bleeding', spec: '1d4', turns: 3, type: 'pierce' },
+      { k: 'affected', then: [{ k: 'deepen', turns: 2 }] },
+    ],
+  },
+  // ---- Conjured for one fight by the Drain class spells (Objects) ----------
+  {
+    id: 'conjuredBloodhammer',
+    name: 'Bloodhammer',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    weaponFamily: 'hammer',
+    blurb: '120% Strength shatter. On hit: drain 50% of the damage dealt as corrosive (heals you), +1 damage taken for 2 turns. Fades after the fight.',
+    fleeting: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.2, damageType: 'shatter' },
+    onHit: [{ k: 'siphon', pct: 0.5 }, { k: 'pitted', amount: 1, turns: 2 }],
+  },
+  {
+    id: 'conjuredLeechingBuckler',
+    name: 'Leeching Buckler',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Shield: 20% block, +1 armour. Attackers who hit you are rooted for 2 turns and drained for 50% of the damage they dealt you (heals you). Fades after the fight.',
+    fleeting: true,
+    shield: { blockPct: 0.2, armorFlat: 1, bashMult: 0.6 },
+    onStruck: [{ k: 'root', turns: 2 }, { k: 'siphon', pct: 0.5 }],
+  },
+  {
+    id: 'conjuredGravedrinker',
+    name: 'Gravedrinker',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    blurb: 'Two-handed, 160% Strength shatter. On hit against units Desecrate harms: drain 100% of the damage dealt as corrosive (heals you), and the ground around them is fouled for 2 turns (1d6 corrosive, no healing; you heal for it). Fades after the fight.',
+    fleeting: true,
+    twoHanded: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.6, damageType: 'shatter' },
+    onHit: [{
+      k: 'affected',
+      then: [{ k: 'siphon', pct: 1 }, { k: 'foul', radius: 2 * U, turns: 2, spec: '1d6', drink: true }],
+    }],
   },
   // ---- Legendary ----------------------------------------------------------
   {
@@ -2202,6 +2575,11 @@ export const ITEM_DEFS: ItemDef[] = [
       ['boarTusk', 'Boar Tusk', 6, 0.4, 'Pulled from a boar.'],
       ['lionPelt', 'Lion Pelt', 8, 1.2, 'Skinned from a lion.'],
       ['lionFang', 'Lion Fang', 7, 0.2, 'Pulled from a lion.'],
+      ['spiderLeg', 'Spider Leg', 2, 0.2, 'Taken from a small spider.'],
+      ['hugeSpiderLeg', 'Huge Spider Leg', 9, 0.8, 'Taken from a huge spider.'],
+      ['gigantuanSpiderLeg', 'Gigantuan Spider Leg', 25, 2, 'Taken from a gigantuan spider.'],
+      ['silk', 'Silk', 3, 0.1, 'Spun by a small spider.'],
+      ['fineSilk', 'Fine Silk', 10, 0.1, 'Rare spider thread.'],
       ['koboldScale', 'Kobold Scale', 2, 0.3, 'Salvaged from a kobold.'],
       ['demonHorn', 'Soldier Demon Horn', 20, 1, 'Broken from a soldier demon.'],
       ['badCharm', 'Bad Charm', 15, 0.1, 'Dropped by an oni. It means ill.'],

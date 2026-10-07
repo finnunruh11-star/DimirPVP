@@ -67,7 +67,7 @@ variants(
     dc: 11,
     color: DARK_WATER,
     text:
-      'Its grip deals 1d4 water and drags the target 2cm toward it. Against a target standing in a shadow it also ' +
+      'It is immune to shadow. Its grip deals 1d4 water and drags the target 2cm toward it. Against a target standing in a shadow it also ' +
       'deals 1d4 shadow and roots it for 2 turns. When it dies, a shadow opens where it fell.',
   }),
   imbue('blackwaterHook', {
@@ -139,9 +139,9 @@ variants(
     lightning: true,
     color: STORM,
     text:
-      'It cannot attack. At the start of your turns, lightning leaps from it to the nearest unit within half the ' +
-      'Lightning power in cm (at least 2cm), enemies first but never you: 1d6 heat plus 1 per 6 Lightning power, and ' +
-      'the struck unit is thrown 2cm away from it.',
+      'It cannot attack. At the start of your turns, lightning leaps from it to the nearest enemy within half the ' +
+      'Lightning power in cm (at least 2cm): 1d6 heat plus 1 per 6 Lightning power, and the struck enemy is thrown ' +
+      '2cm away from it.',
   }),
   imbue('conductorsTrident', {
     dc: 12,
@@ -149,15 +149,15 @@ variants(
     uses: usesPer(5),
     text:
       'Your next landed basic attacks, 1 per 5 Lightning power (at least 1), push the target 2cm away, then lightning ' +
-      'arcs from it to the nearest other unit within 3cm, friend or foe but never you: 1d6 heat.',
+      'arcs from it to the nearest other enemy within 3cm: 1d6 heat.',
   }),
   law('conductiveSea', {
     dc: 13,
     lightning: true,
     color: STORM,
     text:
-      'every water hit sends lightning from its victim to the nearest other unit within a third of the Lightning ' +
-      'power in cm (at least 2cm), friend or foe: 1d6 heat plus 1 per 6 Lightning power.',
+      'every water hit sends lightning from its victim to the nearest other unit of its own side within a third of ' +
+      'the Lightning power in cm (at least 2cm): 1d6 heat plus 1 per 6 Lightning power.',
   })
 );
 
@@ -194,7 +194,7 @@ variants(
     dc: 13,
     color: DEEP,
     text:
-      'It cannot attack. A shadow opens under it as it rises. At the start of your turns, every enemy within 6cm of ' +
+      'It cannot attack and is immune to shadow. A shadow opens under it as it rises. At the start of your turns, every enemy within 6cm of ' +
       'it that stands in a shadow forgets one random word until the end of its next turn.',
     after: (ctx, unit) => placeShadow(ctx, unit.pos),
   }),
@@ -293,8 +293,8 @@ variants(
     lightning: true,
     color: STORM,
     text:
-      'every water hit gives its victim 1 Mindconduct stack and arcs from it to the nearest other unit within a third ' +
-      `of the Lightning power in cm (at least 2cm), friend or foe: that unit ${BOLT} 1d3 sanity plus 1 per 6 ` +
+      'every water hit gives its victim 1 Mindconduct stack and arcs from it to the nearest other unit of its own ' +
+      `side within a third of the Lightning power in cm (at least 2cm): that unit ${BOLT} 1d3 sanity plus 1 per 6 ` +
       `Lightning power, ${SCALED}.`,
   })
 );
@@ -326,7 +326,7 @@ variants(
     dc: 13,
     color: DARK_WATER,
     text:
-      'Its bite deals 1d6 sanity. At the start of your turns, every unit within 4cm of it but you, allies included, is ' +
+      'It is immune to shadow. Its bite deals 1d6 sanity. At the start of your turns, every unit within 4cm of it but you, allies included, is ' +
       'drawn 2cm toward it and takes 1d4 sanity. When it dies, every unit within 3cm of it, you included, takes 2d4 ' +
       'sanity.',
   }),

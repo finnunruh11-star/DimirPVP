@@ -249,7 +249,7 @@ function movable(ctx: EffectContext, m: Mage): boolean {
 export function relocate(ctx: EffectContext, m: Mage, to: Vec2): boolean {
   if (!movable(ctx, m)) return false;
   const from = { ...m.pos };
-  const at = clampToField(to);
+  const at = ctx.game.nearestFreePosition(m, clampToField(to));
   m.x = at.x;
   m.y = at.y;
   settle(ctx, m);
@@ -447,7 +447,7 @@ export function fling(
   for (const m of flung) {
     if (!movable(ctx, m)) continue;
     const from = { ...m.pos };
-    const to = mirror(from);
+    const to = game.nearestFreePosition(m, mirror(from));
     m.x = to.x;
     m.y = to.y;
     moved.push(m);

@@ -126,8 +126,8 @@ variants(
     dc: 13,
     color: 0x5f9f8a,
     text:
-      'The next 3 times a unit lands a basic attack on you, it takes 1d4 corrosive at the start of its turns for 3 turns ' +
-      '(you heal for that damage), and you gain a half veil until your next turn.',
+      'The next 3 times a unit lands a basic attack on you, it takes a third of the damage it dealt you (rounded up) as ' +
+      'corrosive at the start of its turns for 3 turns (you heal for that damage), and you gain a half veil until your next turn.',
   }),
   law('unseenHunger', {
     dc: 14,
@@ -240,8 +240,8 @@ variants(
     dc: 13,
     color: 0x70c8b0,
     text:
-      'For the rest of the fight, your landed basic attacks drain 1d3 corrosive (you heal for the damage dealt), then ' +
-      'you dash 2cm straight away from the target.',
+      'For the rest of the fight, your landed basic attacks drain corrosive equal to half the damage they dealt (rounded ' +
+      'up; you heal for it), then you dash 2cm straight away from the target.',
   }),
   law('hiddenFangs', {
     dc: 13,
@@ -264,7 +264,8 @@ variants(
     color: 0x80b098,
     text:
       `Conjure a Siphoning Maul into your hand until the fight ends. ${HELD} 120% Strength shatter. ` +
-      'On hit: drain 1d4 corrosive (you heal for the damage dealt), then dash 2cm straight away from the target.',
+      'On hit: drain corrosive equal to half the damage dealt (rounded up; you heal for it), then dash 2cm straight away ' +
+      'from the target.',
   }),
   law('shatteredThirst', {
     dc: 13,
@@ -309,8 +310,8 @@ variants(
     ally: true,
     color: 0x6ab8c0,
     text:
-      'For the rest of the fight, a unit landing a basic attack on the bearer is rooted for 2 turns and drained for 1d3 ' +
-      'corrosive; the bearer heals for the damage dealt.',
+      'For the rest of the fight, a unit landing a basic attack on the bearer is rooted for 2 turns and drained for ' +
+      'corrosive equal to half the damage it dealt (rounded up); the bearer heals for it.',
   }),
   law('chokingMist', {
     dc: 13,

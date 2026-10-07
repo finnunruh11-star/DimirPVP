@@ -359,6 +359,8 @@ export interface DealDamageOptions {
   triggersFaraday?: boolean;
   /** Already shaped by the staff its spell was cast through. */
   staffShaped?: boolean;
+  /** A damage-over-time tick rather than a hit (Thundering Mantle only rolls on hits). */
+  dot?: boolean;
 }
 
 export function dealDamage(
@@ -375,7 +377,7 @@ export function dealDamage(
   // Hexcraft laws reshape and answer hits; a law's own hits never set off another.
   if (game.hexLawDepth > 0 || game.hexcraftGlobals.length === 0) {
     const dealt = dealOneHit(ctx, target, damage, opts);
-    game.imbueOnDamaged(target, dealt);
+    game.imbueOnDamaged(target, dealt, !!opts.dot);
     return dealt;
   }
   const prep = game.lawBeforeHit(ctx, target, damage, opts, game.isVeiled(target));
@@ -386,7 +388,7 @@ export function dealDamage(
   game.hexLawDepth += 1;
   try {
     game.lawAfterHit(ctx, victim, prep.damage.type, main, victimVeiled);
-    game.imbueOnDamaged(victim, main);
+    game.imbueOnDamaged(victim, main, !!opts.dot);
     return main;
   } finally {
     game.hexLawDepth -= 1;
@@ -512,6 +514,7 @@ function dealOneHit(
     amount += globalHexcraftBonus;
     ctx.log(`Mind Shadow deepens the attack (+${globalHexcraftBonus}).`);
   }
+  if (damage.amount > 0) amount += ctx.game.hitAmplifier(ctx.caster, target, damage.type);
   if (ctx.caster.damageScale !== 1) amount *= ctx.caster.damageScale;
 
   amount = Math.max(0, Math.round(amount));
@@ -609,7 +612,9 @@ function dealOneHit(
   if (damage.type === 'sanity') {
     target.sanity = Math.max(floorVital, target.sanity - amount);
   } else {
+    const beforeHp = target.hp;
     target.hp = Math.max(floorVital, target.hp - amount);
+    if (amount > 0) ctx.game.resolveHydraWound(target, beforeHp, damage.type);
   }
   ctx.log(`${target.name} takes ${amount} ${damage.type} damage.`);
   if (amount > 0) {
@@ -956,9 +961,10 @@ export function applyStun(
     return;
   }
   if (opts.type === 'movement' && ctx.game.lawBlocksRoot(target)) {
-    ctx.log(`${target.name} is veiled and cannot be rooted.`);
+    ctx.log(`${target.name} cannot be rooted.`);
     return;
   }
+  const wasRooted = opts.type === 'movement' && target.isStunned('movement');
   const names: Record<StunType, string> = {
     main: 'Disarmed',
     movement: 'Rooted',
@@ -979,7 +985,7 @@ export function applyStun(
     !!opts.extend
   );
   ctx.log(`${target.name} is ${names[opts.type].toLowerCase()} (${duration} cycles).`);
-  if (opts.type === 'movement') ctx.game.lawOnRoot(ctx, target);
+  if (opts.type === 'movement') ctx.game.lawOnRoot(ctx, target, wasRooted);
   if (!opts.veilBindLinked && opts.type !== 'main' && ctx.game.isInVeilBindZone(target)) {
     applyInvisibility(ctx, target, {
       duration,
@@ -1032,9 +1038,10 @@ export function dash(
   };
   // A reality-break barrier stops a dash at its edge (the dash/spell ends).
   const bc = ctx.game.clampToBarriers(from, fieldDest);
-  mover.x = bc.dest.x;
-  mover.y = bc.dest.y;
-  ctx.game.notifyMageRelocation(mover, from, bc.dest, true);
+  const landing = ctx.game.nearestFreePosition(mover, ctx.game.clampToMages(mover, from, bc.dest), from, true);
+  mover.x = landing.x;
+  mover.y = landing.y;
+  ctx.game.notifyMageRelocation(mover, from, landing, true);
   ctx.vfx?.dash?.(mover, from);
   ctx.game.triggerNeedlepointDomains(mover);
   if (bc.blocked) {
@@ -1042,6 +1049,7 @@ export function dash(
   } else {
     ctx.log(`${mover.name} dashes ${Math.round(opts.distance)} away.`);
   }
+  ctx.game.lawDashed(mover);
 }
 
 /**
@@ -1073,8 +1081,12 @@ export function blinkstep(
   }
   const from = { x: mover.x, y: mover.y };
   // Clamp only to the field edge — barriers and crushing fields never stop a blink.
-  mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x));
-  mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y));
+  const landing = ctx.game.nearestFreePosition(mover, {
+    x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x)),
+    y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y)),
+  });
+  mover.x = landing.x;
+  mover.y = landing.y;
   ctx.game.notifyMageRelocation(mover, from, mover.pos, false);
   ctx.vfx?.blink?.(from, mover.pos, BLINK_ARCANE);
   ctx.game.triggerNeedlepointDomains(mover);
@@ -1086,14 +1098,18 @@ export function blinkstep(
  * not visibly slide across the field, they simply are somewhere new on the next
  * redraw. Clamped to the playfield edge. Used for shadow-to-shadow teleports.
  */
-export function teleport(ctx: EffectContext, mover: Mage, at: Vec2): void {
+export function teleport(ctx: EffectContext, mover: Mage, at: Vec2, vacating?: Mage): void {
   if (ctx.game.isImmovable(mover)) {
     ctx.log(`${mover.name} is fixed in place.`);
     return;
   }
   const from = mover.pos;
-  mover.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x));
-  mover.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y));
+  const landing = ctx.game.nearestFreePosition(mover, {
+    x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, at.x)),
+    y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, at.y)),
+  }, from, false, vacating);
+  mover.x = landing.x;
+  mover.y = landing.y;
   ctx.game.notifyMageRelocation(mover, from, mover.pos, false);
   ctx.vfx?.blink?.(from, mover.pos, BLINK_SHADOW);
   ctx.game.triggerNeedlepointDomains(mover);
@@ -1296,6 +1312,8 @@ export function applyStackingDot(
     decayPerTick?: boolean;
     /** Spread the DoT to the owner's enemies within this radius (px) each tick. */
     infectRadius?: number;
+    /** Index (in game.mages) of the mage healed for this DoT's damage each tick. */
+    lifestealToIndex?: number;
   }
 ): void {
   if (target.isDebuffImmune()) {
@@ -1330,6 +1348,7 @@ export function applyStackingDot(
     decayPerTick: opts.decayPerTick,
     infectRadius: opts.infectRadius,
     sourceTeam: ctx.caster.team,
+    lifestealToIndex: opts.lifestealToIndex,
   });
   ctx.game.syncCurseCorrodeSlow(target);
   ctx.log(`${target.name} is afflicted with ${opts.name}.`);

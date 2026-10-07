@@ -44,6 +44,11 @@ import './waves/corrodeClass';
 import './waves/veilClass';
 import './waves/mindClass';
 import './waves/waterClass';
+import './waves/shadowClass';
+import './waves/lightningClass';
+import './waves/pierceClass';
+import './waves/drainClass';
+import './waves/bindClass';
 
 /** Abstract range number (5 / 10 / 15) to pixels. */
 const R = (units: number): number => units * RANGE_UNIT;
@@ -99,7 +104,11 @@ function summonVigor(ctx: EffectContext): number {
 
 function classLightningPower(ctx: EffectContext): number {
   const natural = ctx.spellRoll ?? 1;
-  const power = natural + Math.max(0, ctx.caster.statInt - 1) + Math.max(0, ctx.caster.luck - 1);
+  const power =
+    natural +
+    Math.max(0, ctx.caster.statInt - 1) +
+    Math.max(0, ctx.caster.luck - 1) +
+    ctx.game.lightningAmplifier(ctx.caster);
   ctx.log(`Lightning power: ${power}.`);
   return power;
 }

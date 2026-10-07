@@ -1,4 +1,4 @@
-import { applyDebuff, applyDot, applyInvisibility, applyStun, areaDamage, dealDamage, heal, teleport } from '../effects/effects';
+import { applyDebuff, applyDot, applyInvisibility, applyStun, areaDamage, dash, dealDamage, heal, teleport } from '../effects/effects';
 import { applyEnemyTraits } from '../pve/swamprun';
 import { RANGE_UNIT } from '../config/constants';
 import { FIELD, MELEE_RANGE } from '../config/constants';
@@ -11,12 +11,15 @@ import { Mage } from './Mage';
 import { WORD_ORDER, type WordId } from './Words';
 import { WORD_COLOR } from './Colors';
 import { dist } from './utils';
+import { getItem } from './Items';
 import { getSpell, rackCoverage, setActiveSpellSets, spellForSelection } from '../spells/registry';
 import {
   addImbue,
+  applyStifle,
   castRobe,
   imbueAfterStrike,
   imbueDeflects,
+  imbueTurnStart,
   lawRoundEnd,
   lawTurnEnd,
   MINIONS,
@@ -756,7 +759,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     foe.maxHp = 400;
     foe.hp = 400;
     const game = new GameState([caster, foe], 5);
-    const spell = getSpell(['bind', 'shatter', 'pierce']);
+    const spell = getSpell(['bind', 'shatter', 'pierce'], null);
     assert(spell, 'Expected Bind Shatter Pierce to be registered.');
 
     void spell.cast(game.effectContext(caster, foe, null));
@@ -780,7 +783,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     foe.maxHp = 400;
     foe.hp = 400;
     const game = new GameState([caster, foe], 13);
-    const spell = getSpell(['bind', 'curse', 'pierce']);
+    const spell = getSpell(['bind', 'curse', 'pierce'], null);
     assert(spell, 'Expected Bind Curse Pierce to be registered.');
 
     void spell.cast(game.effectContext(caster, foe, null));
@@ -2076,7 +2079,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
 
     const walker = creature('Walker', 400);
     const thorns = new GameState([caster, walker], 181);
-    void getSpell(['desecrate', 'curse', 'pierce'])!.cast(thorns.effectContext(caster, null, null));
+    void getSpell(['desecrate', 'curse', 'pierce'], null)!.cast(thorns.effectContext(caster, null, null));
     thorns.currentIndex = 1;
     thorns.beginTurn();
     walker.x += 5 * RANGE_UNIT;
@@ -2136,7 +2139,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
 
     const rival = godUnit('Rival', 2, 600);
     const spire = new GameState([caster, rival], 227);
-    void getSpell(['desecrate', 'shatter', 'pierce'])!.cast(spire.effectContext(caster, null, { x: 600, y: 270 }));
+    void getSpell(['desecrate', 'shatter', 'pierce'], null)!.cast(spire.effectContext(caster, null, { x: 600, y: 270 }));
     assert(rival.hp <= 297, 'The spire strikes a drafted enemy');
     equal(rival.isStunned('full'), true, 'and stuns it');
     equal(spire.desecrationFields.length, 1, 'and fouls the ground');
@@ -2262,7 +2265,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(legal, 192, 'Fourteen words make 192 legal combinations of three');
   }],
 
-  ['gives every Corrode, Veil, Mind and Water combo an ordinary spell and three class variants, and a modifier undoes the class', async () => {
+  ['gives every Corrode, Veil, Mind, Water, Shadow, Lightning, Pierce, Drain and Bind combo an ordinary spell and three class variants, and a modifier undoes the class', async () => {
     await import('../spells/classSpells');
     const wave = (lead: WordId, rest: WordId[], skip: (a: WordId, b: WordId) => boolean): WordId[][] => {
       const combos: WordId[][] = rest.map((word): WordId[] => [lead, word]);
@@ -2280,11 +2283,30 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const mind = wave('mind', ['shadow', 'reality', 'fire', 'lightning'], (a, b) => !(a === 'fire' && b === 'lightning'));
     const waterPairs = new Set(['mind+shadow', 'mind+reality', 'mind+fire', 'mind+lightning', 'mind+pain', 'shadow+pain', 'fire+lightning']);
     const water = wave('water', ['mind', 'shadow', 'reality', 'fire', 'lightning', 'pain'], (a, b) => !waterPairs.has(`${a}+${b}`));
+    const shadowPairs = new Set(['lightning+fire', 'lightning+pain', 'fire+pain', 'pain+death', 'pain+mind']);
+    const shadow = wave('shadow', ['lightning', 'fire', 'pain', 'death', 'mind'], (a, b) => !shadowPairs.has(`${a}+${b}`));
+    const lightning = wave('lightning', ['fire', 'pain'], () => false);
+    const pierce = wave(
+      'pierce',
+      ['twist', 'bind', 'shatter', 'drain', 'curse', 'desecrate'],
+      (a, b) => b === 'desecrate' && (a === 'twist' || a === 'bind')
+    );
+    const drain = wave(
+      'drain',
+      ['twist', 'bind', 'shatter', 'curse', 'desecrate'],
+      (a, b) => b === 'desecrate' && (a === 'twist' || a === 'bind')
+    );
     equal(corrode.length, 33, 'The Corrode wave covers 33 combinations');
     equal(veil.length, 21, 'The Veil wave covers 21 more');
     equal(mind.length, 5, 'The Mind wave covers 5 more (Reality joins only blue; red, black and blue never meet)');
     equal(water.length, 13, 'The Water wave covers 13 more');
-    for (const combo of [...corrode, ...veil, ...mind, ...water]) {
+    equal(shadow.length, 10, 'The Shadow wave covers 10 (Mind Shadow came with Mind, the Water ones with Water)');
+    equal(lightning.length, 3, 'The Lightning wave covers the last 3 (Mind, Water and Shadow brought the rest)');
+    equal(pierce.length, 19, 'The Pierce wave covers 19 (Corrode and Veil brought theirs; Desecrate joins neither Bind nor Twist)');
+    equal(drain.length, 13, 'The Drain wave covers 13 (Corrode, Veil and Pierce brought theirs)');
+    const bind = wave('bind', ['twist', 'shatter', 'curse'], () => false);
+    equal(bind.length, 6, 'The Bind wave covers the last 6 (Desecrate never joins blue)');
+    for (const combo of [...corrode, ...veil, ...mind, ...water, ...shadow, ...lightning, ...pierce, ...drain, ...bind]) {
       const label = combo.join(' ');
       const ordinary = getSpell(combo, null);
       assert(ordinary && !ordinary.id.includes('@'), `${label} has an ordinary spell`);
@@ -3133,6 +3155,1552 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     getSpell(['water', 'fire', 'lightning'], null)!.cast(heath.effectContext(stormer, null, { x: 700, y: 270 }));
     assert(underStorm.hp < 300 && stacks(underStorm, 'fire') === 1, 'Storm Call strikes and kindles whatever stands under it');
     assert(nearStorm.x > 700 + R(4) && nearStorm.hp === 300, 'and its thunderclap throws back whatever stands near');
+  }],
+
+  ['amplifies: Shadow trinkets, auras and laws make the other word stronger, now and then more so in the dark', async () => {
+    await import('../spells/classSpells');
+    const R = (cm: number): number => cm * RANGE_UNIT;
+    const stacks = (m: Mage, kind: string): number =>
+      (m.statuses.find((s) => s.kind === kind) as { stacks: number } | undefined)?.stacks ?? 0;
+    const forgot = (m: Mage): number =>
+      (m.statuses.find((s) => s.kind === 'forget') as { forgotten: string[] } | undefined)?.forgotten.length ?? 0;
+    const summon = (game: GameState, owner: Mage, words: WordId[], at: { x: number; y: number }): Mage => {
+      void getSpell(words, 'life')!.cast(game.effectContext(owner, null, at));
+      const raised = game.summonsOf(owner);
+      return raised[raised.length - 1];
+    };
+    const lay = (game: GameState, caster: Mage, words: WordId[]): void => {
+      void getSpell(words, 'hexcraft')!.cast(game.effectContext(caster, caster, null));
+    };
+    const wear = (game: GameState, bearer: Mage, words: WordId[]): void => {
+      void getSpell(words, 'objects')!.cast(game.effectContext(bearer, bearer, null));
+    };
+
+    const kinds: [WordId[], string][] = [
+      [['lightning', 'shadow'], 'umbral-coil'],
+      [['fire', 'shadow'], 'cinder-shade'],
+      [['pain', 'shadow'], 'wailing-shade'],
+      [['death', 'shadow'], 'grave-shade'],
+      [['lightning', 'fire', 'shadow'], 'ashcloud'],
+      [['lightning', 'shadow', 'pain'], 'nerve-coil'],
+      [['fire', 'shadow', 'pain'], 'pyre-wraith'],
+      [['mind', 'shadow', 'pain'], 'haunt'],
+      [['death', 'shadow', 'pain'], 'banshee'],
+      [['mind', 'shadow'], 'mare'],
+      [['water', 'shadow'], 'drowner'],
+      [['water', 'mind', 'shadow'], 'abyssal-eye'],
+      [['water', 'shadow', 'pain'], 'abyssal-maw'],
+    ];
+    const unshaded = ['ashcloud', 'nerve-coil'];
+    for (const [words, kind] of kinds) {
+      const raiser = godUnit('Raiser', 1, 300);
+      const field = new GameState([raiser, godUnit('Other', 2, 900)], 799);
+      const raised = summon(field, raiser, words, { x: 500, y: 270 });
+      equal(raised?.summonKind, kind, `Life ${words.join(' ')} raises its minion`);
+      equal(raised.isImmuneTo('shadow'), !unshaded.includes(kind), `${kind}: immune to shadow unless it is ash or nerves`);
+    }
+
+    // ---- The two-word trinkets amplify their other word ----
+    const lamp = godUnit('Lamp', 1, 300);
+    const lit = new GameState([lamp, godUnit('Unlit', 2, 900)], 801);
+    lit.spellRollThisCast = 10;
+    const dim = summon(lit, lamp, ['lightning', 'shadow'], { x: 400, y: 270 }).lightningMindPower;
+    wear(lit, lamp, ['lightning', 'shadow']);
+    const bright = summon(lit, lamp, ['lightning', 'shadow'], { x: 400, y: 400 }).lightningMindPower;
+    equal(bright - dim, 4, "Gloom Lantern: the bearer's Lightning power is 4 higher");
+
+    const stoker = godUnit('Stoker', 1, 300);
+    const coal = godUnit('Coal', 2, 500);
+    const twin = godUnit('Twin', 2, 500 + R(1));
+    const hearth = new GameState([stoker, coal, twin], 803);
+    wear(hearth, stoker, ['fire', 'shadow']);
+    hearth.applyFireStacks(coal, 1, stoker);
+    equal(stacks(coal, 'fire'), 2, 'Coal Heart: Fire the bearer sets is a stack stronger');
+    hearth.applyFireStacks(coal, 3, twin);
+    hearth.applyFireStacks(twin, 5, coal);
+    hearth.applyFireStacks(coal, 1, stoker);
+    equal([stacks(coal, 'fire'), stacks(twin, 'fire')], [5, 6], 'and an overflow spreads without the bonus, so it settles');
+
+    const thorn = godUnit('Thorn', 1, 300);
+    const wince = godUnit('Wince', 2, 500);
+    const briar = new GameState([thorn, wince], 805);
+    wear(briar, thorn, ['pain', 'shadow']);
+    dealDamage(briar.effectContext(thorn, wince, null), wince, dmg(3, 'sanity'), { canMiss: false });
+    equal(wince.sanity, 295, "Thorned Circlet: the bearer's sanity hits deal 2 more");
+    dealDamage(briar.effectContext(wince, thorn, null), thorn, dmg(3, 'sanity'), { canMiss: false });
+    equal(thorn.sanity, 296, 'and the sanity hits it takes deal 1 more');
+
+    const sexton = godUnit('Sexton', 1, 300);
+    const doomed = godUnit('Doomed', 2, 500);
+    const churchyard = new GameState([sexton, doomed], 807);
+    wear(churchyard, sexton, ['death', 'shadow']);
+    churchyard.applyReap(doomed, 2, sexton);
+    equal(churchyard.reapOn(doomed), 3, 'Black Sigil: Reap the bearer marks is 1 higher');
+    doomed.hp = 11;
+    assert(!churchyard.executeTarget(sexton, doomed, 2) && doomed.alive, 'its executions reach 2 more health (2 + 2 + 2 per Reap = 10)');
+    doomed.hp = 10;
+    assert(churchyard.executeTarget(sexton, doomed, 2), 'and take a unit at 10');
+
+    // ---- Laws: amplified for everyone ----
+    const stormCaller = godUnit('StormCaller', 1, 300);
+    const rival = godUnit('Rival', 2, 600);
+    const blackSky = new GameState([stormCaller, rival], 809);
+    blackSky.spellRollThisCast = 12;
+    lay(blackSky, stormCaller, ['lightning', 'shadow']);
+    const storm = blackSky.hexLaw('blackStorm')!;
+    equal(blackSky.lightningAmplifier(rival), Math.max(2, Math.floor((storm.power ?? 0) / 3)), "Black Storm raises everyone's Lightning power by a third of its own");
+    blackSky.pushStack(blackSky.makeSpellItem(stormCaller, getSpell(['lightning', 'shadow'], null)!, rival, null));
+    assert(stormCaller.hp < 300, 'and strikes whoever declares Lightning');
+
+    const pyro = godUnit('Pyro', 1, 300);
+    const singed = godUnit('Singed', 2, 500);
+    const blackfire = new GameState([pyro, singed], 811);
+    lay(blackfire, pyro, ['fire', 'shadow']);
+    dealDamage(blackfire.effectContext(pyro, singed, null), singed, dmg(2, 'heat'), { canMiss: false });
+    const seared = 300 - singed.hp;
+    assert(seared >= 3 && seared <= 6, `Blackfire: a heat hit also deals 1d4 shadow (${seared})`);
+
+    const screamer = godUnit('Screamer', 1, 300);
+    const victim = godUnit('Victim', 2, 500);
+    const beside = godUnit('Beside', 2, 500 + R(1.5));
+    const echo = new GameState([screamer, victim, beside], 813);
+    lay(echo, screamer, ['pain', 'shadow']);
+    dealDamage(echo.effectContext(screamer, victim, null), victim, dmg(6, 'sanity'), { canMiss: false });
+    equal([victim.sanity, beside.sanity, screamer.sanity], [294, 297, 300], 'Echoing Agony: half a sanity hit echoes into those beside its victim');
+
+    const nightfall = godUnit('Nightfall', 1, 300);
+    const dusk = godUnit('Dusk', 2, 500);
+    const night = new GameState([nightfall, dusk], 815);
+    lay(night, nightfall, ['death', 'shadow']);
+    dusk.hp = 8;
+    night.applyReap(dusk, 3, nightfall);
+    assert(dusk.alive, 'Long Night: 3 Reap does not take a unit at 8 health');
+    night.applyReap(dusk, 1, nightfall);
+    assert(!dusk.alive, 'but 4 Reap counts as 8 and does');
+
+    const firestarter = godUnit('Firestarter', 1, 300);
+    const kindling = godUnit('Kindling', 2, 600);
+    const blaze = new GameState([firestarter, kindling], 817);
+    blaze.spellRollThisCast = 12;
+    lay(blaze, firestarter, ['lightning', 'fire', 'shadow']);
+    blaze.applyFireStacks(kindling, 2, firestarter);
+    lawRoundEnd(blaze);
+    assert(kindling.hp < 300 && stacks(kindling, 'fire') === 1, 'Firestorm: every burning unit flares at round end and takes shadow');
+
+    const crier = godUnit('Crier', 1, 300);
+    const frail = godUnit('Frail', 2, 600);
+    const howl = new GameState([crier, frail, godUnit('Calm', 2, 800)], 819);
+    howl.spellRollThisCast = 12;
+    lay(howl, crier, ['lightning', 'shadow', 'pain']);
+    frail.sanity = 50;
+    lawRoundEnd(howl);
+    assert(frail.sanity < 50 && frail.hp < 300, 'Screaming Sky strikes the least sane mind');
+
+    const torcher = godUnit('Torcher', 1, 300);
+    const torched = godUnit('Torched', 2, 600);
+    const terror = new GameState([torcher, torched], 821);
+    lay(terror, torcher, ['fire', 'shadow', 'pain']);
+    terror.applyFireStacks(torched, 3, torcher);
+    terror.currentIndex = 1;
+    terror.beginTurn();
+    assert(torched.sanity < 300, 'Burning Terror: a burning unit is frightened at its turn start');
+
+    const fraySource = godUnit('FraySource', 1, 300);
+    const frayed = godUnit('Frayed', 2, 500, 270, ['bind', 'veil', 'mind']);
+    const loom = new GameState([fraySource, frayed], 823);
+    lay(loom, fraySource, ['mind', 'shadow', 'pain']);
+    frayed.statuses.push({ key: 'forget', name: 'Forgotten', kind: 'forget', duration: 3, forgotten: ['bind', 'veil'] });
+    dealDamage(loom.effectContext(fraySource, frayed, null), frayed, dmg(1, 'sanity'), { canMiss: false });
+    equal(frayed.sanity, 297, 'Fraying Minds: a sanity hit deals 1 more per forgotten word');
+
+    const keener = godUnit('Keener', 1, 300);
+    const fading = godUnit('Fading', 2, 500);
+    const dying = new GameState([keener, fading], 825);
+    lay(dying, keener, ['death', 'shadow', 'pain']);
+    dealDamage(dying.effectContext(keener, fading, null), fading, dmg(4, 'sanity'), { canMiss: false });
+    equal(dying.reapOn(fading), 1, 'Dying Light: a sanity hit of 4 or more marks 1 Reap');
+    fading.sanity = 100;
+    dying.addShadow(fading.pos, 1);
+    dying.currentIndex = 1;
+    dying.beginTurn();
+    equal(dying.reapOn(fading), 3, 'and a shaken mind starting its turn in a shadow gains 2 more');
+
+    // ---- Minions ----
+    const coiler = godUnit('Coiler', 1, 200);
+    const struck = godUnit('Struck', 2, 600);
+    const gloom = new GameState([coiler, struck], 827);
+    gloom.spellRollThisCast = 12;
+    const coil = summon(gloom, coiler, ['lightning', 'shadow'], { x: 500, y: 270 });
+    runPulse(gloom, coil, coiler, MINIONS['umbral-coil'].pulse!);
+    assert(struck.hp < 300 && gloom.isInShadow(struck), 'An Umbral Coil strikes with shadow and leaves a shadow where it lands');
+
+    const tender = godUnit('Tender', 1, 200);
+    const lit2 = godUnit('Lit', 1, 500, 330);
+    const cold = godUnit('Cold', 2, 500, 210);
+    const cinders = new GameState([tender, lit2, cold], 829);
+    cinders.applyFireStacks(lit2, 2, cold);
+    const shade = summon(cinders, tender, ['fire', 'shadow'], { x: 500, y: 270 });
+    runPulse(cinders, shade, tender, MINIONS['cinder-shade'].pulse!);
+    assert(stacks(cold, 'fire') === 1 && cold.hp < 300, 'A Cinder Shade darkens and kindles the units beside it');
+    assert(stacks(lit2, 'fire') === 1 && lit2.hp < 300, 'and sets off an ally already burning');
+
+    const mourner = godUnit('Mourner', 1, 200);
+    const nearAlly = godUnit('NearAlly', 1, 450);
+    const preyW = godUnit('PreyW', 2, 600);
+    const wailing = new GameState([mourner, nearAlly, preyW], 831);
+    const wailer = summon(wailing, mourner, ['pain', 'shadow'], { x: 500, y: 270 });
+    runPulse(wailing, wailer, mourner, MINIONS['wailing-shade'].pulse!);
+    assert(nearAlly.sanity < 300 && mourner.sanity === 300, 'A Wailing Shade frightens even the allies beside it, never its summoner');
+    wailing.addShadow(preyW.pos, 1);
+    const steady = preyW.sanity;
+    runHitEffects(
+      { striker: wailer, victim: preyW, dealt: 2, drinker: mourner, ctx: wailing.quietContext(wailer, preyW) },
+      MINIONS['wailing-shade'].onHit!
+    );
+    assert(preyW.sanity < steady, 'and its touch cuts deeper into one standing in a shadow');
+
+    const digger = godUnit('Digger', 1, 200);
+    const marked = godUnit('Marked', 2, 800);
+    const yard = new GameState([digger, marked], 833);
+    yard.addShadow(marked.pos, 1);
+    const graveShade = summon(yard, digger, ['death', 'shadow'], { x: 400, y: 270 });
+    runPulse(yard, graveShade, digger, MINIONS['grave-shade'].pulse!);
+    assert(dist(graveShade.pos, marked.pos) < R(1.5), 'A Grave Shade steps out of your shadow beside an enemy standing in it');
+    runHitEffects(
+      { striker: graveShade, victim: marked, dealt: 2, drinker: digger, ctx: yard.quietContext(graveShade, marked) },
+      MINIONS['grave-shade'].onHit!
+    );
+    equal(yard.reapOn(marked), 3, 'and marks it with 3 Reap there');
+    dealDamage(yard.effectContext(marked, graveShade, null), graveShade, dmg(100, 'generic'), { canMiss: false });
+    equal(yard.reapOn(marked), 5, 'and 2 more as it dies');
+
+    const smoker = godUnit('Smoker', 1, 200);
+    const torch = godUnit('Torch', 2, 500);
+    const ashen = new GameState([smoker, torch], 835);
+    ashen.spellRollThisCast = 12;
+    const cloud = summon(ashen, smoker, ['lightning', 'fire', 'shadow'], { x: 400, y: 270 });
+    runPulse(ashen, cloud, smoker, MINIONS.ashcloud.pulse!);
+    equal(stacks(torch, 'fire'), 2, 'An Ashcloud kindles the nearest enemy when nobody burns');
+    const unburnt = torch.hp;
+    runPulse(ashen, cloud, smoker, MINIONS.ashcloud.pulse!);
+    assert(torch.hp < unburnt && stacks(torch, 'fire') === 1, 'and sets off one that does');
+
+    const wirer = godUnit('Wirer', 1, 200);
+    const nerve = godUnit('Nerve', 2, 500);
+    const wired = new GameState([wirer, nerve], 837);
+    wired.spellRollThisCast = 16;
+    const nerveCoil = summon(wired, wirer, ['lightning', 'shadow', 'pain'], { x: 450, y: 270 });
+    const boost = 1 + Math.floor(nerveCoil.lightningMindPower / 8);
+    dealDamage(wired.effectContext(wirer, nerve, null), nerve, dmg(2, 'sanity'), { canMiss: false });
+    equal(300 - nerve.sanity, 2 + boost, 'A Nerve Coil makes every sanity hit beside it stronger with its Lightning power');
+
+    const burner = godUnit('Burner', 1, 450);
+    const foeW = godUnit('FoeW', 2, 550);
+    const pyre = new GameState([burner, foeW], 839);
+    const wraith = summon(pyre, burner, ['fire', 'shadow', 'pain'], { x: 500, y: 330 });
+    dealDamage(pyre.effectContext(foeW, wraith, null), wraith, dmg(100, 'generic'), { canMiss: false });
+    assert(
+      stacks(foeW, 'fire') === 2 && stacks(burner, 'fire') === 2 && burner.sanity < 300,
+      'A Pyre Wraith bursts over everything near it, its summoner included'
+    );
+
+    const haunter = godUnit('Haunter', 1, 200);
+    const shaky = godUnit('Shaky', 1, 450, 270, ['bind', 'veil']);
+    const calm = godUnit('CalmFoe', 2, 550, 270, ['bind']);
+    const manor = new GameState([haunter, shaky, calm], 841);
+    shaky.sanity = 100;
+    const ghost = summon(manor, haunter, ['mind', 'shadow', 'pain'], { x: 500, y: 330 });
+    runPulse(manor, ghost, haunter, MINIONS.haunt.pulse!);
+    assert(shaky.sanity < 100 && forgot(shaky) === 1 && calm.sanity === 300, 'A Haunt preys on the least sane mind near it, allies included');
+
+    const caller = godUnit('Caller', 1, 200);
+    const broken = godUnit('Broken', 2, 500);
+    const whole = godUnit('Whole', 2, 500, 340);
+    const moor = new GameState([caller, broken, whole], 843);
+    broken.sanity = 100;
+    const banshee = summon(moor, caller, ['death', 'shadow', 'pain'], { x: 500, y: 410 });
+    runPulse(moor, banshee, caller, MINIONS.banshee.pulse!);
+    assert(
+      moor.reapOn(broken) === 2 && moor.reapOn(whole) === 0 && whole.sanity < 300,
+      'A Banshee wails at all near it and reaps the minds it breaks'
+    );
+
+    // ---- Objects ----
+    const brander = godUnit('Brander', 1, 300);
+    const branded = godUnit('Branded', 2, 360);
+    const smithy = new GameState([brander, branded], 845);
+    smithy.spellRollThisCast = 12;
+    wear(smithy, brander, ['lightning', 'fire', 'shadow']);
+    smithy.applyFireStacks(branded, 2, brander);
+    imbueAfterStrike(smithy, brander, branded, 2);
+    assert(branded.hp < 300 && stacks(branded, 'fire') === 3, 'Storm Brand sears, sets the Fire off and kindles 2 more');
+
+    const wearer = godUnit('Wearer', 1, 300);
+    const hitter = godUnit('Hitter', 2, 360);
+    const nextTo = godUnit('NextTo', 2, 360, 340);
+    const mail = new GameState([wearer, hitter, nextTo], 847);
+    mail.spellRollThisCast = 12;
+    wear(mail, wearer, ['lightning', 'shadow', 'pain']);
+    imbueAfterStrike(mail, hitter, wearer, 2);
+    assert(
+      hitter.sanity < 300 && nextTo.sanity < 300 && wearer.sanity === 300,
+      'Nerve Mail shocks an attacker and the shock jumps on, never to the bearer'
+    );
+
+    const agony = godUnit('Agony', 1, 300);
+    const burning = godUnit('Burning', 2, 360);
+    const branding = new GameState([agony, burning], 849);
+    wear(branding, agony, ['fire', 'shadow', 'pain']);
+    branding.applyFireStacks(burning, 4, agony);
+    imbueAfterStrike(branding, agony, burning, 2);
+    equal([300 - burning.sanity, stacks(burning, 'fire')], [4, 5], 'Brand of Agony: 1 sanity per Fire stack, then 1 more Fire');
+
+    const dreadful = godUnit('Dreadful', 1, 300);
+    const target = godUnit('Target', 2, 360, 270, ['bind', 'veil']);
+    const edge = new GameState([dreadful, target], 851);
+    wear(edge, dreadful, ['mind', 'shadow', 'pain']);
+    imbueAfterStrike(edge, dreadful, target, 2);
+    const light = 300 - target.sanity;
+    assert(light >= 1 && light <= 4 && forgot(target) === 0, 'Dreadful Edge: 1d4 sanity against a steady mind');
+    target.sanity = 100;
+    imbueAfterStrike(edge, dreadful, target, 2);
+    assert(target.sanity <= 98 && forgot(target) === 1, 'and 2d6 and a lost word against a shaken one');
+
+    const mourning = godUnit('Mourning', 1, 300);
+    const attacker = godUnit('Attacker', 2, 360);
+    const funeral = new GameState([mourning, attacker], 853);
+    wear(funeral, mourning, ['death', 'shadow', 'pain']);
+    imbueAfterStrike(funeral, attacker, mourning, 2);
+    assert(attacker.sanity < 300 && funeral.reapOn(attacker) === 1, 'Shroud of Mourning: an attacker takes sanity and 1 Reap');
+    attacker.sanity = 100;
+    imbueAfterStrike(funeral, attacker, mourning, 2);
+    equal(funeral.reapOn(attacker), 4, 'and 3 more once shaken');
+
+    // ---- The new ordinaries ----
+    const ashCaster = godUnit('AshCaster', 1, 300);
+    const first = godUnit('First', 2, 600);
+    const second = godUnit('Second', 2, 600 + R(2));
+    const ashGame = new GameState([ashCaster, first, second], 855);
+    ashGame.spellRollThisCast = 12;
+    getSpell(['lightning', 'fire', 'shadow'], null)!.cast(ashGame.effectContext(ashCaster, first, null));
+    assert(first.hp < 300 && second.hp < 300 && stacks(second, 'fire') === 1, 'Ashen Bolt strikes, kindles and leaps on');
+
+    const nerveCaster = godUnit('NerveCaster', 1, 300);
+    const nTarget = godUnit('NTarget', 2, 600);
+    const nAlly = godUnit('NAlly', 1, 600, 340);
+    const nGame = new GameState([nerveCaster, nTarget, nAlly], 857);
+    nGame.spellRollThisCast = 12;
+    getSpell(['lightning', 'shadow', 'pain'], null)!.cast(nGame.effectContext(nerveCaster, nTarget, null));
+    assert(nTarget.sanity < 300 && nTarget.hp < 300 && nAlly.sanity < 300, 'Nerve Storm shocks its target and spreads to allies beside it');
+
+    const sCaster = godUnit('SCaster', 1, 300);
+    const sTarget = godUnit('STarget', 2, 600);
+    const sAlly = godUnit('SAlly', 1, 600, 340);
+    const sGame = new GameState([sCaster, sTarget, sAlly], 859);
+    getSpell(['fire', 'shadow', 'pain'], null)!.cast(sGame.effectContext(sCaster, sTarget, null));
+    assert(stacks(sTarget, 'fire') === 2 && sAlly.sanity < 300, 'Searing Dread sets 2 Fire and frightens allies beside its target');
+  }],
+
+  ['gambles: Lightning scales with the roll, arcs and lurches, misfires into its own side and surges past it', async () => {
+    await import('../spells/classSpells');
+    const R = (cm: number): number => cm * RANGE_UNIT;
+    const stacks = (m: Mage, kind: string): number =>
+      (m.statuses.find((s) => s.kind === kind) as { stacks: number } | undefined)?.stacks ?? 0;
+    const summon = (game: GameState, owner: Mage, words: WordId[], at: { x: number; y: number }): Mage => {
+      void getSpell(words, 'life')!.cast(game.effectContext(owner, null, at));
+      const raised = game.summonsOf(owner);
+      return raised[raised.length - 1];
+    };
+    const lay = (game: GameState, caster: Mage, words: WordId[]): void => {
+      void getSpell(words, 'hexcraft')!.cast(game.effectContext(caster, caster, null));
+    };
+    const wear = (game: GameState, bearer: Mage, words: WordId[]): void => {
+      void getSpell(words, 'objects')!.cast(game.effectContext(bearer, bearer, null));
+    };
+    /** Every d`sides` the game rolls (d6 unless told) shows `face` until the returned undo runs. */
+    const loaded = (game: GameState, face: number, sides = 6): (() => void) => {
+      const die = game.rng.die.bind(game.rng);
+      game.rng.die = (n: number) => (n === sides ? face : die(n));
+      return () => {
+        game.rng.die = die;
+      };
+    };
+    /** The game's d`sides` show `faces` in order, then roll freely, until the returned undo runs. */
+    const rigged = (game: GameState, sides: number, faces: number[]): (() => void) => {
+      const die = game.rng.die.bind(game.rng);
+      const queue = [...faces];
+      game.rng.die = (n: number) => (n === sides && queue.length > 0 ? queue.shift()! : die(n));
+      return () => {
+        game.rng.die = die;
+      };
+    };
+
+    const kinds: [WordId[], string][] = [
+      [['lightning', 'fire'], 'ball-lightning'],
+      [['lightning', 'pain'], 'live-wire'],
+      [['lightning', 'fire', 'pain'], 'hellspark'],
+    ];
+    for (const [words, kind] of kinds) {
+      const raiser = godUnit('Raiser', 1, 300);
+      const field = new GameState([raiser, godUnit('Other', 2, 900)], 899);
+      equal(summon(field, raiser, words, { x: 500, y: 270 })?.summonKind, kind, `Life ${words.join(' ')} raises its minion`);
+    }
+
+    // ---- Lightning Fire ----
+    const roller = godUnit('Roller', 1, 200);
+    const rolledAt = godUnit('RolledAt', 2, 1000);
+    const nearAlly = godUnit('NearAlly', 1, 960, 330);
+    const alley = new GameState([roller, rolledAt, nearAlly], 901);
+    alley.spellRollThisCast = 12;
+    const ball = summon(alley, roller, ['lightning', 'fire'], { x: 400, y: 270 });
+    equal(ball.maxHp, 3, 'Ball Lightning has 3 health');
+    runPulse(alley, ball, roller, MINIONS['ball-lightning'].pulse!);
+    assert(
+      dist(ball.pos, rolledAt.pos) < R(1.5) && rolledAt.hp < 300 && stacks(rolledAt, 'fire') === 1,
+      'and runs on its own all the way to the nearest enemy, then bursts'
+    );
+    assert(nearAlly.hp < 300 && roller.hp === 300, 'catching allies beside it but never its summoner');
+    const burstReaches = (roll: number): boolean => {
+      const raiser = godUnit('Raiser', 1, 200);
+      const pal = godUnit('Pal', 1, 600, 420);
+      const field = new GameState([raiser, godUnit('Foe', 2, 600), pal], 903);
+      field.spellRollThisCast = roll;
+      runPulse(field, summon(field, raiser, ['lightning', 'fire'], { x: 400, y: 270 }), raiser, MINIONS['ball-lightning'].pulse!);
+      return pal.hp < 300;
+    };
+    assert(!burstReaches(17) && burstReaches(18), 'Summoned on a natural 18 or more, its burst reaches twice as far');
+
+    const brander = godUnit('Brander', 1, 300);
+    brander.hands = ['ironShortsword'];
+    const branded = godUnit('Branded', 2, 360);
+    const brandPal = godUnit('BrandPal', 1, 360, 330);
+    const forge = new GameState([brander, branded, brandPal], 905);
+    wear(forge, brander, ['lightning', 'fire']);
+    equal(brander.hands, ['conjuredArcBrand'], 'Objects Lightning Fire conjures an Arc Brand into the hand');
+    const brand = getItem('conjuredArcBrand');
+    equal([brand.weapon?.kind, brand.weapon?.damageType], ['dex', 'heat'], 'a Dexterity weapon that strikes as heat');
+    let undo = loaded(forge, 1);
+    imbueAfterStrike(forge, brander, branded, 2, brand.onHit);
+    undo();
+    assert(brander.hp < 300 && branded.hp === 300, 'Arc Brand on a 1: the charge grounds through its wielder');
+    undo = loaded(forge, 3);
+    imbueAfterStrike(forge, brander, branded, 2, brand.onHit);
+    undo();
+    assert(stacks(branded, 'fire') === 1 && brandPal.hp < 300, 'on 2-5 it sets the target alight and arcs on, friend or foe');
+    const stoodAt = { ...brander.pos };
+    undo = loaded(forge, 6);
+    imbueAfterStrike(forge, brander, branded, 2, brand.onHit);
+    undo();
+    assert(stacks(branded, 'fire') === 3 && dist(brander.pos, stoodAt) > R(1.5), 'and on a 6 it surges and its wielder dashes away');
+
+    const dryCaster = godUnit('DryCaster', 1, 300);
+    const scorched = godUnit('Scorched', 2, 600);
+    const nextDoor = godUnit('NextDoor', 2, 600 + R(1.5));
+    const dry = new GameState([dryCaster, scorched, nextDoor], 907);
+    dry.spellRollThisCast = 12;
+    lay(dry, dryCaster, ['lightning', 'fire']);
+    undo = loaded(dry, 6);
+    dealDamage(dry.effectContext(dryCaster, scorched, null), scorched, dmg(3, 'heat'), { canMiss: false });
+    undo();
+    equal(nextDoor.hp, 297, 'Dry Lightning: on a 5 or 6 a heat hit leaps on for the same');
+    undo = loaded(dry, 1);
+    dealDamage(dry.effectContext(dryCaster, scorched, null), scorched, dmg(3, 'heat'), { canMiss: false });
+    undo();
+    equal(dryCaster.hp, 297, 'and on a 1 it leaps back into whoever dealt it');
+
+    // ---- Lightning Pain ----
+    const writher = godUnit('Writher', 1, 300);
+    const writhed = godUnit('Writhed', 2, 600);
+    const kin = godUnit('Kin', 1, 600, 340);
+    const wires = new GameState([writher, writhed, kin], 909);
+    wires.spellRollThisCast = 15;
+    getSpell(['lightning', 'pain'], null)!.cast(wires.effectContext(writher, writhed, null));
+    assert(
+      writhed.hp < 300 && writhed.sanity < 300 && kin.sanity < 300,
+      'Writhing Bolt strikes its target and writhes on into your own side'
+    );
+    undo = loaded(wires, 1);
+    const steadyHp = writher.hp;
+    getSpell(['lightning', 'pain'], null)!.cast(wires.effectContext(writher, writhed, null));
+    undo();
+    assert(writher.hp < steadyHp, 'and on a misfire it strikes you too');
+
+    const wirer = godUnit('Wirer', 1, 200);
+    const wirePrey = godUnit('WirePrey', 2, 500);
+    const wirePal = godUnit('WirePal', 1, 500, 340);
+    const live = new GameState([wirer, wirePrey, wirePal], 911);
+    live.spellRollThisCast = 16;
+    const wire = summon(live, wirer, ['lightning', 'pain'], { x: 420, y: 270 });
+    undo = loaded(live, 6);
+    runPulse(live, wire, wirer, MINIONS['live-wire'].pulse!);
+    undo();
+    assert(
+      wirePrey.sanity < 300 && wirePal.sanity < 300 && wirer.sanity === 300,
+      'Live Wire on a 6 lashes every unit in reach but you'
+    );
+    undo = loaded(live, 1);
+    runPulse(live, wire, wirer, MINIONS['live-wire'].pulse!);
+    undo();
+    assert(wirer.sanity < 300, 'on a 1 it lashes you, wherever you are');
+    undo = loaded(live, 3);
+    runPulse(live, wire, wirer, MINIONS['live-wire'].pulse!);
+    undo();
+    assert(
+      dist(wire.pos, wirePrey.pos) < R(1.2) || dist(wire.pos, wirePal.pos) < R(1.2),
+      'and otherwise it lashes one of them and leaps to its side'
+    );
+
+    const capBearer = godUnit('CapBearer', 1, 300);
+    const capFoe = godUnit('CapFoe', 2, 360);
+    const capPal = godUnit('CapPal', 1, 300, 340);
+    const lab = new GameState([capBearer, capFoe, capPal], 913);
+    lab.spellRollThisCast = 12;
+    wear(lab, capBearer, ['lightning', 'pain']);
+    dealDamage(lab.effectContext(capFoe, capBearer, null), capBearer, dmg(5, 'heat'), { canMiss: false });
+    undo = loaded(lab, 6);
+    imbueTurnStart(lab, capBearer);
+    undo();
+    assert(
+      capFoe.hp === 295 && capFoe.sanity === 295 && capPal.hp === 295,
+      'Agony Capacitor stores what its bearer takes and, on a 6, looses it all on everyone near'
+    );
+    dealDamage(lab.effectContext(capFoe, capBearer, null), capBearer, dmg(4, 'heat'), { canMiss: false });
+    undo = loaded(lab, 1);
+    imbueTurnStart(lab, capBearer);
+    undo();
+    equal(capBearer.sanity, 296, 'and on a 1 into its bearer');
+    dealDamage(lab.effectContext(capFoe, capBearer, null), capBearer, dmg(3, 'heat'), { canMiss: false });
+    undo = loaded(lab, 3);
+    imbueTurnStart(lab, capBearer);
+    undo();
+    assert(
+      capFoe.hp + capPal.hp === 587 && capFoe.sanity + capPal.sanity === 587,
+      'on 2-5 into one unit near it, as heat and again as sanity (a misfire never charges it back up)'
+    );
+
+    const agonist = godUnit('Agonist', 1, 300);
+    const sufferer = godUnit('Sufferer', 2, 700);
+    const storm = new GameState([agonist, sufferer], 915);
+    storm.spellRollThisCast = 12;
+    lay(storm, agonist, ['lightning', 'pain']);
+    undo = loaded(storm, 1);
+    lawRoundEnd(storm);
+    undo();
+    assert(
+      agonist.hp < 300 && agonist.sanity < 300 && sufferer.hp < 300,
+      'Storm of Agony: on a 1 lightning strikes a unit, its caster not spared'
+    );
+
+    // ---- Lightning Fire Pain ----
+    const hellCaster = godUnit('HellCaster', 1, 300);
+    const damned = godUnit('Damned', 2, 360);
+    const pit = new GameState([hellCaster, damned], 917);
+    pit.spellRollThisCast = 12;
+    undo = rigged(pit, 6, [3, 1, 4, 1, 6]);
+    getSpell(['lightning', 'fire', 'pain'], null)!.cast(pit.effectContext(hellCaster, damned, null));
+    undo();
+    assert(
+      hellCaster.hp <= 298 && damned.hp <= 298 && hellCaster.sanity <= 298,
+      'Hellbolt bounces between everyone, you included, until a 6 makes it explode'
+    );
+    assert(
+      stacks(damned, 'fire') === 0 && stacks(hellCaster, 'fire') === 0,
+      'and the explosion burns all the Fire it catches at once'
+    );
+
+    const sparkOwner = godUnit('SparkOwner', 1, 600, 330);
+    const sparkFoe = godUnit('SparkFoe', 2, 800);
+    const furnace = new GameState([sparkOwner, sparkFoe], 919);
+    furnace.spellRollThisCast = 12;
+    const spark = summon(furnace, sparkOwner, ['lightning', 'fire', 'pain'], { x: 540, y: 270 });
+    const swerve = furnace.rng.float.bind(furnace.rng);
+    furnace.rng.float = () => 0.5;
+    const undoZips = loaded(furnace, 3, 3);
+    undo = loaded(furnace, 2);
+    runPulse(furnace, spark, sparkOwner, MINIONS.hellspark.pulse!);
+    undo();
+    undoZips();
+    furnace.rng.float = swerve;
+    assert(
+      spark.x > 780 && stacks(sparkFoe, 'fire') === 2,
+      'A Hellspark zips 1d3 times toward the enemy, 1d6cm each, and flares after every zip'
+    );
+    assert(sparkOwner.sanity < 300 && stacks(sparkOwner, 'fire') === 1, 'its flares catching you too');
+
+    const mantled = godUnit('Mantled', 1, 300);
+    const brute = godUnit('Brute', 2, 360);
+    const mantlePal = godUnit('MantlePal', 1, 300, 340);
+    const faraway = godUnit('Faraway', 2, 900);
+    const hall = new GameState([mantled, brute, mantlePal, faraway], 921);
+    hall.spellRollThisCast = 12;
+    wear(hall, mantled, ['lightning', 'fire', 'pain']);
+    undo = loaded(hall, 3, 3);
+    dealDamage(hall.effectContext(brute, mantled, null), mantled, dmg(8, 'pierce'), { canMiss: false });
+    undo();
+    equal(
+      [brute.hp, brute.sanity, stacks(brute, 'fire'), mantlePal.hp, faraway.hp],
+      [296, 298, 2, 296, 300],
+      'Thundering Mantle: what its bearer takes strikes everyone near it, half as heat, a quarter as sanity and as Fire'
+    );
+    undo = loaded(hall, 2, 3);
+    dealDamage(hall.effectContext(brute, mantled, null), mantled, dmg(1, 'pierce'), { canMiss: false });
+    undo();
+    equal(mantled.hp, 290, 'a hit on its bearer rolls 1d3: on a 2 the bearer takes 1 heat more');
+    undo = loaded(hall, 1, 3);
+    dealDamage(hall.effectContext(brute, mantled, null), mantled, dmg(1, 'pierce'), { canMiss: false });
+    undo();
+    equal(brute.sanity, 297, 'on a 1 lightning arcs from it into the nearest unit for 1d3 sanity');
+    undo = loaded(hall, 2, 3);
+    dealDamage(hall.effectContext(mantled, mantled, null), mantled, dmg(4, 'heat'), { canMiss: false, dot: true });
+    undo();
+    equal(
+      [mantled.hp, brute.hp, stacks(brute, 'fire')],
+      [285, 294, 3],
+      'its own damage over time is passed on as well, but rolls nothing'
+    );
+    applyDot(hall.effectContext(brute, mantled, null), mantled, { name: 'Test Rot', duration: 3, damage: dmg(4, 'corrosive') });
+    hall.currentIndex = 0;
+    hall.beginTurn();
+    equal(brute.hp, 292, 'even a curse ticking at its turn start');
+
+    const lawgiver = godUnit('Lawgiver', 1, 300);
+    const frenzied = godUnit('Frenzied', 2, 600);
+    const kindling = godUnit('Kindling', 2, 600 + R(0.9));
+    const frenzy = new GameState([lawgiver, frenzied, kindling], 923);
+    lay(frenzy, lawgiver, ['lightning', 'fire', 'pain']);
+    frenzy.applyFireStacks(frenzied, 2, lawgiver);
+    frenzy.currentIndex = 1;
+    frenzy.beginTurn();
+    assert(frenzied.sanity < 300, 'Burning Frenzy: Fire burns the mind as well');
+    equal(stacks(kindling, 'fire'), 1, 'and a unit that loses sanity flares, setting Fire on everyone near it');
+    dealDamage(frenzy.effectContext(lawgiver, kindling, null), kindling, dmg(2, 'sanity'), { canMiss: false });
+    equal(stacks(frenzied, 'fire'), 2, 'whatever took the sanity');
+
+    // ---- Blue keeps Lightning off your side ----
+    const pierceCaster = godUnit('PierceCaster', 1, 300);
+    const pierceAlly = godUnit('PierceAlly', 1, 360);
+    const pierceFoe = godUnit('PierceFoe', 2, 600);
+    const lane = new GameState([pierceCaster, pierceAlly, pierceFoe], 925);
+    lane.spellRollThisCast = 12;
+    await getSpell(['lightning', 'veil', 'pierce'], null)!.cast(lane.effectContext(pierceCaster, null, null));
+    assert(pierceFoe.hp < 300 && pierceAlly.hp === 300, 'Lightning Veil Pierce strikes enemies only');
+
+    const eelOwner = godUnit('EelOwner', 1, 200);
+    const eelPal = godUnit('EelPal', 1, 500);
+    const pond = new GameState([eelOwner, eelPal, godUnit('FarFoe', 2, 1200)], 927);
+    pond.spellRollThisCast = 12;
+    const eel = summon(pond, eelOwner, ['water', 'lightning'], { x: 450, y: 270 });
+    runPulse(pond, eel, eelOwner, MINIONS['storm-eel'].pulse!);
+    equal(eelPal.hp, 300, 'A Storm Eel never strikes your side, even with no enemy near');
+
+    const waveCaster = godUnit('WaveCaster', 1, 300);
+    const waveFoe = godUnit('WaveFoe', 2, 600);
+    const waveAlly = godUnit('WaveAlly', 1, 600, 340);
+    const shore = new GameState([waveCaster, waveFoe, waveAlly], 929);
+    shore.spellRollThisCast = 12;
+    getSpell(['water', 'lightning'], null)!.cast(shore.effectContext(waveCaster, waveFoe, null));
+    equal(waveAlly.hp, 300, 'Conducting Wave keeps its lightning off your side');
+
+    const seaCaster = godUnit('SeaCaster', 1, 300);
+    const soakedFoe = godUnit('SoakedFoe', 2, 600);
+    const seaAlly = godUnit('SeaAlly', 1, 600 + R(1));
+    const seaFoe = godUnit('SeaFoe', 2, 600, 340);
+    const tide = new GameState([seaCaster, soakedFoe, seaAlly, seaFoe], 931);
+    tide.spellRollThisCast = 12;
+    lay(tide, seaCaster, ['water', 'lightning']);
+    dealDamage(tide.effectContext(seaCaster, soakedFoe, null), soakedFoe, dmg(1, 'water'), { canMiss: false });
+    assert(seaAlly.hp === 300 && seaFoe.hp < 300, "Conductive Sea arcs only within its victim's side");
+
+    const tridentBearer = godUnit('TridentBearer', 1, 300);
+    const speared = godUnit('Speared', 2, 360);
+    const tridentPal = godUnit('TridentPal', 1, 450, 340);
+    const armoury = new GameState([tridentBearer, speared, tridentPal], 933);
+    armoury.spellRollThisCast = 12;
+    wear(armoury, tridentBearer, ['water', 'lightning']);
+    imbueAfterStrike(armoury, tridentBearer, speared, 2);
+    equal(tridentPal.hp, 300, "Conductor's Trident arcs only into enemies");
+  }],
+
+  ['pierces: archers, lunges and dashes, bows and blades, and laws that turn, splinter, stake and bleed', async () => {
+    await import('../spells/classSpells');
+    const R = (cm: number): number => cm * RANGE_UNIT;
+    const stacks = (m: Mage, kind: string): number =>
+      (m.statuses.find((s) => s.kind === kind) as { stacks: number } | undefined)?.stacks ?? 0;
+    const has = (m: Mage, key: string): boolean => m.statuses.some((s) => s.key === key);
+    const summon = (game: GameState, owner: Mage, words: WordId[], at: { x: number; y: number }): Mage => {
+      void getSpell(words, 'life')!.cast(game.effectContext(owner, null, at));
+      const raised = game.summonsOf(owner);
+      return raised[raised.length - 1];
+    };
+    const lay = (game: GameState, caster: Mage, words: WordId[]): void => {
+      void getSpell(words, 'hexcraft')!.cast(game.effectContext(caster, caster, null));
+    };
+    const wear = (game: GameState, bearer: Mage, words: WordId[]): void => {
+      void getSpell(words, 'objects')!.cast(game.effectContext(bearer, bearer, null));
+    };
+    const pierceHit = (game: GameState, from: Mage, to: Mage, amount: number): number =>
+      dealDamage(game.effectContext(from, to, null), to, dmg(amount, 'pierce'), { canMiss: false });
+
+    const roster: [WordId[], string, string, string | null][] = [
+      [['pierce', 'twist'], 'blade-dervish', 'conjuredTwinblades', 'turningBlades'],
+      [['pierce', 'bind'], 'pin-archer', 'conjuredGrapnel', null],
+      [['pierce', 'shatter'], 'scorpion', 'conjuredSplinterJavelin', 'splintering'],
+      [['pierce', 'curse'], 'thorn-fiend', 'conjuredThornbow', 'openWounds'],
+      [['pierce', 'drain'], 'bloodfang-stalker', 'conjuredLeechingRapier', 'bloodscent'],
+      [['pierce', 'desecrate'], 'grave-stalker', 'conjuredBoneLongbow', 'graveStakes'],
+      [['pierce', 'twist', 'bind'], 'needle-sentry', 'conjuredSilencerCrossbow', 'pinningLaw'],
+      [['pierce', 'twist', 'shatter'], 'spinning-top', 'conjuredCorkscrewLance', 'whirlwind'],
+      [['pierce', 'twist', 'drain'], 'leech-dervish', 'conjuredLeechingChakram', 'circlingThirst'],
+      [['pierce', 'twist', 'curse'], 'hooked-archer', 'conjuredHookblade', 'twistingBarbs'],
+      [['pierce', 'bind', 'shatter'], 'stake-warden', 'conjuredStakeCrossbow', 'stakeLaw'],
+      [['pierce', 'bind', 'drain'], 'leech-harpooner', 'conjuredBloodhookHarpoon', 'bloodpin'],
+      [['pierce', 'bind', 'curse'], 'thornbinder', 'conjuredThornwhip', 'thornedFetters'],
+      [['pierce', 'shatter', 'drain'], 'marrow-archer', 'boneMail', 'marrowThirst'],
+      [['pierce', 'shatter', 'curse'], 'shardhound', 'conjuredSplinterbow', 'splinterCurse'],
+      [['pierce', 'shatter', 'desecrate'], 'bone-thrower', 'conjuredBonebreakerPike', 'boneGarden'],
+      [['pierce', 'drain', 'curse'], 'vampire-bat', 'bloodthirstyEdge', 'vampiricWounds'],
+      [['pierce', 'drain', 'desecrate'], 'blood-harvester', 'conjuredHarvestersGlaive', 'bloodHarvest'],
+      [['pierce', 'curse', 'desecrate'], 'thorn-archer', 'conjuredThornspitter', 'stigmata'],
+    ];
+    for (const [words, kind, gear, rule] of roster) {
+      const label = words.join(' ');
+      const caster = godUnit('Caster', 1, 300);
+      const field = new GameState([caster, godUnit('Other', 2, 900)], 939);
+      equal(summon(field, caster, words, { x: 500, y: 270 })?.summonKind, kind, `Life ${label} raises its minion`);
+      wear(field, caster, words);
+      const geared =
+        caster.hands.includes(gear as never) ||
+        caster.utility.includes(gear as never) ||
+        caster.statuses.some((s) => s.kind === 'imbue' && (s as { imbue: string }).imbue === gear);
+      assert(geared, `Objects ${label} arms you with ${gear}`);
+      lay(field, caster, words);
+      if (rule) assert(field.hexLaw(rule as never), `Hexcraft ${label} lays its law`);
+    }
+    equal(getSpell(['pierce', 'bind'], 'hexcraft')?.codename, 'Needlepoint Domain', 'Pierce Bind keeps its Needlepoint Domain');
+
+    // ---- Minions ----
+    const dancer = godUnit('Dancer', 1, 200);
+    const mark = godUnit('Mark', 2, 600);
+    const arena = new GameState([dancer, mark], 941);
+    const dervish = summon(arena, dancer, ['pierce', 'twist'], { x: 450, y: 270 });
+    runPulse(arena, dervish, dancer, MINIONS['blade-dervish'].pulse!);
+    assert(mark.hp < 300 && dist(dervish.pos, mark.pos) < R(1.6), 'A Blade Dervish dashes to the nearest enemy and cuts it');
+
+    const warden = godUnit('Warden', 1, 200);
+    const shot = godUnit('Shot', 2, 600);
+    const post = new GameState([warden, shot], 943);
+    const sentry = summon(post, warden, ['pierce', 'twist', 'bind'], { x: 300, y: 270 });
+    runPulse(post, sentry, warden, MINIONS['needle-sentry'].pulse!);
+    assert(shot.hp < 300 && shot.statuses.some((s) => s.kind === 'stifle'), 'A Needle Sentry shoots the nearest enemy and stifles it');
+
+    const batOwner = godUnit('BatOwner', 1, 200);
+    const batPal = godUnit('BatPal', 1, 420);
+    const batFoe = godUnit('BatFoe', 2, 640);
+    const cave = new GameState([batOwner, batPal, batFoe], 945);
+    const bat = summon(cave, batOwner, ['pierce', 'drain', 'curse'], { x: 380, y: 270 });
+    runPulse(cave, bat, batOwner, MINIONS['vampire-bat'].pulse!);
+    assert(
+      batPal.hp < 300 && has(batPal, 'dot:kit:Bloodletting') && batFoe.hp === 300 && batOwner.hp === 300,
+      'A Vampire Bat bites the nearest unit, friend or foe, never its master'
+    );
+
+    const fiendOwner = godUnit('FiendOwner', 1, 200);
+    const fiendPal = godUnit('FiendPal', 1, 450, 300);
+    const pit = new GameState([fiendOwner, fiendPal, godUnit('FiendFoe', 2, 900)], 947);
+    const fiend = summon(pit, fiendOwner, ['pierce', 'curse'], { x: 420, y: 270 });
+    dealDamage(pit.effectContext(fiendOwner, fiend, null), fiend, dmg(50, 'pierce'), { canMiss: false, trueDamage: true });
+    assert(!fiend.alive && fiendPal.hp < 300, 'A Thorn Fiend bursts into thorns when it dies, your side included');
+
+    // ---- Objects ----
+    const duelist = godUnit('Duelist', 1, 300);
+    duelist.hands = ['ironShortsword'];
+    const parried = godUnit('Parried', 2, 360);
+    const yard = new GameState([duelist, parried], 949);
+    wear(yard, duelist, ['pierce', 'twist']);
+    equal(duelist.hands, ['conjuredTwinblades'], 'Objects Pierce Twist conjures Twinblades into the hand');
+    const stance = { ...duelist.pos };
+    imbueAfterStrike(yard, duelist, parried, 2, getItem('conjuredTwinblades').onHit);
+    assert(
+      dist(duelist.pos, stance) > R(0.5) && Math.abs(dist(duelist.pos, parried.pos) - 60) < 2,
+      'whose hits slip you a quarter circle around the target'
+    );
+
+    const hooker = godUnit('Hooker', 1, 200);
+    const hooked = godUnit('Hooked', 2, 500);
+    const quay = new GameState([hooker, hooked], 951);
+    imbueAfterStrike(quay, hooker, hooked, 2, getItem('conjuredGrapnel').onHit);
+    assert(hooked.isStunned('movement') && dist(hooker.pos, hooked.pos) < R(1.2), 'A Grapnel roots its target and pulls you to its side');
+
+    const thrower = godUnit('Thrower', 1, 200);
+    const thrownAt = godUnit('ThrownAt', 2, 600);
+    const beside = godUnit('Beside', 2, 600, 330);
+    const pal = godUnit('Pal', 1, 640);
+    const range = new GameState([thrower, thrownAt, beside, pal], 953);
+    wear(range, thrower, ['pierce', 'shatter']);
+    equal(thrower.utility.filter((id) => id === 'conjuredSplinterJavelin').length, 3, 'Objects Pierce Shatter conjures 3 Splinter Javelins');
+    range.throwItem(thrower, thrownAt, 'conjuredSplinterJavelin');
+    assert(
+      thrownAt.hp < 300 && beside.hp < 300 && pal.hp === 300,
+      'A Splinter Javelin splinters into the enemies beside its target, never your side'
+    );
+
+    const crossbowman = godUnit('Crossbowman', 1, 200);
+    const staked = godUnit('Staked', 2, 500);
+    const butts = new GameState([crossbowman, staked], 955);
+    const stakeBolt = getItem('conjuredStakeCrossbow').onHit;
+    imbueAfterStrike(butts, crossbowman, staked, 2, stakeBolt);
+    equal([staked.isStunned('movement'), staked.hp], [true, 300], 'A Stake Crossbow roots a free target');
+    imbueAfterStrike(butts, crossbowman, staked, 2, stakeBolt);
+    assert(staked.hp < 300, 'and splits a rooted one with shatter');
+
+    const mailed = godUnit('Mailed', 1, 300);
+    mailed.hp = 200;
+    const striker = godUnit('Striker', 2, 360);
+    const smithy = new GameState([mailed, striker], 957);
+    wear(smithy, mailed, ['pierce', 'shatter', 'drain']);
+    equal(imbueDeflects(smithy, striker, mailed, 6), true, 'Bone Mail negates a basic attack');
+    assert(striker.hp < 297 && mailed.hp === 203, 'pierces the attacker and drains half the blow it turned aside into its wearer');
+
+    // ---- Laws ----
+    const turner = godUnit('Turner', 1, 300);
+    const spun = godUnit('Spun', 2, 400);
+    const ring = new GameState([turner, spun], 959);
+    lay(ring, turner, ['pierce', 'twist']);
+    const spunFrom = { ...spun.pos };
+    pierceHit(ring, turner, spun, 3);
+    assert(
+      dist(spun.pos, spunFrom) > R(1) && Math.abs(dist(spun.pos, turner.pos) - 100) < 2,
+      'Turning Blades turns every pierced unit a quarter circle around its attacker'
+    );
+
+    const splinterer = godUnit('Splinterer', 1, 300);
+    const splintered = godUnit('Splintered', 2, 600);
+    const nextTo = godUnit('NextTo', 2, 600 + R(1.2));
+    const sawmill = new GameState([splinterer, splintered, nextTo], 961);
+    lay(sawmill, splinterer, ['pierce', 'shatter']);
+    pierceHit(sawmill, splinterer, splintered, 2);
+    assert(nextTo.hp < 300 && splinterer.hp === 300, 'Splintering Law splinters a pierce hit into its neighbours, never its attacker');
+
+    const wounder = godUnit('Wounder', 1, 300);
+    const wounded = godUnit('Wounded', 2, 400);
+    const surgery = new GameState([wounder, wounded], 963);
+    lay(surgery, wounder, ['pierce', 'curse']);
+    pierceHit(surgery, wounder, wounded, 1);
+    pierceHit(surgery, wounder, wounded, 1);
+    equal(
+      (wounded.statuses.find((s) => s.key === 'dot:law-open-wound') as { stacks?: number } | undefined)?.stacks,
+      2,
+      'Open Wounds stacks a wound with every pierce hit'
+    );
+
+    const scent = godUnit('Scent', 1, 300);
+    scent.hp = 200;
+    const bleeding = godUnit('Bleeding', 2, 400);
+    bleeding.hp = 150;
+    const fresh = godUnit('Fresh', 2, 400, 340);
+    const trail = new GameState([scent, bleeding, fresh], 965);
+    lay(trail, scent, ['pierce', 'drain']);
+    pierceHit(trail, scent, fresh, 2);
+    equal(scent.hp, 200, 'Bloodscent leaves a hale unit be');
+    pierceHit(trail, scent, bleeding, 2);
+    assert(scent.hp > 200 && bleeding.hp < 148, 'but drains one at half health or less into its attacker');
+
+    const staker = godUnit('Staker', 1, 300);
+    const ghoul = creature('Ghoul', 400);
+    const hero = godUnit('Hero', 2, 500, 340);
+    const graveyard = new GameState([staker, ghoul, hero], 967);
+    lay(graveyard, staker, ['pierce', 'desecrate']);
+    pierceHit(graveyard, staker, ghoul, 2);
+    pierceHit(graveyard, staker, hero, 2);
+    assert(ghoul.isStunned('movement') && ghoul.hp <= 297 && ghoul.healMult() === 0, 'Grave Stakes stakes an affected unit');
+    equal(hero.isStunned('movement'), false, 'but never a unit Desecrate spares');
+
+    const pinner = godUnit('Pinner', 1, 300);
+    const pinned = godUnit('Pinned', 2, 400);
+    const friend = godUnit('Friend', 1, 300, 340);
+    const gallery = new GameState([pinner, pinned, friend], 969);
+    lay(gallery, pinner, ['pierce', 'twist', 'bind']);
+    pierceHit(gallery, pinner, pinned, 2);
+    pierceHit(gallery, pinned, friend, 2);
+    assert(pinned.isStunned('movement') && gallery.cannotReact(pinned), 'Pinning Law roots a pierced enemy and stops its reactions');
+    assert(!friend.isStunned('movement') && !gallery.cannotReact(friend), 'and never your side');
+
+    const dasher = godUnit('Dasher', 1, 300);
+    const caughtUp = godUnit('CaughtUp', 2, 560, 300);
+    const gale = new GameState([dasher, caughtUp], 971);
+    lay(gale, dasher, ['pierce', 'twist', 'shatter']);
+    const caughtFrom = { ...caughtUp.pos };
+    dash(gale.effectContext(dasher, null, null), dasher, { toPoint: { x: 520, y: 270 }, distance: R(8) });
+    assert(caughtUp.hp < 300 && dist(caughtUp.pos, caughtFrom) > R(0.5), 'Whirlwind Law: a dash spins and cuts everyone near where it stops');
+
+    const circler = godUnit('Circler', 1, 300);
+    circler.hp = 200;
+    const circled = godUnit('Circled', 2, 360);
+    const dance = new GameState([circler, circled], 973);
+    lay(dance, circler, ['pierce', 'twist', 'drain']);
+    const circlerFrom = { ...circler.pos };
+    pierceHit(dance, circler, circled, 2);
+    assert(dist(circler.pos, circlerFrom) > R(0.5) && circler.hp > 200, 'Circling Thirst slips the attacker around its target and drains it');
+
+    const barber = godUnit('Barber', 1, 300);
+    const barbed = godUnit('Barbed', 2, 400);
+    const hooks = new GameState([barber, barbed], 975);
+    lay(hooks, barber, ['pierce', 'twist', 'curse']);
+    pierceHit(hooks, barber, barbed, 2);
+    const barbedFrom = { ...barbed.pos };
+    hooks.currentIndex = 1;
+    hooks.beginTurn();
+    assert(barbed.hp < 298 && dist(barbed.pos, barbedFrom) > R(0.5), 'Twisting Barbs lodge a barb that turns its bearer as it ticks');
+
+    const stakeOwner = godUnit('StakeOwner', 1, 300);
+    const stakeFoe = godUnit('StakeFoe', 2, 400);
+    const stockade = new GameState([stakeOwner, stakeFoe], 977);
+    lay(stockade, stakeOwner, ['pierce', 'bind', 'shatter']);
+    pierceHit(stockade, stakeOwner, stakeFoe, 2);
+    equal(stakeFoe.hp, 298, 'Stake Law adds nothing to a free enemy');
+    applyStun(stockade.effectContext(stakeOwner, stakeFoe, null), stakeFoe, { duration: 2, type: 'movement' });
+    pierceHit(stockade, stakeOwner, stakeFoe, 2);
+    assert(stakeFoe.hp <= 295, 'but splits a rooted one with 1d6 shatter more');
+
+    const leech = godUnit('Leech', 1, 300);
+    leech.hp = 200;
+    const leeched = godUnit('Leeched', 2, 400);
+    const ward = new GameState([leech, leeched], 979);
+    lay(ward, leech, ['pierce', 'bind', 'drain']);
+    applyStun(ward.effectContext(leech, leeched, null), leeched, { duration: 2, type: 'movement' });
+    pierceHit(ward, leech, leeched, 2);
+    assert(leech.hp > 200 && leeched.hp < 298, 'Bloodpin Law drains a pierced rooted unit');
+
+    const fetterer = godUnit('Fetterer', 1, 300);
+    const fettered = godUnit('Fettered', 2, 400);
+    const cells = new GameState([fetterer, fettered], 981);
+    lay(cells, fetterer, ['pierce', 'bind', 'curse']);
+    applyStun(cells.effectContext(fetterer, fettered, null), fettered, { duration: 2, type: 'movement' });
+    equal(has(fettered, 'dot:law-thorned-fetters'), true, 'Thorned Fetters drives thorns into whatever is rooted');
+
+    const marrow = godUnit('Marrow', 1, 300);
+    marrow.hp = 200;
+    const bone = godUnit('Bone', 2, 400);
+    const ossuary = new GameState([marrow, bone], 983);
+    lay(ossuary, marrow, ['pierce', 'shatter', 'drain']);
+    pierceHit(ossuary, marrow, bone, 3);
+    equal(marrow.hp, 200, 'Marrow Thirst ignores a pierce hit under 4');
+    pierceHit(ossuary, marrow, bone, 4);
+    assert(marrow.hp > 200, 'and drains one of 4 or more');
+
+    const shardCaster = godUnit('ShardCaster', 1, 300);
+    const shardFoe = godUnit('ShardFoe', 2, 400);
+    const quarry = new GameState([shardCaster, shardFoe], 985);
+    lay(quarry, shardCaster, ['pierce', 'shatter', 'curse']);
+    dealDamage(quarry.effectContext(shardCaster, shardFoe, null), shardFoe, dmg(2, 'shatter'), { canMiss: false });
+    equal(has(shardFoe, 'dot:law-splinters'), true, 'Splinter Curse leaves splinters in every shatter hit');
+
+    const gardener = godUnit('Gardener', 1, 300);
+    const corpse = creature('Corpse', 600);
+    corpse.hp = 1;
+    const nearby = creature('Nearby', 600 + R(2));
+    const garden = new GameState([gardener, corpse, nearby], 987);
+    lay(garden, gardener, ['pierce', 'shatter', 'desecrate']);
+    pierceHit(garden, gardener, corpse, 5);
+    assert(!corpse.alive && nearby.hp < 300, 'Bone Garden bursts bone spikes from an affected corpse into the affected near it');
+
+    const vampire = godUnit('Vampire', 1, 300);
+    const veins = godUnit('Veins', 2, 400);
+    const crypt = new GameState([vampire, veins], 989);
+    lay(crypt, vampire, ['pierce', 'drain', 'curse']);
+    pierceHit(crypt, vampire, veins, 2);
+    const letting = veins.statuses.find((s) => s.key === 'dot:law-bloodletting') as { lifestealToIndex?: number } | undefined;
+    equal(letting?.lifestealToIndex, 0, 'Vampiric Wounds bleeds a pierced unit into its attacker');
+
+    const harvester = godUnit('Harvester', 1, 300);
+    harvester.hp = 200;
+    const sheaf = creature('Sheaf', 400);
+    sheaf.hp = 3;
+    const field = new GameState([harvester, sheaf], 991);
+    lay(field, harvester, ['pierce', 'drain', 'desecrate']);
+    pierceHit(field, harvester, sheaf, 5);
+    assert(!sheaf.alive && harvester.hp >= 202, 'Blood Harvest feeds whoever kills an affected unit');
+
+    const scourge = godUnit('Scourge', 1, 300);
+    const beast = creature('Beast', 400);
+    const altar = new GameState([scourge, beast], 993);
+    lay(altar, scourge, ['pierce', 'curse', 'desecrate']);
+    applyDot(altar.effectContext(scourge, beast, null), beast, { name: 'Sore', duration: 3, damage: dmg(1, 'corrosive') });
+    pierceHit(altar, scourge, beast, 3);
+    equal(beast.hp, 294, 'Stigmata doubles a pierce hit on an afflicted affected unit');
+    altar.currentIndex = 1;
+    altar.beginTurn();
+    assert(beast.hp <= 292, 'and its damage over time pierces as it ticks');
+
+    // ---- Ordinary spells ----
+    const flanker = godUnit('Flanker', 1, 200);
+    const flanked = godUnit('Flanked', 2, 500);
+    const lane = new GameState([flanker, flanked], 995);
+    getSpell(['pierce', 'twist'], null)!.cast(lane.effectContext(flanker, flanked, null));
+    assert(flanked.hp < 300 && dist(flanker.pos, flanked.pos) < R(1.6), 'Flanking Strike dashes to its target and strikes it');
+
+    const corker = godUnit('Corker', 1, 200);
+    const passed = godUnit('Passed', 2, 400);
+    const pastFrom = { ...passed.pos };
+    const alley = new GameState([corker, passed], 997);
+    getSpell(['pierce', 'twist', 'shatter'], null)!.cast(alley.effectContext(corker, null, { x: 560, y: 270 }));
+    assert(passed.hp < 300 && dist(passed.pos, pastFrom) > R(0.5), 'Corkscrew Dash cuts and spins whoever it passes');
+
+    const drinker = godUnit('Drinker', 1, 200);
+    const drained = godUnit('Drained', 2, 500);
+    const drainedPal = godUnit('DrainedPal', 2, 500, 340);
+    const drinkerPal = godUnit('DrinkerPal', 1, 540, 270);
+    const bloodbath = new GameState([drinker, drained, drainedPal, drinkerPal], 999);
+    getSpell(['pierce', 'drain', 'curse'], null)!.cast(bloodbath.effectContext(drinker, drained, null));
+    assert(
+      has(drained, 'dot:bled-dry') && has(drainedPal, 'dot:bled-dry') && has(drinkerPal, 'dot:bled-dry') && !has(drinker, 'dot:bled-dry'),
+      'Exsanguinate bleeds everything near its target dry, your side included but never you'
+    );
+
+    const lancer = godUnit('Lancer', 1, 200);
+    const firstInLine = godUnit('FirstInLine', 2, 400);
+    const unhallowed = creature('Unhallowed', 600);
+    const throughLine = new GameState([lancer, firstInLine, unhallowed], 1001);
+    getSpell(['pierce', 'desecrate'], null)!.cast(throughLine.effectContext(lancer, null, { x: 800, y: 270 }));
+    assert(
+      firstInLine.hp < 300 && unhallowed.hp < 300 && throughLine.desecrationFields.length === 1,
+      'Defiling Lance pierces its whole line and fouls the ground under the affected'
+    );
+  }],
+
+  ['drains: Corrode twins that heal for their corrosion, minions that feed themselves and their summoner, gear that drinks a share of the blow', async () => {
+    await import('../spells/classSpells');
+    const R = (cm: number): number => cm * RANGE_UNIT;
+    const has = (m: Mage, key: string): boolean => m.statuses.some((s) => s.key === key);
+    const summon = (game: GameState, owner: Mage, words: WordId[], at: { x: number; y: number }): Mage => {
+      void getSpell(words, 'life')!.cast(game.effectContext(owner, null, at));
+      const raised = game.summonsOf(owner);
+      return raised[raised.length - 1];
+    };
+    const lay = (game: GameState, caster: Mage, words: WordId[]): void => {
+      void getSpell(words, 'hexcraft')!.cast(game.effectContext(caster, caster, null));
+    };
+    const wear = (game: GameState, bearer: Mage, words: WordId[]): void => {
+      void getSpell(words, 'objects')!.cast(game.effectContext(bearer, bearer, null));
+    };
+    const hit = (game: GameState, from: Mage, to: Mage, amount: number, type: 'corrosive' | 'shatter' | 'pierce'): number =>
+      dealDamage(game.effectContext(from, to, null), to, dmg(amount, type), { canMiss: false });
+    /** A caster at 200 health, so every drink shows. */
+    const thirsty = (name: string, x = 300): Mage => {
+      const m = godUnit(name, 1, x);
+      m.hp = 200;
+      return m;
+    };
+
+    const roster: [WordId[], string, string, string][] = [
+      [['drain', 'twist'], 'gag-leech', 'gaggingFang', 'chokingThirst'],
+      [['drain', 'bind'], 'blood-slime', 'leechingChains', 'clingingThirst'],
+      [['drain', 'shatter'], 'leech-brute', 'conjuredBloodhammer', 'brittleThirst'],
+      [['drain', 'curse'], 'blood-idol', 'thirstingCurse', 'curseOfThirst'],
+      [['drain', 'desecrate'], 'blood-wight', 'gorgingEdge', 'gorgingWorld'],
+      [['drain', 'twist', 'bind'], 'bloodjaw', 'bloodGag', 'gnawingLockdown'],
+      [['drain', 'twist', 'shatter'], 'bloodmill', 'leechspring', 'grindingThirst'],
+      [['drain', 'twist', 'curse'], 'leech-wheel', 'thirstingSpindle', 'passingThirst'],
+      [['drain', 'bind', 'shatter'], 'blood-warden', 'conjuredLeechingBuckler', 'calcifiedThirst'],
+      [['drain', 'bind', 'curse'], 'fetter-leech', 'thirstingFetters', 'festeringThirst'],
+      [['drain', 'shatter', 'curse'], 'gorged-toad', 'blightdrinker', 'crackedVessels'],
+      [['drain', 'shatter', 'desecrate'], 'marrow-colossus', 'conjuredGravedrinker', 'marrowFeast'],
+      [['drain', 'curse', 'desecrate'], 'blood-herald', 'bloodCenser', 'eternalThirst'],
+    ];
+    for (const [words, kind, gear, rule] of roster) {
+      const label = words.join(' ');
+      const caster = godUnit('Caster', 1, 300);
+      const field = new GameState([caster, godUnit('Other', 2, 900)], 1101);
+      equal(summon(field, caster, words, { x: 500, y: 270 })?.summonKind, kind, `Life ${label} raises its minion`);
+      assert(getSpell(words, 'life')!.description.includes('heals it as well as you'), `Life ${label} says its minion feeds itself too`);
+      wear(field, caster, words);
+      const geared =
+        caster.hands.includes(gear as never) ||
+        caster.statuses.some((s) => s.kind === 'imbue' && (s as { imbue: string }).imbue === gear);
+      assert(geared, `Objects ${label} arms you with ${gear}`);
+      lay(field, caster, words);
+      assert(field.hexLaw(rule as never), `Hexcraft ${label} lays its law`);
+    }
+
+    // ---- Minions feed themselves and their summoner ----
+    const leechOwner = thirsty('LeechOwner', 200);
+    const leechPrey = godUnit('LeechPrey', 2, 600);
+    const marsh = new GameState([leechOwner, leechPrey], 1103);
+    const leech = summon(marsh, leechOwner, ['drain', 'twist'], { x: 560, y: 270 });
+    leech.hp = 2;
+    marsh.lastIntrinsicDamage = 3;
+    leech.intrinsicMelee!.onHit!(marsh.effectContext(leech, leechPrey, null), leechPrey);
+    equal([leechOwner.hp, leech.hp], [203, 5], 'A Gag Leech bite heals the leech and its summoner for what it drank');
+
+    const wheelOwner = thirsty('WheelOwner', 200);
+    const wheelPrey = godUnit('WheelPrey', 2, 600);
+    const mill = new GameState([wheelOwner, wheelPrey], 1105);
+    const wheel = summon(mill, wheelOwner, ['drain', 'twist', 'curse'], { x: 560, y: 270 });
+    wheel.hp = 1;
+    mill.lastIntrinsicDamage = 2;
+    wheel.intrinsicMelee!.onHit!(mill.effectContext(wheel, wheelPrey, null), wheelPrey);
+    const [ownerBefore, wheelBefore, preyBefore] = [wheelOwner.hp, wheel.hp, wheelPrey.hp];
+    mill.currentIndex = 1;
+    mill.beginTurn();
+    const sipped = preyBefore - wheelPrey.hp;
+    assert(
+      sipped > 0 && wheelOwner.hp - ownerBefore === sipped && wheel.hp - wheelBefore === sipped,
+      "A Leech Wheel's Drinking Wheel feeds both the wheel and its summoner as it ticks"
+    );
+
+    const idolOwner = thirsty('IdolOwner', 200);
+    const idolPal = godUnit('IdolPal', 1, 500, 300);
+    const idolFoe = godUnit('IdolFoe', 2, 540);
+    const shrine = new GameState([idolOwner, idolPal, idolFoe], 1107);
+    const idol = summon(shrine, idolOwner, ['drain', 'curse'], { x: 520, y: 270 });
+    idol.hp = 3;
+    runPulse(shrine, idol, idolOwner, MINIONS['blood-idol'].pulse!);
+    const bled = 600 - idolPal.hp - idolFoe.hp;
+    assert(idolPal.hp < 300 && idolFoe.hp < 300, 'A Blood Idol drains everyone near it but its summoner, your side included');
+    equal([idolOwner.hp, idol.hp], [200 + bled, Math.min(8, 3 + bled)], 'and both it and its summoner drink all of it');
+
+    const wightOwner = thirsty('WightOwner', 200);
+    const thrall = creature('Thrall', 520);
+    const barrow = new GameState([wightOwner, thrall], 1109);
+    const wight = summon(barrow, wightOwner, ['drain', 'desecrate'], { x: 500, y: 270 });
+    wight.hp = 4;
+    barrow.currentIndex = 1;
+    barrow.beginTurn();
+    const fouled = 300 - thrall.hp;
+    assert(
+      fouled >= 2 && wightOwner.hp - 200 === fouled && wight.hp === Math.min(14, 4 + fouled),
+      "A Blood Wight's fouled ground drains the affected into the wight and its summoner"
+    );
+
+    // ---- Gear drinks a share of the blow ----
+    const chained = thirsty('Chained');
+    const brute = godUnit('Brute', 2, 360);
+    const chainYard = new GameState([chained, brute], 1111);
+    wear(chainYard, chained, ['drain', 'bind']);
+    imbueAfterStrike(chainYard, brute, chained, 10);
+    equal([300 - brute.hp, chained.hp, brute.isStunned('movement')], [5, 205, true], 'Leeching Chains drains half the blow back from its attacker and roots it');
+    imbueAfterStrike(chainYard, brute, chained, 40);
+    equal([300 - brute.hp, chained.hp], [25, 225], 'and the drain grows with the blow');
+
+    const wringer = thirsty('Wringer');
+    const wrung = godUnit('Wrung', 2, 360);
+    const wringYard = new GameState([wringer, wrung], 1113);
+    wear(wringYard, wringer, ['drain', 'twist']);
+    for (let i = 0; i < 3; i++) imbueAfterStrike(wringYard, wringer, wrung, 6);
+    equal([300 - wrung.hp, wringer.hp], [9, 209], 'Gagging Fang drains half of each of its three blows');
+    assert(wrung.statuses.some((s) => s.kind === 'stifle'), 'and stifles the target');
+    equal(wringer.statuses.some((s) => s.kind === 'imbue'), false, 'and is spent after three');
+
+    const curser = thirsty('Curser');
+    const cursed = godUnit('Cursed', 2, 360);
+    const cursing = new GameState([curser, cursed], 1115);
+    wear(cursing, curser, ['drain', 'curse']);
+    imbueAfterStrike(cursing, curser, cursed, 9);
+    cursing.currentIndex = 1;
+    cursing.beginTurn();
+    equal([300 - cursed.hp, curser.hp], [5, 205], 'Thirsting Curse ticks for half the blow that laid it, and its wielder drinks it');
+
+    const smith = thirsty('Smith');
+    const anvil = godUnit('Anvil', 2, 360);
+    const forge = new GameState([smith, anvil], 1117);
+    wear(forge, smith, ['drain', 'shatter']);
+    equal(smith.hands, ['conjuredBloodhammer'], 'Objects Drain Shatter conjures a Bloodhammer');
+    imbueAfterStrike(forge, smith, anvil, 8, getItem('conjuredBloodhammer').onHit);
+    equal([300 - anvil.hp, smith.hp, has(anvil, 'debuff:pitted')], [4, 204, true], 'its blows drain half their damage and crack the target');
+
+    const springer = thirsty('Springer');
+    const sprung = godUnit('Sprung', 2, 360);
+    const springYard = new GameState([springer, sprung], 1119);
+    wear(springYard, springer, ['drain', 'twist', 'shatter']);
+    equal(imbueDeflects(springYard, sprung, springer, 10), true, 'Leechspring negates a basic attack');
+    assert(sprung.hp <= 294 && springer.hp === 205, 'shatters the attacker and drains half the blow it turned aside');
+
+    const gorger = thirsty('Gorger');
+    const carcass = creature('Carcass', 360);
+    const shambles = new GameState([gorger, carcass], 1121);
+    wear(shambles, gorger, ['drain', 'desecrate']);
+    imbueAfterStrike(shambles, gorger, carcass, 8);
+    equal([300 - carcass.hp, gorger.hp], [4, 204], 'Gorging Edge drains half a blow on one of the affected');
+    equal(shambles.desecrationFields[0]?.lifesteal, true, 'and fouls the ground around it with drinking rot');
+
+    // ---- Laws heal what corrosion takes ----
+    const twister = thirsty('Twister');
+    const twisted = godUnit('Twisted', 2, 400);
+    const vortex = new GameState([twister, twisted], 1123);
+    lay(vortex, twister, ['drain', 'twist']);
+    hit(vortex, twister, twisted, 3, 'corrosive');
+    assert(twisted.statuses.some((s) => s.kind === 'stifle') && twister.hp === 203, 'Choking Thirst stifles at the first corrosive hit of a round and feeds its attacker');
+    hit(vortex, twister, twisted, 3, 'corrosive');
+    equal(twister.hp, 203, 'only once a round');
+
+    const clinger = thirsty('Clinger');
+    const clung = godUnit('Clung', 2, 400);
+    const bog = new GameState([clinger, clung], 1125);
+    lay(bog, clinger, ['drain', 'bind']);
+    hit(bog, clinger, clung, 3, 'corrosive');
+    equal([clung.isStunned('movement'), clinger.hp], [true, 203], 'Clinging Thirst roots at the first corrosive hit and feeds its attacker');
+
+    const cracker = thirsty('Cracker');
+    const brittle = godUnit('Brittle', 2, 400);
+    const kiln = new GameState([cracker, brittle], 1127);
+    lay(kiln, cracker, ['drain', 'shatter']);
+    hit(kiln, cracker, brittle, 2, 'corrosive');
+    equal(cracker.hp, 200, 'Brittle Thirst: a corrosive hit only makes its target brittle');
+    hit(kiln, cracker, brittle, 2, 'shatter');
+    const cracked = 300 - brittle.hp - 4;
+    assert(cracked >= 1 && cracker.hp - 200 === cracked, 'and the next shatter hit drains it for 1d6 more');
+
+    const thirster = thirsty('Thirster');
+    const parched = godUnit('Parched', 2, 400);
+    const desert = new GameState([thirster, parched], 1129);
+    lay(desert, thirster, ['drain', 'curse']);
+    applyDot(desert.effectContext(thirster, parched, null), parched, { name: 'Sore', duration: 3, damage: dmg(1, 'corrosive') });
+    assert(has(parched, 'debuff:curse-corrode-slow'), 'Curse of Thirst slows every afflicted unit');
+    desert.currentIndex = 1;
+    desert.beginTurn();
+    assert(thirster.hp > 200 && 300 - parched.hp - 1 === thirster.hp - 200, 'and every tick drains 1d3 more into whoever laid it');
+
+    const glutton = thirsty('Glutton');
+    const swine = creature('Swine', 400);
+    const sty = new GameState([glutton, swine], 1131);
+    lay(sty, glutton, ['drain', 'desecrate']);
+    hit(sty, glutton, swine, 8, 'pierce');
+    equal([300 - swine.hp, glutton.hp], [12, 204], 'The Gorging World drains half again any hit on one of the affected');
+    heal(sty.effectContext(swine, swine, null), swine, 5);
+    equal(swine.hp, 288, 'and they cannot be healed');
+
+    const jailer = thirsty('Jailer');
+    const jailed = godUnit('Jailed', 2, 400);
+    const jail = new GameState([jailer, jailed], 1133);
+    lay(jail, jailer, ['drain', 'twist', 'bind']);
+    applyStun(jail.effectContext(jailer, jailed, null), jailed, { duration: 2, type: 'movement' });
+    const bolt = getSpell(['pierce'], null)!;
+    equal(jail.stopDeclaredAction(jail.makeSpellItem(jailed, bolt, jailer, null)), true, "Gnawing Lockdown stops a rooted unit's first action");
+    assert(jailed.hp < 300 && jailer.hp - 200 === 300 - jailed.hp, 'and drains it into the nearest unit of another side');
+    equal(jail.stopDeclaredAction(jail.makeSpellItem(jailed, bolt, jailer, null)), false, 'once a round');
+
+    const grinder = thirsty('Grinder');
+    const ground = godUnit('Ground', 2, 400);
+    const quarry = new GameState([grinder, ground], 1135);
+    lay(quarry, grinder, ['drain', 'twist', 'shatter']);
+    quarry.slamDamage(quarry.effectContext(grinder, ground, null), ground, 3, 'shatter');
+    const ground2 = 300 - ground.hp - 6;
+    assert(ground2 >= 1 && grinder.hp - 200 === ground2, 'Grinding Thirst doubles a slam and drains 1d6 more into whoever slammed it');
+
+    const passer = thirsty('Passer', 100);
+    const carrier = godUnit('Carrier', 2, 500);
+    const heir = godUnit('Heir', 2, 500 + R(2));
+    const relay = new GameState([passer, carrier, heir], 1137);
+    lay(relay, passer, ['drain', 'twist', 'curse']);
+    applyDot(relay.effectContext(passer, carrier, null), carrier, { name: 'Sore', duration: 3, damage: dmg(1, 'corrosive') });
+    lawRoundEnd(relay);
+    assert(has(heir, 'dot:Sore') && !has(carrier, 'dot:Sore'), 'Passing Thirst moves a damage over time on');
+    equal(passer.hp - 200, 300 - carrier.hp, 'and whoever laid it drinks the bite it leaves behind');
+
+    const calcifier = thirsty('Calcifier');
+    const stone = godUnit('Stone', 2, 400);
+    const cairn = new GameState([calcifier, stone], 1139);
+    lay(cairn, calcifier, ['drain', 'bind', 'shatter']);
+    applyStun(cairn.effectContext(calcifier, stone, null), stone, { duration: 3, type: 'movement' });
+    hit(cairn, calcifier, stone, 3, 'corrosive');
+    equal([300 - stone.hp, calcifier.hp], [4, 204], 'Calcified Thirst: a corrosive hit on a rooted unit deals 1 more and feeds its attacker');
+    hit(cairn, calcifier, stone, 2, 'shatter');
+    equal(stone.isStunned('full'), true, 'and the first shatter hit on it each round stuns it');
+
+    const festerer = thirsty('Festerer');
+    const festered = godUnit('Festered', 2, 400);
+    const sore = new GameState([festerer, festered], 1141);
+    lay(sore, festerer, ['drain', 'bind', 'curse']);
+    applyStun(sore.effectContext(festerer, festered, null), festered, { duration: 3, type: 'movement' });
+    applyDot(sore.effectContext(festerer, festered, null), festered, { name: 'Sore', duration: 3, damage: dmg(2, 'corrosive') });
+    sore.currentIndex = 1;
+    sore.beginTurn();
+    equal([300 - festered.hp, festerer.hp], [4, 204], 'Festering Thirst doubles corrosion on a rooted unit and feeds whoever laid it');
+
+    const potter = thirsty('Potter');
+    const vessel = godUnit('Vessel', 2, 400);
+    const kilnyard = new GameState([potter, vessel], 1143);
+    lay(kilnyard, potter, ['drain', 'shatter', 'curse']);
+    applyDot(kilnyard.effectContext(potter, vessel, null), vessel, { name: 'Sore', duration: 3, damage: dmg(2, 'corrosive') });
+    hit(kilnyard, potter, vessel, 1, 'shatter');
+    equal([300 - vessel.hp, potter.hp], [3, 202], 'Cracked Vessels sets corrosion off at a shatter hit and feeds its attacker');
+
+    const feaster = thirsty('Feaster');
+    const marrow = creature('Marrow', 400);
+    const ossuary = new GameState([feaster, marrow], 1145);
+    lay(ossuary, feaster, ['drain', 'shatter', 'desecrate']);
+    hit(ossuary, feaster, marrow, 3, 'shatter');
+    const feast = 300 - marrow.hp - 6;
+    assert(
+      marrow.isStunned('full') && feast >= 1 && feaster.hp - 200 === feast,
+      'Marrow Feast doubles a shatter hit on the affected, stuns it and drains it'
+    );
+
+    const ancient = thirsty('Ancient');
+    const undying = creature('Undying', 400);
+    const tomb = new GameState([ancient, undying], 1147);
+    lay(tomb, ancient, ['drain', 'curse', 'desecrate']);
+    applyDot(tomb.effectContext(ancient, undying, null), undying, { name: 'Sore', duration: 2, damage: dmg(2, 'corrosive') });
+    tomb.currentIndex = 1;
+    tomb.beginTurn();
+    equal(ancient.hp, 202, 'Eternal Thirst feeds whoever laid a damage over time on the affected');
+
+    // ---- Ordinary spells ----
+    const sipper = thirsty('Sipper', 200);
+    const sipped2 = godUnit('Sipped', 2, 400);
+    const tavern = new GameState([sipper, sipped2], 1149);
+    getSpell(['drain', 'twist'], null)!.cast(tavern.effectContext(sipper, sipped2, null));
+    assert(
+      sipped2.statuses.some((s) => s.kind === 'stifle') && sipper.hp - 200 === 300 - sipped2.hp,
+      'Throttle drinks its target and stifles it'
+    );
+
+    const locker = thirsty('Locker');
+    const locked = godUnit('Locked', 2, 400);
+    const vault = new GameState([locker, locked], 1151);
+    getSpell(['drain', 'twist', 'bind'], null)!.cast(vault.effectContext(locker, locked, null));
+    equal(vault.stopDeclaredAction(vault.makeSpellItem(locked, bolt, locker, null)), true, 'Bloodlock stifles the next action');
+    assert(locked.hp <= 298 && locker.hp - 200 === 300 - locked.hp, 'and drains 2d4 from it into its caster');
+
+    const shackler = thirsty('Shackler');
+    const shackled = godUnit('Shackled', 2, 400);
+    const cell = new GameState([shackler, shackled], 1153);
+    getSpell(['drain', 'bind', 'curse'], null)!.cast(cell.effectContext(shackler, shackled, null));
+    cell.currentIndex = 1;
+    cell.beginTurn();
+    assert(shackled.hp < 300 && shackler.hp - 200 === 300 - shackled.hp, 'Leech Shackles drain their bearer into the caster');
+
+    const digger = thirsty('Digger');
+    const fallen = creature('Fallen', 500);
+    const pit = new GameState([digger, fallen], 1155);
+    getSpell(['drain', 'shatter', 'desecrate'], null)!.cast(pit.effectContext(digger, null, { x: 500, y: 270 }));
+    pit.currentIndex = 1;
+    pit.beginTurn();
+    const drunkPit = digger.hp - 200;
+    assert(drunkPit >= 1 && drunkPit < 300 - fallen.hp, 'Gorging Pit feeds its caster the corrosion, not the shatter');
+  }],
+
+  ['binds: wardens guard their side, shackles turn enemy gear on its owner, and Bind laws cut both ways', async () => {
+    await import('../spells/classSpells');
+    const R = (cm: number): number => cm * RANGE_UNIT;
+    const has = (m: Mage, key: string): boolean => m.statuses.some((s) => s.key === key);
+    const stifled = (m: Mage): boolean => m.statuses.some((s) => s.kind === 'stifle');
+    const imbued = (m: Mage, id: string) =>
+      m.statuses.find((s) => s.kind === 'imbue' && (s as { imbue: string }).imbue === id) as { boundIndex?: number } | undefined;
+    const summon = (game: GameState, owner: Mage, words: WordId[], at: { x: number; y: number }): Mage => {
+      void getSpell(words, 'life')!.cast(game.effectContext(owner, null, at));
+      const raised = game.summonsOf(owner);
+      return raised[raised.length - 1];
+    };
+    const lay = (game: GameState, caster: Mage, words: WordId[]): void => {
+      void getSpell(words, 'hexcraft')!.cast(game.effectContext(caster, caster, null));
+    };
+    const arm = (game: GameState, caster: Mage, target: Mage, words: WordId[]): void => {
+      void getSpell(words, 'objects')!.cast(game.effectContext(caster, target, null));
+    };
+    const root = (game: GameState, from: Mage, to: Mage): void =>
+      applyStun(game.effectContext(from, to, null), to, { duration: 3, type: 'movement' });
+    const hit = (game: GameState, from: Mage, to: Mage, amount: number, type: 'shatter' | 'pierce'): number =>
+      dealDamage(game.effectContext(from, to, null), to, dmg(amount, type), { canMiss: false });
+    const bolt = getSpell(['pierce'], null)!;
+
+    const roster: [WordId[], string, string, 'self' | 'foe', string][] = [
+      [['bind', 'twist'], 'gaoler', 'shackledGrip', 'foe', 'gagOrder'],
+      [['bind', 'shatter'], 'bulwark', 'brittleFetters', 'foe', 'petrifaction'],
+      [['bind', 'twist', 'shatter'], 'warding-obelisk', 'shatterlockMail', 'self', 'breakingPoint'],
+      [['bind', 'twist', 'curse'], 'shackle-wraith', 'effigyBlade', 'self', 'hexedSilence'],
+      [['bind', 'shatter', 'curse'], 'basilisk', 'gorgonCharm', 'self', 'shatteredCurses'],
+    ];
+    for (const [words, kind, gear, bearer, rule] of roster) {
+      const label = words.join(' ');
+      const caster = godUnit('Caster', 1, 300);
+      const other = godUnit('Other', 2, 600);
+      const field = new GameState([caster, other], 1201);
+      equal(summon(field, caster, words, { x: 450, y: 270 })?.summonKind, kind, `Life ${label} raises its minion`);
+      arm(field, caster, bearer === 'foe' ? other : caster, words);
+      assert(imbued(bearer === 'foe' ? other : caster, gear), `Objects ${label} lays ${gear}`);
+      lay(field, caster, words);
+      assert(field.hexLaw(rule as never), `Hexcraft ${label} lays its law`);
+    }
+    equal(getSpell(['bind', 'curse'], 'life')?.codename, 'Bind Curse', 'Bind Curse keeps its Binder, shackles and binding aura');
+
+    // ---- Wardens guard their side ----
+    const warden = godUnit('Warden', 1, 200);
+    const ward = godUnit('Ward', 1, 500);
+    const intruder = godUnit('Intruder', 2, 500 + R(2));
+    const stranger = godUnit('Stranger', 2, 950);
+    const keep = new GameState([warden, ward, intruder, stranger], 1203);
+    const gaoler = summon(keep, warden, ['bind', 'twist'], { x: 450, y: 270 });
+    runPulse(keep, gaoler, warden, MINIONS.gaoler.pulse!);
+    assert(intruder.isStunned('movement') && stifled(intruder), 'A Gaoler roots and gags the enemy closest to one of your units');
+    assert(!stranger.isStunned('movement') && !stifled(stranger), 'and leaves enemies away from your side alone');
+
+    const mason = godUnit('Mason', 1, 200);
+    const sapper = godUnit('Sapper', 2, 500 + R(1.5));
+    const rampart = new GameState([mason, sapper], 1205);
+    const bulwark = summon(rampart, mason, ['bind', 'shatter'], { x: 500, y: 270 });
+    hit(rampart, sapper, bulwark, 6, 'pierce');
+    assert(sapper.hp < 300 && sapper.isStunned('movement'), 'A Bulwark struck roots and shatters the enemies beside it');
+
+    const keeper = godUnit('Keeper', 1, 200);
+    const near = godUnit('Near', 2, 500 + R(1));
+    const nearish = godUnit('Nearish', 2, 500 + R(2.5));
+    const henge = new GameState([keeper, near, nearish], 1207);
+    const obelisk = summon(henge, keeper, ['bind', 'twist', 'shatter'], { x: 500, y: 270 });
+    runPulse(henge, obelisk, keeper, MINIONS['warding-obelisk'].pulse!);
+    equal([near.isStunned('movement'), nearish.isStunned('movement')], [true, true], 'A Warding Obelisk roots every enemy around it');
+    equal([stifled(near), stifled(nearish)], [true, false], 'and gags the nearest');
+
+    const haunter = godUnit('Haunter', 1, 200);
+    const haunted = godUnit('Haunted', 2, 600);
+    const hauntPal = godUnit('HauntPal', 1, 660);
+    const manor = new GameState([haunter, haunted, hauntPal], 1209);
+    const wraith = summon(manor, haunter, ['bind', 'twist', 'curse'], { x: 520, y: 270 });
+    manor.lastIntrinsicDamage = 2;
+    wraith.intrinsicMelee!.onHit!(manor.effectContext(wraith, haunted, null), haunted);
+    runPulse(manor, wraith, haunter, MINIONS['shackle-wraith'].pulse!);
+    assert(stifled(haunted), 'A Shackle Wraith gags a cursed enemy beside one of your units');
+    manor.currentIndex = 1;
+    manor.beginTurn();
+    assert(haunted.isStunned('movement') && haunted.hp < 300, 'and its Shackle Curse roots at every tick');
+
+    const gazer = godUnit('Gazer', 1, 200);
+    const gazed = godUnit('Gazed', 2, 600);
+    const lair = new GameState([gazer, gazed], 1211);
+    const basilisk = summon(lair, gazer, ['bind', 'shatter', 'curse'], { x: 520, y: 270 });
+    lair.lastIntrinsicDamage = 2;
+    const gaze = (): void => basilisk.intrinsicMelee!.onHit!(lair.effectContext(basilisk, gazed, null), gazed);
+    gaze();
+    equal([has(gazed, 'debuff:kit-stoning'), gazed.isStunned('movement')], [true, false], 'A Basilisk gaze first slows');
+    gaze();
+    equal(gazed.isStunned('movement'), true, 'then roots');
+    gaze();
+    assert(gazed.isStunned('full') && gazed.hp < 300, 'then stuns and cracks the stone');
+
+    // ---- Shackles turn enemy gear on its owner; wards guard your own ----
+    const jailer = godUnit('Jailer', 1, 300);
+    const brute = godUnit('Brute', 2, 360);
+    const yard = new GameState([jailer, brute], 1213);
+    arm(yard, jailer, brute, ['bind', 'twist']);
+    imbueAfterStrike(yard, brute, jailer, 3);
+    assert(brute.isStunned('movement') && stifled(brute), 'Shackled Grip: a bound weapon roots and gags its own wielder');
+
+    const smith = godUnit('Smith', 1, 300);
+    const plated = godUnit('Plated', 2, 360);
+    const forge = new GameState([smith, plated], 1215);
+    arm(forge, smith, plated, ['bind', 'shatter']);
+    imbueAfterStrike(forge, smith, plated, 3);
+    assert(plated.hp < 300 && plated.isStunned('movement'), 'Brittle Fetters crack and root the armour they bind when it is struck');
+
+    const sentinel = godUnit('Sentinel', 1, 300);
+    const raider = godUnit('Raider', 2, 360);
+    raider.hands = ['ironShortsword'];
+    const gate = new GameState([sentinel, raider], 1217);
+    arm(gate, sentinel, sentinel, ['bind', 'twist', 'shatter']);
+    equal(imbueDeflects(gate, raider, sentinel, 5), true, 'Shatterlock Mail negates a basic attack');
+    assert(raider.hp < 300 && stifled(raider), 'shatters and gags the attacker');
+    equal(raider.sabotagedItems.has('ironShortsword'), true, 'and shackles the weapon it struck with');
+
+    const hexer = godUnit('Hexer', 1, 300);
+    const effigy = godUnit('Effigy', 2, 900);
+    const dummy = godUnit('Dummy', 2, 360);
+    const coven = new GameState([hexer, effigy, dummy], 1219);
+    arm(coven, hexer, effigy, ['bind', 'twist', 'curse']);
+    equal(imbued(hexer, 'effigyBlade')?.boundIndex, 1, 'Effigy Blade binds your weapon to an enemy');
+    imbueAfterStrike(coven, hexer, dummy, 2);
+    assert(has(effigy, 'dot:kit:Effigy Curse') && !has(dummy, 'dot:kit:Effigy Curse'), 'and a blow on anyone curses the bound enemy instead');
+
+    const charmed = godUnit('Charmed', 1, 300);
+    const stoned = godUnit('Stoned', 2, 300 + R(2));
+    const garden = new GameState([charmed, stoned], 1221);
+    arm(garden, charmed, charmed, ['bind', 'shatter', 'curse']);
+    imbueTurnStart(garden, charmed);
+    imbueTurnStart(garden, charmed);
+    equal(stoned.isStunned('movement'), true, 'Gorgon Charm stiffens nearby enemies a stage each turn');
+    imbueTurnStart(garden, charmed);
+    assert(stoned.isStunned('full') && stoned.hp < 300, 'until they are stone');
+
+    // ---- Laws ----
+    const judge = godUnit('Judge', 1, 300);
+    const convict = godUnit('Convict', 2, 400);
+    const court = new GameState([judge, convict], 1223);
+    lay(court, judge, ['bind', 'twist']);
+    root(court, judge, convict);
+    equal(court.stopDeclaredAction(court.makeSpellItem(convict, bolt, judge, null)), true, "Gag Order fails a rooted unit's first action");
+    equal(convict.isStunned('movement'), false, 'and the failure frees it from its roots');
+
+    const sculptor = godUnit('Sculptor', 1, 300);
+    const statue = godUnit('Statue', 2, 400);
+    const atelier = new GameState([sculptor, statue], 1225);
+    lay(atelier, sculptor, ['bind', 'shatter']);
+    root(atelier, sculptor, statue);
+    hit(atelier, sculptor, statue, 6, 'pierce');
+    equal(300 - statue.hp, 3, 'Petrifaction halves every hit on a rooted unit');
+    hit(atelier, sculptor, statue, 3, 'shatter');
+    equal(300 - statue.hp, 9, 'except shatter, which it doubles');
+
+    const smasher = godUnit('Smasher', 1, 300);
+    const strained = godUnit('Strained', 2, 400);
+    const rack = new GameState([smasher, strained], 1227);
+    lay(rack, smasher, ['bind', 'twist', 'shatter']);
+    root(rack, smasher, strained);
+    equal(strained.hp, 300, 'Breaking Point: a first root holds');
+    root(rack, smasher, strained);
+    assert(!strained.isStunned('movement') && strained.hp <= 298 && stifled(strained), 'a second one snaps: freed, shattered and gagged');
+
+    const witch = godUnit('Witch', 1, 300);
+    const hexed = godUnit('Hexed', 2, 400);
+    const sabbath = new GameState([witch, hexed], 1229);
+    lay(sabbath, witch, ['bind', 'twist', 'curse']);
+    applyDot(sabbath.effectContext(witch, hexed, null), hexed, { name: 'Sore', duration: 3, damage: dmg(2, 'shadow') });
+    root(sabbath, witch, hexed);
+    equal(hexed.isStunned('movement'), false, 'Hexed Silence: a cursed unit cannot be rooted');
+    applyStifle(sabbath.effectContext(witch, hexed, null), hexed);
+    sabbath.stopDeclaredAction(sabbath.makeSpellItem(hexed, bolt, witch, null));
+    equal(hexed.hp, 298, 'but a stifled one has its curses go off at once');
+
+    const breaker = godUnit('Breaker', 1, 300);
+    const cursed = godUnit('Cursed', 2, 400);
+    const rubble = new GameState([breaker, cursed], 1231);
+    lay(rubble, breaker, ['bind', 'shatter', 'curse']);
+    applyDot(rubble.effectContext(breaker, cursed, null), cursed, { name: 'Sore', duration: 3, damage: dmg(2, 'corrosive') });
+    hit(rubble, breaker, cursed, 1, 'shatter');
+    equal(
+      [300 - cursed.hp, has(cursed, 'dot:Sore'), cursed.isStunned('movement')],
+      [7, false, true],
+      'Shattered Curses breaks a curse open: all its ticks at once, then a root'
+    );
+
+    // ---- Ordinary spells ----
+    const constable = godUnit('Constable', 1, 300);
+    const suspect = godUnit('Suspect', 2, 400);
+    const street = new GameState([constable, suspect], 1233);
+    getSpell(['bind', 'twist'], null)!.cast(street.effectContext(constable, suspect, null));
+    assert(suspect.isStunned('movement') && stifled(suspect), 'Arrest roots and gags');
+
+    const curser = godUnit('Curser', 1, 300);
+    const bound = godUnit('Bound', 2, 400);
+    const hollow = new GameState([curser, bound], 1235);
+    getSpell(['bind', 'curse'], null)!.cast(hollow.effectContext(curser, bound, null));
+    hollow.currentIndex = 1;
+    hollow.beginTurn();
+    assert(bound.hp < 300 && bound.isStunned('movement'), 'Binding Curse roots at every tick');
+
+    const locksmith = godUnit('Locksmith', 1, 300);
+    const locked = godUnit('Locked', 2, 400);
+    const vault = new GameState([locksmith, locked], 1237);
+    root(vault, locksmith, locked);
+    getSpell(['bind', 'twist', 'shatter'], null)!.cast(vault.effectContext(locksmith, locked, null));
+    assert(locked.hp <= 298 && locked.isStunned('movement') && stifled(locked), 'Shatterlock cracks a rooted target and gags it');
+
+    const gagger = godUnit('Gagger', 1, 300);
+    const gagged = godUnit('Gagged', 2, 400);
+    const cell = new GameState([gagger, gagged], 1239);
+    getSpell(['bind', 'twist', 'curse'], null)!.cast(cell.effectContext(gagger, gagged, null));
+    assert(gagged.isStunned('movement'), 'Hex Gag roots');
+    cell.currentIndex = 1;
+    cell.beginTurn();
+    assert(gagged.hp < 300 && stifled(gagged), 'and its curse gags at every tick');
   }],
 ];
 

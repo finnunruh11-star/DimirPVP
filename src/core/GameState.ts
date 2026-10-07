@@ -32,12 +32,18 @@ import { WORDS } from './Words';
 import {
   castRobe,
   clampToTethers,
+  drainFed,
+  drink,
+  executeBonus,
   HEX_LAW_NAMES,
+  hitAmplifier,
   imbueAfterStrike,
   imbueDeflects,
   imbueOnDamaged,
+  imbueOnDotTick,
   imbueTurnStart,
   isHexLawKind,
+  kindleBonus,
   lawAfterHit,
   lawBeforeHit,
   lawBlocksHealing,
@@ -45,6 +51,9 @@ import {
   lawCannotReact,
   lawDotBonus,
   lawAfterDotTick,
+  lawFireBurns,
+  lawOnDash,
+  lawOnDeath,
   lawOnRoot,
   lawOnShoved,
   lawOnVeilBroken,
@@ -57,9 +66,12 @@ import {
   lawVeilBlocked,
   lawVeilDuration,
   lawVeilHolds,
+  lightningAmplifier,
   MINIONS,
   minionStruck,
   onDeclare,
+  reapBonus,
+  reapWeight,
   runDeath,
   runHitEffects,
   runPulse,
@@ -71,6 +83,7 @@ import {
 } from '../effects/classKit';
 import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_TURNS } from '../pve/goblins';
 import { BARAL_MARK, DENIAL_RELOCATION_DAMAGE, DENIAL_STIFLE_MILL, denialArmed } from '../pve/baral';
+import { applyMineEnemyTraits, type MineEnemyKind } from '../pve/minerun';
 import { splitModifiers } from './Words';
 import { stormWordsCompatible } from './Colors';
 import { makeSandCadett, makeRemnant } from './sandSummons';
@@ -421,6 +434,7 @@ export interface SandPatch {
 export class GameState {
   mages: Mage[];
   onMageDefeated?: (target: Mage, source: Mage) => void;
+  spawnMineCreature?: (kind: MineEnemyKind, level: number, at: Vec2) => Mage;
   currentIndex = 0;
   round = 1;
   stack: StackItem[] = [];
@@ -1253,6 +1267,13 @@ export class GameState {
     this.applyCorrosionPools(m);
     this.applyThunderBlessing(m);
     this.applyMineTurnResources(m);
+    this.tickSpiderVenom(m);
+    if (m.alive && m.crocodileGrip?.alive) {
+      dealDamage(this.quietContext(m.crocodileGrip, m), m, dmg(this.rng.roll('1d3').total, 'pierce'), { canMiss: false });
+    }
+    if (m.mine?.kind === 'siren') {
+      m.mine.aggressive = this.livingEnemiesOf(m).some((enemy) => dist(m.pos, enemy.pos) <= 3 * RANGE_UNIT);
+    }
     this.applyEdgelordLanternUpkeep(m);
     this.tickScarabs(m);
     this.tickSwornRepetition(m);
@@ -1268,6 +1289,9 @@ export class GameState {
     // Reveal anyone a foe is already standing next to at the start of the turn.
     this.breakProximityVeils();
     m.beginTurn();
+    if (m.alive && m.mine?.kind === 'hydra' && m.actions.main > 0) {
+      m.actions.main = m.mine.heads ?? 3;
+    }
     this.applyDesecrationActionTax(m);
   }
 
@@ -1308,6 +1332,97 @@ export class GameState {
       const tierBonus = (m.mine.level >= 6 ? 1 : 0) + (m.mine.level >= 12 ? 1 : 0);
       m.mine.stones = (m.mine.stones ?? 0) + this.rng.roll('1d3').total + tierBonus;
       m.mine.stonesRound = this.round;
+    }
+    if (m.mine.kind === 'gigantuan-spider') {
+      m.mine.eggLayRound = (m.mine.eggLayRound ?? 0) + 1;
+      if (m.mine.eggLayRound % 2 === 0) {
+        const count = this.rng.roll('1d3').total;
+        for (let egg = 0; egg < count; egg++) {
+          const angle = (2 * Math.PI * egg) / count;
+          const gap = m.bodyRadius() + 20;
+          const spawn = this.spawnSpiderCreature('spider-egg', m.mine.level, {
+            x: m.x + Math.cos(angle) * gap, y: m.y + Math.sin(angle) * gap,
+          });
+          if (spawn.mine) spawn.mine.hatchRound = this.round + 3;
+        }
+        this.log(`${m.name} lays ${count} egg${count === 1 ? '' : 's'}.`);
+      }
+    }
+  }
+
+  hydraBurning(m: Mage): boolean {
+    return m.mine?.kind === 'hydra' && m.mine.lastBurnRound != null &&
+      m.mine.lastBurnRound >= this.round - 1;
+  }
+
+  resolveHydraWound(target: Mage, beforeHp: number, type: DamageType): void {
+    const state = target.mine;
+    if (state?.kind !== 'hydra') return;
+    if (type === 'heat') state.lastBurnRound = this.round;
+    if (!target.alive) return;
+    for (const [index, fraction] of [0.75, 0.5, 0.25].entries()) {
+      const bit = 1 << index;
+      if ((state.headThresholds ?? 0) & bit) continue;
+      const threshold = target.maxHp * fraction;
+      if (beforeHp <= threshold || target.hp > threshold) continue;
+      state.headThresholds = (state.headThresholds ?? 0) | bit;
+      if (this.hydraBurning(target)) {
+        this.log(`${target.name}'s new head is cauterized.`);
+      } else {
+        state.heads = (state.heads ?? 3) + 1;
+        this.log(`${target.name} grows another head (${state.heads}).`);
+      }
+    }
+  }
+
+  addSpiderVenom(target: Mage, stacks: number, source: Mage): void {
+    if (!target.alive || stacks <= 0) return;
+    target.venomStacks += stacks;
+    target.venomSource = source;
+    this.log(`${target.name} has ${target.venomStacks} venom stacks.`);
+    if (target.venomStacks >= 50) this.defeatMage(target, source, `${target.name} succumbs to spider venom.`);
+  }
+
+  private removeSpiderVenom(target: Mage, stacks: number): void {
+    const removed = Math.min(target.venomStacks, stacks);
+    if (!removed || !target.alive) return;
+    target.venomStacks -= removed;
+    this.log(`${target.name} sheds ${removed} venom stacks (${target.venomStacks} remain).`);
+    dealDamage(this.quietContext(target.venomSource ?? target, target), target,
+      dmg(removed, 'typeless'), { canMiss: false, trueDamage: true });
+    if (!target.venomStacks) target.venomDistance = 0;
+  }
+
+  private tickSpiderVenom(target: Mage): void {
+    if (target.alive && target.venomStacks > 0) {
+      this.removeSpiderVenom(target, Math.ceil(target.venomStacks / 4));
+    }
+  }
+
+  spawnSpiderCreature(kind: MineEnemyKind, level: number, at: Vec2): Mage {
+    const point = {
+      x: Math.max(FIELD.x + 8, Math.min(FIELD.x + FIELD.w - 8, at.x)),
+      y: Math.max(FIELD.y + 8, Math.min(FIELD.y + FIELD.h - 8, at.y)),
+    };
+    if (this.spawnMineCreature) return this.spawnMineCreature(kind, level, point);
+    const mage = new Mage({ name: 'Spider', isAI: true, team: 2, position: point, loadout: [] });
+    applyMineEnemyTraits(mage, { kind, level }, this.rng);
+    this.addMage(mage);
+    return mage;
+  }
+
+  private hatchSpiderEggs(): void {
+    for (const egg of [...this.mages]) {
+      if (!egg.alive || egg.mine?.kind !== 'spider-egg' || (egg.mine.hatchRound ?? Infinity) > this.round) continue;
+      if (!egg.mine.hatchHuge && this.rng.die(6) === 6) {
+        egg.mine.hatchHuge = true;
+        egg.mine.hatchRound = this.round + 2;
+        this.log(`${egg.name} swells; something larger is growing inside.`);
+        continue;
+      }
+      const kind = egg.mine.hatchHuge ? 'huge-spider' : 'small-spider';
+      this.spawnSpiderCreature(kind, egg.mine.level, egg.pos);
+      this.defeatMage(egg, egg, `${egg.name} hatches into a ${kind}.`);
     }
   }
 
@@ -1547,19 +1662,25 @@ export class GameState {
       .flatMap((id) => getItem(id).onStruck ?? []);
   }
 
-  /** Every corrosive damage-over-time on `bearer` ticks once, right now. */
-  tickCorrosiveDots(bearer: Mage, source: Mage): void {
-    const dots = bearer.statuses.filter(
-      (s) => s.kind === 'dot' && (s as DotStatus).damage.type === 'corrosive'
-    ) as DotStatus[];
+  /** Every corrosive damage-over-time on `bearer` ticks once, right now. Returns what they dealt. */
+  tickCorrosiveDots(bearer: Mage, source: Mage): number {
+    return this.tickDotsNow(bearer, source, (dot) => dot.damage.type === 'corrosive');
+  }
+
+  /** Every damage-over-time on `bearer` that `which` picks ticks once, right now. Returns what they dealt. */
+  tickDotsNow(bearer: Mage, source: Mage, which: (dot: DotStatus) => boolean = () => true): number {
+    const dots = bearer.statuses.filter((s) => s.kind === 'dot' && which(s as DotStatus)) as DotStatus[];
+    let dealt = 0;
     for (const dot of dots) {
-      if (!bearer.alive) return;
-      dealDamage(this.quietContext(source, bearer), bearer, dmg(this.rollDotDamage(dot), 'corrosive'), {
+      if (!bearer.alive) break;
+      dealt += dealDamage(this.quietContext(source, bearer), bearer, dmg(this.rollDotDamage(dot), dot.damage.type), {
         canMiss: false,
         noImpactFx: true,
         cause: dot.name,
+        dot: true,
       });
     }
+    return dealt;
   }
 
   /** A damage-over-time's current dice, rolled fresh, without advancing it. */
@@ -1980,19 +2101,22 @@ export class GameState {
   }
 
   /** Roll one desecration's dice on `m`, returning the total it actually dealt. */
-  private rollDesecrationTicks(m: Mage, owner: Mage, ticks: DesecrationTick[]): number {
+  private rollDesecrationTicks(m: Mage, owner: Mage, ticks: DesecrationTick[]): { dealt: number; corrosive: number } {
     let dealt = 0;
+    let corrosive = 0;
     for (const tick of ticks) {
       if (!m.alive) break;
-      dealt += dealDamage(
+      const landed = dealDamage(
         this.effectContext(owner, m, m.pos),
         m,
         dmg(this.rng.roll(tick.spec).total, tick.type),
         { canMiss: false, aoe: true, noImpactFx: true }
       );
+      dealt += landed;
+      if (tick.type === 'corrosive') corrosive += landed;
     }
     if (dealt > 0) this.vfxSink?.spellEffect?.(m, 'corrosive');
-    return dealt;
+    return { dealt, corrosive };
   }
 
   /** Field-wide desecration upkeep at the start of an affected unit's turn. */
@@ -2003,10 +2127,8 @@ export class GameState {
       // A law with nothing to roll this turn (thorns bill at turn end) stays quiet.
       if (this.lawTicks(law).length === 0 && !law.wither) continue;
       const owner = this.mages[law.ownerIndex] ?? m;
-      const dealt = this.rollDesecrationTicks(m, owner, this.lawTicks(law));
-      if (law.lifesteal && dealt > 0 && owner.alive && owner !== m) {
-        heal(this.effectContext(owner, m, null), owner, dealt);
-      }
+      const { corrosive } = this.rollDesecrationTicks(m, owner, this.lawTicks(law));
+      if (law.lifesteal && owner !== m) drink(this, owner, corrosive);
       if (law.wither && m.alive) {
         const room = Math.max(0, law.wither.cap - m.witheredMaxHp);
         const bite = Math.min(law.wither.perTurn, room, Math.max(0, m.maxHp - 1));
@@ -2028,11 +2150,9 @@ export class GameState {
       if (!m.alive) return;
       if (!this.isDesecrationAffected(m)) continue;
       const owner = this.mages[field.ownerIndex] ?? m;
-      const dealt = this.rollDesecrationTicks(m, owner, field.ticks);
+      const { dealt, corrosive } = this.rollDesecrationTicks(m, owner, field.ticks);
       if (dealt > 0) {
-        if (field.lifesteal && owner.alive && owner !== m) {
-          heal(this.effectContext(owner, m, null), owner, dealt);
-        }
+        if (field.lifesteal && owner !== m) drink(this, owner, corrosive);
         if (field.healKin) {
           for (const kin of this.mages) {
             if (!kin.alive || kin === m) continue;
@@ -2844,6 +2964,7 @@ export class GameState {
   /** Stopped time or stopped reflexes: this mage cannot react to anything. */
   cannotReact(m: Mage): boolean {
     return (
+      !!m.crocodileGrip?.alive ||
       this.isTimeStopped(m) ||
       m.statuses.some((status) => status.kind === 'reflexStop') ||
       lawCannotReact(this, m)
@@ -3018,8 +3139,8 @@ export class GameState {
 
   /** Stopped clock: nothing on the bearer wears off but the stopped clock itself. */
   private ageStatuses(m: Mage): string[] {
-    // Eternal Rot: afflictions on the unhallowed do not run down.
-    if (this.hexLaw('eternalRot') && this.isDesecrationAffected(m)) {
+    // Eternal Rot / Eternal Thirst: afflictions on the unhallowed do not run down.
+    if ((this.hexLaw('eternalRot') || this.hexLaw('eternalThirst')) && this.isDesecrationAffected(m)) {
       for (const status of m.statuses) if (status.kind === 'dot') status.duration += 1;
     }
     const clock = m.statuses.find((status) => status.kind === 'clockStopped');
@@ -3169,6 +3290,19 @@ export class GameState {
   stopDeclaredAction(item: StackItem): boolean {
     const bearer = item.source;
     if (item.windowTrigger || !bearer.alive) return false;
+    if (bearer.crocodileGrip?.alive) {
+      this.log(`${bearer.name} cannot ${item.label} while held in the crocodile's jaws.`);
+      return true;
+    }
+    for (const faeri of this.mages) {
+      if (!faeri.alive || faeri.mine?.kind !== 'faeri' || faeri === bearer) continue;
+      if (this.rng.die(3) !== 3) continue;
+      const gap = bearer.bodyRadius() + faeri.bodyRadius() + 4;
+      teleport(this.quietContext(faeri, bearer), faeri, stepTowards(bearer.pos, faeri.pos, gap));
+      this.log(`${faeri.name} stifles ${bearer.name}'s ${item.label}.`);
+      dealDamage(this.quietContext(faeri, bearer), bearer, dmg(1, 'sanity'), { canMiss: false });
+      return true;
+    }
     const fore = bearer.statuses.find((status) => status.kind === 'foreknown') as
       | ForeknownStatus
       | undefined;
@@ -3371,6 +3505,12 @@ export class GameState {
       (status) => status.kind === 'invisibility' || status.kind === 'shadowVeil' || status.kind === 'imbue'
     );
     const washed = before - m.statuses.length;
+    if (m.venomStacks > 0) {
+      m.venomStacks = 0;
+      m.venomDistance = 0;
+      m.venomSource = undefined;
+      this.log(`${m.name} washes away the spider venom.`);
+    }
     this.syncCurseCorrodeSlow(m);
     this.log(
       washed > 0
@@ -3440,6 +3580,7 @@ export class GameState {
         this.tickShadows();
         this.tickTotems();
         this.tickBarriers();
+        this.hatchSpiderEggs();
         this.tickGlobalEscalations();
         this.tickNeedlepointDomains();
         this.tickHexcraftGlobals();
@@ -3595,7 +3736,7 @@ export class GameState {
           ? 'Curse Corrode infects every lingering affliction with universal decay.'
           : `${HEX_LAW_NAMES[kind]} takes hold of the field for ${roundsLeft} rounds.`
     );
-    if (kind === 'curseCorrode') {
+    if (kind === 'curseCorrode' || kind === 'curseOfThirst') {
       for (const mage of this.mages) this.syncCurseCorrodeSlow(mage);
     }
   }
@@ -3637,20 +3778,25 @@ export class GameState {
     if (this.hexcraftGlobals.length > 0) lawOnVeilGained(ctx, target);
   }
 
-  lawOnRoot(ctx: EffectContext, target: Mage): void {
-    lawOnRoot(ctx, target);
+  lawOnRoot(ctx: EffectContext, target: Mage, already = false): void {
+    lawOnRoot(ctx, target, already);
   }
 
   lawOnVeilBroken(ctx: EffectContext, target: Mage): void {
     lawOnVeilBroken(ctx, target);
   }
 
-  imbueOnDamaged(target: Mage, dealt: number): void {
-    if (dealt > 0 && target.statuses.some((s) => s.kind === 'imbue')) imbueOnDamaged(this, target, dealt);
+  /** `mover` just dashed: the laws that answer a dash. Moves the laws make themselves set nothing off. */
+  lawDashed(mover: Mage): void {
+    if (this.hexLawDepth === 0 && this.hexcraftGlobals.length > 0) lawOnDash(this, mover);
+  }
+
+  imbueOnDamaged(target: Mage, dealt: number, dot = false): void {
+    if (dealt > 0 && target.statuses.some((s) => s.kind === 'imbue')) imbueOnDamaged(this, target, dealt, dot);
     if (dealt > 0 && target.summonKind) minionStruck(this, target, dealt);
   }
 
-  /** Keep Curse Corrode's 75% slow exactly as long as the bearer's longest DoT. */
+  /** Keep Curse Corrode's (and Curse of Thirst's) 75% slow exactly as long as the bearer's longest DoT. */
   syncCurseCorrodeSlow(mage: Mage): void {
     const key = 'debuff:curse-corrode-slow';
     const existing = mage.statuses.find((status) => status.key === key);
@@ -3661,7 +3807,7 @@ export class GameState {
       mage.statuses = mage.statuses.filter((status) => status.key !== key);
       return;
     }
-    if (!existing && !this.hasHexcraftGlobal('curseCorrode')) return;
+    if (!existing && !this.hasHexcraftGlobal('curseCorrode') && !this.hasHexcraftGlobal('curseOfThirst')) return;
     const duration = Math.max(...dots.map((status) => status.duration));
     const slow = {
       key,
@@ -4716,6 +4862,19 @@ export class GameState {
 
   /** Attribute one confirmed defeat, including summon kills, before scene hooks run. */
   notifyMageDefeated(target: Mage, source: Mage): void {
+    const offspring = target.mine?.kind === 'huge-spider' ? 'small-spider'
+      : target.mine?.kind === 'gigantuan-spider' ? 'huge-spider' : null;
+    if (offspring) {
+      const count = this.rng.roll(offspring === 'small-spider' ? '1d8' : '1d4').total;
+      for (let index = 0; index < count; index++) {
+        const angle = (2 * Math.PI * index) / count;
+        const gap = target.bodyRadius() + 20;
+        this.spawnSpiderCreature(offspring, target.mine!.level, {
+          x: target.x + Math.cos(angle) * gap, y: target.y + Math.sin(angle) * gap,
+        });
+      }
+      this.log(`${target.name} releases ${count} ${offspring}${count === 1 ? '' : 's'}.`);
+    }
     const minion = target.summonKind ? MINIONS[target.summonKind] : undefined;
     if (minion?.death) runDeath(this, target, this.mages[target.summonOwnerIndex ?? -1] ?? target, minion.death);
     // A banner buys the body back instead of letting it crumble, so this runs first.
@@ -4736,6 +4895,7 @@ export class GameState {
     }
     this.transferReapOnDeath(target, owner);
     this.onDesecrationDeath(target, owner);
+    lawOnDeath(this, target, source, this.wasDesecrationAffected(target));
     if (target.baral) this.dismantleBaralWorks(target);
     this.onMageDefeated?.(target, source);
   }
@@ -4860,6 +5020,11 @@ export class GameState {
     physicalTravel: boolean,
     path?: readonly Vec2[]
   ): void {
+    if (physicalTravel && mover.venomStacks > 0) {
+      const travelled = mover.venomDistance + dist(origin, destination);
+      mover.venomDistance = travelled % RANGE_UNIT;
+      this.removeSpiderVenom(mover, Math.floor(travelled / RANGE_UNIT));
+    }
     const points: Vec2[] = physicalTravel
       ? [origin, ...(path?.length ? path : [destination])]
       : [destination];
@@ -5034,10 +5199,13 @@ export class GameState {
     const highFire = fire.stacks >= 4;
     const spec = highFire ? '1d6' : '1d3';
     this.log(`${m.name}'s Fire flares at ${fire.stacks} stacks.`);
-    dealDamage(ctx, m, dmg(this.rng.roll(spec).total, 'heat'), {
+    const rolled = this.rng.roll(spec).total;
+    dealDamage(ctx, m, dmg(rolled, 'heat'), {
       canMiss: false,
       noImpactFx: true,
+      dot: true,
     });
+    lawFireBurns(ctx, m, rolled, true);
     if (highFire) {
       const nearby = this.mages.filter(
         (other) => other !== m && other.alive && dist(other.pos, m.pos) <= 2 * RANGE_UNIT
@@ -5052,13 +5220,15 @@ export class GameState {
   }
 
   /** Apply Fire stacks, resolving every stack above six as an immediate detonation. */
-  applyFireStacks(target: Mage, count: number, owner: Mage): void {
+  applyFireStacks(target: Mage, count: number, owner: Mage, spread = false): void {
     if (!target.alive || count <= 0) return;
     if (this.defeatPftlhbByIllumination(target, owner)) return;
     if (target.isDebuffImmune()) {
       this.log(`${target.name} is immune to debuffs. Fire fails.`);
       return;
     }
+    // Overflow spreads skip the amplifier, or two neighbours could overflow into each other forever.
+    if (!spread) count += kindleBonus(owner);
     let fire = target.statuses.find((s) => s.kind === 'fire') as FireStatus | undefined;
     if (!fire) {
       fire = {
@@ -5078,9 +5248,11 @@ export class GameState {
       if (fire.stacks <= 6) continue;
       this.log(`${target.name}'s Fire overflows!`);
       const ctx = this.effectContext(owner, target, null);
-      dealDamage(ctx, target, dmg(this.rng.roll('1d10').total, 'heat'), {
+      const blast = this.rng.roll('1d10').total;
+      dealDamage(ctx, target, dmg(blast, 'heat'), {
         canMiss: false,
       });
+      lawFireBurns(ctx, target, blast, false);
       fire.stacks = 5;
       const nearbyEnemies = this.mages.filter(
         (other) =>
@@ -5089,7 +5261,7 @@ export class GameState {
           other.team !== owner.team &&
           dist(other.pos, target.pos) <= 2 * RANGE_UNIT
       );
-      for (const other of nearbyEnemies) this.applyFireStacks(other, 1, owner);
+      for (const other of nearbyEnemies) this.applyFireStacks(other, 1, owner, true);
     }
     this.log(`${target.name} has ${fire.stacks} Fire stack${fire.stacks === 1 ? '' : 's'}.`);
   }
@@ -5107,7 +5279,7 @@ export class GameState {
       this.effectContext(owner, m, null),
       m,
       dmg(this.rng.roll(spec).total, 'heat'),
-      { canMiss: false, noImpactFx: true }
+      { canMiss: false, noImpactFx: true, dot: true }
     );
     if (highFire) {
       for (const other of this.mages) {
@@ -5181,6 +5353,21 @@ export class GameState {
     this.applyFireDamage(m);
   }
 
+  /** Every Fire tick `m` has left lands at once as one hit (Hellbolt), and the Fire is spent. */
+  condenseFire(m: Mage, ctx: EffectContext): number {
+    const fire = m.statuses.find((s) => s.kind === 'fire') as FireStatus | undefined;
+    if (!m.alive || !fire || fire.stacks <= 0) return 0;
+    let total = 0;
+    for (let stacks = fire.stacks; stacks > 0; stacks -= stacks >= 4 ? 2 : 1) {
+      total += this.rng.roll(stacks >= 4 ? '1d6' : '1d3').total;
+    }
+    m.statuses = m.statuses.filter((s) => s !== fire);
+    this.log(`${m.name}'s ${fire.stacks} Fire burn all at once.`);
+    const dealt = dealDamage(ctx, m, dmg(total, 'heat'), { canMiss: false, aoe: true });
+    lawFireBurns(ctx, m, total, false);
+    return dealt;
+  }
+
   /** Blueflare mirrors Fire at half mental damage, with easier spread and slower decay. */
   private applyBlueflareDamage(m: Mage): void {
     if (!m.alive) return;
@@ -5194,6 +5381,7 @@ export class GameState {
     dealDamage(this.effectContext(owner, m, null), m, dmg(amount, 'sanity'), {
       canMiss: false,
       noImpactFx: true,
+      dot: true,
     });
     if (highFlare) {
       for (const other of this.mages) {
@@ -5317,6 +5505,7 @@ export class GameState {
   /** Add Reap stacks, then test the standing "dies at or below Reap" threshold. */
   applyReap(target: Mage, count: number, source: Mage): number {
     if (!target.alive || count <= 0) return this.reapOn(target);
+    count += reapBonus(source);
     let reap = target.statuses.find((status) => status.kind === 'reap') as ReapStatus | undefined;
     if (!reap) {
       reap = { key: 'reap', name: 'Reap', kind: 'reap', duration: Infinity, stacks: 0 };
@@ -5328,9 +5517,9 @@ export class GameState {
     return reap.stacks;
   }
 
-  /** A reaped victim dies the moment its health falls to its Reap count. */
+  /** A reaped victim dies the moment its health falls to its Reap count (twice that under Long Night). */
   checkReapDeath(target: Mage, source: Mage): boolean {
-    const reap = this.reapOn(target);
+    const reap = this.reapOn(target) * reapWeight(this);
     if (reap <= 0 || !target.alive || target.hp > reap) return false;
     this.log(`${target.name} sinks to ${target.hp} health under ${reap} Reap.`);
     return this.killByDeathWord(target, source);
@@ -5347,7 +5536,7 @@ export class GameState {
       this.applyReap(target, amount, source);
       return false;
     }
-    const threshold = amount + 2 * this.reapOn(target);
+    const threshold = amount + executeBonus(source) + 2 * this.reapOn(target) * reapWeight(this);
     if (target.hp > threshold) {
       this.log(`${target.name} escapes execution (${target.hp} health above ${threshold}).`);
       return false;
@@ -5512,7 +5701,7 @@ export class GameState {
   ): { from: Vec2; to: Vec2 } | null {
     if (!target.alive || target === bearer) return null;
     const origin = target.pos;
-    const destination = stepTowards(origin, bearer.pos, distance);
+    const destination = this.nearestFreePosition(target, stepTowards(origin, bearer.pos, distance), origin);
     target.x = destination.x;
     target.y = destination.y;
     this.notifyMageRelocation(target, origin, destination, false);
@@ -5732,16 +5921,19 @@ export class GameState {
         amount + bonus + this.hexcraftDamageBonus(s.damage.type) + lawDotBonus(this, m, s);
       if (s.damage.type === 'sanity') m.sanity = Math.max(0, m.sanity - total);
       else m.hp = Math.max(0, m.hp - total);
-      // Order Curse Drain: the curse's author drinks the damage as healing.
+      // Order Curse Drain: the curse's author drinks the damage as healing (a summon's curse feeds it and its summoner).
       if (s.lifestealToIndex !== undefined && total > 0) {
         const owner = this.mages[s.lifestealToIndex];
         if (owner && owner.alive && owner !== m) {
           this.vfxSink?.spellEffect?.(m, 'corrosive');
           this.vfxSink?.drainParticles?.(m.pos, owner.pos);
-          heal(this.effectContext(owner, m, null), owner, total, s.lifestealPool ?? 'hp');
+          for (const fed of drainFed(this, owner, source)) {
+            if (fed !== m) heal(this.effectContext(fed, m, null), fed, total, s.lifestealPool ?? 'hp');
+          }
         }
       }
       lawAfterDotTick(this, m, s, total);
+      imbueOnDotTick(this, m, total);
       if (total > 0) {
         this.vfxSink?.hit?.(m);
         // Several afflictions can tick at once, so each number names its cause.
@@ -5970,7 +6162,7 @@ export class GameState {
     const hitBorder = dist(fieldDest, wanted) > 0.5;
     const barrier = this.clampToBarriers(origin, fieldDest);
     const mut = this.clampToMutivargZones(target, origin, barrier.dest);
-    const dest = this.clampToMages(target, origin, mut.dest);
+    const dest = this.nearestFreePosition(target, this.clampToMages(target, origin, mut.dest), origin, true);
     target.x = dest.x;
     target.y = dest.y;
     this.notifyMageRelocation(target, origin, dest, true);
@@ -5990,14 +6182,25 @@ export class GameState {
     lawOnShoved(this, source, target);
   }
 
-  /** A slam into a wall or the field edge. Crushing Law doubles it and adds acid; Panic Tide adds dread. */
+  /** What Shadow gear and minion auras add to a hit of `type` from `source` on `target`. */
+  hitAmplifier(source: Mage, target: Mage, type: DamageType): number {
+    return hitAmplifier(this, source, target, type);
+  }
+
+  /** How much higher `m`'s Lightning power runs (Gloom Lantern, Black Storm). */
+  lightningAmplifier(m: Mage): number {
+    return lightningAmplifier(this, m);
+  }
+
+  /** A slam into a wall or the field edge. Crushing Law doubles it and adds acid; Panic Tide adds dread; Grinding Thirst drinks. */
   slamDamage(ctx: EffectContext, target: Mage, amount: number, type: DamageType, opts: DealDamageOptions = {}): void {
     if (!target.alive) return;
     const slam = lawSlam(this);
     dealDamage(ctx, target, dmg(amount * slam.mult, type), { ...opts, canMiss: false });
     for (const extra of slam.extras) {
       if (!target.alive) break;
-      dealDamage(ctx, target, dmg(this.rng.roll(extra.spec).total, extra.type), { ...opts, canMiss: false });
+      const dealt = dealDamage(ctx, target, dmg(this.rng.roll(extra.spec).total, extra.type), { ...opts, canMiss: false });
+      if (extra.drink && ctx.caster !== target) drink(this, ctx.caster, dealt);
     }
   }
 
@@ -6047,6 +6250,32 @@ export class GameState {
   /** The compulsion currently gripping `m`, if any. */
   controlOf(m: Mage): ControlStatus | undefined {
     return m.statuses.find((s) => s.kind === 'control') as ControlStatus | undefined;
+  }
+
+  resolveCreatureCompulsion(m: Mage): boolean {
+    if (m.crocodileGrip?.alive && m.alive) {
+      const captor = m.crocodileGrip;
+      if (this.rng.die(3) === 3) {
+        m.crocodileGrip = undefined;
+        this.log(`${m.name} breaks free of ${captor.name}.`);
+      } else this.log(`${m.name} struggles in ${captor.name}'s jaws.`);
+      return true;
+    }
+    if (!m.sirenCharm?.alive || !m.alive) {
+      m.sirenCharm = undefined;
+      return false;
+    }
+    const siren = m.sirenCharm;
+    const ally = this.mages.find((candidate) => candidate.alive && candidate !== m && candidate.team === m.team &&
+      dist(candidate.pos, m.pos) <= 3 * RANGE_UNIT);
+    if (ally) {
+      this.log(`${siren.name} forces ${m.name} to strike ${ally.name}.`);
+      dealDamage(this.effectContext(m, ally, null), ally, dmg(this.rng.roll('1d4').total, 'slashing'), { canMiss: false });
+    } else {
+      this.log(`${siren.name} lures ${m.name} closer.`);
+      this.leapMove(m, stepTowards(m.pos, siren.pos, 3 * RANGE_UNIT));
+    }
+    return true;
   }
 
   // ---- Area queries ---------------------------------------------------------
@@ -6821,10 +7050,11 @@ export class GameState {
     if (weapon?.toHit && source.reloadTurns > 0) return false;
     if (!this.canStrikeAirborne(source, target)) return false;
     const d = dist(source.pos, target.pos);
-    if (source.beastDemonKind && d > MELEE_RANGE && source.beastDemonBlood <= 0) return false;
+    const extraRadius = Math.max(0, target.bodyRadius() - MAGE_BODY_RADIUS);
+    if (source.beastDemonKind && d > MELEE_RANGE + extraRadius && source.beastDemonBlood <= 0) return false;
     const reach = weapon ? weapon.rangePx : source.intrinsicMeleeReach ?? MELEE_RANGE;
     const min = weapon?.minRangePx ?? source.intrinsicMeleeMin ?? 0;
-    return d <= reach && d >= min;
+    return d <= reach + extraRadius && d >= min;
   }
 
   /** Resolve one 2d10 spear strike split evenly between pierce and shadow. */
@@ -7077,6 +7307,34 @@ export class GameState {
       x: from.x + (to.x - from.x) * firstContact,
       y: from.y + (to.y - from.y) * firstContact,
     };
+  }
+
+  /** Find the closest vacant endpoint; allies remain passable during travel. */
+  nearestFreePosition(source: Mage, desired: Vec2, from: Vec2 = source.pos, walking = false, vacating?: Mage): Vec2 {
+    const fits = (point: Vec2): boolean =>
+      point.x >= FIELD.x && point.x <= FIELD.x + FIELD.w &&
+      point.y >= FIELD.y && point.y <= FIELD.y + FIELD.h &&
+      this.mages.every((other) => other === source || other === vacating || !other.alive ||
+        dist(point, other.pos) >= source.bodyRadius() + other.bodyRadius() + 0.1);
+    const reachable = (point: Vec2): boolean =>
+      !walking || (dist(from, point) <= dist(from, desired) + 0.1 &&
+        dist(this.clampToMages(source, from, point), point) < 0.1);
+    if (fits(desired) && reachable(desired)) return desired;
+    for (let radius = 8; radius <= Math.max(FIELD.w, FIELD.h); radius += 8) {
+      let nearest: Vec2 | null = null;
+      let best = Infinity;
+      for (let angle = 0; angle < 32; angle++) {
+        const theta = (angle * Math.PI * 2) / 32;
+        const point = { x: desired.x + radius * Math.cos(theta), y: desired.y + radius * Math.sin(theta) };
+        const travel = dist(from, point);
+        if (travel < best && fits(point) && reachable(point)) {
+          nearest = point;
+          best = travel;
+        }
+      }
+      if (nearest) return nearest;
+    }
+    return from;
   }
 
   // ---- Mutivarg's Rod & weapon abilities ------------------------------------
@@ -7466,6 +7724,7 @@ export class GameState {
    */
   stunPrevents(item: StackItem): string | null {
     const source = item.source;
+    if (source.crocodileGrip?.alive) return 'held in the crocodile\'s jaws';
     if (source.isStunned('full')) return 'stunned';
     if (item.kind === 'move') return source.isStunned('movement') ? 'rooted in place' : null;
     const usesMain =
@@ -7490,7 +7749,8 @@ export class GameState {
     // A tether holds its bearer within reach of whatever it is tied to.
     const tethered = clampToTethers(this, source, source.pos, sealed);
     // Stop short of running into the other mage's body.
-    const dest = phased ? tethered : this.clampToMages(source, source.pos, tethered);
+    const uncluttered = this.nearestFreePosition(source, tethered, source.pos, !phased);
+    const dest = phased ? uncluttered : this.clampToMages(source, source.pos, uncluttered);
     return {
       id: this.nextId++,
       kind: 'move',
@@ -7660,7 +7920,7 @@ export class GameState {
             return;
           }
           let dealt = 0;
-          if (imbueDeflects(game, source, target)) return;
+          if (imbueDeflects(game, source, target, amount)) return;
           if (amount > 0) {
             dealt = dealDamage(ictx, target, dmg(amount, im.type), {});
           }
@@ -7797,7 +8057,7 @@ export class GameState {
           source.statuses = source.statuses.filter((s) => s.kind !== 'invisibility');
           game.log(`${source.name} is revealed by their attack.`);
         }
-        if (imbueDeflects(game, source, target)) return;
+        if (imbueDeflects(game, source, target, amount)) return;
         let dealt = 0;
         if (amount > 0) {
           dealt = dealDamage(ctx, target, dmg(amount, type), {

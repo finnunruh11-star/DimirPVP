@@ -18,7 +18,7 @@ import {
   rollTrip,
   TRAVEL_MODES,
 } from '../pve/exploration/travel';
-import { createWorld, placeById, terrainAt } from '../pve/exploration/world';
+import { createWorld, line4, placeById, terrainAt } from '../pve/exploration/world';
 import type { Cell } from '../world/pathfind';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -68,6 +68,7 @@ const tests: [name: string, run: () => void][] = [
     const onRoad = route.filter((cell) => ['road', 'bridge'].includes(terrainAt(world, cell.x, cell.y))).length;
     assert(onRoad / route.length > 0.7, `the Northway carries most of the trip (${onRoad}/${route.length})`);
     equal(findRoute(world, run, { x: 40, y: 48 }), null, 'nobody walks into the lake');
+    for (const id of ['nerogril', 'theocracy']) equal(findRoute(world, run, placeById(id)!), null, `${id} is behind the wall`);
   }],
 
   ['makes sneaking slow and safe, and exploring slow, risky and rich', () => {
@@ -185,7 +186,7 @@ const tests: [name: string, run: () => void][] = [
     const nerogril = placeById('nerogril')!;
     run.pos = { x: nerogril.x, y: nerogril.y };
     const theocracy = placeById('theocracy')!;
-    const route = findRoute(world, run, theocracy)!;
+    const route = line4(nerogril, theocracy);
     walked(run, route);
     const plan = planTrip(world, run, route, 'sprint');
     const first = plan.steps[0];

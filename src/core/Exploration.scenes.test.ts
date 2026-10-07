@@ -62,7 +62,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       const roster = ZONE_ROSTERS[zone];
       return [...new Set([...roster.monsters, ...roster.elites].map((entry) => entry.kind as string))].sort();
     };
-    for (const zone of ['capitol', 'lake', 'white'] as const) {
+    for (const zone of ['capitol', 'white'] as const) {
       equal(kinds(zone), [], `${zone} has no monsters yet`);
       assert(!hasMonsters(zone), `${zone} fields only robbers`);
       for (let seed = 1; seed <= 20; seed++) {
@@ -71,7 +71,8 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
         }
       }
     }
-    equal(kinds('forest'), ['boar', 'lion', 'lioness', 'rabbit', 'slime', 'wolf'], 'the forest');
+    equal(kinds('lake'), ['crab', 'crocodile', 'faeri', 'siren', 'spellcaster-spirit', 'water-spirit'], 'the blue lake');
+    equal(kinds('forest'), ['boar', 'gigantuan-spider', 'huge-spider', 'hydra', 'lion', 'lioness', 'marsh-toad', 'rabbit', 'slime', 'small-spider', 'thornback', 'wolf'], 'the forest');
     equal(kinds('red'), ['black-dragonborn', 'elite-kobold', 'kobold', 'magma-sentinel', 'red-dragonborn', 'sentinel', 'slime-red'], 'the red surface');
     equal(kinds('wilds'), kinds('red'), 'the red wilds are the red');
     const swampDwellers = ['zombie', 'acidZombie', 'skeleton', 'wisp', 'specter', 'ghast', 'lich', 'reaper', 'deathknightSpear', 'soldierDemon', 'beastDemon', 'oni'];

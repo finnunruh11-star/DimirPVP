@@ -161,7 +161,7 @@ variants(
     dc: 12,
     color: 0x9b7bff,
     text:
-      'Its bite deals 1d4 sanity and leaves a nightmare: 1d3 sanity at the start of the target\'s turns for 3 turns. ' +
+      'It is immune to shadow. Its bite deals 1d4 sanity and leaves a nightmare: 1d3 sanity at the start of the target\'s turns for 3 turns. ' +
       'A mind it leaves at 4 sanity or less breaks: the unit dies.',
   }),
   imbue('dreamreaver', {

@@ -17,7 +17,7 @@ import { RANGE_UNIT } from '../../config/constants';
 import { getItem, type ItemId } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
 import type { WordId } from '../../core/Words';
-import { addImbue, HEX_LAW_NAMES, IMBUES, makeMinion, MINIONS, type HexLawKind } from '../../effects/classKit';
+import { addImbue, HEX_LAW_NAMES, IMBUES, makeMinion, minionDrinks, MINIONS, type HexLawKind } from '../../effects/classKit';
 import { rollDice, type EffectContext } from '../../effects/effects';
 import { registerClassSpellVariants, type ClassSpellVariant } from '../registry';
 import { attachSummonRider } from '../summonRiders';
@@ -41,9 +41,20 @@ export interface Priced {
  */
 export function castPower(ctx: EffectContext): number {
   const natural = ctx.spellRoll ?? 1;
-  const power = natural + Math.max(0, ctx.caster.statInt - 1) + Math.max(0, ctx.caster.luck - 1);
+  const power =
+    natural +
+    Math.max(0, ctx.caster.statInt - 1) +
+    Math.max(0, ctx.caster.luck - 1) +
+    ctx.game.lightningAmplifier(ctx.caster);
   ctx.log(`Lightning power: ${power}${ctx.crit ? ' (doubled)' : ''}.`);
   return power * (ctx.crit ? 2 : 1);
+}
+
+/** The Lightning gamble, rolled where everyone sees it: 1 misfires, 6 surges, anything else holds steady. */
+export function lightningGamble(ctx: EffectContext): number {
+  const roll = rollDice(ctx, '1d6', 'Lightning gamble', ctx.caster);
+  ctx.log(`Lightning gamble: ${roll === 1 ? 'misfire' : roll === 6 ? 'surge' : 'steady'}.`);
+  return roll;
 }
 
 // ---- Life -------------------------------------------------------------------
@@ -64,6 +75,7 @@ export function minion(
     manualCastVisual: true,
     description:
       `Summon a ${def.name} within ${MINION_RANGE}cm. ${o.text} ` +
+      (minionDrinks(kind) ? 'Whatever it drains heals it as well as you. ' : '') +
       `HP ${def.hp}, move ${def.move}cm${def.armor ? `, armour ${def.armor}` : ''}. Obeys Command.`,
     visual: { preset: 'conjure', color: o.color, size: 26, speed: 1 },
     cast(ctx) {
@@ -88,7 +100,7 @@ export function minion(
 
 export function imbue(
   id: string,
-  o: Priced & { ally?: boolean; uses?: (ctx: EffectContext) => number }
+  o: Priced & { ally?: boolean; foe?: boolean; uses?: (ctx: EffectContext) => number; lightning?: boolean }
 ): ClassSpellVariant {
   const def = IMBUES[id];
   def.text = o.text;
@@ -96,18 +108,22 @@ export function imbue(
   return {
     name: def.name,
     actionType: o.bonus ? 'bonus' : 'main',
-    range: o.ally ? R(8) : 0,
-    targeting: o.ally ? 'any' : 'self',
+    range: o.ally ? R(8) : o.foe ? R(10) : 0,
+    targeting: o.ally ? 'any' : o.foe ? 'enemy' : 'self',
     dc: o.dc,
     noCastSprite: true,
     description: o.ally
       ? `Enchant the ${gear} of yourself or a unit within 8cm. ${o.text}`
-      : `Enchant your ${gear}. ${o.text}`,
+      : o.foe
+        ? `Bind the ${gear} of one enemy within 10cm. ${o.text}`
+        : `Enchant your ${gear}. ${o.text}`,
     visual: { preset: 'conjure', color: o.color, size: 24, speed: 1 },
     cast(ctx) {
       const bearer = ctx.target ?? ctx.caster;
-      if (o.uses) addImbue(ctx.game, ctx.caster, bearer, id, 1, Math.max(1, o.uses(ctx)));
-      else addImbue(ctx.game, ctx.caster, bearer, id, ctx.crit ? 2 : 1);
+      const laid = o.uses
+        ? addImbue(ctx.game, ctx.caster, bearer, id, 1, Math.max(1, o.uses(ctx)))
+        : addImbue(ctx.game, ctx.caster, bearer, id, ctx.crit ? 2 : 1);
+      if (o.lightning) laid.power = castPower(ctx);
     },
   };
 }

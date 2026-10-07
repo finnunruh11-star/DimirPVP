@@ -13,6 +13,7 @@ import { FIELD, MELEE_RANGE, MOVE_RANGE, RANGE_UNIT } from '../config/constants'
 import { barrierDistance } from '../core/Barrier';
 import { dmg, type DamageInstance, type DamageType } from '../core/Damage';
 import type { GameState } from '../core/GameState';
+import { getItem } from '../core/Items';
 import { Mage } from '../core/Mage';
 import type { StackItem } from '../core/Stack';
 import {
@@ -60,6 +61,8 @@ export interface RotSpec {
   turns: number;
   decay?: boolean;
   spread?: number;
+  /** Whoever laid it heals for every tick. */
+  drink?: boolean;
 }
 
 /** Blightburst's plague: it wanes when not refreshed and jumps to nearby enemies. */
@@ -73,6 +76,8 @@ export type HitEffect =
   | { k: 'damage'; spec: string; type: DamageType }
   /** A corrosive bite whose damage heals the drinker in full. */
   | { k: 'drain'; spec: string }
+  /** A drain that scales: corrosive equal to `pct` of what the strike dealt (rounded up), healing the drinker in full. */
+  | { k: 'siphon'; pct: number }
   /** The drinker heals everything the strike itself dealt. */
   | { k: 'lifesteal' }
   | { k: 'root'; turns: number; chance?: number }
@@ -83,23 +88,29 @@ export type HitEffect =
   | {
       k: 'dot';
       name: string;
-      spec: string;
+      /** Dice per tick; or `pct`: each tick deals that share of what the strike dealt (rounded up). */
+      spec?: string;
+      pct?: number;
       turns: number;
       type?: DamageType;
       drink?: boolean;
       barbed?: boolean;
       /** Every tick also stifles the bearer's next action. */
       stifles?: boolean;
+      /** Every tick turns the bearer a quarter circle around whoever laid it. */
+      orbit?: boolean;
+      /** Every tick roots the bearer until its next turn. */
+      roots?: boolean;
     }
   | { k: 'rot'; rot: RotSpec }
   | { k: 'tether'; px: number; turns: number; mutual?: boolean }
-  /** The victim spins a quarter turn around the striker. */
-  | { k: 'orbit'; slam?: Hit }
+  /** The victim spins a quarter turn around the striker; `onSlam` runs if a wall or the field edge stops it, `orElse` if not. */
+  | { k: 'orbit'; slam?: Hit; onSlam?: HitEffect[]; orElse?: HitEffect[] }
   | { k: 'veilSelf'; turns: number }
-  /** The victim's next declared action other than moving fails, costing it `spec` corrosive. */
-  | { k: 'stifle'; chance?: number; spec?: string }
-  /** Foul the ground around the victim (desecration rules: harms affected units only). */
-  | { k: 'foul'; radius: number; turns: number; spec: string; carried?: boolean }
+  /** The victim's next declared action other than moving fails, costing it `spec` corrosive (`drink`: the stifler heals for it). */
+  | { k: 'stifle'; chance?: number; spec?: string; drink?: boolean }
+  /** Foul the ground around the victim (desecration rules: harms affected units only; `drink`: the striker heals for it). */
+  | { k: 'foul'; radius: number; turns: number; spec: string; carried?: boolean; drink?: boolean }
   | { k: 'wither'; amount: number; cap: number }
   | { k: 'noHeal'; turns: number }
   /** Only against units Desecrate may harm. */
@@ -124,14 +135,14 @@ export type HitEffect =
   | { k: 'inShadow'; then: HitEffect[] }
   /** Branch on whether the victim is burning. */
   | { k: 'ifBurning'; then: HitEffect[]; else?: HitEffect[] }
-  /** Lightning leaps from the victim to the nearest other unit in reach but the striker, friend or foe. */
-  | { k: 'arc'; radius: number; hits: Hit[] }
+  /** Lightning leaps from the victim to the nearest other unit in reach but the striker; only the drinker's enemies with `foes`. */
+  | { k: 'arc'; radius: number; hits: Hit[]; foes?: boolean }
   /** A Mindconduct bolt: a stack, then `spec` sanity, 50% more for every stack after the first. */
   | { k: 'mindBolt'; spec: string }
   /** Lightning on the victim: it takes the hits and Fire, and every other unit in reach is thrown `cm` away from it. */
   | { k: 'thunderclap'; radius: number; cm: number; hits: Hit[]; fire?: number }
-  /** Reap stacks: the victim dies at or below its Reap count. */
-  | { k: 'reap'; stacks: number }
+  /** Reap stacks: the victim dies at or below its Reap count. `inShadow` instead when it stands in a shadow. */
+  | { k: 'reap'; stacks: number; inShadow?: number }
   /** The victim dies at `at` health or less (+2 per Reap). */
   | { k: 'execute'; at: number }
   /** These land on the striker instead: the price some gear asks. */
@@ -139,7 +150,27 @@ export type HitEffect =
   /** The striker teleports this far straight away from the victim. */
   | { k: 'blinkAway'; px: number }
   /** Only in a fight's first `rounds` rounds. */
-  | { k: 'early'; rounds: number; then: HitEffect[] };
+  | { k: 'early'; rounds: number; then: HitEffect[] }
+  /** The victim's Fire pulses at once. */
+  | { k: 'pulseFire' }
+  /** Sanity equal to the victim's Fire stacks, at least 1. */
+  | { k: 'fireSanity' }
+  /** Branch on whether the victim is at half its sanity or less. */
+  | { k: 'ifShaken'; then: HitEffect[]; else?: HitEffect[] }
+  /** The Lightning gamble: roll 1d6, a 1 runs `low`, a 6 runs `high`, anything else `mid`. */
+  | { k: 'gamble'; low?: HitEffect[]; mid?: HitEffect[]; high?: HitEffect[] }
+  /** The striker slips a quarter circle around the victim. */
+  | { k: 'flank' }
+  /** The striker dashes to the victim's side. */
+  | { k: 'closeIn' }
+  /** Splinters: every other unit within `radius` of the victim, never the striker, takes the hits; only the drinker's enemies with `foes`. */
+  | { k: 'shrapnel'; radius: number; hits: Hit[]; foes?: boolean }
+  /** Branch on whether the victim is rooted. */
+  | { k: 'ifRooted'; then: HitEffect[]; else?: HitEffect[] }
+  /** Stoning, a stage at a time: slowed 50% for 3 turns, then rooted for 2, then stunned for 2 with 1d6 shatter. */
+  | { k: 'petrify' }
+  /** The weapon the victim holds is shackled for the fight: it cannot be put away and deals half damage. */
+  | { k: 'sabotage' };
 
 export interface Strike {
   striker: Mage;
@@ -152,10 +183,20 @@ export interface Strike {
 }
 
 const QUIET: DealDamageOptions = { canMiss: false, noImpactFx: true };
+const STONING_KEY = 'debuff:kit-stoning';
 
-function drink(game: GameState, drinker: Mage, amount: number): void {
-  if (amount <= 0 || !drinker.alive) return;
-  heal(game.quietContext(drinker, drinker), drinker, amount);
+/** Who a drain feeds: the drinker, the summon that drew it (`via`), and a drinking summon's summoner. */
+export function drainFed(game: GameState, drinker: Mage, via?: Mage): Mage[] {
+  const fed = [drinker];
+  if (via && via !== drinker && via.isSummon) fed.push(via);
+  const lord = drinker.isSummon && drinker.summonOwnerIndex != null ? game.mages[drinker.summonOwnerIndex] : undefined;
+  if (lord && !fed.includes(lord)) fed.push(lord);
+  return fed.filter((m) => m.alive);
+}
+
+export function drink(game: GameState, drinker: Mage, amount: number, via?: Mage): void {
+  if (amount <= 0) return;
+  for (const m of drainFed(game, drinker, via)) heal(game.quietContext(m, m), m, amount);
 }
 
 /** A body forced movement can reach: alive, in this world, riding nothing. */
@@ -231,16 +272,21 @@ export function runHitEffects(strike: Strike, effects: readonly HitEffect[]): vo
   const game = ctx.game;
   const roll = (spec: string): number => game.rng.roll(spec).total;
   for (const e of effects) {
-    if (!victim.alive && e.k !== 'foul' && e.k !== 'lifesteal' && e.k !== 'dashAway' && e.k !== 'self' && e.k !== 'blinkAway') continue;
+    if (!victim.alive && e.k !== 'foul' && e.k !== 'lifesteal' && e.k !== 'dashAway' && e.k !== 'self' && e.k !== 'blinkAway' && e.k !== 'shrapnel') continue;
     switch (e.k) {
       case 'damage':
         dealDamage(ctx, victim, dmg(roll(e.spec), e.type), QUIET);
         break;
       case 'drain':
-        drink(game, drinker, dealDamage(ctx, victim, dmg(roll(e.spec), 'corrosive'), QUIET));
+        drink(game, drinker, dealDamage(ctx, victim, dmg(roll(e.spec), 'corrosive'), QUIET), striker);
         break;
+      case 'siphon': {
+        const amount = Math.ceil(strike.dealt * e.pct);
+        if (amount > 0) drink(game, drinker, dealDamage(ctx, victim, dmg(amount, 'corrosive'), QUIET), striker);
+        break;
+      }
       case 'lifesteal':
-        drink(game, drinker, strike.dealt);
+        drink(game, drinker, strike.dealt, striker);
         break;
       case 'root':
         if (!e.chance || game.rng.chance(e.chance)) applyStun(ctx, victim, { duration: e.turns, type: 'movement' });
@@ -260,19 +306,23 @@ export function runHitEffects(strike: Strike, effects: readonly HitEffect[]): vo
         applyDebuff(ctx, victim, { name: 'Pitted', key: 'debuff:pitted', duration: e.turns, mods: { damageTaken: e.amount } });
         break;
       case 'dot':
+        if (e.pct != null && strike.dealt <= 0) break;
         applyDot(ctx, victim, {
           name: e.name,
           key: `dot:kit:${e.name}`,
           duration: e.turns,
-          damage: dmg(0, e.type ?? 'corrosive'),
-          damageSpec: e.spec,
+          damage: dmg(e.pct != null ? Math.ceil(strike.dealt * e.pct) : 0, e.type ?? 'corrosive'),
+          damageSpec: e.pct != null ? undefined : e.spec,
           lifestealToIndex: e.drink ? game.mages.indexOf(drinker) : undefined,
           extendOnPierce: e.barbed ? { minAmount: 1, chanceBelow: 1, maxDuration: 4 } : undefined,
           stifleOnTick: e.stifles,
+          orbitSource: e.orbit,
+          stunChance: e.roots ? 1 : undefined,
+          stunType: e.roots ? 'movement' : undefined,
         });
         break;
       case 'rot':
-        applyRot(ctx, victim, e.rot);
+        applyRot(ctx, victim, e.rot, drinker);
         break;
       case 'tether': {
         const owner = game.mages.indexOf(drinker);
@@ -283,13 +333,15 @@ export function runHitEffects(strike: Strike, effects: readonly HitEffect[]): vo
       case 'orbit': {
         const turn = game.orbitAround(victim, striker.pos, game.rng.chance(0.5));
         if (turn.slammed) slamInto(ctx, victim, e.slam);
+        const branch = turn.slammed ? e.onSlam : e.orElse;
+        if (branch) runHitEffects(strike, branch);
         break;
       }
       case 'veilSelf':
         applyInvisibility(ctx, striker, { duration: e.turns, mode: 'partial' });
         break;
       case 'stifle':
-        if (!e.chance || game.rng.chance(e.chance)) applyStifle(ctx, victim, { spec: e.spec });
+        if (!e.chance || game.rng.chance(e.chance)) applyStifle(ctx, victim, { spec: e.spec, drink: e.drink });
         break;
       case 'foul':
         if (!game.isDesecrationAffected(victim) && victim.alive) break;
@@ -298,6 +350,7 @@ export function runHitEffects(strike: Strike, effects: readonly HitEffect[]): vo
           radius: e.radius,
           turns: e.turns,
           blocksHealing: true,
+          lifesteal: e.drink,
           carrierIndex: e.carried && victim.alive ? game.mages.indexOf(victim) : undefined,
           ticks: [{ spec: e.spec, type: 'corrosive' }],
         });
@@ -351,7 +404,8 @@ export function runHitEffects(strike: Strike, effects: readonly HitEffect[]): vo
         break;
       }
       case 'arc': {
-        const next = nearestOther(game, victim, e.radius, [victim, striker]);
+        const allow = e.foes ? (m: Mage): boolean => m.team !== drinker.team : undefined;
+        const next = nearestOther(game, victim, e.radius, [victim, striker], allow);
         if (!next) break;
         void game.vfxSink?.lightningBolt?.(victim.pos, next.pos);
         hitAll(game, game.quietContext(ctx.caster, next), next, e.hits);
@@ -364,7 +418,7 @@ export function runHitEffects(strike: Strike, effects: readonly HitEffect[]): vo
         thunderclapOn(game, ctx.caster, victim, { hits: e.hits, fire: e.fire, radius: e.radius, cm: e.cm });
         break;
       case 'reap':
-        game.applyReap(victim, e.stacks, drinker);
+        game.applyReap(victim, e.inShadow != null && game.isInShadow(victim) ? e.inShadow : e.stacks, drinker);
         break;
       case 'execute':
         game.executeTarget(drinker, victim, e.at);
@@ -380,8 +434,72 @@ export function runHitEffects(strike: Strike, effects: readonly HitEffect[]): vo
       case 'early':
         if (game.round <= e.rounds) runHitEffects(strike, e.then);
         break;
+      case 'pulseFire':
+        game.pulseFire(victim);
+        break;
+      case 'fireSanity':
+        dealDamage(ctx, victim, dmg(Math.max(1, stacksOf(victim, 'fire')), 'sanity'), QUIET);
+        break;
+      case 'ifShaken': {
+        const branch = shaken(victim) ? e.then : e.else;
+        if (branch) runHitEffects(strike, branch);
+        break;
+      }
+      case 'gamble': {
+        const roll = game.rng.die(6);
+        game.log(`Lightning gamble: ${roll === 1 ? 'misfire' : roll === 6 ? 'surge' : 'steady'} (${roll}).`);
+        const branch = roll === 1 ? e.low : roll === 6 ? e.high : e.mid;
+        if (branch) runHitEffects(strike, branch);
+        break;
+      }
+      case 'flank':
+        if (striker.alive && striker !== victim) game.orbitAround(striker, victim.pos, game.rng.chance(0.5));
+        break;
+      case 'closeIn':
+        if (striker.alive && striker !== victim) rushToward(game, striker, striker, victim, Infinity);
+        break;
+      case 'shrapnel':
+        for (const m of game.mages) {
+          if (!m.alive || m === victim || m === striker || game.isUnreachable(m)) continue;
+          if ((e.foes && m.team === drinker.team) || dist(m.pos, victim.pos) > e.radius + m.bodyRadius()) continue;
+          hitAll(game, game.quietContext(ctx.caster, m), m, e.hits);
+        }
+        break;
+      case 'ifRooted': {
+        const branch = victim.isStunned('movement') ? e.then : e.else;
+        if (branch) runHitEffects(strike, branch);
+        break;
+      }
+      case 'petrify':
+        if (victim.isStunned('movement')) {
+          applyStun(ctx, victim, { duration: 2, type: 'full' });
+          dealDamage(ctx, victim, dmg(roll('1d6'), 'shatter'), QUIET);
+          victim.statuses = victim.statuses.filter((s) => s.key !== STONING_KEY);
+        } else if (victim.statuses.some((s) => s.key === STONING_KEY)) {
+          applyStun(ctx, victim, { duration: 2, type: 'movement' });
+        } else {
+          applyDebuff(ctx, victim, {
+            name: 'Stiffening',
+            key: STONING_KEY,
+            duration: 3,
+            mods: { moveRange: -Math.round(MOVE_RANGE * 0.5) },
+          });
+        }
+        break;
+      case 'sabotage': {
+        const held = victim.activeWeaponId() ?? victim.hands[0];
+        if (!held || victim.sabotagedItems.has(held)) break;
+        victim.sabotagedItems.add(held);
+        game.log(`${victim.name}'s ${getItem(held).name} is shackled.`);
+        break;
+      }
     }
   }
+}
+
+/** At half its sanity or less (the mindless never are). */
+function shaken(m: Mage): boolean {
+  return m.alive && !m.isImmuneTo('sanity') && m.maxSanity > 0 && m.sanity * 2 <= m.maxSanity;
 }
 
 /** Fire or Blueflare stacks `m` carries. */
@@ -405,7 +523,7 @@ export function breakMind(game: GameState, from: Mage, victim: Mage, threshold: 
   return true;
 }
 
-export function applyRot(ctx: EffectContext, victim: Mage, rot: RotSpec): void {
+export function applyRot(ctx: EffectContext, victim: Mage, rot: RotSpec, drinker: Mage = ctx.caster): void {
   applyStackingDot(ctx, victim, {
     name: rot.name,
     key: `dot:${rot.name}`,
@@ -415,6 +533,7 @@ export function applyRot(ctx: EffectContext, victim: Mage, rot: RotSpec): void {
     refreshDuration: rot.turns,
     decayPerTick: rot.decay,
     infectRadius: rot.spread,
+    lifestealToIndex: rot.drink ? ctx.game.mages.indexOf(drinker) : undefined,
   });
 }
 
@@ -425,7 +544,7 @@ export function applyRot(ctx: EffectContext, victim: Mage, rot: RotSpec): void {
 type PulseWho = 'foes' | 'others' | 'affected' | 'rooted';
 
 export type PulseEffect =
-  /** Every chosen unit in reach takes the hits; `drink` heals the owner. */
+  /** Every chosen unit in reach takes the hits; `drink` heals the owner (and the minion) for the corrosive part. */
   | { k: 'aura'; radius: number; who: PulseWho; hits: Hit[]; drink?: boolean }
   /** Enemies in reach lose their veils; those that had one take the hits. */
   | { k: 'unveil'; radius: number; hits: Hit[] }
@@ -436,9 +555,9 @@ export type PulseEffect =
   /** Every unit in reach carrying a damage-over-time spins around it. */
   | { k: 'orbitAfflicted'; radius: number }
   /** Affected units in reach gain a stack of plague rot and cannot be healed for 2 turns. */
-  | { k: 'rotAffected'; radius: number }
-  /** Stifle the nearest enemy in reach, or every rooted / afflicted one. */
-  | { k: 'stifle'; radius: number; who: 'nearest' | 'rooted' | 'afflicted' }
+  | { k: 'rotAffected'; radius: number; drink?: boolean }
+  /** Stifle the nearest enemy in reach, or every rooted / afflicted one; a failed action costs it `spec` corrosive. */
+  | { k: 'stifle'; radius: number; who: 'nearest' | 'rooted' | 'afflicted'; spec?: string; drink?: boolean }
   | { k: 'kindle'; radius: number; who: PulseWho; blueflare?: number; fire?: number }
   /** Lightning minions: their summoning roll sets reach and count. */
   | { k: 'synapse' }
@@ -458,10 +577,39 @@ export type PulseEffect =
   /** Lightning water minions: the eel's shock, the conducting bolt and the thundercloud. */
   | { k: 'shock' }
   | { k: 'conductBolt' }
-  | { k: 'thunderhead' };
+  | { k: 'thunderhead' }
+  /** Umbral Coil: a shadow bolt into a random unit in reach, doubled on one standing in a shadow. */
+  | { k: 'darkBolt' }
+  /** Every other unit in reach takes the hits, then its Fire pulses at once, or it catches 1 Fire. */
+  | { k: 'pyre'; radius: number; hits: Hit[] }
+  /** Grave Shade: it steps out of its side's shadow beside the nearest enemy standing in one. */
+  | { k: 'stalk' }
+  /** Ashcloud: lightning sets off every burning unit in reach, or kindles the nearest enemy. */
+  | { k: 'ignite' }
+  /** The least sane other unit in reach takes 1d6 sanity (2d6 in a shadow) and forgets a word. */
+  | { k: 'haunt'; radius: number }
+  /** Every other unit in reach takes 1d6 sanity; one left at half sanity or less gains `reap` Reap. */
+  | { k: 'wail'; radius: number; reap: number }
+  /** Lightning-wave minions: each rolls the Lightning gamble every turn. */
+  | { k: 'ballLightning' }
+  | { k: 'liveWire' }
+  | { k: 'hellspark' }
+  /** Assassins: it dashes up to `cm` (all the way without) to the nearest chosen unit in reach, then strikes it if it got there. */
+  | { k: 'lunge'; radius: number; cm?: number; who?: 'foes' | 'others'; hits?: Hit[]; then?: HitEffect[] }
+  /** Sentries: it shoots the nearest enemy in reach. */
+  | { k: 'shoot'; radius: number; hits: Hit[]; then?: HitEffect[] }
+  /** These land on every chosen unit in reach (only the nearest with `nearest`). */
+  | { k: 'hex'; radius: number; who: PulseWho; then: HitEffect[]; nearest?: boolean }
+  /**
+   * Wardens: these land on the enemy nearest to one of the owner's units within `radius` of it, if it stands within
+   * `reach` of that unit (every such enemy with `all`; only those carrying a damage over time with `afflicted`).
+   */
+  | { k: 'guard'; radius: number; reach: number; then: HitEffect[]; all?: boolean; afflicted?: boolean };
 
 /** Plaguewell's rot: the stack desecrations hand out. */
 const PLAGUE_ROT: RotSpec = { name: 'Plague Rot', spec: '1d3', max: 4, turns: 3, decay: true };
+/** Plague rot that feeds whoever laid it. */
+const THIRSTING_PLAGUE: RotSpec = { ...PLAGUE_ROT, name: 'Thirsting Plague', drink: true };
 
 function pulseTargets(game: GameState, source: Mage, owner: Mage, radius: number, who: PulseWho): Mage[] {
   return game.mages.filter((m) => {
@@ -473,11 +621,13 @@ function pulseTargets(game: GameState, source: Mage, owner: Mage, radius: number
   });
 }
 
-function hitAll(game: GameState, ctx: EffectContext, victim: Mage, hits: readonly Hit[]): number {
+/** Every hit in turn; returns what they dealt, or only the part of type `only`. */
+function hitAll(game: GameState, ctx: EffectContext, victim: Mage, hits: readonly Hit[], only?: DamageType): number {
   let dealt = 0;
   for (const hit of hits) {
     if (!victim.alive) break;
-    dealt += dealDamage(ctx, victim, dmg(game.rng.roll(hit.spec).total, hit.type), { ...QUIET, aoe: true });
+    const landed = dealDamage(ctx, victim, dmg(game.rng.roll(hit.spec).total, hit.type), { ...QUIET, aoe: true });
+    if (!only || hit.type === only) dealt += landed;
   }
   return dealt;
 }
@@ -488,8 +638,8 @@ export function runPulse(game: GameState, source: Mage, owner: Mage, effects: re
     switch (e.k) {
       case 'aura':
         for (const victim of pulseTargets(game, source, owner, e.radius, e.who)) {
-          const dealt = hitAll(game, game.quietContext(source, victim), victim, e.hits);
-          if (e.drink) drink(game, owner, dealt);
+          const dealt = hitAll(game, game.quietContext(source, victim), victim, e.hits, e.drink ? 'corrosive' : undefined);
+          if (e.drink) drink(game, owner, dealt, source);
         }
         break;
       case 'unveil':
@@ -514,14 +664,14 @@ export function runPulse(game: GameState, source: Mage, owner: Mage, effects: re
         for (const victim of pulseTargets(game, source, owner, e.radius, e.who)) {
           const ctx = game.quietContext(source, victim);
           const turn = game.orbitAround(victim, source.pos, game.rng.chance(0.5));
-          const dealt = e.hits ? hitAll(game, ctx, victim, e.hits) : 0;
-          if (e.drink) drink(game, owner, dealt);
+          const dealt = e.hits ? hitAll(game, ctx, victim, e.hits, e.drink ? 'corrosive' : undefined) : 0;
+          if (e.drink) drink(game, owner, dealt, source);
           if (turn.slammed) slamInto(ctx, victim, e.slam);
         }
         break;
       case 'drinkTethered':
         for (const victim of game.tetheredTo(source)) {
-          drink(game, owner, hitAll(game, game.quietContext(source, victim), victim, [{ spec: e.spec, type: 'corrosive' }]));
+          drink(game, owner, hitAll(game, game.quietContext(source, victim), victim, [{ spec: e.spec, type: 'corrosive' }]), source);
         }
         break;
       case 'orbitAfflicted':
@@ -534,8 +684,8 @@ export function runPulse(game: GameState, source: Mage, owner: Mage, effects: re
         break;
       case 'rotAffected':
         for (const victim of pulseTargets(game, source, owner, e.radius, 'affected')) {
-          const ctx = game.quietContext(owner, victim);
-          applyRot(ctx, victim, PLAGUE_ROT);
+          const ctx = game.quietContext(e.drink ? source : owner, victim);
+          applyRot(ctx, victim, e.drink ? THIRSTING_PLAGUE : PLAGUE_ROT, owner);
           applyDebuff(ctx, victim, { name: 'Festering', key: 'debuff:kit-no-heal', duration: 2, mods: {}, healMult: 0 });
         }
         break;
@@ -544,7 +694,7 @@ export function runPulse(game: GameState, source: Mage, owner: Mage, effects: re
           .filter((m) => e.who !== 'afflicted' || m.statuses.some((s) => s.kind === 'dot'))
           .sort((a, b) => dist(a.pos, source.pos) - dist(b.pos, source.pos));
         for (const victim of e.who === 'nearest' ? foes.slice(0, 1) : foes) {
-          applyStifle(game.quietContext(source, victim), victim);
+          applyStifle(game.quietContext(source, victim), victim, { spec: e.spec, drink: e.drink });
         }
         break;
       }
@@ -612,8 +762,240 @@ export function runPulse(game: GameState, source: Mage, owner: Mage, effects: re
       case 'thunderhead':
         thunderhead(game, source, owner);
         break;
+      case 'darkBolt':
+        darkBolt(game, source, owner);
+        break;
+      case 'pyre':
+        for (const victim of pulseTargets(game, source, owner, e.radius, 'others')) {
+          const ctx = game.quietContext(owner, victim);
+          hitAll(game, ctx, victim, e.hits);
+          if (!victim.alive) continue;
+          if (stacksOf(victim, 'fire') > 0) game.pulseFire(victim);
+          else applyFireStacks(ctx, victim, 1);
+        }
+        break;
+      case 'stalk':
+        stalk(game, source, owner);
+        break;
+      case 'ignite':
+        ignite(game, source, owner);
+        break;
+      case 'haunt': {
+        const victim = pulseTargets(game, source, owner, e.radius, 'others')
+          .filter((m) => !game.isUnreachable(m) && !m.isImmuneTo('sanity') && m.maxSanity > 0)
+          .sort((a, b) => a.sanity - b.sanity || dist(a.pos, source.pos) - dist(b.pos, source.pos))[0];
+        if (!victim) break;
+        hitAll(game, game.quietContext(owner, victim), victim, [
+          { spec: game.isInShadow(victim) ? '2d6' : '1d6', type: 'sanity' },
+        ]);
+        forgetWords(game, victim, 1, 2);
+        break;
+      }
+      case 'wail':
+        for (const victim of pulseTargets(game, source, owner, e.radius, 'others')) {
+          hitAll(game, game.quietContext(owner, victim), victim, [{ spec: '1d6', type: 'sanity' }]);
+          if (shaken(victim)) game.applyReap(victim, e.reap, owner);
+        }
+        break;
+      case 'ballLightning':
+        ballLightning(game, source, owner);
+        break;
+      case 'liveWire':
+        liveWire(game, source, owner);
+        break;
+      case 'hellspark':
+        hellspark(game, source, owner);
+        break;
+      case 'lunge':
+        lunge(game, source, owner, e);
+        break;
+      case 'shoot': {
+        const foe = nearestPulseFoe(game, source, owner, e.radius);
+        if (foe) strikeFrom(game, source, owner, foe, e.hits, e.then);
+        break;
+      }
+      case 'hex': {
+        const caught = pulseTargets(game, source, owner, e.radius, e.who)
+          .sort((a, b) => dist(a.pos, source.pos) - dist(b.pos, source.pos));
+        for (const victim of e.nearest ? caught.slice(0, 1) : caught) strikeFrom(game, source, owner, victim, [], e.then);
+        break;
+      }
+      case 'guard': {
+        const wards = game.mages.filter(
+          (m) => m.alive && m !== source && m.team === owner.team && dist(m.pos, source.pos) <= e.radius + m.bodyRadius()
+        );
+        const threats = game.mages
+          .filter((m) => m.alive && m.team !== owner.team && !game.isUnreachable(m))
+          .filter((m) => !e.afflicted || m.statuses.some((s) => s.kind === 'dot'))
+          .map((m) => ({ m, gap: Math.min(...wards.map((w) => dist(w.pos, m.pos) - m.bodyRadius())) }))
+          .filter((t) => t.gap <= e.reach)
+          .sort((a, b) => a.gap - b.gap);
+        for (const t of e.all ? threats : threats.slice(0, 1)) strikeFrom(game, source, owner, t.m, [], e.then);
+        break;
+      }
     }
   }
+}
+
+/** A minion's own strike on `victim`: the hits, then what they set off (its summoner drinks). */
+function strikeFrom(game: GameState, source: Mage, owner: Mage, victim: Mage, hits: readonly Hit[] = [], then?: readonly HitEffect[]): void {
+  const ctx = game.quietContext(source, victim);
+  const dealt = hitAll(game, ctx, victim, hits);
+  if (then?.length) runHitEffects({ striker: source, victim, dealt, drinker: owner, ctx }, then);
+}
+
+/** An assassin's lunge: to the nearest chosen unit in reach, striking it once it stands beside it. */
+function lunge(game: GameState, source: Mage, owner: Mage, e: Extract<PulseEffect, { k: 'lunge' }>): void {
+  const prey = game.mages
+    .filter((m) => m.alive && m !== source && m !== owner && !game.isUnreachable(m) && (e.who === 'others' || m.team !== owner.team))
+    .filter((m) => dist(m.pos, source.pos) <= e.radius + m.bodyRadius())
+    .sort((a, b) => dist(a.pos, source.pos) - dist(b.pos, source.pos) || game.mages.indexOf(a) - game.mages.indexOf(b))[0];
+  if (!prey) return;
+  rushToward(game, owner, source, prey, e.cm ? R(e.cm) : Infinity);
+  const beside = dist(source.pos, prey.pos) <= source.bodyRadius() + prey.bodyRadius() + R(0.5);
+  if (beside && (e.hits || e.then)) strikeFrom(game, source, owner, prey, e.hits, e.then);
+}
+
+/** `mover` dashes up to `maxPx` toward `target`, stopping short of its body. */
+function rushToward(game: GameState, owner: Mage, mover: Mage, target: Mage, maxPx: number): void {
+  const room = dist(mover.pos, target.pos) - (target.bodyRadius() + mover.bodyRadius() + 2);
+  if (room <= 0.5 || game.isImmovable(mover)) return;
+  dash(game.quietContext(owner, mover), mover, { toPoint: target.pos, distance: Math.min(maxPx, room) });
+}
+
+/** `mover` appears right beside `target`, on its own side of it (a leap, not a walk). */
+function stepBeside(game: GameState, mover: Mage, target: Mage): boolean {
+  const gap = target.bodyRadius() + mover.bodyRadius() + 2;
+  if (game.isImmovable(mover) || dist(target.pos, mover.pos) <= gap + 1) return false;
+  const from = { ...mover.pos };
+  const to = stepTowards(target.pos, mover.pos, gap);
+  mover.x = to.x;
+  mover.y = to.y;
+  game.notifyMageRelocation(mover, from, mover.pos, false);
+  game.updateAttachedScarabs();
+  return true;
+}
+
+/** Ball Lightning: it runs to the nearest enemy, however far, and bursts; raised on a natural 18+, twice as wide. */
+function ballLightning(game: GameState, source: Mage, owner: Mage): void {
+  const foe = nearestPulseFoe(game, source, owner, Infinity);
+  if (!foe) return;
+  rushToward(game, owner, source, foe, Infinity);
+  const radius = R(source.lightningSurge ? 4 : 2);
+  const caught = game.mages.filter(
+    (m) =>
+      m.alive && m !== source && m !== owner && !game.isUnreachable(m) && dist(m.pos, source.pos) <= radius + m.bodyRadius()
+  );
+  game.log(`${source.name} bursts${source.lightningSurge ? ' wide' : ''}.`);
+  const spec = plus('1d10', Math.floor(sparkOf(source) / 6));
+  for (const m of caught) {
+    const ctx = game.quietContext(owner, m);
+    hitAll(game, ctx, m, [{ spec, type: 'heat' }]);
+    if (m.alive) applyFireStacks(ctx, m, 1);
+  }
+}
+
+/** Live Wire: it lashes a random unit in reach and leaps to it; a 1 lashes its owner, a 6 everyone in reach. */
+function liveWire(game: GameState, source: Mage, owner: Mage): void {
+  const power = sparkOf(source);
+  const bonus = Math.floor(power / 6);
+  const roll = game.rng.die(6);
+  const lash = (m: Mage): void => {
+    void game.vfxSink?.lightningBolt?.(source.pos, m.pos);
+    hitAll(game, game.quietContext(owner, m), m, [
+      { spec: plus('1d6', bonus), type: 'sanity' },
+      { spec: plus('1d4', bonus), type: 'heat' },
+    ]);
+  };
+  if (roll === 1) {
+    game.log(`${source.name} lashes its own master.`);
+    if (owner.alive) lash(owner);
+    return;
+  }
+  const near = strikeable(game, source, owner, R(Math.max(2, power / 2)));
+  if (roll === 6) {
+    for (const m of near) lash(m);
+    return;
+  }
+  if (near.length === 0) return;
+  const victim = game.rng.pick(near);
+  lash(victim);
+  if (victim.alive && stepBeside(game, source, victim)) game.log(`${source.name} leaps to ${victim.name}.`);
+}
+
+/**
+ * Hellspark: it zips 1d3 times, 1d6cm each, roughly toward the nearest enemy (up to 45° off),
+ * and flares over everyone near it after every zip, its owner included.
+ */
+function hellspark(game: GameState, source: Mage, owner: Mage): void {
+  const bonus = Math.floor(sparkOf(source) / 6);
+  const zips = game.rng.die(3);
+  game.log(`${source.name} zips ${zips} time${zips === 1 ? '' : 's'}.`);
+  for (let i = 0; i < zips && source.alive; i++) {
+    const foe = nearestPulseFoe(game, source, owner, Infinity);
+    const swerve = (game.rng.float() - 0.5) * (Math.PI / 2);
+    const angle = foe ? Math.atan2(foe.y - source.y, foe.x - source.x) + swerve : game.rng.float() * Math.PI * 2;
+    const cm = game.rng.die(6);
+    if (!game.isImmovable(source)) {
+      dash(game.quietContext(owner, source), source, { direction: { x: Math.cos(angle), y: Math.sin(angle) }, distance: R(cm) });
+    }
+    const caught = game.mages.filter(
+      (m) => m.alive && m !== source && !game.isUnreachable(m) && dist(m.pos, source.pos) <= R(2) + m.bodyRadius()
+    );
+    for (const m of caught) {
+      const ctx = game.quietContext(owner, m);
+      hitAll(game, ctx, m, [
+        { spec: plus('1d4', bonus), type: 'heat' },
+        { spec: plus('1d4', bonus), type: 'sanity' },
+      ]);
+      if (m.alive) applyFireStacks(ctx, m, 1);
+    }
+  }
+}
+
+/** Umbral Coil: a shadow bolt into a random unit in reach, never its owner; a shadow opens where it lands. */
+function darkBolt(game: GameState, source: Mage, owner: Mage): void {
+  const power = sparkOf(source);
+  const struck = strikeable(game, source, owner, R(Math.max(2, power / 2)));
+  if (struck.length === 0) return;
+  const victim = game.rng.pick(struck);
+  void game.vfxSink?.lightningBolt?.(source.pos, victim.pos);
+  const rolled = game.rng.roll(plus('1d6', Math.floor(power / 6))).total;
+  const amount = game.isInShadow(victim) ? rolled * 2 : rolled;
+  dealDamage(game.quietContext(owner, victim), victim, dmg(amount, 'shadow'), { ...QUIET, aoe: true });
+  game.addShadow(victim.pos, owner.team);
+}
+
+/** Grave Shade: out of its side's shadow, beside the nearest enemy standing in one. */
+function stalk(game: GameState, source: Mage, owner: Mage): void {
+  if (game.isImmovable(source)) return;
+  const pools = game.shadowsOf(owner.team);
+  const prey = game.mages
+    .filter((m) => m.alive && m.team !== owner.team && !game.isUnreachable(m) && pools.some((p) => dist(p, m.pos) <= p.radius))
+    .sort((a, b) => dist(a.pos, source.pos) - dist(b.pos, source.pos) || game.mages.indexOf(a) - game.mages.indexOf(b))[0];
+  if (!prey) return;
+  if (stepBeside(game, source, prey)) game.log(`${source.name} steps out of the dark beside ${prey.name}.`);
+}
+
+/** Ashcloud: every burning unit in reach flares at once and takes shadow; with none, the nearest enemy catches fire. */
+function ignite(game: GameState, source: Mage, owner: Mage): void {
+  const power = sparkOf(source);
+  const near = strikeable(game, source, owner, R(Math.max(2, power / 2)));
+  const burning = near.filter((m) => stacksOf(m, 'fire') > 0);
+  for (const m of burning) {
+    void game.vfxSink?.lightningBolt?.(source.pos, m.pos);
+    game.pulseFire(m);
+    if (m.alive) hitAll(game, game.quietContext(owner, m), m, [{ spec: '1d4', type: 'shadow' }]);
+  }
+  if (burning.length > 0) return;
+  const foe = near
+    .filter((m) => m.team !== owner.team)
+    .sort((a, b) => dist(a.pos, source.pos) - dist(b.pos, source.pos))[0];
+  if (!foe) return;
+  void game.vfxSink?.lightningBolt?.(source.pos, foe.pos);
+  const ctx = game.quietContext(owner, foe);
+  hitAll(game, ctx, foe, [{ spec: plus('1d6', Math.floor(power / 6)), type: 'heat' }]);
+  if (foe.alive) applyFireStacks(ctx, foe, 2);
 }
 
 /** The nearest enemy of `owner` within `radius` of `source` that is still in this world. */
@@ -631,13 +1013,12 @@ function strikeable(game: GameState, source: Mage, owner: Mage, reach: number): 
   );
 }
 
-/** Storm Eel: lightning leaps to the nearest unit in reach, enemies first, and throws it back. */
+/** Storm Eel: lightning leaps to the nearest enemy in reach and throws it back (blue keeps it off your side). */
 function shock(game: GameState, source: Mage, owner: Mage): void {
   const power = sparkOf(source);
-  const enemyFirst = (m: Mage): number => (m.team !== owner.team ? 0 : 1);
-  const victim = strikeable(game, source, owner, R(Math.max(2, power / 2))).sort(
-    (a, b) => enemyFirst(a) - enemyFirst(b) || dist(a.pos, source.pos) - dist(b.pos, source.pos)
-  )[0];
+  const victim = strikeable(game, source, owner, R(Math.max(2, power / 2)))
+    .filter((m) => m.team !== owner.team)
+    .sort((a, b) => dist(a.pos, source.pos) - dist(b.pos, source.pos))[0];
   if (!victim) return;
   void game.vfxSink?.lightningBolt?.(source.pos, victim.pos);
   hitAll(game, game.quietContext(owner, victim), victim, [{ spec: plus('1d6', Math.floor(power / 6)), type: 'heat' }]);
@@ -734,7 +1115,7 @@ function stormArc(game: GameState, source: Mage, owner: Mage): void {
 // -----------------------------------------------------------------------------
 
 export type DeathEffect =
-  /** Everything in reach (only enemies with `foes`) takes the hits, then the listed afflictions. */
+  /** Everything in reach (only enemies with `foes`) takes the hits, then the listed afflictions; `drink` feeds the owner the corrosive part. */
   | {
       k: 'burst';
       radius: number;
@@ -746,9 +1127,11 @@ export type DeathEffect =
       stifle?: boolean;
       fire?: number;
       blueflare?: number;
+      reap?: number;
+      drink?: boolean;
     }
-  | { k: 'foul'; radius: number; turns: number; ticks: Hit[] }
-  | { k: 'rotAffected'; radius: number; stacks: number }
+  | { k: 'foul'; radius: number; turns: number; ticks: Hit[]; drink?: boolean }
+  | { k: 'rotAffected'; radius: number; stacks: number; drink?: boolean }
   /** Every enemy in reach takes its Blueflare pulse at once. */
   | { k: 'flare'; radius: number }
   /** A shadow opens where it fell, for its owner's side. */
@@ -762,14 +1145,16 @@ export function runDeath(game: GameState, corpse: Mage, owner: Mage, effects: re
           if (!victim.alive || victim === corpse || dist(victim.pos, corpse.pos) > e.radius + victim.bodyRadius()) continue;
           if (e.foes && victim.team === owner.team) continue;
           const ctx = game.quietContext(owner, victim);
-          hitAll(game, ctx, victim, e.hits);
+          const dealt = hitAll(game, ctx, victim, e.hits, 'corrosive');
+          if (e.drink && victim !== owner) drink(game, owner, dealt);
           if (!victim.alive) continue;
-          if (e.rot) applyRot(ctx, victim, e.rot);
+          if (e.rot) applyRot(ctx, victim, e.rot, owner);
           if (e.stun) applyStun(ctx, victim, { duration: e.stun, type: 'full' });
           if (e.root) applyStun(ctx, victim, { duration: e.root, type: 'movement' });
           if (e.stifle) applyStifle(ctx, victim);
           if (e.fire) applyFireStacks(ctx, victim, e.fire);
           if (e.blueflare && victim.alive) applyBlueflareStacks(ctx, victim, e.blueflare);
+          if (e.reap && victim.alive) game.applyReap(victim, e.reap, owner);
         }
         game.log(`${corpse.name} bursts.`);
         break;
@@ -779,6 +1164,7 @@ export function runDeath(game: GameState, corpse: Mage, owner: Mage, effects: re
           radius: e.radius,
           turns: e.turns,
           blocksHealing: true,
+          lifesteal: e.drink,
           ticks: e.ticks,
         });
         break;
@@ -786,7 +1172,7 @@ export function runDeath(game: GameState, corpse: Mage, owner: Mage, effects: re
         for (const victim of game.mages) {
           if (!game.isDesecrationAffected(victim) || dist(victim.pos, corpse.pos) > e.radius + victim.bodyRadius()) continue;
           const ctx = game.quietContext(owner, victim);
-          for (let i = 0; i < e.stacks; i++) applyRot(ctx, victim, PLAGUE_ROT);
+          for (let i = 0; i < e.stacks; i++) applyRot(ctx, victim, e.drink ? THIRSTING_PLAGUE : PLAGUE_ROT);
         }
         break;
       case 'flare':
@@ -820,14 +1206,25 @@ export interface MinionDef {
   shroud?: number;
   /** Chance that an enemy single-target spell or attack aimed at its owner strikes it instead. */
   decoy?: number;
-  /** Whenever a hit lands on it, every enemy within `radius` of it takes these. */
-  struck?: { radius: number; hits: Hit[] };
+  /** Whenever a hit lands on it, every enemy within `radius` of it takes these (and is rooted for `root` turns). */
+  struck?: { radius: number; hits: Hit[]; root?: number };
+  /** Hits of these types on any other unit within `radius` of it deal `bonus` more, plus 1 per `perPower` Lightning power. */
+  amplify?: { radius: number; types: DamageType[]; bonus: number; perPower?: number };
   onHit?: HitEffect[];
   pulse?: PulseEffect[];
   death?: DeathEffect[];
 }
 
 const corrosive = (spec: string): Hit => ({ spec, type: 'corrosive' });
+const pierce = (spec: string): Hit => ({ spec, type: 'pierce' });
+/** Grave Stalker's wound on one of the affected: deeper, and past mending for a while. */
+const GRAVE_WOUND: HitEffect = { k: 'affected', then: [{ k: 'damage', spec: '1d6', type: 'pierce' }, { k: 'noHeal', turns: 2 }] };
+/** Vampire Bat's bleed: a corrosive curse that feeds its master. */
+const BLOODLETTING: HitEffect = { k: 'dot', name: 'Bloodletting', spec: '1d3', turns: 3, drink: true };
+/** Fetter Leech's shackles: Rotting Shackles that feed whoever laid them. */
+const THIRSTING_SHACKLES: RotSpec = { name: 'Thirsting Shackles', spec: '1d2', max: 4, turns: 3, drink: true };
+/** Blight that feeds whoever laid it. */
+const THIRSTING_BLIGHT: RotSpec = { ...BLIGHT, name: 'Thirsting Blight', drink: true };
 
 export const MINIONS: Record<string, MinionDef> = {
   'gag-mite': {
@@ -1061,7 +1458,7 @@ export const MINIONS: Record<string, MinionDef> = {
     death: [{ k: 'burst', radius: R(4), hits: [{ spec: '4d6', type: 'heat' }], fire: 3, blueflare: 3 }],
   },
   mare: {
-    name: 'Mare', hp: 6, move: 7, melee: { spec: '1d4', type: 'sanity' },
+    name: 'Mare', hp: 6, move: 7, immune: ['shadow'], melee: { spec: '1d4', type: 'sanity' },
     onHit: [{ k: 'dot', name: 'Nightmare', spec: '1d3', turns: 3, type: 'sanity' }, { k: 'breakMind', at: 4 }],
   },
 
@@ -1071,7 +1468,7 @@ export const MINIONS: Record<string, MinionDef> = {
     pulse: [{ k: 'lure', radius: R(5), cm: 2, forget: 1 }],
   },
   drowner: {
-    name: 'Drowner', hp: 7, move: 6, melee: { spec: '1d4', type: 'water' },
+    name: 'Drowner', hp: 7, move: 6, immune: ['shadow'], melee: { spec: '1d4', type: 'water' },
     onHit: [
       { k: 'pull', cm: 2 },
       { k: 'inShadow', then: [{ k: 'damage', spec: '1d4', type: 'shadow' }, { k: 'root', turns: 2 }] },
@@ -1093,7 +1490,7 @@ export const MINIONS: Record<string, MinionDef> = {
     death: [{ k: 'burst', radius: R(2), hits: [{ spec: '1d6', type: 'sanity' }], foes: true }],
   },
   'abyssal-eye': {
-    name: 'Abyssal Eye', hp: 5, move: 6, pacifist: true,
+    name: 'Abyssal Eye', hp: 5, move: 6, pacifist: true, immune: ['shadow'],
     pulse: [{ k: 'forgetInShadow', radius: R(6) }],
   },
   'tide-clock': {
@@ -1111,7 +1508,7 @@ export const MINIONS: Record<string, MinionDef> = {
     pulse: [{ k: 'lure', radius: R(8), cm: 3, hits: [{ spec: '1d4', type: 'sanity' }] }],
   },
   'abyssal-maw': {
-    name: 'Abyssal Maw', hp: 10, move: 3, melee: { spec: '1d6', type: 'sanity' },
+    name: 'Abyssal Maw', hp: 10, move: 3, immune: ['shadow'], melee: { spec: '1d6', type: 'sanity' },
     pulse: [{ k: 'whirl', radius: R(4), cm: 2, who: 'others', hits: [{ spec: '1d4', type: 'sanity' }] }],
     death: [{ k: 'burst', radius: R(3), hits: [{ spec: '2d4', type: 'sanity' }] }],
   },
@@ -1119,7 +1516,230 @@ export const MINIONS: Record<string, MinionDef> = {
     name: 'Thundercloud', hp: 6, move: 6, pacifist: true, pulse: [{ k: 'thunderhead' }],
     death: [{ k: 'burst', radius: R(3), hits: [{ spec: '2d6', type: 'heat' }], fire: 1 }],
   },
+
+  // ---- Shadow wave: amplifiers ----
+  'umbral-coil': { name: 'Umbral Coil', hp: 5, move: 7, pacifist: true, immune: ['shadow'], pulse: [{ k: 'darkBolt' }] },
+  'cinder-shade': {
+    name: 'Cinder Shade', hp: 6, move: 5, pacifist: true, immune: ['heat', 'shadow'],
+    pulse: [{ k: 'pyre', radius: R(3), hits: [{ spec: '1d4', type: 'shadow' }] }],
+  },
+  'wailing-shade': {
+    name: 'Wailing Shade', hp: 6, move: 6, immune: ['shadow'], melee: { spec: '1d4', type: 'sanity' },
+    onHit: [{ k: 'inShadow', then: [{ k: 'damage', spec: '1d6', type: 'sanity' }] }],
+    pulse: [{ k: 'aura', radius: R(2), who: 'others', hits: [{ spec: '1d4', type: 'sanity' }] }],
+  },
+  'grave-shade': {
+    name: 'Grave Shade', hp: 7, move: 6, immune: ['shadow'], melee: { spec: '1d4', type: 'shadow' },
+    onHit: [{ k: 'reap', stacks: 1, inShadow: 3 }],
+    pulse: [{ k: 'stalk' }],
+    death: [{ k: 'burst', radius: R(3), hits: [], foes: true, reap: 2 }],
+  },
+  ashcloud: { name: 'Ashcloud', hp: 6, move: 6, pacifist: true, immune: ['heat'], pulse: [{ k: 'ignite' }] },
+  'nerve-coil': {
+    name: 'Nerve Coil', hp: 5, move: 6, pacifist: true,
+    amplify: { radius: R(3), types: ['sanity'], bonus: 1, perPower: 8 },
+    pulse: [{ k: 'aura', radius: R(3), who: 'others', hits: [{ spec: '1d4', type: 'sanity' }] }],
+  },
+  'pyre-wraith': {
+    name: 'Pyre Wraith', hp: 7, move: 5, immune: ['heat', 'shadow'], melee: { spec: '1d4', type: 'heat' },
+    onHit: [{ k: 'fire', stacks: 1 }, { k: 'damage', spec: '1d4', type: 'sanity' }],
+    death: [{ k: 'burst', radius: R(3), hits: [{ spec: '1d6', type: 'sanity' }], fire: 2 }],
+  },
+  haunt: { name: 'Haunt', hp: 5, move: 7, pacifist: true, immune: ['shadow'], pulse: [{ k: 'haunt', radius: R(6) }] },
+  banshee: { name: 'Banshee', hp: 6, move: 7, pacifist: true, immune: ['shadow'], pulse: [{ k: 'wail', radius: R(3), reap: 2 }] },
+
+  // ---- Lightning wave: gamblers ----
+  'ball-lightning': { name: 'Ball Lightning', hp: 3, move: 8, pacifist: true, immune: ['heat'], pulse: [{ k: 'ballLightning' }] },
+  'live-wire': { name: 'Live Wire', hp: 4, move: 8, pacifist: true, pulse: [{ k: 'liveWire' }] },
+  hellspark: { name: 'Hellspark', hp: 5, move: 6, pacifist: true, immune: ['heat'], pulse: [{ k: 'hellspark' }] },
+
+  // ---- Pierce wave: archers, assassins and sentries ----
+  'blade-dervish': {
+    name: 'Blade Dervish', hp: 5, move: 7, melee: { spec: '1d4', type: 'pierce', reach: R(2) },
+    pulse: [{ k: 'lunge', radius: R(5), hits: [pierce('1d4')], then: [{ k: 'orbit', slam: pierce('1d6') }] }],
+  },
+  'pin-archer': {
+    name: 'Pin Archer', hp: 5, move: 5, melee: { spec: '1d4', type: 'pierce', reach: R(10) },
+    onHit: [{ k: 'root', turns: 2 }],
+  },
+  scorpion: {
+    name: 'Scorpion', hp: 10, move: 2, armor: 1, melee: { spec: '1d8', type: 'pierce', reach: R(14) },
+    onHit: [{ k: 'shrapnel', radius: R(1.5), hits: [{ spec: '1d4', type: 'shatter' }], foes: true }],
+  },
+  'thorn-fiend': {
+    name: 'Thorn Fiend', hp: 6, move: 6, melee: { spec: '1d4', type: 'pierce', reach: R(2) },
+    onHit: [{ k: 'dot', name: 'Bleeding', spec: '1d3', turns: 3, type: 'pierce', barbed: true }],
+    death: [{ k: 'burst', radius: R(2), hits: [pierce('2d4')] }],
+  },
+  'bloodfang-stalker': {
+    name: 'Bloodfang Stalker', hp: 6, move: 7, melee: { spec: '1d4', type: 'pierce', reach: R(2) },
+    onHit: [{ k: 'drain', spec: '1d3' }],
+    pulse: [{ k: 'lunge', radius: R(6), hits: [pierce('1d4')], then: [{ k: 'drain', spec: '1d3' }] }],
+  },
+  'grave-stalker': {
+    name: 'Grave Stalker', hp: 10, move: 6, melee: { spec: '1d8', type: 'pierce', reach: R(2) },
+    onHit: [GRAVE_WOUND],
+    pulse: [{ k: 'lunge', radius: R(8), hits: [pierce('1d8')], then: [GRAVE_WOUND] }],
+  },
+  'needle-sentry': {
+    name: 'Needle Sentry', hp: 6, move: 3, pacifist: true,
+    pulse: [{ k: 'shoot', radius: R(10), hits: [pierce('1d4')], then: [{ k: 'stifle' }] }],
+  },
+  'spinning-top': {
+    name: 'Spinning Top', hp: 8, move: 6, pacifist: true,
+    pulse: [
+      { k: 'lunge', radius: R(6), cm: 4 },
+      { k: 'orbit', radius: R(2), who: 'foes', hits: [pierce('1d6')], slam: { spec: '2d6', type: 'shatter' } },
+    ],
+  },
+  'leech-dervish': {
+    name: 'Leech Dervish', hp: 6, move: 7, melee: { spec: '1d4', type: 'pierce', reach: R(2) },
+    onHit: [{ k: 'drain', spec: '1d3' }],
+    pulse: [{ k: 'lunge', radius: R(6), hits: [pierce('1d4')], then: [{ k: 'drain', spec: '1d3' }, { k: 'flank' }] }],
+  },
+  'hooked-archer': {
+    name: 'Hooked Archer', hp: 5, move: 5, melee: { spec: '1d4', type: 'pierce', reach: R(10) },
+    onHit: [{ k: 'dot', name: 'Barbed Hook', spec: '1d3', turns: 3, type: 'pierce', orbit: true }],
+  },
+  'stake-warden': {
+    name: 'Stake Warden', hp: 10, move: 4, armor: 1, melee: { spec: '1d8', type: 'pierce', reach: R(3) },
+    onHit: [{ k: 'ifRooted', then: [{ k: 'damage', spec: '1d6', type: 'shatter' }] }, { k: 'root', turns: 2 }],
+    death: [{ k: 'burst', radius: R(2), hits: [{ spec: '2d4', type: 'shatter' }], foes: true, root: 2 }],
+  },
+  'leech-harpooner': {
+    name: 'Leech Harpooner', hp: 6, move: 5, melee: { spec: '1d4', type: 'pierce', reach: R(6) },
+    onHit: [{ k: 'pull', cm: 2 }, { k: 'drain', spec: '1d3' }],
+  },
+  thornbinder: {
+    name: 'Thornbinder', hp: 7, move: 5, melee: { spec: '1d4', type: 'pierce', reach: R(4) },
+    onHit: [{ k: 'root', turns: 2 }, { k: 'dot', name: 'Thorns', spec: '1d3', turns: 3, type: 'pierce' }],
+  },
+  'marrow-archer': {
+    name: 'Marrow Archer', hp: 5, move: 5, melee: { spec: '1d4', type: 'pierce', reach: R(12) },
+    onHit: [{ k: 'drain', spec: '1d3' }, { k: 'shrapnel', radius: R(1.5), hits: [{ spec: '1d3', type: 'shatter' }], foes: true }],
+  },
+  shardhound: {
+    name: 'Shardhound', hp: 7, move: 7, melee: { spec: '1d6', type: 'pierce', reach: R(2) },
+    onHit: [{ k: 'dot', name: 'Splinters', spec: '1d4', turns: 3, type: 'shatter' }],
+    death: [{ k: 'burst', radius: R(2), hits: [{ spec: '2d4', type: 'shatter' }] }],
+  },
+  'bone-thrower': {
+    name: 'Bone Thrower', hp: 14, move: 3, armor: 1, melee: { spec: '2d6', type: 'pierce', reach: R(10) },
+    onHit: [{ k: 'affected', then: [{ k: 'stun', turns: 2 }] }],
+    death: [{ k: 'foul', radius: R(3), turns: 4, ticks: [pierce('1d6')] }],
+  },
+  'vampire-bat': {
+    name: 'Vampire Bat', hp: 5, move: 9, melee: { spec: '1d4', type: 'pierce', reach: R(2) },
+    onHit: [BLOODLETTING],
+    pulse: [{ k: 'lunge', radius: R(6), who: 'others', hits: [pierce('1d4')], then: [BLOODLETTING] }],
+  },
+  'blood-harvester': {
+    name: 'Blood Harvester', hp: 12, move: 5, melee: { spec: '2d4', type: 'pierce', reach: R(3) },
+    onHit: [{ k: 'drain', spec: '1d4' }, { k: 'affected', then: [{ k: 'drain', spec: '2d4' }, { k: 'noHeal', turns: 2 }] }],
+  },
+  'thorn-archer': {
+    name: 'Thorn Archer', hp: 8, move: 5, melee: { spec: '1d6', type: 'pierce', reach: R(12) },
+    onHit: [
+      { k: 'dot', name: 'Bleeding', spec: '1d4', turns: 3, type: 'pierce' },
+      { k: 'affected', then: [{ k: 'noHeal', turns: 3 }] },
+    ],
+  },
+
+  // ---- Drain wave: the Corrode minions, drinking what they deal ----
+  'gag-leech': {
+    name: 'Gag Leech', hp: 6, move: 6, melee: { spec: '1d3', type: 'corrosive' },
+    onHit: [{ k: 'lifesteal' }, { k: 'stifle', chance: 0.34, spec: '1d3', drink: true }],
+  },
+  'blood-slime': {
+    name: 'Blood Slime', hp: 9, move: 4, melee: { spec: '1d3', type: 'corrosive' },
+    onHit: [{ k: 'lifesteal' }, { k: 'tether', px: R(3), turns: 2 }],
+  },
+  'leech-brute': {
+    name: 'Leech Brute', hp: 12, move: 3, armor: 1, melee: { spec: '1d6', type: 'shatter' },
+    onHit: [{ k: 'drain', spec: '1d3' }, { k: 'pitted', amount: 1, turns: 2 }],
+  },
+  'blood-idol': {
+    name: 'Blood Idol', hp: 8, move: 5, pacifist: true,
+    pulse: [{ k: 'aura', radius: R(3), who: 'others', hits: [corrosive('1d3')], drink: true }],
+  },
+  'blood-wight': {
+    name: 'Blood Wight', hp: 14, move: 4, melee: { spec: '1d6', type: 'corrosive' },
+    onHit: [{ k: 'lifesteal' }],
+  },
+  bloodjaw: {
+    name: 'Bloodjaw', hp: 8, move: 5, melee: { spec: '1d3', type: 'corrosive' },
+    onHit: [{ k: 'lifesteal' }, { k: 'root', turns: 2 }],
+    pulse: [{ k: 'stifle', radius: R(2), who: 'rooted', spec: '1d3', drink: true }],
+  },
+  bloodmill: {
+    name: 'Bloodmill', hp: 12, move: 3, pacifist: true,
+    pulse: [{
+      k: 'orbit', radius: R(2.5), who: 'foes', drink: true,
+      hits: [{ spec: '1d6', type: 'shatter' }, corrosive('1d3')],
+      slam: { spec: '2d6', type: 'shatter' },
+    }],
+  },
+  'leech-wheel': {
+    name: 'Leech Wheel', hp: 8, move: 5, melee: { spec: '1d3', type: 'corrosive' },
+    onHit: [{ k: 'lifesteal' }, { k: 'dot', name: 'Drinking Wheel', spec: '1d4', turns: 4, drink: true }],
+    pulse: [{ k: 'orbitAfflicted', radius: R(3) }],
+  },
+  'blood-warden': {
+    name: 'Blood Warden', hp: 12, move: 3, armor: 1, melee: { spec: '1d4', type: 'shatter' },
+    onHit: [{ k: 'drain', spec: '1d3' }, { k: 'root', turns: 2 }, { k: 'pitted', amount: 1, turns: 2 }],
+  },
+  'fetter-leech': {
+    name: 'Fetter Leech', hp: 8, move: 4, melee: { spec: '1d3', type: 'corrosive' },
+    onHit: [{ k: 'lifesteal' }, { k: 'rot', rot: THIRSTING_SHACKLES }, { k: 'slow', pct: 0.3, turns: 2 }],
+  },
+  'gorged-toad': {
+    name: 'Gorged Toad', hp: 8, move: 4, melee: { spec: '1d4', type: 'shatter' },
+    onHit: [{ k: 'drain', spec: '1d3' }],
+    death: [{ k: 'burst', radius: R(2.5), hits: [corrosive('2d4')], rot: THIRSTING_BLIGHT, drink: true }],
+  },
+  'marrow-colossus': {
+    name: 'Marrow Colossus', hp: 18, move: 3, armor: 1, melee: { spec: '2d6', type: 'shatter' },
+    pulse: [{ k: 'aura', radius: R(2), who: 'affected', hits: [{ spec: '1d6', type: 'shatter' }, corrosive('1d4')], drink: true }],
+    death: [{ k: 'foul', radius: R(3), turns: 4, ticks: [corrosive('1d6'), { spec: '1d6', type: 'shatter' }], drink: true }],
+  },
+  'blood-herald': {
+    name: 'Blood Herald', hp: 12, move: 4, pacifist: true,
+    pulse: [{ k: 'rotAffected', radius: R(3), drink: true }],
+    death: [{ k: 'rotAffected', radius: R(4), stacks: 2, drink: true }],
+  },
+
+  // ---- Bind wave: blue wardens hold the enemy off your side; the cursed ones hunt alone ----
+  gaoler: {
+    name: 'Gaoler', hp: 7, move: 5, pacifist: true,
+    pulse: [{ k: 'guard', radius: R(5), reach: R(3), then: [{ k: 'root', turns: 2 }, { k: 'stifle' }] }],
+  },
+  bulwark: {
+    name: 'Bulwark', hp: 12, move: 4, armor: 2, pacifist: true, decoy: 0.35,
+    struck: { radius: R(2), hits: [{ spec: '1d4', type: 'shatter' }], root: 2 },
+  },
+  'warding-obelisk': {
+    name: 'Warding Obelisk', hp: 14, move: 2, armor: 2, pacifist: true,
+    pulse: [
+      { k: 'hex', radius: R(3), who: 'foes', then: [{ k: 'root', turns: 2 }] },
+      { k: 'hex', radius: R(3), who: 'foes', nearest: true, then: [{ k: 'stifle' }] },
+    ],
+    death: [{ k: 'burst', radius: R(3), hits: [{ spec: '2d6', type: 'shatter' }], foes: true, stun: 2 }],
+  },
+  'shackle-wraith': {
+    name: 'Shackle Wraith', hp: 6, move: 6, melee: { spec: '1d3', type: 'shadow' },
+    onHit: [{ k: 'dot', name: 'Shackle Curse', spec: '1d3', turns: 3, type: 'shadow', roots: true }],
+    pulse: [{ k: 'guard', radius: R(5), reach: R(2), all: true, afflicted: true, then: [{ k: 'stifle' }] }],
+  },
+  basilisk: {
+    name: 'Basilisk', hp: 9, move: 4, melee: { spec: '1d4', type: 'shatter', reach: R(4) },
+    onHit: [{ k: 'petrify' }],
+  },
 };
+
+/** Whether a minion of `kind` drains: whatever it drinks heals it as well as its summoner. */
+export function minionDrinks(kind: string): boolean {
+  return /"k":"(drain|siphon|lifesteal|drinkTethered)"|"drink":true/.test(JSON.stringify(MINIONS[kind] ?? {}));
+}
 
 /**
  * Build a minion of `kind` for its summoner. Its strength, dexterity and
@@ -1184,6 +1804,8 @@ export interface ImbueDef {
   robe?: { label: string; text: string; cast: (game: GameState, wearer: Mage) => void };
   /** Weapon: on every landed basic attack. */
   onHit?: HitEffect[];
+  /** Weapon bound to a unit (`boundIndex`): every landed basic attack, on anyone, also lands these on it. */
+  onBound?: HitEffect[];
   /** Weapon: when it drew no blood since the bearer's last turn, it bites the bearer for this much. */
   hunger?: number;
   /** Armour: run on the attacker whenever a basic attack lands on the bearer. */
@@ -1196,6 +1818,20 @@ export interface ImbueDef {
   turnStart?: PulseEffect[];
   /** Armour: an enemy single-target spell aimed at the bearer is cast at its own caster instead (a use each). */
   reflect?: boolean;
+  /** The bearer's hits of these types deal `dealt` more; such hits on the bearer deal `taken` more. */
+  amplify?: { types: DamageType[]; dealt: number; taken?: number };
+  /** The bearer's Lightning power is this much higher. */
+  lightning?: number;
+  /** Fire the bearer sets is this many stacks stronger. */
+  kindle?: number;
+  /** Reap the bearer marks is this much higher. */
+  reap?: number;
+  /** The bearer's executions reach this much more health. */
+  execute?: number;
+  /** Trinket: every hit on the bearer charges it (up to its Lightning power); it discharges on the gamble at turn start. */
+  capacitor?: { radius: number };
+  /** Armour: whatever the bearer takes also strikes everyone near it, and a hit rolls 1d3 on top. */
+  thunder?: boolean;
 }
 
 export const IMBUES: Record<string, ImbueDef> = {
@@ -1217,7 +1853,7 @@ export const IMBUES: Record<string, ImbueDef> = {
       },
     },
   },
-  leechingEdge: { name: 'Leeching Edge', slot: 'weapon', onHit: [{ k: 'drain', spec: '1d3' }], hunger: 1 },
+  leechingEdge: { name: 'Leeching Edge', slot: 'weapon', onHit: [{ k: 'siphon', pct: 0.5 }], hunger: 1 },
   foulingEdge: { name: 'Fouling Edge', slot: 'weapon', onHit: [{ k: 'foul', radius: R(2), turns: 3, spec: '2d4' }] },
   rustGag: {
     name: 'Rust Gag', slot: 'weapon', charges: 3,
@@ -1231,7 +1867,7 @@ export const IMBUES: Record<string, ImbueDef> = {
     name: 'Shatterspring', slot: 'armour', charges: 2,
     deflect: [{ k: 'orbit' }, { k: 'damage', spec: '1d6', type: 'shatter' }, { k: 'damage', spec: '1d3', type: 'corrosive' }],
   },
-  leechHook: { name: 'Leeching Hook', slot: 'weapon', onHit: [{ k: 'orbit' }, { k: 'drain', spec: '1d4' }] },
+  leechHook: { name: 'Leeching Hook', slot: 'weapon', onHit: [{ k: 'orbit' }, { k: 'siphon', pct: 0.5 }] },
   spindle: {
     name: 'Spindle Curse', slot: 'weapon',
     onHit: [{ k: 'rot', rot: { name: 'Spindle Rot', spec: '1d3', max: 3, turns: 3 } }, { k: 'orbit' }],
@@ -1242,7 +1878,7 @@ export const IMBUES: Record<string, ImbueDef> = {
   },
   bloodchain: {
     name: 'Bloodchain', slot: 'weapon',
-    onHit: [{ k: 'drain', spec: '1d4' }, { k: 'tether', px: R(3), turns: 2, mutual: true }],
+    onHit: [{ k: 'siphon', pct: 0.5 }, { k: 'tether', px: R(3), turns: 2, mutual: true }],
   },
   fetters: {
     name: 'Cursed Fetters', slot: 'armour',
@@ -1262,10 +1898,10 @@ export const IMBUES: Record<string, ImbueDef> = {
   },
   barbed: { name: 'Barbed Edge', slot: 'weapon', onHit: [{ k: 'dot', name: 'Barb', spec: '1d4', turns: 3, barbed: true }] },
   blightHammer: { name: 'Blight Hammer', slot: 'weapon', onHit: [{ k: 'rot', rot: BLIGHT }] },
-  vampireFang: { name: 'Vampire Fang', slot: 'weapon', onHit: [{ k: 'dot', name: 'Drinking Curse', spec: '1d3', turns: 3, drink: true }] },
+  vampireFang: { name: 'Vampire Fang', slot: 'weapon', onHit: [{ k: 'dot', name: 'Drinking Curse', pct: 1 / 3, turns: 3, drink: true }] },
   devourer: {
     name: 'Devourer', slot: 'weapon',
-    onHit: [{ k: 'affected', then: [{ k: 'drain', spec: '2d6' }, { k: 'wither', amount: 2, cap: 8 }] }],
+    onHit: [{ k: 'affected', then: [{ k: 'siphon', pct: 1 }, { k: 'wither', amount: 2, cap: 8 }] }],
   },
   plagueCenser: { name: 'Plague Censer', slot: 'trinket', turnStart: [{ k: 'rotAffected', radius: R(4) }] },
 
@@ -1341,7 +1977,7 @@ export const IMBUES: Record<string, ImbueDef> = {
   },
   leechveil: {
     name: 'Leechveil', slot: 'armour', charges: 3,
-    onStruck: [{ k: 'dot', name: 'Leeching Curse', spec: '1d4', turns: 3, drink: true }, { k: 'veilSelf', turns: 1 }],
+    onStruck: [{ k: 'dot', name: 'Leeching Curse', pct: 1 / 3, turns: 3, drink: true }, { k: 'veilSelf', turns: 1 }],
   },
   briarShroud: {
     name: 'Briar Shroud', slot: 'armour',
@@ -1357,11 +1993,11 @@ export const IMBUES: Record<string, ImbueDef> = {
   },
   thirstingNeedle: {
     name: 'Thirsting Needle', slot: 'weapon',
-    onHit: [{ k: 'drain', spec: '1d3' }, { k: 'dashAway', px: R(2) }],
+    onHit: [{ k: 'siphon', pct: 0.5 }, { k: 'dashAway', px: R(2) }],
   },
   bindingVeil: {
     name: 'Binding Veil', slot: 'armour',
-    onStruck: [{ k: 'root', turns: 2 }, { k: 'drain', spec: '1d3' }],
+    onStruck: [{ k: 'root', turns: 2 }, { k: 'siphon', pct: 0.5 }],
   },
   mirrorMail: {
     name: 'Mirror Mail', slot: 'armour', charges: 2,
@@ -1407,7 +2043,7 @@ export const IMBUES: Record<string, ImbueDef> = {
   },
   conductorsTrident: {
     name: "Conductor's Trident", slot: 'weapon', charges: 1,
-    onHit: [{ k: 'push', cm: 2 }, { k: 'arc', radius: R(3), hits: [{ spec: '1d6', type: 'heat' }] }],
+    onHit: [{ k: 'push', cm: 2 }, { k: 'arc', radius: R(3), hits: [{ spec: '1d6', type: 'heat' }], foes: true }],
   },
   gaspingHook: {
     name: 'Gasping Hook', slot: 'weapon',
@@ -1445,6 +2081,99 @@ export const IMBUES: Record<string, ImbueDef> = {
     name: 'Storm Trident', slot: 'weapon', charges: 1,
     onHit: [{ k: 'thunderclap', radius: R(2), cm: 2, hits: [{ spec: '1d6', type: 'heat' }], fire: 1 }],
   },
+
+  // ---- Shadow wave: the two-word trinkets amplify their other word ----
+  gloomLantern: { name: 'Gloom Lantern', slot: 'trinket', lightning: 4 },
+  coalHeart: { name: 'Coal Heart', slot: 'trinket', kindle: 1 },
+  thornedCirclet: { name: 'Thorned Circlet', slot: 'trinket', amplify: { types: ['sanity'], dealt: 2, taken: 1 } },
+  blackSigil: { name: 'Black Sigil', slot: 'trinket', reap: 1, execute: 2 },
+  stormBrand: {
+    name: 'Storm Brand', slot: 'weapon', charges: 1,
+    onHit: [{ k: 'damage', spec: '1d6', type: 'shadow' }, { k: 'pulseFire' }, { k: 'fire', stacks: 2 }],
+  },
+  nerveMail: {
+    name: 'Nerve Mail', slot: 'armour', charges: 1,
+    onStruck: [{ k: 'damage', spec: '1d6', type: 'sanity' }, { k: 'arc', radius: R(3), hits: [{ spec: '1d4', type: 'sanity' }] }],
+  },
+  brandOfAgony: { name: 'Brand of Agony', slot: 'weapon', hunger: 1, onHit: [{ k: 'fireSanity' }, { k: 'fire', stacks: 1 }] },
+  dreadfulEdge: {
+    name: 'Dreadful Edge', slot: 'weapon',
+    onHit: [{
+      k: 'ifShaken',
+      then: [{ k: 'damage', spec: '2d6', type: 'sanity' }, { k: 'forget', count: 1, turns: 2 }],
+      else: [{ k: 'damage', spec: '1d4', type: 'sanity' }],
+    }],
+  },
+  shroudOfMourning: {
+    name: 'Shroud of Mourning', slot: 'armour',
+    onStruck: [
+      { k: 'damage', spec: '1d4', type: 'sanity' },
+      { k: 'ifShaken', then: [{ k: 'reap', stacks: 3 }], else: [{ k: 'reap', stacks: 1 }] },
+    ],
+  },
+
+  // ---- Lightning wave: the gamble rides on what the bearer takes ----
+  agonyCapacitor: { name: 'Agony Capacitor', slot: 'trinket', capacitor: { radius: R(4) } },
+  thunderingMantle: { name: 'Thundering Mantle', slot: 'armour', thunder: true },
+
+  // ---- Pierce wave ----
+  boneMail: { name: 'Bone Mail', slot: 'armour', charges: 2, deflect: [{ k: 'damage', spec: '1d6', type: 'pierce' }, { k: 'siphon', pct: 0.5 }] },
+  bloodthirstyEdge: {
+    name: 'Bloodthirsty Edge', slot: 'weapon', hunger: 2,
+    onHit: [{ k: 'siphon', pct: 0.5 }, { k: 'dot', name: 'Bleeding', spec: '1d3', turns: 2, type: 'pierce' }],
+  },
+
+  // ---- Drain wave: the Corrode gear, drinking what it deals ----
+  gaggingFang: { name: 'Gagging Fang', slot: 'weapon', charges: 3, onHit: [{ k: 'stifle' }, { k: 'siphon', pct: 0.5 }] },
+  leechingChains: { name: 'Leeching Chains', slot: 'armour', onStruck: [{ k: 'siphon', pct: 0.5 }, { k: 'root', turns: 2 }] },
+  thirstingCurse: {
+    name: 'Thirsting Curse', slot: 'weapon', hunger: 2,
+    onHit: [{ k: 'dot', name: 'Thirsting Curse', pct: 0.5, turns: 3, drink: true }],
+  },
+  gorgingEdge: {
+    name: 'Gorging Edge', slot: 'weapon',
+    onHit: [{ k: 'affected', then: [{ k: 'siphon', pct: 0.5 }, { k: 'foul', radius: R(2), turns: 3, spec: '2d4', drink: true }] }],
+  },
+  bloodGag: {
+    name: 'Blood Gag', slot: 'weapon', charges: 3,
+    onHit: [{ k: 'root', turns: 2 }, { k: 'stifle' }, { k: 'siphon', pct: 0.5 }],
+  },
+  leechspring: {
+    name: 'Leechspring', slot: 'armour', charges: 2,
+    deflect: [{ k: 'orbit' }, { k: 'damage', spec: '1d6', type: 'shatter' }, { k: 'siphon', pct: 0.5 }],
+  },
+  thirstingSpindle: {
+    name: 'Thirsting Spindle', slot: 'weapon',
+    onHit: [{ k: 'dot', name: 'Spindle Thirst', pct: 1 / 3, turns: 3, drink: true }, { k: 'orbit' }],
+  },
+  thirstingFetters: {
+    name: 'Thirsting Fetters', slot: 'armour',
+    onStruck: [{ k: 'root', turns: 2 }, { k: 'dot', name: 'Fettered Thirst', pct: 1 / 3, turns: 3, drink: true }],
+  },
+  blightdrinker: { name: 'Blightdrinker', slot: 'weapon', onHit: [{ k: 'rot', rot: THIRSTING_BLIGHT }] },
+  bloodCenser: { name: 'Blood Censer', slot: 'trinket', turnStart: [{ k: 'rotAffected', radius: R(4), drink: true }] },
+
+  // ---- Bind wave: shackles on enemy gear, wards on your own ----
+  shackledGrip: {
+    name: 'Shackled Grip', slot: 'weapon', charges: 3,
+    onHit: [{ k: 'self', then: [{ k: 'root', turns: 2 }, { k: 'stifle' }] }],
+  },
+  brittleFetters: {
+    name: 'Brittle Fetters', slot: 'armour', charges: 3,
+    onStruck: [{ k: 'self', then: [{ k: 'damage', spec: '1d6', type: 'shatter' }, { k: 'root', turns: 2 }] }],
+  },
+  shatterlockMail: {
+    name: 'Shatterlock Mail', slot: 'armour', charges: 2,
+    deflect: [{ k: 'damage', spec: '1d6', type: 'shatter' }, { k: 'stifle' }, { k: 'sabotage' }],
+  },
+  effigyBlade: {
+    name: 'Effigy Blade', slot: 'weapon',
+    onBound: [
+      { k: 'dot', name: 'Effigy Curse', spec: '1d3', turns: 3, type: 'shadow', roots: true },
+      { k: 'stifle', chance: 0.34 },
+    ],
+  },
+  gorgonCharm: { name: 'Gorgon Charm', slot: 'trinket', turnStart: [{ k: 'hex', radius: R(3), who: 'foes', then: [{ k: 'petrify' }] }] },
 };
 
 export function imbuesOf(m: Mage): ImbueStatus[] {
@@ -1452,11 +2181,11 @@ export function imbuesOf(m: Mage): ImbueStatus[] {
 }
 
 /** Put imbue `id` on `bearer` for the rest of the fight, replacing one of the same kind. `scale` multiplies its uses; `uses` sets them outright. */
-export function addImbue(game: GameState, owner: Mage, bearer: Mage, id: string, scale = 1, uses?: number): void {
+export function addImbue(game: GameState, owner: Mage, bearer: Mage, id: string, scale = 1, uses?: number): ImbueStatus {
   const def = IMBUES[id];
   const charges = uses ?? (def.charges != null ? def.charges * scale : undefined);
   bearer.statuses = bearer.statuses.filter((s) => !(s.kind === 'imbue' && (s as ImbueStatus).imbue === id));
-  bearer.statuses.push({
+  const status: ImbueStatus = {
     key: `imbue:${id}`,
     name: def.name,
     kind: 'imbue',
@@ -1465,8 +2194,10 @@ export function addImbue(game: GameState, owner: Mage, bearer: Mage, id: string,
     ownerIndex: game.mages.indexOf(owner),
     charges,
     fed: true,
-  });
+  };
+  bearer.statuses.push(status);
   game.log(`${bearer.name} carries ${def.name}.`);
+  return status;
 }
 
 function spend(bearer: Mage, imbue: ImbueStatus): void {
@@ -1519,6 +2250,11 @@ export function onDeclare(game: GameState, item: StackItem): void {
     const owner = lawOwner(game, 'burningFocus') ?? source;
     applyBlueflareStacks(game.quietContext(owner, source), source, item.spell.words.length);
   }
+  if (item.kind === 'spell' && item.spell?.words.includes('lightning') && game.hexLaw('blackStorm')) {
+    game.log(`The black storm answers ${source.name}'s lightning.`);
+    lawHit(game, lawOwner(game, 'blackStorm') ?? source, source, { spec: '1d6', type: 'shadow' }, false);
+    if (!source.alive) return;
+  }
   let target = item.target;
   if (!target?.alive) return;
   const spell = item.kind === 'spell' ? item.spell : undefined;
@@ -1554,7 +2290,9 @@ export function minionStruck(game: GameState, minion: Mage, dealt: number): void
   if (!owner) return;
   for (const foe of game.mages) {
     if (!foe.alive || foe.team === owner.team || dist(foe.pos, minion.pos) > def.struck.radius + foe.bodyRadius()) continue;
-    hitAll(game, game.quietContext(owner, foe), foe, def.struck.hits);
+    const ctx = game.quietContext(owner, foe);
+    hitAll(game, ctx, foe, def.struck.hits);
+    if (def.struck.root && foe.alive) applyStun(ctx, foe, { duration: def.struck.root, type: 'movement' });
   }
 }
 
@@ -1577,9 +2315,9 @@ function forgetWords(game: GameState, m: Mage, count: number, turns: number): vo
 
 /**
  * A defender's deflecting armour may swallow a basic attack before it lands.
- * Returns true when the blow is negated.
+ * Returns true when the blow is negated. `blocked`: what the blow would have dealt.
  */
-export function imbueDeflects(game: GameState, attacker: Mage, defender: Mage): boolean {
+export function imbueDeflects(game: GameState, attacker: Mage, defender: Mage, blocked = 0): boolean {
   if (attacker.team === defender.team) return false;
   const deflector = imbuesOf(defender).find((s) => IMBUES[s.imbue]?.deflect);
   if (!deflector) return false;
@@ -1587,7 +2325,7 @@ export function imbueDeflects(game: GameState, attacker: Mage, defender: Mage): 
   game.log(`${defender.name}'s ${def.name} turns the blow aside.`);
   spend(defender, deflector);
   runHitEffects(
-    { striker: defender, victim: attacker, dealt: 0, drinker: defender, ctx: game.quietContext(defender, attacker) },
+    { striker: defender, victim: attacker, dealt: blocked, drinker: defender, ctx: game.quietContext(defender, attacker) },
     def.deflect!
   );
   return true;
@@ -1613,22 +2351,32 @@ export function imbueAfterStrike(
     runHitEffects({ striker: source, victim: target, dealt, drinker: owner, ctx }, def.onHit);
     if (def.charges != null) spend(source, imbue);
   }
+  for (const imbue of imbuesOf(source)) {
+    const bound = imbue.boundIndex != null ? game.mages[imbue.boundIndex] : undefined;
+    const def = IMBUES[imbue.imbue];
+    if (!def?.onBound || !bound?.alive) continue;
+    runHitEffects({ striker: source, victim: bound, dealt, drinker: owner, ctx: game.quietContext(source, bound) }, def.onBound);
+  }
   if (source.team === target.team) return;
+  // Armour answers with the blow it took: `dealt` is what landed on the wearer.
   const back = game.quietContext(target, source);
   if (armourHits.length && source.alive) {
-    runHitEffects({ striker: target, victim: source, dealt: 0, drinker: target, ctx: back }, armourHits);
+    runHitEffects({ striker: target, victim: source, dealt, drinker: target, ctx: back }, armourHits);
   }
   for (const imbue of imbuesOf(target)) {
     const def = IMBUES[imbue.imbue];
     if (!def?.onStruck || !source.alive || !target.alive) continue;
-    runHitEffects({ striker: target, victim: source, dealt: 0, drinker: target, ctx: back }, def.onStruck);
+    runHitEffects({ striker: target, victim: source, dealt, drinker: target, ctx: back }, def.onStruck);
     if (def.charges != null) spend(target, imbue);
   }
 }
 
-/** Any hit landed on an imbued bearer: bursting mail. */
-export function imbueOnDamaged(game: GameState, target: Mage, dealt: number): void {
+/** Any hit landed on an imbued bearer: bursting mail, charging capacitors, a thundering mantle. `dot`: a damage-over-time tick. */
+export function imbueOnDamaged(game: GameState, target: Mage, dealt: number, dot = false): void {
   if (dealt <= 0) return;
+  for (const imbue of imbuesOf(target)) {
+    if (IMBUES[imbue.imbue]?.capacitor) imbue.stored = Math.min(imbue.power ?? 10, (imbue.stored ?? 0) + dealt);
+  }
   for (const imbue of imbuesOf(target)) {
     const burst = IMBUES[imbue.imbue]?.burst;
     if (!burst || dealt < burst.min) continue;
@@ -1639,6 +2387,64 @@ export function imbueOnDamaged(game: GameState, target: Mage, dealt: number): vo
     }
     if (target.alive) applyInvisibility(game.quietContext(target, target), target, { duration: burst.veil, mode: 'partial' });
     game.log(`${target.name}'s ${IMBUES[imbue.imbue].name} bursts.`);
+  }
+  for (const imbue of imbuesOf(target)) {
+    if (IMBUES[imbue.imbue]?.thunder) thunder(game, target, imbue, dealt, dot);
+  }
+}
+
+/** A damage-over-time tick that never passed through a hit: only a thundering mantle hears it. */
+export function imbueOnDotTick(game: GameState, bearer: Mage, taken: number): void {
+  if (taken <= 0) return;
+  for (const imbue of imbuesOf(bearer)) {
+    if (IMBUES[imbue.imbue]?.thunder) thunder(game, bearer, imbue, taken, true);
+  }
+}
+
+/** Nonzero while a mantle thunders: its own strikes never set a mantle off again. */
+let thundering = 0;
+
+/**
+ * Thundering Mantle: what the bearer takes also strikes every other unit near it, half as heat,
+ * a quarter as sanity and a quarter as Fire stacks (rounded down). A hit (not a damage-over-time
+ * tick) then rolls 1d3: a 2 crackles back into the bearer for 1 heat, a 1 arcs 1d3 sanity into
+ * the nearest other unit.
+ */
+function thunder(game: GameState, bearer: Mage, imbue: ImbueStatus, taken: number, dot: boolean): void {
+  if (thundering > 0) return;
+  thundering += 1;
+  try {
+    const name = IMBUES[imbue.imbue].name;
+    const heat = Math.floor(taken / 2);
+    const quarter = Math.floor(taken / 4);
+    const radius = R(Math.max(2, (imbue.power ?? 8) / 4));
+    const near = heat > 0
+      ? game.mages.filter(
+        (m) => m.alive && m !== bearer && !game.isUnreachable(m) && dist(m.pos, bearer.pos) <= radius + m.bodyRadius()
+      )
+      : [];
+    if (near.length > 0) game.log(`${bearer.name}'s ${name} thunders out.`);
+    for (const m of near) {
+      void game.vfxSink?.lightningBolt?.(bearer.pos, m.pos);
+      const ctx = game.quietContext(bearer, m);
+      dealDamage(ctx, m, dmg(heat, 'heat'), { ...QUIET, aoe: true });
+      if (quarter > 0 && m.alive) dealDamage(ctx, m, dmg(quarter, 'sanity'), { ...QUIET, aoe: true });
+      if (quarter > 0 && m.alive) applyFireStacks(ctx, m, quarter);
+    }
+    if (dot || !bearer.alive) return;
+    const roll = game.rng.die(3);
+    if (roll === 2) {
+      game.log(`${bearer.name}'s ${name} crackles back into its bearer.`);
+      dealDamage(game.quietContext(bearer, bearer), bearer, dmg(1, 'heat'), QUIET);
+    } else if (roll === 1) {
+      const next = nearestOther(game, bearer, Infinity, [bearer], (m) => !game.isUnreachable(m));
+      if (!next) return;
+      game.log(`${bearer.name}'s ${name} arcs into ${next.name}.`);
+      void game.vfxSink?.lightningBolt?.(bearer.pos, next.pos);
+      dealDamage(game.quietContext(bearer, next), next, dmg(game.rng.roll('1d3').total, 'sanity'), QUIET);
+    }
+  } finally {
+    thundering -= 1;
   }
 }
 
@@ -1653,7 +2459,89 @@ export function imbueTurnStart(game: GameState, bearer: Mage): void {
     }
     imbue.fed = false;
     if (def.turnStart) runPulse(game, bearer, bearer, def.turnStart);
+    if (def.capacitor && (imbue.stored ?? 0) > 0) discharge(game, bearer, imbue, def.capacitor.radius);
   }
+}
+
+/** Agony Capacitor: the whole charge goes on the gamble — into the bearer, one unit near it, or all of them. */
+function discharge(game: GameState, bearer: Mage, imbue: ImbueStatus, radius: number): void {
+  const charge = imbue.stored ?? 0;
+  const roll = game.rng.die(6);
+  const near = game.mages.filter(
+    (m) => m.alive && m !== bearer && !game.isUnreachable(m) && dist(m.pos, bearer.pos) <= radius + m.bodyRadius()
+  );
+  const zap = (m: Mage, type: DamageType): void => {
+    if (m.alive) dealDamage(game.quietContext(bearer, m), m, dmg(charge, type), { ...QUIET, aoe: true });
+  };
+  if (roll === 1) {
+    game.log(`${bearer.name}'s ${IMBUES[imbue.imbue].name} discharges into its bearer.`);
+    zap(bearer, 'sanity');
+  } else if (roll === 6) {
+    game.log(`${bearer.name}'s ${IMBUES[imbue.imbue].name} discharges into everything near it.`);
+    for (const m of near) {
+      void game.vfxSink?.lightningBolt?.(bearer.pos, m.pos);
+      zap(m, 'heat');
+      zap(m, 'sanity');
+    }
+  } else if (near.length > 0) {
+    const victim = game.rng.pick(near);
+    void game.vfxSink?.lightningBolt?.(bearer.pos, victim.pos);
+    zap(victim, 'heat');
+    zap(victim, 'sanity');
+  }
+  // Emptied last: a discharge into its own bearer must not charge it straight back up.
+  imbue.stored = 0;
+}
+
+// -----------------------------------------------------------------------------
+//  AMPLIFIERS — Shadow gear, auras and laws that make other words stronger
+// -----------------------------------------------------------------------------
+
+const imbueSum = (m: Mage, read: (def: ImbueDef) => number | undefined): number => {
+  let sum = 0;
+  for (const imbue of imbuesOf(m)) {
+    const def = IMBUES[imbue.imbue];
+    if (def) sum += read(def) ?? 0;
+  }
+  return sum;
+};
+
+/** What gear and minion auras add to a hit of `type` from `source` on `target`. */
+export function hitAmplifier(game: GameState, source: Mage, target: Mage, type: DamageType): number {
+  let bonus = imbueSum(source, (def) => (def.amplify?.types.includes(type) ? def.amplify.dealt : 0));
+  bonus += imbueSum(target, (def) => (def.amplify?.types.includes(type) ? def.amplify.taken : 0));
+  for (const m of game.mages) {
+    const aura = m.isSummon && m.alive && m !== target ? MINIONS[m.summonKind ?? '']?.amplify : undefined;
+    if (!aura?.types.includes(type) || dist(m.pos, target.pos) > aura.radius + target.bodyRadius()) continue;
+    bonus += aura.bonus + (aura.perPower ? Math.floor(sparkOf(m) / aura.perPower) : 0);
+  }
+  return bonus;
+}
+
+/** How much higher `m`'s Lightning power runs: its gear and Black Storm. */
+export function lightningAmplifier(game: GameState, m: Mage): number {
+  const storm = game.hexLaw('blackStorm');
+  return imbueSum(m, (def) => def.lightning) + (storm ? Math.max(2, Math.floor((storm.power ?? 0) / 3)) : 0);
+}
+
+/** Extra Fire stacks whatever `owner` sets. */
+export function kindleBonus(owner: Mage): number {
+  return imbueSum(owner, (def) => def.kindle);
+}
+
+/** Extra Reap whatever `source` marks. */
+export function reapBonus(source: Mage): number {
+  return imbueSum(source, (def) => def.reap);
+}
+
+/** Extra health `source`'s executions reach. */
+export function executeBonus(source: Mage): number {
+  return imbueSum(source, (def) => def.execute);
+}
+
+/** How much every Reap stack counts: double under Long Night. */
+export function reapWeight(game: GameState): number {
+  return game.hexLaw('longNight') ? 2 : 1;
 }
 
 // -----------------------------------------------------------------------------
@@ -1728,7 +2616,55 @@ export type HexLawKind =
   | 'mindCurrent'
   | 'flinching'
   | 'maelstrom'
-  | 'squall';
+  | 'squall'
+  | 'blackStorm'
+  | 'blackfire'
+  | 'echoingAgony'
+  | 'longNight'
+  | 'firestorm'
+  | 'screamingSky'
+  | 'burningTerror'
+  | 'frayingMinds'
+  | 'dyingLight'
+  | 'dryLightning'
+  | 'stormOfAgony'
+  | 'burningFrenzy'
+  | 'turningBlades'
+  | 'splintering'
+  | 'openWounds'
+  | 'bloodscent'
+  | 'graveStakes'
+  | 'pinningLaw'
+  | 'whirlwind'
+  | 'circlingThirst'
+  | 'twistingBarbs'
+  | 'stakeLaw'
+  | 'bloodpin'
+  | 'thornedFetters'
+  | 'marrowThirst'
+  | 'splinterCurse'
+  | 'boneGarden'
+  | 'vampiricWounds'
+  | 'bloodHarvest'
+  | 'stigmata'
+  | 'chokingThirst'
+  | 'clingingThirst'
+  | 'brittleThirst'
+  | 'curseOfThirst'
+  | 'gorgingWorld'
+  | 'gnawingLockdown'
+  | 'grindingThirst'
+  | 'passingThirst'
+  | 'calcifiedThirst'
+  | 'festeringThirst'
+  | 'crackedVessels'
+  | 'marrowFeast'
+  | 'eternalThirst'
+  | 'gagOrder'
+  | 'petrifaction'
+  | 'breakingPoint'
+  | 'hexedSilence'
+  | 'shatteredCurses';
 
 export const HEX_LAW_NAMES: Record<HexLawKind, string> = {
   chokingRust: 'Choking Rust',
@@ -1799,6 +2735,54 @@ export const HEX_LAW_NAMES: Record<HexLawKind, string> = {
   flinching: 'Flinching Law',
   maelstrom: 'Maelstrom',
   squall: 'Squall',
+  blackStorm: 'Black Storm',
+  blackfire: 'Blackfire',
+  echoingAgony: 'Echoing Agony',
+  longNight: 'Long Night',
+  firestorm: 'Firestorm',
+  screamingSky: 'Screaming Sky',
+  burningTerror: 'Burning Terror',
+  frayingMinds: 'Fraying Minds',
+  dyingLight: 'Dying Light',
+  dryLightning: 'Dry Lightning',
+  stormOfAgony: 'Storm of Agony',
+  burningFrenzy: 'Burning Frenzy',
+  turningBlades: 'Turning Blades',
+  splintering: 'Splintering Law',
+  openWounds: 'Open Wounds',
+  bloodscent: 'Bloodscent',
+  graveStakes: 'Grave Stakes',
+  pinningLaw: 'Pinning Law',
+  whirlwind: 'Whirlwind Law',
+  circlingThirst: 'Circling Thirst',
+  twistingBarbs: 'Twisting Barbs',
+  stakeLaw: 'Stake Law',
+  bloodpin: 'Bloodpin Law',
+  thornedFetters: 'Thorned Fetters',
+  marrowThirst: 'Marrow Thirst',
+  splinterCurse: 'Splinter Curse',
+  boneGarden: 'Bone Garden',
+  vampiricWounds: 'Vampiric Wounds',
+  bloodHarvest: 'Blood Harvest',
+  stigmata: 'Stigmata',
+  chokingThirst: 'Choking Thirst',
+  clingingThirst: 'Clinging Thirst',
+  brittleThirst: 'Brittle Thirst',
+  curseOfThirst: 'Curse of Thirst',
+  gorgingWorld: 'The Gorging World',
+  gnawingLockdown: 'Gnawing Lockdown',
+  grindingThirst: 'Grinding Thirst',
+  passingThirst: 'Passing Thirst',
+  calcifiedThirst: 'Calcified Thirst',
+  festeringThirst: 'Festering Thirst',
+  crackedVessels: 'Cracked Vessels',
+  marrowFeast: 'Marrow Feast',
+  eternalThirst: 'Eternal Thirst',
+  gagOrder: 'Gag Order',
+  petrifaction: 'Petrifaction',
+  breakingPoint: 'Breaking Point',
+  hexedSilence: 'Hexed Silence',
+  shatteredCurses: 'Shattered Curses',
 };
 
 export function isHexLawKind(kind: string): kind is HexLawKind {
@@ -1806,6 +2790,7 @@ export function isHexLawKind(kind: string): kind is HexLawKind {
 }
 
 const BRITTLE_KEY = 'debuff:law-brittle';
+const BRITTLE_THIRST_KEY = 'debuff:law-brittle-thirst';
 
 /** Once per unit per round: true the first time, false after. */
 function firstThisRound(game: GameState, kind: HexLawKind, m: Mage): boolean {
@@ -1818,9 +2803,15 @@ function firstThisRound(game: GameState, kind: HexLawKind, m: Mage): boolean {
   return true;
 }
 
-function nearestOther(game: GameState, from: Mage, radius: number, exclude: readonly Mage[]): Mage | null {
+function nearestOther(
+  game: GameState,
+  from: Mage,
+  radius: number,
+  exclude: readonly Mage[],
+  allow: (m: Mage) => boolean = () => true
+): Mage | null {
   return game.mages
-    .filter((m) => m.alive && !exclude.includes(m) && dist(m.pos, from.pos) <= radius + m.bodyRadius())
+    .filter((m) => m.alive && !exclude.includes(m) && allow(m) && dist(m.pos, from.pos) <= radius + m.bodyRadius())
     .sort((a, b) => dist(a.pos, from.pos) - dist(b.pos, from.pos) || game.mages.indexOf(a) - game.mages.indexOf(b))[0] ?? null;
 }
 
@@ -1873,8 +2864,9 @@ export function lawBeforeHit(
   }
   const affected = game.isDesecrationAffected(target);
   if (game.hexLaw('impaling') && type === 'pierce' && affected) prep.damage.amount *= 2;
-  if (game.hexLaw('crumbling') && type === 'shatter' && affected) prep.damage.amount *= 2;
+  if ((game.hexLaw('crumbling') || game.hexLaw('marrowFeast')) && type === 'shatter' && affected) prep.damage.amount *= 2;
   if (game.hexLaw('calcification') && type === 'corrosive' && target.isStunned('movement')) prep.damage.amount += 1;
+  if (game.hexLaw('calcifiedThirst') && type === 'corrosive' && target.isStunned('movement')) prep.damage.amount += 1;
   if (game.hexLaw('brittle') && type === 'shatter' && target.statuses.some((s) => s.key === BRITTLE_KEY)) {
     prep.damage.amount += game.rng.roll('1d6').total;
     target.statuses = target.statuses.filter((s) => s.key !== BRITTLE_KEY);
@@ -1889,6 +2881,13 @@ export function lawBeforeHit(
     prep.damage.amount += game.rng.roll('1d6').total;
   }
   if (game.hexLaw('nightTerrors') && type === 'sanity' && game.isInShadow(target)) prep.damage.amount *= 2;
+  if (game.hexLaw('frayingMinds') && type === 'sanity') prep.damage.amount += target.forgotten().length;
+  if (game.hexLaw('stigmata') && type === 'pierce' && affected && target.statuses.some((s) => s.kind === 'dot')) {
+    prep.damage.amount *= 2;
+  }
+  if (game.hexLaw('petrifaction') && target.isStunned('movement')) {
+    prep.damage.amount = type === 'shatter' ? prep.damage.amount * 2 : Math.ceil(prep.damage.amount / 2);
+  }
   return prep;
 }
 
@@ -1919,6 +2918,7 @@ export function lawAfterHit(ctx: EffectContext, target: Mage, type: DamageType, 
       applyDebuff(ctx, target, { name: 'Brittle', key: BRITTLE_KEY, duration: 4, mods: {} });
     }
     if (law('bloodtide') && attacker !== target) drink(game, attacker, dealt);
+    if (attacker !== target) drainingCorrosion(ctx, target, dealt);
   }
   if (type === 'pierce') {
     if (law('etching')) side(target, corrosive('1d3'));
@@ -1950,7 +2950,7 @@ export function lawAfterHit(ctx: EffectContext, target: Mage, type: DamageType, 
     }
   }
   if (type === 'shatter') {
-    if (law('crushing') && target.alive && attacker !== target) {
+    if ((law('crushing') || law('grindingThirst')) && target.alive && attacker !== target) {
       game.forceMove(attacker, target, stepTowards(target.pos, attacker.pos, -R(1)));
     }
     if (law('calcification') && target.alive && target.isStunned('movement') && firstThisRound(game, 'calcification', target)) {
@@ -1961,6 +2961,8 @@ export function lawAfterHit(ctx: EffectContext, target: Mage, type: DamageType, 
     if (law('crumbling') && affected && target.alive && firstThisRound(game, 'crumbling', target)) {
       applyStun(ctx, target, { duration: 2, type: 'full' });
     }
+    shatteringThirsts(ctx, target, affected);
+    if (law('shatteredCurses') && target.alive) shatterCurse(ctx, target);
   }
   if ((type === 'pierce' || type === 'shatter') && law('breach')) side(target, corrosive('1'));
   if (type === 'sanity' && law('neuralStorm') && target.alive) applyMindLightningStack(target);
@@ -1979,15 +2981,162 @@ export function lawAfterHit(ctx: EffectContext, target: Mage, type: DamageType, 
     if (type === 'heat' && law('scaldingWater')) pushFrom(game, attacker, target, attacker.pos, 1);
     if (type === 'sanity' && law('flinching') && dealt >= 2) pushFrom(game, attacker, target, attacker.pos, Math.floor(dealt / 2));
   }
+  if (type === 'heat' && law('blackfire') && target.alive) {
+    side(target, { spec: game.isInShadow(target) ? '2d4' : '1d4', type: 'shadow' });
+  }
+  if (type === 'sanity' && law('echoingAgony') && dealt >= 2) {
+    const echo = Math.floor(dealt / 2);
+    for (const other of game.mages) {
+      if (!other.alive || other === target || dist(other.pos, target.pos) > R(2) + other.bodyRadius()) continue;
+      dealDamage(game.quietContext(attacker, other), other, dmg(echo, 'sanity'), { ...QUIET, aoe: true });
+    }
+  }
+  if (type === 'sanity' && law('dyingLight') && dealt >= 4 && target.alive) game.applyReap(target, 1, attacker);
+  if (type === 'sanity' && law('burningFrenzy')) frenzyFlare(game, target);
+  const dry = game.hexLaw('dryLightning');
+  if (type === 'heat' && dry) {
+    const roll = game.rng.die(6);
+    if (roll >= 5) {
+      const next = nearestOther(game, target, R(Math.max(2, (dry.power ?? 0) / 3)), [target]);
+      if (next) {
+        void game.vfxSink?.lightningBolt?.(target.pos, next.pos);
+        dealDamage(game.quietContext(attacker, next), next, dmg(dealt, 'heat'), QUIET);
+      }
+    } else if (roll === 1 && attacker !== target && attacker.alive) {
+      game.log(`The dry lightning leaps back into ${attacker.name}.`);
+      void game.vfxSink?.lightningBolt?.(target.pos, attacker.pos);
+      dealDamage(game.quietContext(attacker, attacker), attacker, dmg(dealt, 'heat'), QUIET);
+    }
+  }
   if (affected) {
     if (law('worldFeeds') && attacker !== target) drink(game, attacker, side(target, corrosive('1d4')));
     if (law('rottingWorld')) side(target, corrosive('1d4'));
+    if (law('gorgingWorld') && attacker !== target) drink(game, attacker, side(target, corrosive(String(Math.ceil(dealt / 2)))));
+  }
+  if (type === 'pierce') pierceLaws(ctx, target, affected);
+  if (type === 'shatter' && law('splinterCurse') && target.alive) {
+    applyDot(ctx, target, { name: 'Splinters', key: 'dot:law-splinters', duration: 3, damage: dmg(0, 'pierce'), damageSpec: '1d3' });
+  }
+  if ((type === 'pierce' || type === 'shatter') && dealt >= 4 && law('marrowThirst') && attacker !== target) {
+    drink(game, attacker, side(target, corrosive('1d4')));
   }
 }
 
-/** Conductive Sea and Mind Current: lightning runs from `victim` through the water to the nearest other unit, friend or foe. */
+/** Shattered Curses: the longest damage over time on `target` deals all its remaining ticks at once and ends; it is rooted. */
+function shatterCurse(ctx: EffectContext, target: Mage): void {
+  const game = ctx.game;
+  const dot = (target.statuses.filter((s) => s.kind === 'dot') as DotStatus[]).sort((a, b) => b.duration - a.duration)[0];
+  if (!dot) return;
+  target.statuses = target.statuses.filter((s) => s !== dot);
+  let total = 0;
+  for (let i = 0; i < Math.max(1, dot.duration); i++) total += game.rollDotDamage(dot);
+  game.log(`${dot.name} shatters on ${target.name}.`);
+  dealDamage(ctx, target, dmg(total, dot.damage.type), { ...QUIET, cause: dot.name, dot: true });
+  if (target.alive) applyStun(ctx, target, { duration: 2, type: 'movement' });
+}
+
+/** The Drain laws that answer a corrosive hit one unit lands on another. */
+function drainingCorrosion(ctx: EffectContext, target: Mage, dealt: number): void {
+  const game = ctx.game;
+  const attacker = ctx.caster;
+  if (game.hexLaw('chokingThirst') && target.alive && firstThisRound(game, 'chokingThirst', target)) {
+    applyStifle(ctx, target);
+    drink(game, attacker, dealt);
+  }
+  if (game.hexLaw('clingingThirst') && target.alive && firstThisRound(game, 'clingingThirst', target)) {
+    applyStun(ctx, target, { duration: 2, type: 'movement' });
+    drink(game, attacker, dealt);
+  }
+  if (game.hexLaw('brittleThirst') && target.alive) {
+    applyDebuff(ctx, target, { name: 'Brittle', key: BRITTLE_THIRST_KEY, duration: 4, mods: {} });
+  }
+  if (game.hexLaw('calcifiedThirst') && target.isStunned('movement')) drink(game, attacker, dealt);
+}
+
+/** The Drain laws that answer a shatter hit. */
+function shatteringThirsts(ctx: EffectContext, target: Mage, affected: boolean): void {
+  const game = ctx.game;
+  const attacker = ctx.caster;
+  const side = (hit: Hit): number =>
+    target.alive ? dealDamage(ctx, target, dmg(game.rng.roll(hit.spec).total, hit.type), QUIET) : 0;
+  const feed = (amount: number): void => {
+    if (attacker !== target) drink(game, attacker, amount);
+  };
+  if (game.hexLaw('brittleThirst') && target.statuses.some((s) => s.key === BRITTLE_THIRST_KEY)) {
+    target.statuses = target.statuses.filter((s) => s.key !== BRITTLE_THIRST_KEY);
+    game.log(`${target.name} was brittle: the blow cracks it open.`);
+    feed(side(corrosive('1d6')));
+  }
+  if (game.hexLaw('calcifiedThirst') && target.alive && target.isStunned('movement') && firstThisRound(game, 'calcifiedThirst', target)) {
+    applyStun(ctx, target, { duration: 2, type: 'full' });
+  }
+  if (game.hexLaw('crackedVessels') && target.alive) feed(game.tickCorrosiveDots(target, attacker));
+  if (game.hexLaw('marrowFeast') && affected && target.alive && firstThisRound(game, 'marrowFeast', target)) {
+    applyStun(ctx, target, { duration: 2, type: 'full' });
+    feed(side(corrosive('1d6')));
+  }
+}
+
+/** The Pierce laws that answer a landed pierce hit. */
+function pierceLaws(ctx: EffectContext, target: Mage, affected: boolean): void {
+  const game = ctx.game;
+  const attacker = ctx.caster;
+  const law = (kind: HexLawKind): boolean => !!game.hexLaw(kind);
+  const side = (hit: Hit): number =>
+    target.alive ? dealDamage(ctx, target, dmg(game.rng.roll(hit.spec).total, hit.type), QUIET) : 0;
+  const struck = attacker !== target;
+  const rooted = target.isStunned('movement');
+  const stake = game.hexLaw('stakeLaw');
+  if (stake && rooted && target.team !== stake.owner) {
+    side({ spec: '1d6', type: 'shatter' });
+    if (target.alive) applyStun(ctx, target, { duration: 2, type: 'movement' });
+  }
+  if (law('bloodpin') && rooted && struck) drink(game, attacker, side(corrosive('1d4')));
+  const pin = game.hexLaw('pinningLaw');
+  if (pin && target.alive && target.team !== pin.owner) applyStun(ctx, target, { duration: 2, type: 'movement' });
+  if (law('splintering')) {
+    for (const m of game.mages) {
+      if (!m.alive || m === target || m === attacker || dist(m.pos, target.pos) > R(1.5) + m.bodyRadius()) continue;
+      dealDamage(game.quietContext(attacker, m), m, dmg(game.rng.roll('1d4').total, 'shatter'), { ...QUIET, aoe: true });
+    }
+  }
+  if (law('openWounds') && target.alive) {
+    applyStackingDot(ctx, target, {
+      name: 'Open Wound', key: 'dot:law-open-wound', damage: dmg(0, 'pierce'), perStackSpec: '1d3',
+      maxStacks: 4, refreshDuration: 3,
+    });
+  }
+  if (law('bloodscent') && struck && target.alive && target.hp * 2 <= target.maxHp) drink(game, attacker, side(corrosive('1d6')));
+  if (law('twistingBarbs') && target.alive) {
+    applyDot(ctx, target, {
+      name: 'Twisting Barb', key: 'dot:law-twisting-barb', duration: 2, damage: dmg(0, 'pierce'), damageSpec: '1d3', orbitSource: true,
+    });
+  }
+  if (law('vampiricWounds') && struck && target.alive) {
+    applyDot(ctx, target, {
+      name: 'Bloodletting', key: 'dot:law-bloodletting', duration: 3, damage: dmg(0, 'corrosive'), damageSpec: '1d3',
+      lifestealToIndex: game.mages.indexOf(attacker),
+    });
+  }
+  if (affected && law('graveStakes') && target.alive) {
+    applyStun(ctx, target, { duration: 2, type: 'movement' });
+    side(pierce('1d6'));
+    if (target.alive) applyDebuff(ctx, target, { name: 'Festering', key: 'debuff:kit-no-heal', duration: 2, mods: {}, healMult: 0 });
+  }
+  if (affected && law('bloodHarvest') && struck) drink(game, attacker, side(corrosive('1d6')));
+  if (!struck || !attacker.alive) return;
+  if (law('turningBlades') && target.alive && game.orbitAround(target, attacker.pos, game.rng.chance(0.5)).slammed) {
+    slamInto(ctx, target, pierce('1d6'));
+  }
+  if (law('circlingThirst') && target.alive) {
+    game.orbitAround(attacker, target.pos, game.rng.chance(0.5));
+    drink(game, attacker, side(corrosive('1d3')));
+  }
+}
+
+/** Conductive Sea and Mind Current: lightning runs from `victim` through the water to the nearest other unit of its own side. */
 function conduct(game: GameState, attacker: Mage, victim: Mage, power: number, mind: boolean): void {
-  const next = nearestOther(game, victim, R(Math.max(2, power / 3)), [victim]);
+  const next = nearestOther(game, victim, R(Math.max(2, power / 3)), [victim], (m) => m.team === victim.team);
   if (!next) return;
   void game.vfxSink?.lightningBolt?.(victim.pos, next.pos);
   const bonus = Math.floor(power / 6);
@@ -2034,6 +3183,43 @@ export function lawOnShoved(game: GameState, source: Mage, target: Mage): void {
       game.hexLawDepth -= 1;
     }
   }
+}
+
+/** Whirlwind Law: a unit that dashes spins everyone near where it stops around itself and cuts them. */
+export function lawOnDash(game: GameState, mover: Mage): void {
+  if (!game.hexLaw('whirlwind') || !mover.alive) return;
+  const caught = game.mages.filter(
+    (m) => m.alive && m !== mover && !game.isUnreachable(m) && dist(m.pos, mover.pos) <= R(2) + m.bodyRadius()
+  );
+  if (caught.length === 0) return;
+  game.log(`${mover.name} whirls to a stop.`);
+  game.hexLawDepth += 1;
+  try {
+    for (const m of caught) {
+      const ctx = game.quietContext(mover, m);
+      const turn = game.orbitAround(m, mover.pos, game.rng.chance(0.5));
+      dealDamage(ctx, m, dmg(game.rng.roll('1d4').total, 'pierce'), { ...QUIET, aoe: true });
+      if (turn.slammed) slamInto(ctx, m, { spec: '2d6', type: 'shatter' });
+    }
+  } finally {
+    game.hexLawDepth -= 1;
+  }
+}
+
+/** Laws that answer a death: Blood Harvest feeds the killer, Bone Garden bursts the corpse. `unhallowed`: Desecrate could harm it. */
+export function lawOnDeath(game: GameState, victim: Mage, killer: Mage, unhallowed: boolean): void {
+  if (!unhallowed || game.hexcraftGlobals.length === 0) return;
+  if (game.hexLaw('bloodHarvest') && killer.alive && killer !== victim) {
+    game.log(`${killer.name} feasts on ${victim.name}.`);
+    heal(game.quietContext(killer, killer), killer, game.rng.roll('2d6').total);
+  }
+  if (!game.hexLaw('boneGarden')) return;
+  const owner = lawOwner(game, 'boneGarden') ?? killer;
+  const caught = game.mages.filter(
+    (m) => m !== victim && game.isDesecrationAffected(m) && dist(m.pos, victim.pos) <= R(3) + m.bodyRadius()
+  );
+  game.log(`Bone spikes burst from where ${victim.name} fell.`);
+  for (const m of caught) lawHit(game, owner, m, pierce('2d6'), false);
 }
 
 /** Laws that act at a unit's own turn start. */
@@ -2084,6 +3270,14 @@ export function lawTurnStart(game: GameState, m: Mage): void {
     if (m.alive && dist(m.pos, eye) <= R(4) + m.bodyRadius()) {
       lawHit(game, lawOwner(game, 'maelstrom') ?? m, m, { spec: '2d4', type: 'sanity' }, false);
     }
+  }
+  if (game.hexLaw('burningTerror') && m.alive && stacksOf(m, 'fire') > 0) {
+    const spec = game.isInShadow(m) ? '2d4' : '1d4';
+    lawHit(game, lawOwner(game, 'burningTerror') ?? m, m, { spec, type: 'sanity' }, false);
+  }
+  if (game.hexLaw('dyingLight') && game.isInShadow(m) && shaken(m)) {
+    game.log(`The light dies around ${m.name}.`);
+    game.applyReap(m, 2, lawOwner(game, 'dyingLight') ?? m);
   }
 }
 
@@ -2153,7 +3347,16 @@ export function lawRoundEnd(game: GameState): void {
   tideRemembers(game);
   driftShadows(game);
   squall(game);
-  const law = game.hexLaw('passingRot');
+  firestorm(game);
+  screamingSky(game);
+  stormOfAgony(game);
+  passDots(game, 'passingRot');
+  passDots(game, 'passingThirst');
+}
+
+/** Passing Rot / Passing Thirst: every damage-over-time moves on to the nearest other unit within 4cm, biting the one it leaves. */
+function passDots(game: GameState, kind: 'passingRot' | 'passingThirst'): void {
+  const law = game.hexLaw(kind);
   if (!law) return;
   const owner = game.mages[law.ownerIndex ?? -1];
   const moves: { from: Mage; to: Mage; dot: DotStatus }[] = [];
@@ -2169,7 +3372,9 @@ export function lawRoundEnd(game: GameState): void {
     move.from.statuses = move.from.statuses.filter((s) => s !== move.dot);
     move.to.statuses.push(move.dot);
     if (move.from.alive) {
-      dealDamage(game.quietContext(owner ?? move.from, move.from), move.from, dmg(game.rng.roll('1d3').total, 'corrosive'), QUIET);
+      const bite = dealDamage(game.quietContext(owner ?? move.from, move.from), move.from, dmg(game.rng.roll('1d3').total, 'corrosive'), QUIET);
+      const laidBy = move.dot.sourceIndex != null ? game.mages[move.dot.sourceIndex] : undefined;
+      if (kind === 'passingThirst' && laidBy && laidBy !== move.from) drink(game, laidBy, bite);
     }
     game.log(`${move.dot.name} passes from ${move.from.name} to ${move.to.name}.`);
   }
@@ -2285,10 +3490,92 @@ function squall(game: GameState): void {
   }
 }
 
+/** Firestorm: lightning sets off every burning unit at round end, friend or foe, and darkens the burn. */
+function firestorm(game: GameState): void {
+  const law = game.hexLaw('firestorm');
+  if (!law) return;
+  const burning = game.mages.filter((m) => m.alive && !game.isUnreachable(m) && stacksOf(m, 'fire') > 0);
+  if (burning.length === 0) return;
+  const owner = lawOwner(game, 'firestorm');
+  const spec = plus('1d4', Math.floor((law.power ?? 0) / 6));
+  game.log('The firestorm strikes every burning unit.');
+  game.hexLawDepth += 1;
+  try {
+    for (const m of burning) {
+      void game.vfxSink?.lightningBolt?.({ x: m.x, y: m.y - R(4) }, m.pos);
+      game.pulseFire(m);
+      if (m.alive) dealDamage(game.quietContext(owner ?? m, m), m, dmg(game.rng.roll(spec).total, 'shadow'), QUIET);
+    }
+  } finally {
+    game.hexLawDepth -= 1;
+  }
+}
+
+/** Screaming Sky: lightning strikes the least sane mind at round end, friend or foe. */
+function screamingSky(game: GameState): void {
+  const law = game.hexLaw('screamingSky');
+  if (!law) return;
+  const minds = game.mages.filter((m) => m.alive && !game.isUnreachable(m) && !m.isImmuneTo('sanity') && m.maxSanity > 0);
+  if (minds.length === 0) return;
+  const least = Math.min(...minds.map((m) => m.sanity));
+  const struck = game.rng.pick(minds.filter((m) => m.sanity === least));
+  const owner = lawOwner(game, 'screamingSky') ?? struck;
+  const bonus = Math.floor((law.power ?? 0) / 6);
+  game.log(`The sky screams at ${struck.name}.`);
+  void game.vfxSink?.lightningBolt?.({ x: struck.x, y: struck.y - R(4) }, struck.pos);
+  lawHit(game, owner, struck, { spec: plus(game.isInShadow(struck) ? '2d6' : '1d6', bonus), type: 'sanity' }, false);
+  lawHit(game, owner, struck, { spec: plus('1d6', bonus), type: 'shadow' }, false);
+}
+
+/** Storm of Agony: every unit rolls at round end; a 1 is struck, a 6 sends the bolt on to its nearest neighbour. */
+function stormOfAgony(game: GameState): void {
+  const law = game.hexLaw('stormOfAgony');
+  if (!law) return;
+  const power = law.power ?? 0;
+  const bonus = Math.floor(power / 6);
+  const reach = R(Math.max(3, power / 2));
+  const owner = lawOwner(game, 'stormOfAgony');
+  for (const m of game.mages.filter((u) => u.alive && !game.isUnreachable(u))) {
+    if (!m.alive) continue;
+    const roll = game.rng.die(6);
+    const struck = roll === 1 ? m : roll === 6 ? nearestOther(game, m, reach, [m]) : null;
+    if (!struck) continue;
+    game.log(roll === 1 ? `Lightning strikes ${struck.name}.` : `Lightning leaps from ${m.name} into ${struck.name}.`);
+    void game.vfxSink?.lightningBolt?.(roll === 1 ? { x: m.x, y: m.y - R(4) } : m.pos, struck.pos);
+    lawHit(game, owner ?? struck, struck, { spec: plus('1d6', bonus), type: 'heat' }, false);
+    lawHit(game, owner ?? struck, struck, { spec: plus('1d6', bonus), type: 'sanity' }, false);
+  }
+}
+
+/** Burning Frenzy: a unit that loses sanity flares, and Fire leaps onto every other unit within 1d6cm of it. */
+function frenzyFlare(game: GameState, m: Mage): void {
+  const reach = game.rng.die(6);
+  const caught = game.mages.filter(
+    (o) => o.alive && o !== m && !game.isUnreachable(o) && dist(o.pos, m.pos) <= R(reach) + o.bodyRadius()
+  );
+  game.log(`${m.name} flares: Fire leaps ${reach}cm.`);
+  const owner = lawOwner(game, 'burningFrenzy') ?? m;
+  game.hexLawDepth += 1;
+  try {
+    for (const o of caught) applyFireStacks(game.quietContext(owner, o), o, 1);
+  } finally {
+    game.hexLawDepth -= 1;
+  }
+}
+
+/** Burning Frenzy: Fire burns the mind as well, for half its damage rounded up. `dot`: a Fire tick, not a blast. */
+export function lawFireBurns(ctx: EffectContext, m: Mage, rolled: number, dot: boolean): void {
+  if (!ctx.game.hexLaw('burningFrenzy') || !m.alive || rolled <= 0) return;
+  dealDamage(ctx, m, dmg(Math.ceil(rolled / 2), 'sanity'), { ...QUIET, dot });
+}
+
 /** Extra damage a law adds to one DoT tick on `bearer`. */
 export function lawDotBonus(game: GameState, bearer: Mage, dot: DotStatus): number {
   let bonus = 0;
   if (game.hexLaw('fester') && dot.damage.type === 'corrosive' && bearer.isStunned('movement')) {
+    bonus += game.rollDotDamage(dot);
+  }
+  if (game.hexLaw('festeringThirst') && dot.damage.type === 'corrosive' && bearer.isStunned('movement')) {
     bonus += game.rollDotDamage(dot);
   }
   if (game.hexLaw('eternalRot') && game.isDesecrationAffected(bearer)) bonus += 1;
@@ -2296,22 +3583,33 @@ export function lawDotBonus(game: GameState, bearer: Mage, dot: DotStatus): numb
   return bonus;
 }
 
-/** After a DoT tick: Feeding Rot feeds whoever laid it; Creeping Shroud veils the bearer. */
+/** After a DoT tick: Feeding Rot feeds whoever laid it; Creeping Shroud veils the bearer; a mind losing sanity flares under Burning Frenzy. */
 export function lawAfterDotTick(game: GameState, bearer: Mage, dot: DotStatus, dealt: number): void {
   const source = dot.sourceIndex != null ? game.mages[dot.sourceIndex] : undefined;
   if (game.hexLaw('feedingRot') && dealt > 0 && dot.lifestealToIndex == null && source && source !== bearer) {
     drink(game, source, dealt);
   }
+  const laidBy = source && source !== bearer && source.alive ? source : undefined;
+  if (laidBy && dealt > 0 && dot.lifestealToIndex == null) {
+    const rooted = bearer.isStunned('movement');
+    if (game.hexLaw('festeringThirst') && dot.damage.type === 'corrosive' && rooted) drink(game, laidBy, dealt);
+    if (game.hexLaw('eternalThirst') && game.isDesecrationAffected(bearer)) drink(game, laidBy, dealt);
+  }
+  if (laidBy && game.hexLaw('curseOfThirst')) lawHit(game, laidBy, bearer, corrosive('1d3'), true);
   // Ticks land at the bearer's turn start, before its statuses age: 2 lasts until its next turn.
   if (game.hexLaw('creepingShroud') && bearer.alive) {
     applyInvisibility(game.quietContext(source ?? bearer, bearer), bearer, { duration: 2, mode: 'partial' });
+  }
+  if (game.hexLaw('burningFrenzy') && dot.damage.type === 'sanity' && dealt > 0) frenzyFlare(game, bearer);
+  if (game.hexLaw('stigmata') && dealt > 0 && game.isDesecrationAffected(bearer)) {
+    lawHit(game, lawOwner(game, 'stigmata') ?? bearer, bearer, pierce('1d4'), false);
   }
 }
 
 /** Healing laws: units Desecrate may harm cannot be healed under these. */
 export function lawBlocksHealing(game: GameState, target: Mage): boolean {
   if (!game.isDesecrationAffected(target)) return false;
-  return !!(game.hexLaw('rottingWorld') || game.hexLaw('impaling') || game.hexLaw('worldFeeds'));
+  return !!(game.hexLaw('rottingWorld') || game.hexLaw('impaling') || game.hexLaw('worldFeeds') || game.hexLaw('gorgingWorld'));
 }
 
 /** Quarantine: a unit carrying a damage-over-time is hidden from its own side. */
@@ -2319,14 +3617,24 @@ export function lawQuarantines(game: GameState, m: Mage, from: Mage): boolean {
   return !!game.hexLaw('quarantine') && from !== m && from.team === m.team && m.statuses.some((s) => s.kind === 'dot');
 }
 
-/** Gagging Bonds stifles whoever is rooted; Choking Mist chokes a rooted veil away. */
-export function lawOnRoot(ctx: EffectContext, target: Mage): void {
+/** Gagging Bonds stifles whoever is rooted; Choking Mist chokes a rooted veil away; Thorned Fetters drives thorns in; Breaking Point snaps a doubled root. */
+export function lawOnRoot(ctx: EffectContext, target: Mage, already = false): void {
   const game = ctx.game;
+  if (already && game.hexLaw('breakingPoint') && target.alive) {
+    target.statuses = target.statuses.filter((s) => !(s.kind === 'stun' && s.stunType === 'movement'));
+    game.log(`${target.name} strains against a second binding and breaks free.`);
+    lawHit(game, ctx.caster, target, { spec: '2d6', type: 'shatter' }, false);
+    applyStifle(ctx, target);
+    return;
+  }
   if (game.hexLaw('gaggingBonds') && target.alive) applyStifle(ctx, target);
   if (game.hexLaw('chokingMist') && target.alive && target.getInvisibility()) {
     target.statuses = target.statuses.filter((s) => s.kind !== 'invisibility');
     game.log(`The mist chokes ${target.name}'s veil away.`);
     lawHit(game, ctx.caster, target, corrosive('1d4'), true);
+  }
+  if (game.hexLaw('thornedFetters') && target.alive) {
+    applyDot(ctx, target, { name: 'Thorned Fetters', key: 'dot:law-thorned-fetters', duration: 3, damage: dmg(0, 'pierce'), damageSpec: '1d3' });
   }
 }
 
@@ -2388,23 +3696,27 @@ export function lawOnVeilBroken(ctx: EffectContext, target: Mage): void {
   if (law('shatteredThirst') && ctx.caster !== target) lawHit(game, ctx.caster, target, corrosive('1d6'), true);
 }
 
-/** Gagging Bonds: a rooted unit cannot react. Silent Veil: a veiled unit cannot react. */
+/** Gagging Bonds: a rooted unit cannot react. Silent Veil: a veiled unit cannot react. Pinning Law: your rooted enemies cannot. */
 export function lawCannotReact(game: GameState, m: Mage): boolean {
   if (game.hexLaw('gaggingBonds') && m.isStunned('movement')) return true;
+  const pin = game.hexLaw('pinningLaw');
+  if (pin && m.team !== pin.owner && m.isStunned('movement')) return true;
   return !!game.hexLaw('silentVeil') && game.isVeiled(m);
 }
 
-/** Brittle Bonds: a veiled unit cannot be rooted. */
+/** Brittle Bonds: a veiled unit cannot be rooted. Hexed Silence: nor can one carrying a damage over time. */
 export function lawBlocksRoot(game: GameState, m: Mage): boolean {
+  if (game.hexLaw('hexedSilence') && m.statuses.some((s) => s.kind === 'dot')) return true;
   return !!game.hexLaw('brittleBonds') && game.isVeiled(m);
 }
 
-/** Crushing Law doubles a slam and adds acid to it; Panic Tide adds dread. */
-export function lawSlam(game: GameState): { mult: number; extras: Hit[] } {
-  const extras: Hit[] = [];
+/** Crushing Law doubles a slam and adds acid to it; Grinding Thirst doubles it and drinks; Panic Tide adds dread. */
+export function lawSlam(game: GameState): { mult: number; extras: (Hit & { drink?: boolean })[] } {
+  const extras: (Hit & { drink?: boolean })[] = [];
   if (game.hexLaw('crushing')) extras.push(corrosive('1d6'));
+  if (game.hexLaw('grindingThirst')) extras.push({ ...corrosive('1d6'), drink: true });
   if (game.hexLaw('panicTide')) extras.push({ spec: '1d6', type: 'sanity' });
-  return { mult: game.hexLaw('crushing') ? 2 : 1, extras };
+  return { mult: game.hexLaw('crushing') || game.hexLaw('grindingThirst') ? 2 : 1, extras };
 }
 
 /** A unit spun into a wall or the field edge takes `hit` (and whatever Crushing Law and Panic Tide add). */
@@ -2417,7 +3729,9 @@ export function slamInto(ctx: EffectContext, victim: Mage, hit?: Hit): void {
     const extras = lawSlam(game).extras;
     if (extras.length === 0) return;
     for (const extra of extras) {
-      if (victim.alive) dealDamage(ctx, victim, dmg(game.rng.roll(extra.spec).total, extra.type), QUIET);
+      if (!victim.alive) continue;
+      const dealt = dealDamage(ctx, victim, dmg(game.rng.roll(extra.spec).total, extra.type), QUIET);
+      if (extra.drink && ctx.caster !== victim) drink(game, ctx.caster, dealt);
     }
   }
   game.log(`${victim.name} is slammed into something immovable.`);
@@ -2449,7 +3763,7 @@ export function clampToTethers(game: GameState, mover: Mage, from: Vec2, to: Vec
 export function applyStifle(
   ctx: EffectContext,
   victim: Mage,
-  opts: { spec?: string; type?: DamageType; turns?: number } = {}
+  opts: { spec?: string; type?: DamageType; turns?: number; drink?: boolean } = {}
 ): void {
   const game = ctx.game;
   if (!victim.alive || game.isUnreachable(victim)) return;
@@ -2467,6 +3781,7 @@ export function applyStifle(
       ownerIndex: game.mages.indexOf(ctx.caster),
       spec: opts.spec,
       type: opts.type,
+      drink: opts.drink,
     },
     false
   );
@@ -2482,15 +3797,25 @@ export function stifleDeclaration(game: GameState, item: StackItem): boolean {
   if (item.kind === 'move' || item.windowTrigger || !actor.alive) return false;
   let stopper: Mage | undefined;
   let hit: Hit | null = null;
+  let drinks = false;
+  let unbinds = false;
   const status = actor.statuses.find((s) => s.kind === 'stifle') as StifleStatus | undefined;
   const afflictions = actor.statuses.filter((s) => s.kind === 'dot').length;
   if (status) {
     actor.statuses = actor.statuses.filter((s) => s !== status);
     stopper = game.mages[status.ownerIndex];
     if (status.spec) hit = { spec: status.spec, type: status.type ?? 'corrosive' };
+    drinks = !!status.drink;
   } else if (actor.isStunned('movement') && firstThisRound(game, 'lockdown', actor)) {
     stopper = lawOwner(game, 'lockdown');
     hit = corrosive('1d3');
+  } else if (actor.isStunned('movement') && firstThisRound(game, 'gnawingLockdown', actor)) {
+    stopper = nearestOther(game, actor, Infinity, [actor], (m) => m.team !== actor.team) ?? undefined;
+    hit = corrosive('1d3');
+    drinks = true;
+  } else if (actor.isStunned('movement') && firstThisRound(game, 'gagOrder', actor)) {
+    stopper = lawOwner(game, 'gagOrder');
+    unbinds = true;
   } else if (afflictions >= 2 && firstThisRound(game, 'smotheringCurse', actor)) {
     stopper = lawOwner(game, 'smotheringCurse');
   } else {
@@ -2499,7 +3824,20 @@ export function stifleDeclaration(game: GameState, item: StackItem): boolean {
   game.log(`${actor.name}'s ${item.label} is stifled.`);
   game.vfxSink?.combatFeedback?.(actor, { kind: 'blocked', label: 'STIFLED' });
   const from = stopper?.alive ? stopper : actor;
-  if (hit) lawHit(game, from, actor, hit, false);
+  if (hit) lawHit(game, from, actor, hit, drinks);
+  if (unbinds) {
+    actor.statuses = actor.statuses.filter((s) => !(s.kind === 'stun' && s.stunType === 'movement'));
+    game.log(`The gag loosens ${actor.name}'s bonds.`);
+  }
+  if (game.hexLaw('hexedSilence') && actor.alive && actor.statuses.some((s) => s.kind === 'dot')) {
+    game.log(`${actor.name}'s silence sets its curses off.`);
+    game.hexLawDepth += 1;
+    try {
+      game.tickDotsNow(actor, from);
+    } finally {
+      game.hexLawDepth -= 1;
+    }
+  }
   if (game.hexLaw('stifledThirst') && from !== actor) lawHit(game, from, actor, corrosive('1d6'), true);
   if (game.hexLaw('silentVeil') && actor.alive) {
     applyInvisibility(game.quietContext(from, actor), actor, { duration: 1, mode: 'partial' });

@@ -19,7 +19,7 @@ import {
 import { ENEMY_DEFS, type EnemyKind } from '../../pve/swamprun';
 import { cssColor, mixColor } from '../../visuals/daylight';
 import { ensureGlowTextures, GLOW } from '../../visuals/glowTextures';
-import { CREATURE_FRAME_RATIO, creatureSpriteFor, creatureTexture } from '../../world/creatureSprite';
+import { CREATURE_FRAME_RATIO, creatureSpriteFor, creatureTexture, ensureCreatureSprites } from '../../world/creatureSprite';
 import { MAGE_FIRST_FRAME, MAGE_IDLE } from '../../world/mageSprite';
 import { CabinetChip, MenuFocusGroup, type MenuControl } from '../cabinet/controls';
 import { isReducedMotion } from '../cabinet/motion';
@@ -612,6 +612,7 @@ export class SearchView extends Phaser.GameObjects.Container {
   private creatureFigure(kind: string, x: number, y: number, height: number): Phaser.GameObjects.Sprite | null {
     const { scene } = this;
     const art = creatureSpriteFor(kind);
+    ensureCreatureSprites(scene, art);
     const texture = art ? creatureTexture(art) : MAGE_FIRST_FRAME;
     if (!scene.textures.exists(texture)) return null;
     const sprite = scene.add.sprite(x, y, texture).setOrigin(0.5, 1);

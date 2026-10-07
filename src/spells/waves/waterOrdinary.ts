@@ -963,8 +963,8 @@ registerSpell({
   dc: 12,
   description:
     'A wave hits one enemy within 15cm for 1d6 water and pushes it 1cm per 5 Lightning power (at least 1cm). ' +
-    'Lightning runs through the water: every other unit within a quarter of the Lightning power in cm of it (at ' +
-    'least 2cm), friend or foe, takes 1d6 heat plus 1 per 6 Lightning power.',
+    'Lightning runs through the water: every other enemy within a quarter of the Lightning power in cm of it (at ' +
+    'least 2cm) takes 1d6 heat plus 1 per 6 Lightning power.',
   visual: { preset: 'projectile', color: STORM, size: 10, speed: 1.5 },
   cast(ctx) {
     const foe = ctx.target;
@@ -972,7 +972,9 @@ registerSpell({
     const power = castPower(ctx);
     hit(ctx, foe, '1d6', 'water', 'Conducting Wave');
     shove(ctx, foe, ctx.caster.pos, Math.max(1, Math.floor(power / 5)));
-    const struck = everyoneAround(ctx, foe.pos, R(Math.max(2, power / 4))).filter((m) => m !== foe);
+    const struck = everyoneAround(ctx, foe.pos, R(Math.max(2, power / 4))).filter(
+      (m) => m !== foe && m.team !== ctx.caster.team
+    );
     for (const m of struck) void ctx.vfx?.lightningBolt?.(foe.pos, m.pos);
     strikeAll(ctx, struck, [[plus('1d6', Math.floor(power / 6)), 'heat']], 'Conducted lightning');
   },

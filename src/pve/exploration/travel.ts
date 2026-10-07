@@ -11,6 +11,7 @@ import { isExplored, packExplored, revealTiles, unpackExplored } from './explore
 import { stepDice, type ExplorationRun } from './run';
 import {
   depthAt,
+  isPassable,
   MIN_TERRAIN_TIME,
   nearTown,
   placeAt,
@@ -105,7 +106,7 @@ const tileKnown = (mask: Uint8Array, cell: Cell): boolean => isExplored(mask, ce
 export function findRoute(world: WorldMap, run: ExplorationRun, to: Cell, from: Cell = run.pos): Cell[] | null {
   const mask = unpackExplored(run.explored);
   const cost = (x: number, y: number): number =>
-    TERRAIN[terrainAt(world, x, y)].time * (isExplored(mask, x, y) ? 1 : UNEXPLORED_TIME);
+    isPassable(world, x, y) ? TERRAIN[terrainAt(world, x, y)].time * (isExplored(mask, x, y) ? 1 : UNEXPLORED_TIME) : Infinity;
   return findWeightedPath(world.w, world.h, cost, from, to, world.w * world.h * 2, MIN_TERRAIN_TIME);
 }
 

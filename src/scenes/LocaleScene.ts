@@ -56,9 +56,10 @@ import { bloodmoonCombat, bloodmoonDue, bloodmoonFight } from '../pve/exploratio
 import { parseRestNap, type RestNap } from '../pve/exploration/nap';
 import { createWorld, describeTile, placeById, START_PLACE, type Place } from '../pve/exploration/world';
 import { ENEMY_DEFS } from '../pve/swamprun';
+import { MINE_ENEMY_DEFS } from '../pve/minerun';
 import { ADVENTURE_SPELL_SETS, casterReach, getSpell, setActiveSpellSets } from '../spells/registry';
 import {
-  createCreatureAnims, CREATURE_FRAME_RATIO, creatureFacesRight, creatureSpriteFor, creatureTexture, preloadCreatureSprites,
+  createCreatureAnims, CREATURE_FRAME_RATIO, creatureFacesRight, creatureSpriteFor, creatureTexture, ensureCreatureSprites, preloadCreatureSprites,
 } from '../world/creatureSprite';
 import { TILE_PX, TILE_SCALE } from '../world/kenney';
 import { buildLocaleModel, type ExitDef, type Keeper, type LocaleModel } from '../world/locale';
@@ -1301,13 +1302,15 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const size = pack.elite ? 1.35 : 1.05;
     // The figure is the first member: in its own art where it has some, else the tinted mage, as in a fight.
     const lead = pack.spawns?.[0];
-    const kind = lead?.family === 'swamp' ? lead.kind : null;
-    const creature = creatureSpriteFor(kind);
+    const kind = lead?.family === 'swamp' ? lead.kind : lead?.spec.kind;
+    const creature = creatureSpriteFor(kind, undefined, lead?.family === 'mine' ? lead.spec.role : undefined);
+    ensureCreatureSprites(this, creature);
     const idleAnim = creature ? `enemy-${creature}-idle` : MAGE_IDLE;
     const sprite = this.add.sprite(x, y, creature ? creatureTexture(creature) : MAGE_FIRST_FRAME)
       .setOrigin(0.5, creature ? 0.9 : 0.95).setDepth(y);
     sprite.play({ key: idleAnim, startFrame: pack.x % 4 });
-    const build = creature && kind ? ENEMY_DEFS[kind].scale ?? 1 : 1;
+    const build = lead?.family === 'swamp' ? ENEMY_DEFS[lead.kind].scale ?? 1
+      : lead?.family === 'mine' ? MINE_ENEMY_DEFS[lead.spec.kind].scale : 1;
     const mageHeight = this.textures.getFrame(MAGE_FIRST_FRAME).height * TILE_SCALE * size;
     sprite.setScale(creature ? (mageHeight * CREATURE_FRAME_RATIO * build) / (sprite.height || 1) : TILE_SCALE * size);
     const restTint = !creature || kind === 'acidZombie' ? pack.tint : null;

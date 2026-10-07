@@ -34,7 +34,20 @@ export type MineEnemyKind =
   | 'boar'
   | 'wolf'
   | 'lion'
-  | 'lioness';
+  | 'lioness'
+  | 'crab'
+  | 'faeri'
+  | 'crocodile'
+  | 'siren'
+  | 'spellcaster-spirit'
+  | 'thornback'
+  | 'marsh-toad'
+  | 'water-spirit'
+  | 'small-spider'
+  | 'huge-spider'
+  | 'gigantuan-spider'
+  | 'spider-egg'
+  | 'hydra';
 
 export type SentinelRole = 'tank' | 'healer' | 'dps';
 
@@ -439,6 +452,94 @@ export const MINE_ENEMY_DEFS: Record<MineEnemyKind, MineEnemyDef> = {
     unlock: 2,
     cost: 6,
   },
+  crab: {
+    kind: 'crab',
+    name: 'Crab',
+    hpSpec: '1d4+2',
+    sanity: 3,
+    moveUnits: 2,
+    stats: { strength: 1, dex: 1, int: 0 },
+    statGrowth: { strength: 0, dex: 0, int: 0 },
+    cannotAttack: true,
+    resistTypes: ['pierce', 'slashing', 'shatter'],
+    bodyRadius: 14,
+    tint: 0x408fac,
+    scale: 0.55,
+    unlock: 1,
+    cost: 2,
+    unscaled: true,
+  },
+  faeri: {
+    kind: 'faeri', name: 'Faeri', hpSpec: '2d4+3', sanity: 12, moveUnits: 5,
+    stats: { strength: 0, dex: 7, int: 6 }, statGrowth: { strength: 0, dex: 3, int: 3 },
+    cannotAttack: true, tint: 0x92d5ef, scale: 0.58, unlock: 3, cost: 7,
+  },
+  crocodile: {
+    kind: 'crocodile', name: 'Crocodile', hpSpec: '4d8+16', sanity: 5, moveUnits: 5,
+    stats: { strength: 7, dex: 3, int: 0 }, statGrowth: { strength: 3, dex: 5, int: 0 },
+    melee: { spec: '1d6', type: 'pierce' }, bodyRadius: 36,
+    tint: 0x557b69, scale: 1.3, unlock: 4, cost: 9,
+  },
+  siren: {
+    kind: 'siren', name: 'Siren', hpSpec: '2d6+8', sanity: 14, moveUnits: 0,
+    stats: { strength: 3, dex: 4, int: 8 }, statGrowth: { strength: 4, dex: 4, int: 2 },
+    cannotAttack: true, tint: 0x6daac2, scale: 0.85, unlock: 5, cost: 8,
+  },
+  'spellcaster-spirit': {
+    kind: 'spellcaster-spirit', name: 'Spellcaster Spirit', hpSpec: '2d6+6', sanity: 20, moveUnits: 5,
+    stats: { strength: 0, dex: 3, int: 10 }, statGrowth: { strength: 0, dex: 4, int: 2 },
+    immuneTypes: ['pierce', 'slashing', 'shatter'], cannotAttack: true,
+    tint: 0x91b9f4, scale: 0.9, unlock: 6, cost: 10,
+  },
+  thornback: {
+    kind: 'thornback', name: 'Thornback', hpSpec: '4d6+12', sanity: 4, moveUnits: 4,
+    stats: { strength: 6, dex: 2, int: 0 }, statGrowth: { strength: 3, dex: 5, int: 0 },
+    melee: { spec: '1d6', type: 'pierce' }, resistTypes: ['slashing'],
+    bodyRadius: 29, tint: 0x54794a, scale: 1, unlock: 5, cost: 7,
+  },
+  'marsh-toad': {
+    kind: 'marsh-toad', name: 'Marsh Toad', hpSpec: '2d6+6', sanity: 3, moveUnits: 4,
+    stats: { strength: 3, dex: 3, int: 0 }, statGrowth: { strength: 4, dex: 4, int: 0 },
+    melee: { spec: '1d4', type: 'pierce' }, bodyRadius: 22,
+    tint: 0x77a05e, scale: 0.8, unlock: 2, cost: 4,
+  },
+  'water-spirit': {
+    kind: 'water-spirit', name: 'Water Spirit', hpSpec: '2d6+12', sanity: 18, moveUnits: 10,
+    stats: { strength: 1, dex: 7, int: 7 }, statGrowth: { strength: 0, dex: 3, int: 3 },
+    immuneTypes: ['pierce', 'slashing', 'shatter'], cannotAttack: true,
+    tint: 0x67bfd3, scale: 0.9, unlock: 4, cost: 9,
+  },
+  'small-spider': {
+    kind: 'small-spider', name: 'Small Spider', hpSpec: '1d4+3', sanity: 2, moveUnits: 8,
+    stats: { strength: 1, dex: 5, int: 0 }, statGrowth: { strength: 5, dex: 3, int: 0 },
+    melee: { spec: '1d3', type: 'pierce' }, bodyRadius: 11,
+    tint: 0x575d45, scale: 0.45, unlock: 1, cost: 2,
+  },
+  'huge-spider': {
+    kind: 'huge-spider', name: 'Huge Spider', hpSpec: '4d8+20', sanity: 6, moveUnits: 7,
+    stats: { strength: 7, dex: 5, int: 0 }, statGrowth: { strength: 3, dex: 3, int: 0 },
+    melee: { spec: '1d8', type: 'pierce' }, bodyRadius: 38,
+    tint: 0x393d31, scale: 1.4, unlock: 5, cost: 10,
+  },
+  'gigantuan-spider': {
+    kind: 'gigantuan-spider', name: 'Gigantuan Spider', hpSpec: '9d10+55', sanity: 10, moveUnits: 4,
+    stats: { strength: 12, dex: 4, int: 1 }, statGrowth: { strength: 2, dex: 4, int: 0 },
+    melee: { spec: '2d8', type: 'pierce', reach: 130 }, bodyRadius: 68,
+    resistTypes: ['pierce', 'slashing'], tint: 0x3b332c, scale: 2,
+    unlock: 9, cost: 18,
+  },
+  'spider-egg': {
+    kind: 'spider-egg', name: 'Spider Egg', hpSpec: '3', sanity: 1, moveUnits: 0,
+    stats: { strength: 0, dex: 0, int: 0 }, statGrowth: { strength: 0, dex: 0, int: 0 },
+    cannotAttack: true, bodyRadius: 12, tint: 0xe0dbbd, scale: 0.4,
+    unlock: 99, cost: 0, unscaled: true,
+  },
+  hydra: {
+    kind: 'hydra', name: 'Hydra', hpSpec: '8d10+48', sanity: 8, moveUnits: 4,
+    stats: { strength: 10, dex: 3, int: 1 }, statGrowth: { strength: 2, dex: 5, int: 0 },
+    cannotAttack: true, resistTypes: ['slashing'], weakTypes: ['heat'],
+    bodyRadius: 62, tint: 0x537c53, scale: 1.8, unlock: 8, cost: 16,
+  },
 };
 
 const SENTINEL_PROFILES: Record<SentinelRole, Partial<MineEnemyDef>> = {
@@ -622,7 +723,20 @@ export function applyMineEnemyTraits(mage: Mage, spawn: MineSpawnSpec, rng: Dice
         type: def.melee.type,
         onHit: magma
           ? (ctx, target) => ctx.game.applySentinelFireStacks(target, 1, ctx.caster)
-          : undefined,
+          : spawn.kind === 'crocodile'
+            ? (ctx, target) => {
+                if (ctx.game.lastIntrinsicDamage > 0) {
+                  target.crocodileGrip = mage;
+                  target.fleeChannel = undefined;
+                }
+              }
+            : spawn.kind === 'huge-spider'
+              ? (ctx, target) => {
+                  if (ctx.game.lastIntrinsicDamage > 0) {
+                    ctx.game.addSpiderVenom(target, ctx.game.rng.roll('2d6').total, mage);
+                  }
+                }
+            : undefined,
         chargePer: def.charge ? def.charge.per * RANGE_UNIT : undefined,
         chargeMax: def.charge?.max,
       }
@@ -635,6 +749,14 @@ export function applyMineEnemyTraits(mage: Mage, spawn: MineSpawnSpec, rng: Dice
   mage.intrinsicAirborne = !!def.airborne;
   mage.intrinsicInitiativePriority = def.initiativePriority ?? 0;
   mage.cannotAttack = !!def.cannotAttack;
+  if (spawn.kind === 'spider-egg') mage.inert = true;
+  if (spawn.kind === 'crab') mage.intrinsicArmorFlat = 2;
+  if (spawn.kind === 'thornback') mage.intrinsicArmorFlat = 2;
+  if (spawn.kind === 'spellcaster-spirit') {
+    mage.setLoadout(['mind', 'bind', 'water', 'stop', 'pierce', 'shatter']);
+    mage.maxMana = 30;
+    mage.mana = 30;
+  }
   mage.mine = {
     kind: spawn.kind,
     level: spawn.level,
@@ -644,6 +766,7 @@ export function applyMineEnemyTraits(mage: Mage, spawn: MineSpawnSpec, rng: Dice
     stones: spawn.kind === 'earth-elemental' ? rng.die(10) : undefined,
     stonesRound: spawn.kind === 'earth-elemental' ? 1 : undefined,
     charges: spawn.kind === 'elite-kobold' ? 7 : undefined,
+    heads: spawn.kind === 'hydra' ? 3 : undefined,
   };
   if (spawn.kind === 'golem') mage.cannotAttack = true;
 }
@@ -710,6 +833,19 @@ const BASE_GOLD: Record<MineEnemyKind, number> = {
   wolf: 1,
   lion: 2,
   lioness: 1.5,
+  crab: 0.25,
+  faeri: 2,
+  crocodile: 3,
+  siren: 2,
+  'spellcaster-spirit': 3,
+  thornback: 2,
+  'marsh-toad': 1,
+  'water-spirit': 3,
+  'small-spider': 0.5,
+  'huge-spider': 3,
+  'gigantuan-spider': 8,
+  'spider-egg': 0,
+  hydra: 6,
 };
 
 const BONUS_SALVAGE: Record<MineEnemyKind, ItemId | null> = {
@@ -739,6 +875,19 @@ const BONUS_SALVAGE: Record<MineEnemyKind, ItemId | null> = {
   wolf: 'wolfPelt',
   lion: 'lionPelt',
   lioness: 'lionPelt',
+  crab: null,
+  faeri: null,
+  crocodile: null,
+  siren: null,
+  'spellcaster-spirit': null,
+  thornback: null,
+  'marsh-toad': null,
+  'water-spirit': null,
+  'small-spider': null,
+  'huge-spider': null,
+  'gigantuan-spider': null,
+  'spider-egg': null,
+  hydra: null,
 };
 
 export function rollMineLoot(kind: MineEnemyKind, rng: Dice): MineLootResult {

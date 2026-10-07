@@ -26,7 +26,16 @@ export type MineActionId =
   | 'magma-eruption'
   | 'dragon-bite'
   | 'red-breath'
-  | 'black-breath';
+  | 'black-breath'
+  | 'crab-dance'
+  | 'siren-charm'
+  | 'siren-rend'
+  | 'toad-tongue'
+  | 'thorn-volley'
+  | 'water-surge'
+  | 'spider-eat-egg'
+  | 'hydra-bite'
+  | 'hydra-regenerate';
 
 export interface MineActionChoice {
   id: MineActionId;
@@ -132,6 +141,110 @@ function rolledDamage(
 }
 
 const ACTIONS: Record<MineActionId, MineActionDef> = {
+  'water-surge': {
+    id: 'water-surge', label: 'Tidal Wall', cost: 'main', hostile: true, visual: 'shatter',
+    available: (source) => mineKind(source) === 'water-spirit',
+    isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 9 * RANGE_UNIT),
+    resolve: (game, source, choice) => {
+      const target = choice.target!;
+      const to = choice.point ?? {
+        x: target.x + (target.x - source.x) / (dist(source.pos, target.pos) || 1) * 5 * RANGE_UNIT,
+        y: target.y + (target.y - source.y) / (dist(source.pos, target.pos) || 1) * 5 * RANGE_UNIT,
+      };
+      game.forceMove(source, target, to);
+      const direction = Math.atan2(target.y - source.y, target.x - source.x);
+      const at = {
+        x: (source.x + target.x) / 2,
+        y: (source.y + target.y) / 2,
+      };
+      game.addBarrier(at, direction + Math.PI / 2, {
+        shape: 'rect', range: 3 * RANGE_UNIT, thickness: 12,
+        owner: source.team, ttl: 3,
+      });
+      game.log(`${source.name} raises a wall of water between itself and ${target.name}.`);
+    },
+  },
+  'spider-eat-egg': {
+    id: 'spider-eat-egg', label: 'Eat Egg', cost: 'main', hostile: false, visual: 'heal',
+    available: (source) => mineKind(source) === 'gigantuan-spider',
+    isStillValid: (_game, source, choice) =>
+      source.alive && source.hp < source.maxHp && choice.target?.alive === true &&
+      choice.target.mine?.kind === 'spider-egg' && choice.target.team === source.team &&
+      dist(source.pos, choice.target.pos) <= 2 * RANGE_UNIT + source.bodyRadius() + choice.target.bodyRadius(),
+    resolve: (game, source, choice) => {
+      const egg = choice.target!;
+      game.defeatMage(egg, source, `${source.name} eats ${egg.name}.`);
+      heal(game.effectContext(source, source, null), source, Math.ceil(source.maxHp / 3));
+    },
+  },
+  'hydra-bite': {
+    id: 'hydra-bite', label: 'Hydra Bite', cost: 'main', hostile: true, visual: 'shatter',
+    available: (source) => mineKind(source) === 'hydra',
+    isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 2 * RANGE_UNIT + source.bodyRadius()),
+    resolve: (game, source, choice) => {
+      rolledDamage(game, source, choice.target!, '1d4', 0, 'pierce', 'Hydra Bite');
+    },
+  },
+  'hydra-regenerate': {
+    id: 'hydra-regenerate', label: 'Regenerate', cost: 'main', hostile: false, visual: 'heal',
+    available: (source) => mineKind(source) === 'hydra',
+    isStillValid: (game, source) => source.alive && source.hp < source.maxHp && !game.hydraBurning(source),
+    resolve: (game, source) => {
+      const ctx = game.effectContext(source, source, null);
+      heal(ctx, source, rollDice(ctx, '1d6', 'Hydra Regeneration') + (source.mine?.heads ?? 3));
+    },
+  },
+  'crab-dance': {
+    id: 'crab-dance', label: 'Rave', cost: 'main', hostile: true, visual: 'shadow',
+    available: (source) => mineKind(source) === 'crab',
+    isStillValid: (_game, source) => source.alive,
+    resolve: (game, source) => {
+      for (const target of game.mages.filter((mage) => mage.alive && mage !== source)) {
+        rolledDamage(game, source, target, '1d3', 0, 'sanity', 'Crab Rave', { canMiss: false, aoe: true });
+      }
+    },
+  },
+  'siren-charm': {
+    id: 'siren-charm', label: 'Siren Song', cost: 'main', hostile: true, visual: 'shadow',
+    available: (source) => mineKind(source) === 'siren' && !source.mine?.aggressive,
+    isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 12 * RANGE_UNIT),
+    resolve: (game, source, choice) => {
+      const target = choice.target!;
+      if (game.rng.die(3) === 3) {
+        target.sirenCharm = source;
+        game.log(`${target.name} is charmed by ${source.name}.`);
+      } else game.log(`${target.name} resists ${source.name}'s song.`);
+    },
+  },
+  'siren-rend': {
+    id: 'siren-rend', label: 'Siren Rend', cost: 'main', hostile: true, visual: 'shatter',
+    available: (source) => mineKind(source) === 'siren' && !!source.mine?.aggressive,
+    isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 3 * RANGE_UNIT),
+    resolve: (game, source, choice) => {
+      for (const type of ['shatter', 'pierce', 'slashing'] as const) {
+        if (choice.target!.alive) rolledDamage(game, source, choice.target!, '1d3', 0, type, 'Siren Rend', { canMiss: false });
+      }
+    },
+  },
+  'toad-tongue': {
+    id: 'toad-tongue', label: 'Tongue Snare', cost: 'main', hostile: true, visual: 'shatter',
+    available: (source) => mineKind(source) === 'marsh-toad',
+    isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 5 * RANGE_UNIT),
+    resolve: (game, source, choice) => {
+      const target = choice.target!;
+      if (rolledDamage(game, source, target, '1d3', 0, 'pierce', 'Tongue Snare') > 0 && target.alive) {
+        applyStun(game.effectContext(source, target, null), target, { duration: 2, type: 'movement' });
+      }
+    },
+  },
+  'thorn-volley': {
+    id: 'thorn-volley', label: 'Thorn Volley', cost: 'main', hostile: true, visual: 'shatter',
+    available: (source) => mineKind(source) === 'thornback',
+    isStillValid: (game, source, choice) => enemyInRange(game, source, choice.target, 6 * RANGE_UNIT),
+    resolve: (game, source, choice) => {
+      rolledDamage(game, source, choice.target!, '1d6', 0, 'pierce', 'Thorn Volley');
+    },
+  },
   'rockling-launch': {
     id: 'rockling-launch',
     label: 'Rockling Launch',

@@ -107,10 +107,15 @@ const tests: [name: string, run: () => void][] = [
     );
   }],
 
-  ['stands every place on open ground reachable from the start', () => {
+  ['keeps desert places behind the wall and other places reachable', () => {
     const start = placeById(START_PLACE)!;
     const blocked = (x: number, y: number): boolean => !isPassable(world, x, y);
     for (const place of PLACES) {
+      if (regionAt(world, place.x, place.y) === 'white') {
+        assert(!isPassable(world, place.x, place.y), `${place.name} is behind the wall`);
+        assert(!findPath(world.w, world.h, blocked, start, place, world.w * world.h * 2), `${place.name} cannot be reached over land`);
+        continue;
+      }
       assert(isPassable(world, place.x, place.y), `${place.name} is on passable ground`);
       if (place.id === START_PLACE) continue;
       assert(findPath(world.w, world.h, blocked, start, place, world.w * world.h * 2), `${place.name} can be reached over land`);
