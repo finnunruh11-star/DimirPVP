@@ -3,13 +3,13 @@
 // -----------------------------------------------------------------------------
 //  Life / Objects / Hexcraft versions of every all-verb Corrode combo (builders
 //  in classWave.ts). Corrode Curse and Corrode Pierce Veil keep the variants
-//  they already had in classSpells.ts.
+//  they already had in classSpells.ts; the Desecrate combos live with the
+//  other Desecrate class spells (desecrateClass.ts).
 // =============================================================================
 
 import { makeSilencingSpike } from '../../core/sandSummons';
-import { desecrateGround, summonScarabs } from '../../effects/effects';
+import { summonScarabs } from '../../effects/effects';
 import {
-  AFFECTED,
   conjure,
   HELD,
   imbue,
@@ -28,7 +28,6 @@ import {
 
 const BLIGHT_TEXT =
   'a stack of Blight (1d3 corrosive per stack at the start of its turns, up to 3 stacks; loses a stack each turn it is not refreshed and spreads to its allies within 3cm)';
-const PLAGUE_TEXT = rotText('Plague Rot', '1d3', 4, 3);
 
 // =============================================================================
 //  TWO WORDS
@@ -170,42 +169,6 @@ variants(
   })
 );
 
-variants(
-  ['corrode', 'desecrate'],
-  minion('blight-walker', {
-    dc: 12,
-    color: 0x7a8a50,
-    text:
-      `Its blows deal 1d6 corrosive. For 6 turns the ground within 3cm of it is fouled and moves with it: ${AFFECTED} ` +
-      'there take 2d4 corrosive at the start of their turns and cannot be healed.',
-    after(ctx, unit) {
-      desecrateGround(ctx, unit.pos, {
-        name: 'Blight Walk',
-        radius: R(3),
-        turns: 6,
-        blocksHealing: true,
-        carrierIndex: ctx.game.mages.indexOf(unit),
-        ticks: [{ spec: '2d4', type: 'corrosive' }],
-      });
-    },
-  }),
-  imbue('foulingEdge', {
-    dc: 12,
-    color: 0x7a8a50,
-    text:
-      `For the rest of the fight, landing a basic attack on one of the ${AFFECTED} fouls the ground within 2cm of it for 3 turns: ` +
-      'affected units there take 2d4 corrosive at the start of their turns and cannot be healed.',
-  }),
-  law('rottingWorld', {
-    dc: 12,
-    color: 0x7a8a50,
-    text: `every hit on one of the ${AFFECTED} also deals 1d4 corrosive, and they cannot be healed.`,
-  })
-);
-
-// =============================================================================
-//  THREE WORDS · TWIST
-// =============================================================================
 
 variants(
   ['corrode', 'twist', 'bind'],
@@ -607,29 +570,6 @@ variants(
   })
 );
 
-variants(
-  ['corrode', 'pierce', 'desecrate'],
-  minion('plague-archer', {
-    dc: 15,
-    color: 0x8a9a60,
-    text:
-      `It shoots from 12cm for 1d6 pierce. One of the ${AFFECTED} it hits carries fouled ground (2cm) for 3 turns: ` +
-      'affected units there take 1d6 corrosive at the start of their turns and cannot be healed.',
-  }),
-  conjure('conjuredPlagueSpear', {
-    dc: 15,
-    color: 0x8a9a60,
-    text:
-      `Conjure a Plague Spear into your hand until the fight ends. ${HELD} 150% Strength pierce, reach 2cm. ` +
-      `On hit against one of the ${AFFECTED}: 2d4 corrosive more, and it cannot be healed for 2 turns.`,
-  }),
-  law('impaling', {
-    dc: 15,
-    color: 0x8a9a60,
-    text: `pierce hits on ${AFFECTED} deal double damage, and they cannot be healed.`,
-  })
-);
-
 // =============================================================================
 //  THREE WORDS · SHATTER
 // =============================================================================
@@ -675,34 +615,8 @@ variants(
   })
 );
 
-variants(
-  ['corrode', 'shatter', 'desecrate'],
-  minion('grave-colossus', {
-    dc: 15,
-    color: 0x9a9a60,
-    text:
-      `Its blows deal 2d6 shatter. At the start of your turns, ${AFFECTED} within 2cm of it take 1d6 shatter. ` +
-      'When it dies, the ground within 3cm is fouled for 4 turns: affected units there take 1d6 corrosive and 1d6 shatter ' +
-      'at the start of their turns and cannot be healed.',
-  }),
-  conjure('conjuredGravebreaker', {
-    dc: 15,
-    color: 0x9a9a60,
-    text:
-      'Conjure Gravebreaker into both hands until the fight ends. Two-handed: you cannot cast while holding it; ' +
-      'your hand items go to your bag and return when it fades. 160% Strength shatter. ' +
-      `On hit against one of the ${AFFECTED}: 2d6 corrosive more, and the ground within 2cm of it is fouled for 2 turns ` +
-      '(affected units there take 1d6 corrosive at the start of their turns and cannot be healed).',
-  }),
-  law('crumbling', {
-    dc: 15,
-    color: 0x9a9a60,
-    text: `shatter hits on ${AFFECTED} deal double damage, and the first such hit on each of them each round stuns it for 2 turns.`,
-  })
-);
-
 // =============================================================================
-//  THREE WORDS · CURSE / DRAIN / DESECRATE
+//  THREE WORDS · CURSE / DRAIN
 // =============================================================================
 
 variants(
@@ -737,50 +651,5 @@ variants(
     dc: 13,
     color: 0x57d6a0,
     text: 'damage over time heals whoever applied it for the damage dealt.',
-  })
-);
-
-variants(
-  ['corrode', 'drain', 'desecrate'],
-  minion('gorging-maw', {
-    dc: 15,
-    color: 0x5f7d4d,
-    text:
-      `Its bite deals 2d6 corrosive and heals you for the damage dealt. At the start of your turns, ${AFFECTED} within 3cm ` +
-      'of it take 1d6 corrosive; you heal for the damage dealt.',
-  }),
-  imbue('devourer', {
-    dc: 15,
-    color: 0x5f7d4d,
-    text:
-      `For the rest of the fight, landing a basic attack on one of the ${AFFECTED} drains corrosive equal to the damage ` +
-      'it dealt (you heal for it) and strips 2 of its maximum health, up to 8 in total; it returns when the fight ends.',
-  }),
-  law('worldFeeds', {
-    dc: 15,
-    color: 0x5f7d4d,
-    text: `every hit on one of the ${AFFECTED} also drains 1d4 corrosive (its attacker heals for that damage), and they cannot be healed.`,
-  })
-);
-
-variants(
-  ['corrode', 'curse', 'desecrate'],
-  minion('rot-herald', {
-    dc: 15,
-    color: 0x6e7d4d,
-    text:
-      `It cannot attack. At the start of your turns, ${AFFECTED} within 3cm of it gain ${PLAGUE_TEXT} and cannot be healed ` +
-      'for 2 turns. When it dies, affected units within 4cm gain 2 stacks.',
-  }),
-  imbue('plagueCenser', {
-    dc: 15,
-    color: 0x6e7d4d,
-    text:
-      `For the rest of the fight, at the start of your turns, ${AFFECTED} within 4cm gain ${PLAGUE_TEXT} and cannot be healed for 2 turns.`,
-  }),
-  law('eternalRot', {
-    dc: 15,
-    color: 0x6e7d4d,
-    text: `damage over time on ${AFFECTED} does not run down and deals 1 more each tick.`,
   })
 );

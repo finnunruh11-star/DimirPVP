@@ -9,7 +9,7 @@
 // =============================================================================
 
 import { registerClassSpellVariants } from '../registry';
-import { AFFECTED, conjure, HELD, imbue, law, minion, SLAM, STIFLE, TURN, variants } from './classWave';
+import { conjure, HELD, imbue, law, minion, SLAM, STIFLE, TURN, variants } from './classWave';
 
 /** A bleeding wound: pierce damage over time. */
 const BLEED = (spec: string, turns: number): string => `${spec} pierce at the start of its turns for ${turns} turns`;
@@ -128,32 +128,6 @@ variants(
     text:
       'every pierce hit on a unit at half its health or less also drains 1d6 corrosive from it; its attacker heals for ' +
       'that damage.',
-  })
-);
-
-variants(
-  ['pierce', 'desecrate'],
-  minion('grave-stalker', {
-    dc: 12,
-    color: 0xb0a0b8,
-    text:
-      `Its claws deal 1d8 pierce; against one of the ${AFFECTED} they deal 1d6 more and stop it being healed for 2 ` +
-      'turns. At the start of your turns it dashes to the nearest enemy within 8cm and strikes it.',
-  }),
-  conjure('conjuredBoneLongbow', {
-    dc: 12,
-    color: 0xb0a0b8,
-    text:
-      `Conjure a Bone Longbow into your hand until the fight ends. ${HELD} Dexterity pierce, +2 to the attack roll, range ` +
-      `16cm, needs no arrows: 100% hit to 12cm, 75% to 16cm. On hit against one of the ${AFFECTED}: 2d6 pierce more, and ` +
-      'it cannot be healed for 2 turns.',
-  }),
-  law('graveStakes', {
-    dc: 12,
-    color: 0xb0a0b8,
-    text:
-      `a pierce hit on one of the ${AFFECTED} stakes it: it is rooted for 2 turns, takes 1d6 pierce more and cannot be ` +
-      'healed for 2 turns.',
   })
 );
 
@@ -383,34 +357,8 @@ variants(
   })
 );
 
-variants(
-  ['pierce', 'shatter', 'desecrate'],
-  minion('bone-thrower', {
-    dc: 15,
-    color: 0xe0d8c8,
-    text:
-      `It hurls bone spikes from 10cm for 2d6 pierce; one of the ${AFFECTED} it hits is stunned for 2 turns. When it ` +
-      'dies, the ground within 3cm is fouled for 4 turns: affected units there take 1d6 pierce at the start of their ' +
-      'turns and cannot be healed.',
-  }),
-  conjure('conjuredBonebreakerPike', {
-    dc: 15,
-    color: 0xe0d8c8,
-    text:
-      `Conjure a Bonebreaker Pike into your hand until the fight ends. ${HELD} 150% Strength pierce, reach 3cm. On hit ` +
-      `against one of the ${AFFECTED}: 2d6 shatter more, and it is stunned for 2 turns.`,
-  }),
-  law('boneGarden', {
-    dc: 15,
-    color: 0xe0d8c8,
-    text:
-      `when one of the ${AFFECTED} dies, bone spikes burst from where it fell: every other affected unit within 3cm ` +
-      'takes 2d6 pierce, and any it kills bursts too.',
-  })
-);
-
 // =============================================================================
-//  THREE WORDS · DRAIN / CURSE / DESECRATE
+//  THREE WORDS · DRAIN / CURSE
 // =============================================================================
 
 variants(
@@ -437,57 +385,5 @@ variants(
     text:
       "every pierce hit inflicts Bloodletting: 1d3 corrosive at the start of the target's turns for 3 turns, and whoever " +
       'dealt the hit heals for each tick.',
-  })
-);
-
-variants(
-  ['pierce', 'drain', 'desecrate'],
-  minion('blood-harvester', {
-    dc: 15,
-    color: 0x8a6070,
-    text:
-      'Its scythe-spear strikes from 3cm for 2d4 pierce and drains 1d4 corrosive (you heal for the drained damage); ' +
-      `against one of the ${AFFECTED} it drains 2d4 more and stops it being healed for 2 turns.`,
-  }),
-  conjure('conjuredHarvestersGlaive', {
-    dc: 15,
-    color: 0x8a6070,
-    text:
-      `Conjure a Harvester's Glaive into your hand until the fight ends. ${HELD} 140% Strength pierce, reach 3cm. On hit: ` +
-      `it drains corrosive equal to half the damage dealt (rounded up; you heal for it); against one of the ${AFFECTED} ` +
-      'it drains as much again as the whole hit, and the target cannot be healed for 2 turns.',
-  }),
-  law('bloodHarvest', {
-    dc: 15,
-    color: 0x8a6070,
-    text:
-      `pierce hits on ${AFFECTED} drain 1d6 corrosive more (the attacker heals for it), and whoever kills one of them ` +
-      'heals 2d6.',
-  })
-);
-
-variants(
-  ['pierce', 'curse', 'desecrate'],
-  minion('thorn-archer', {
-    dc: 15,
-    color: 0x9a6878,
-    text:
-      `It shoots from 12cm for 1d6 pierce and leaves the target bleeding: ${BLEED('1d4', 3)}; one of the ${AFFECTED} it ` +
-      'hits also cannot be healed for 3 turns.',
-  }),
-  conjure('conjuredThornspitter', {
-    dc: 15,
-    color: 0x9a6878,
-    text:
-      `Conjure a Thornspitter into your hand until the fight ends. ${HELD} Dexterity pierce, +2 to the attack roll, range ` +
-      `12cm, needs no bolts. On hit: the target bleeds, ${BLEED('1d4', 3)}; against one of the ${AFFECTED}, every damage ` +
-      'over time on it lasts 2 turns longer.',
-  }),
-  law('stigmata', {
-    dc: 15,
-    color: 0x9a6878,
-    text:
-      `every damage-over-time tick on ${AFFECTED} also deals 1d4 pierce, and pierce hits on an affected unit carrying a ` +
-      'damage over time deal double damage.',
   })
 );

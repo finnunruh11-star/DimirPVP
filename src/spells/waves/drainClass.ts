@@ -8,15 +8,12 @@
 //  grows with the hit. Drain Twist stifles, as Corrode Twist does.
 // =============================================================================
 
-import { desecrateGround } from '../../effects/effects';
 import {
-  AFFECTED,
   conjure,
   HELD,
   imbue,
   law,
   minion,
-  R,
   rotText,
   SLAM,
   STIFLE,
@@ -28,13 +25,11 @@ import {
 const BLOOD = 0xc04a5a;
 const CLOT = 0x9a3a4a;
 const MARROW = 0xc8a890;
-const GRAVE = 0x6a4a50;
 
 const HALF = 'corrosive equal to half the damage dealt (rounded up)';
 const THIRSTING_BLIGHT =
   'a stack of Thirsting Blight (1d3 corrosive per stack at the start of its turns, up to 3 stacks, healing whoever laid ' +
   'it; loses a stack each turn it is not refreshed and spreads to its allies within 3cm)';
-const THIRSTING_PLAGUE = rotText('Thirsting Plague', '1d3', 4, 3);
 
 // =============================================================================
 //  TWO WORDS
@@ -125,43 +120,6 @@ variants(
     text:
       'a unit carrying a damage over time moves 75% slower, and each damage-over-time tick also drains 1d3 corrosive ' +
       'from its bearer: whoever laid it heals for that.',
-  })
-);
-
-variants(
-  ['drain', 'desecrate'],
-  minion('blood-wight', {
-    dc: 12,
-    color: GRAVE,
-    text:
-      `Its blows drain 1d6 corrosive. For 6 turns the ground within 3cm of it is fouled and moves with it: ${AFFECTED} ` +
-      'there are drained for 2d4 corrosive at the start of their turns and cannot be healed.',
-    after(ctx, unit) {
-      desecrateGround(ctx.game.quietContext(unit, unit), unit.pos, {
-        name: 'Blood Walk',
-        radius: R(3),
-        turns: 6,
-        blocksHealing: true,
-        lifesteal: true,
-        carrierIndex: ctx.game.mages.indexOf(unit),
-        ticks: [{ spec: '2d4', type: 'corrosive' }],
-      });
-    },
-  }),
-  imbue('gorgingEdge', {
-    dc: 12,
-    color: GRAVE,
-    text:
-      `For the rest of the fight, landing a basic attack on one of the ${AFFECTED} drains ${HALF}, healing you, and ` +
-      'fouls the ground within 2cm of it for 3 turns: affected units there take 2d4 corrosive at the start of their turns ' +
-      'and cannot be healed, and you heal for that damage.',
-  }),
-  law('gorgingWorld', {
-    dc: 12,
-    color: GRAVE,
-    text:
-      `every hit on one of the ${AFFECTED} also drains corrosive equal to half that hit (rounded up; its attacker heals ` +
-      'for it), and they cannot be healed.',
   })
 );
 
@@ -320,61 +278,5 @@ variants(
     text:
       'each shatter hit makes every corrosive damage over time on its target deal its damage once more, at once, and ' +
       'its attacker heals for that damage.',
-  })
-);
-
-variants(
-  ['drain', 'shatter', 'desecrate'],
-  minion('marrow-colossus', {
-    dc: 15,
-    color: GRAVE,
-    text:
-      `Its blows deal 2d6 shatter. At the start of your turns, ${AFFECTED} within 2cm of it take 1d6 shatter and are ` +
-      'drained for 1d4 corrosive. When it dies, the ground within 3cm is fouled for 4 turns: affected units there take ' +
-      '1d6 corrosive and 1d6 shatter at the start of their turns and cannot be healed, and you heal for the corrosive.',
-  }),
-  conjure('conjuredGravedrinker', {
-    dc: 15,
-    color: GRAVE,
-    text:
-      'Conjure Gravedrinker into both hands until the fight ends. Two-handed: you cannot cast while holding it; ' +
-      'your hand items go to your bag and return when it fades. 160% Strength shatter. ' +
-      `On hit against one of the ${AFFECTED}: drains corrosive equal to the damage dealt (you heal for it), and the ` +
-      'ground within 2cm of it is fouled for 2 turns (affected units there take 1d6 corrosive at the start of their ' +
-      'turns and cannot be healed; you heal for it).',
-  }),
-  law('marrowFeast', {
-    dc: 15,
-    color: GRAVE,
-    text:
-      `shatter hits on ${AFFECTED} deal double damage, and the first such hit on each of them each round stuns it for ` +
-      '2 turns and drains 1d6 corrosive (its attacker heals for it).',
-  })
-);
-
-// =============================================================================
-//  THREE WORDS · CURSE / DESECRATE
-// =============================================================================
-
-variants(
-  ['drain', 'curse', 'desecrate'],
-  minion('blood-herald', {
-    dc: 15,
-    color: GRAVE,
-    text:
-      `It cannot attack. At the start of your turns, ${AFFECTED} within 3cm of it gain ${THIRSTING_PLAGUE}, which it ` +
-      'drains, and cannot be healed for 2 turns. When it dies, affected units within 4cm gain 2 stacks.',
-  }),
-  imbue('bloodCenser', {
-    dc: 15,
-    color: GRAVE,
-    text:
-      `For the rest of the fight, at the start of your turns, ${AFFECTED} within 4cm gain ${THIRSTING_PLAGUE}, which ` +
-      'you drain, and cannot be healed for 2 turns.',
-  }),
-  law('eternalThirst', {
-    dc: 15,
-    color: GRAVE,
-    text: `damage over time on ${AFFECTED} does not run down, and whoever laid it heals for every tick.`,
   })
 );

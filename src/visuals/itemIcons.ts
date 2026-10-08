@@ -15,7 +15,7 @@ export type ItemIconKind =
   | 'helm' | 'hat' | 'circlet' | 'armor' | 'robe' | 'cloak' | 'wings' | 'boots'
   | 'ring' | 'bracelet' | 'amulet' | 'gloves' | 'bag' | 'chalice' | 'book' | 'bolt'
   | 'potion' | 'vial' | 'arrows' | 'ore' | 'gem' | 'leaf' | 'root' | 'mushroom'
-  | 'pelt' | 'fang' | 'scale' | 'core' | 'crystal' | 'blob' | 'ingot' | 'eye' | 'trinket' | 'pickaxe' | 'map';
+  | 'pelt' | 'fang' | 'scale' | 'core' | 'crystal' | 'blob' | 'ingot' | 'eye' | 'trinket' | 'pickaxe' | 'map' | 'paper';
 
 interface Tone {
   base: number;
@@ -103,6 +103,7 @@ const CRAFTED_KIND: Record<CraftForm, ItemIconKind> = {
 export function itemIconKind(def: ItemDef): ItemIconKind {
   const label = `${def.id} ${def.name}`.toLowerCase();
   if (def.crafted) return CRAFTED_KIND[def.crafted.form];
+  if (def.paper || def.hexzettel) return 'paper';
   if (def.ammo) return 'arrows';
   if (def.potion) return def.potion === 'word' ? 'vial' : 'potion';
   if (def.id === 'pickaxe') return 'pickaxe';
@@ -851,6 +852,23 @@ function paint(px: PixelBuffer, look: Look): void {
       line(px, 9, 6, 10, 8, 0x8a6a40);
       line(px, 9, 9, 12, 12, 0xc83a32);
       line(px, 12, 9, 9, 12, 0xc83a32);
+      return;
+    }
+    case 'paper': {
+      const sheet = tone(has(label, /fine/) ? 0xeee4c8 : 0xd8c9a0);
+      poly(px, [[3, 1], [12, 1], [13, 14], [4, 14]], sheet.base);
+      line(px, 3, 1, 12, 1, sheet.light);
+      line(px, 12, 1, 13, 14, sheet.dark);
+      line(px, 4, 14, 13, 14, sheet.dark);
+      if (has(label, /hexzettel/)) {
+        const ink = 0x6a3fb0;
+        line(px, 6, 4, 10, 4, ink);
+        line(px, 8, 4, 8, 11, ink);
+        line(px, 6, 8, 10, 12, ink);
+        line(px, 10, 8, 6, 12, ink);
+      } else {
+        for (const y of [4, 7, 10]) for (const x of [6, 8, 10]) px.set(x, y, sheet.dark);
+      }
       return;
     }
     case 'trinket':

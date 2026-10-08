@@ -68,7 +68,7 @@ export interface ShopDef {
 
 const SHOPPABLE = (def: ItemDef): boolean =>
   !def.enemyOnly && def.set !== 'conjured' && !def.material && !def.ammo && !def.potion && def.rarity !== 'lareneg' &&
-  !def.keyItem && !def.pack;
+  !def.keyItem && !def.pack && !def.paper && !def.hexzettel;
 
 const isWeapon = (def: ItemDef): boolean =>
   SHOPPABLE(def) && def.slot === 'hand' && !def.lightSource && (!!def.weapon || !!def.isWand || !!def.shield);
@@ -100,13 +100,15 @@ export const PICKAXE_PRICE = 3;
 /** Gold for the Minemap. */
 export const MINE_MAP_PRICE = 3;
 
-/** Every guild sells bags (the pack grows with them) and the Minemap. */
+/** Every guild sells bags (the pack grows with them), the Minemap, and paper for a Hexcraft mage to draw on. */
 const GUILD_STOCK: StockRule = {
   fixed: [
     { id: 'smallBag', price: 0.5 },
     { id: 'goodBag', price: 2 },
     { id: 'bagOfHolding', price: 10 },
     { id: 'mineMap', price: MINE_MAP_PRICE },
+    { id: 'paper', price: 0.1 },
+    { id: 'finePaper', price: 1 },
   ],
 };
 

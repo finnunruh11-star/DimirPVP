@@ -7,18 +7,17 @@
 //  gear pushes and drags, and its laws make the whole field flow. Reality and
 //  Mind keep it blue (control), Fire and Lightning add red damage (Lightning
 //  always scales with the roll), Shadow and Pain add black dread. Red, black
-//  and blue never meet, so Water has thirteen combos.
+//  and blue never meet, so Water has thirteen combos; the two with Reality
+//  live with the other Reality class spells (realityClass.ts).
 // =============================================================================
 
 import { FIELD } from '../../config/constants';
 import { dist } from '../../core/utils';
-import { tideAnchors } from '../../effects/classKit';
 import { placeShadow, type EffectContext } from '../../effects/effects';
-import { castPower, imbue, law, LAW_ROUNDS, minion, robe, variants } from './classWave';
+import { castPower, imbue, law, LAW_ROUNDS, minion, variants } from './classWave';
 
 const WATER = 0x4f9be8;
 const DARK_WATER = 0x3a5a8c;
-const TIDE = 0x7fc4ff;
 const STEAM = 0xd9e8f2;
 const STORM = 0x9fc8ff;
 const PAIN = 0xd1475c;
@@ -88,28 +87,6 @@ variants(
 );
 
 variants(
-  ['water', 'reality'],
-  minion('riptide-spirit', {
-    dc: 12,
-    color: TIDE,
-    text: 'It cannot attack. At the start of your turns, it trades places with the nearest enemy within 8cm of it, which takes 1d4 water.',
-  }),
-  imbue('tidalWard', {
-    dc: 12,
-    ally: true,
-    color: TIDE,
-    text: 'The next 2 basic attacks aimed at the bearer never land: each attacker is thrown 4cm away instead.',
-  }),
-  law('turningTide', {
-    dc: 13,
-    color: TIDE,
-    text:
-      'at the end of each round, the tide carries every unit 3cm: to the right, then down, left and up, turning a ' +
-      'quarter each round. A unit carried into a wall or the field edge is slammed (2d6 shatter).',
-  })
-);
-
-variants(
   ['water', 'fire'],
   minion('geyser', {
     dc: 11,
@@ -153,11 +130,11 @@ variants(
   }),
   law('conductiveSea', {
     dc: 13,
-    lightning: true,
     color: STORM,
     text:
-      'every water hit sends lightning from its victim to the nearest other unit of its own side within a third of ' +
-      'the Lightning power in cm (at least 2cm): 1d6 heat plus 1 per 6 Lightning power.',
+      'every hit knocks one of your enemies back 1d4cm, leaving a lightning trail behind it for one full turn cycle; ' +
+      'an enemy that moves through a trail takes 1d10 heat. An enemy knocked into a wall or the field edge bounces ' +
+      'another 1d4cm off it in a random direction.',
   })
 );
 
@@ -218,29 +195,6 @@ variants(
         .filter((m) => m.alive && m.team !== ctx.caster.team && !ctx.game.isUnreachable(m))
         .sort((a, b) => dist(a.pos, ctx.caster.pos) - dist(b.pos, ctx.caster.pos))[0];
       if (foe) placeShadow(ctx, foe.pos);
-    },
-  })
-);
-
-variants(
-  ['water', 'mind', 'reality'],
-  minion('tide-clock', {
-    dc: 13,
-    color: TIDE,
-    text:
-      'It cannot attack. At the start of your turns, every enemy within 5cm of it is carried up to 4cm back toward ' +
-      'where it began its last turn.',
-  }),
-  robe('robeOfEbb', { dc: 13, color: TIDE, text: '' }),
-  law('tideRemembers', {
-    dc: 13,
-    color: TIDE,
-    text:
-      'at the end of each round, every unit is drawn up to 3cm back toward where it stood when the round began (or ' +
-      'when the law was laid).',
-    after(ctx) {
-      const laid = ctx.game.hexLaw('tideRemembers');
-      if (laid) laid.anchors = tideAnchors(ctx.game);
     },
   })
 );

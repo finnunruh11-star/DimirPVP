@@ -60,7 +60,8 @@ export type StatusKind =
   | 'reflexStop'
   | 'imbue'
   | 'tether'
-  | 'stifle';
+  | 'stifle'
+  | 'regen';
 export type StunType = 'main' | 'movement' | 'full';
 export type InvisMode = 'full' | 'partial';
 /** Kinds of mental compulsion the Mind word can inflict. */
@@ -173,6 +174,8 @@ export interface DotStatus extends BaseStatus {
   drift?: { px: number; to?: { x: number; y: number } };
   /** Each tick stifles the bearer's next action. */
   stifleOnTick?: boolean;
+  /** A coupled part of a Hexzettel that fires on the bearer at every tick. */
+  hexEcho?: HexEcho;
 }
 
 /** One hit held back by stopped time, landing when time resumes. */
@@ -674,6 +677,22 @@ export interface StifleStatus extends BaseStatus {
   drink?: boolean;
 }
 
+/** Regeneration: the bearer heals `spec` at the start of each of its turns. */
+export interface RegenStatus extends BaseStatus {
+  kind: 'regen';
+  spec: string;
+  ownerIndex: number;
+  hexEcho?: HexEcho;
+}
+
+/** Which part of which Hexzettel fires when a lingering hex ticks or bites. */
+export interface HexEcho {
+  /** The Hexzettel's id: it spells out the whole sheet. */
+  hex: string;
+  part: number;
+  ownerIndex: number;
+}
+
 export type Status =
   | InvisibilityStatus
   | StunStatus
@@ -730,7 +749,8 @@ export type Status =
   | ReflexStopStatus
   | ImbueStatus
   | TetherStatus
-  | StifleStatus;
+  | StifleStatus
+  | RegenStatus;
 
 /**
  * Add a status, or refresh/extend an existing one that shares the same key.

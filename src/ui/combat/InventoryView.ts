@@ -14,7 +14,7 @@ import {
 } from '../cabinet/theme';
 import { addJourneyStrip, type JourneyView } from '../pve/JourneyStrip';
 
-export type InventoryActionKind = 'consume' | 'throw' | 'equip' | 'unequip' | 'drop-hand' | 'drop-accessory';
+export type InventoryActionKind = 'consume' | 'throw' | 'hex' | 'equip' | 'unequip' | 'drop-hand' | 'drop-accessory';
 
 export interface InventoryActionView {
   kind: InventoryActionKind;

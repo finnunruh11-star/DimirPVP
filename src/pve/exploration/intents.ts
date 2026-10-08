@@ -5,6 +5,7 @@
 import { MAGE_CLASSES, type MageClass } from '../../core/Classes';
 import { CRAFT_TEMPLATE_IDS, MAX_CRAFT_MANA, type CraftForm, type CraftTemplateId } from '../../core/crafting/data';
 import type { CraftDesign } from '../../core/crafting/item';
+import { FULL_GRID, PAPERS } from '../../core/hexcraft/runes';
 import { asItemIds, type ItemId } from '../../core/Items';
 import { abandonBounty, acceptBounty, claimBounty } from './bounties';
 import { enterLodge, takeStarterWeapon } from './arms';
@@ -12,6 +13,7 @@ import { memberOf } from './coop';
 import {
   buyItem,
   craftItem,
+  drawHex,
   dropItem,
   equipItem,
   giveItem,
@@ -31,6 +33,7 @@ export type ExplorationIntent =
   | { op: 'sell'; shop: string; item: ItemId }
   | { op: 'sell-all'; shop: string; items: ItemId[] }
   | { op: 'craft'; shop: string; design: CraftDesign; crafter?: MageClass }
+  | { op: 'hex'; paper: ItemId; grids: number[] }
   | { op: 'rest'; shop: string }
   | { op: 'equip'; item: ItemId }
   | { op: 'unequip'; item: ItemId }
@@ -64,6 +67,7 @@ export function applyIntent(run: ExplorationRun, member: MageClass | null, inten
       case 'sell': return sellItem(run, intent.shop, intent.item, false, member);
       case 'sell-all': return sellAll(run, intent.shop, intent.items, member);
       case 'craft': return craftItem(run, intent.shop, intent.design, member, intent.crafter);
+      case 'hex': return drawHex(run, intent.paper, intent.grids, member);
       case 'rest': return rest(run, intent.shop);
       case 'equip': return equipItem(run, intent.item, member);
       case 'unequip': return unequipItem(run, intent.item, member);
@@ -120,6 +124,13 @@ function parseDesign(value: unknown): CraftDesign | null {
   return { template, form: raw.form as CraftForm, parts, sockets, mana };
 }
 
+/** A drawn sheet off the wire: grid masks only; the paper decides how many. */
+function parseGrids(value: unknown): number[] | null {
+  const most = Math.max(...Object.values(PAPERS).map((paper) => paper.grids));
+  if (!Array.isArray(value) || value.length === 0 || value.length > most) return null;
+  return value.every((mask) => Number.isInteger(mask) && mask >= 0 && mask <= FULL_GRID) ? (value as number[]) : null;
+}
+
 /** Read an intent that came over the wire. Anything malformed is null. */
 export function parseIntent(value: unknown): ExplorationIntent | null {
   if (!value || typeof value !== 'object') return null;
@@ -145,6 +156,11 @@ export function parseIntent(value: unknown): ExplorationIntent | null {
       const design = parseDesign(raw.design);
       const crafter = raw.crafter == null ? undefined : mageClass(raw.crafter) ?? null;
       return shop && design && crafter !== null ? { op: 'craft', shop, design, crafter } : null;
+    }
+    case 'hex': {
+      const paper = itemId(raw.paper);
+      const grids = parseGrids(raw.grids);
+      return paper && grids ? { op: 'hex', paper, grids: [...grids] } : null;
     }
     case 'rest': {
       const shop = text(raw.shop);

@@ -200,6 +200,8 @@ import type {
   OfferingOpts,
 } from '../effects/effects';
 import { HEX_LAW_NAMES, IMBUES, MINIONS, robeOf } from '../effects/classKit';
+import { activateHexzettel, hexAimProblem, hexColor, hexOf } from '../effects/hexzettel';
+import { hexAction, hexAim, hexHarmful, hexManaCost, hexRadius, hexRange, type HexAim as HexAimKind, type HexRecipe } from '../core/hexcraft/runes';
 import { SHIKIGAMI_TIERS, shikigamiTier } from '../effects/deathKit';
 import {
   ACTION_FX_PRESETS,
@@ -506,6 +508,7 @@ export type InputMode =
   | 'aiming-throw'
   | 'aiming-eldritch'
   | 'aiming-staff'
+  | 'aiming-hex'
   | 'aiming-discharge'
   | 'aiming-move'
   | 'aiming-leap'
@@ -617,6 +620,7 @@ type TurnCommand =
   | { t: 'item-equip'; itemId: string }
   | { t: 'item-unequip'; itemId: string }
   | { t: 'item-throw'; itemId: string; target: number }
+  | { t: 'hex'; itemId: string; target: number | null; x?: number; y?: number }
   | { t: 'edgelord-shake' }
   | { t: 'edgelord-throw'; x: number; y: number }
   | { t: 'deaths-angel-wings' }
@@ -679,6 +683,14 @@ function bossSpawnPoint(unit: BossUnit, index: number): Vec2 {
 const creatureSpriteKind = (mage: Mage): CreatureSpriteKind | null =>
   mage.bossArt ? bossSpriteKind(mage.bossArt) : creatureSpriteFor(mage.summonKind ?? mage.mine?.kind ?? mage.enemyKind, mage.mine?.heads, mage.mine?.role);
 
+/** How a loosed Hexzettel looks on the stack. */
+function hexVisual(hex: HexRecipe): StackItem['actionVisual'] {
+  const effects = hex.parts.flatMap((part) => part.effects);
+  if (effects.includes('explosion') || effects.includes('implosion')) return 'fire';
+  if (effects.includes('corrosive') || effects.includes('siphon')) return 'corrosive';
+  return hexHarmful(hex) ? 'shadow' : 'heal';
+}
+
 /** Creatures that wear painted art when a roadside scene brings them. */
 const SCENE_ART: Partial<Record<string, string>> = {
   goblinRaider: 'goblin-raider',
@@ -732,7 +744,7 @@ const ACTION_GROUPS: { title: string; ids: string[] }[] = [
       'edgelord-throw',
     ],
   },
-  { title: 'ITEMS', ids: ['inventory', 'drop', 'pickup', 'throw'] },
+  { title: 'ITEMS', ids: ['inventory', 'drop', 'pickup', 'throw', 'hex'] },
   {
     title: 'RUN',
     ids: ['raid-begin', 'raid-restore-vitals', 'raid-restore-mana', 'raid-restore-words', 'pickaxe'],
@@ -1003,6 +1015,8 @@ export class GameScene extends Phaser.Scene {
   private throwPendingItem: ItemId | null = null;
   /** The staff bolt being aimed: which held staff, and which of its bolts. */
   private staffPending: { item: ItemId; bolt: number } | null = null;
+  /** The Hexzettel being aimed at a unit or a point. */
+  private hexPending: ItemId | null = null;
   /** Orientation (radians) of the rotatable wall while it is being placed. */
   private wallAimAngle = 0;
 
@@ -5300,7 +5314,8 @@ export class GameScene extends Phaser.Scene {
       || this.mode === 'aiming-staff'
       || this.mode === 'aiming-discharge'
       || this.mode === 'subtarget-enemy'
-      || this.mode === 'aiming-spell';
+      || this.mode === 'aiming-spell'
+      || (this.mode === 'aiming-hex' && this.pendingHexAim() === 'unit');
   }
 
   /** Mages that are legal targets for the current aim (turn cast or reaction). */
@@ -6158,6 +6173,44 @@ export class GameScene extends Phaser.Scene {
             needleBan: { kind: 'item', itemId },
             resolve: (game) => {
               game.throwItem(me, target, itemId);
+            },
+          })
+        );
+        break;
+      }
+      case 'hex': {
+        const itemId = cmd.itemId as ItemId;
+        const hex = me.utility.includes(itemId) ? hexOf(itemId) : undefined;
+        if (!hex) break;
+        if (me.isItemBanned(itemId)) {
+          this.gs.log(
+            `${me.name} reaches for ${getItem(itemId).name}, but ${me.itemsSacrificed() ? 'the Shikigami holds it until the day is over' : 'it has been stifled forever'}.`
+          );
+          break;
+        }
+        const aim = {
+          target: cmd.target != null ? this.mageBySeat(cmd.target) : null,
+          point: cmd.x != null && cmd.y != null ? { x: cmd.x, y: cmd.y } : null,
+        };
+        if (me.mana < hexManaCost(hex) || hexAimProblem(this.gs, me, hex, aim)) {
+          this.gs.log(`${getItem(itemId).name} stays quiet.`);
+          break;
+        }
+        const action = hexAction(hex);
+        spend(action === 'bonus' ? 'bonus' : 'main');
+        if (action === 'full') spend('bonus');
+        await runAction(
+          this.gs.makeActionItem({
+            source: me,
+            target: aim.target ?? undefined,
+            targetPoint: aim.point ?? undefined,
+            label: getItem(itemId).name,
+            description: `${me.name} looses ${getItem(itemId).name}.`,
+            hostileAttack: !!aim.target && aim.target.team !== me.team && hexHarmful(hex),
+            actionVisual: hexVisual(hex),
+            needleBan: { kind: 'item', itemId },
+            resolve: (game) => {
+              activateHexzettel(game, me, itemId, aim);
             },
           })
         );
@@ -8365,6 +8418,73 @@ export class GameScene extends Phaser.Scene {
     this.beginThrow(itemId);
   }
 
+  /** Why `me` cannot loose `hex` now, or null. */
+  private hexBlocked(me: Mage, hex: HexRecipe): string | null {
+    const cost = hexManaCost(hex);
+    if (me.mana < cost) return `Loosing it takes ${cost} mana.`;
+    if (Dev.infiniteActions) return null;
+    const action = hexAction(hex);
+    if (action === 'bonus') return me.actions.bonus > 0 ? null : 'It needs a bonus action.';
+    if (me.actions.main <= 0) return action === 'full' ? 'It needs your main and bonus action.' : 'It needs a main action.';
+    return action === 'full' && me.actions.bonus <= 0 ? 'It needs your main and bonus action.' : null;
+  }
+
+  /** Loose a Hexzettel: aim it as its target rune asks, or loose it at once. */
+  private beginHex(itemId: ItemId): void {
+    if (this.mode === 'reaction' || !this.humanActiveOrInventory) return;
+    const me = this.gs.current;
+    const hex = me.utility.includes(itemId) ? hexOf(itemId) : undefined;
+    if (!hex) return this.flashHint('No such Hexzettel.');
+    if (me.isItemBanned(itemId)) return this.flashHint(this.bannedItemHint(me));
+    if (me.swordFormLocked()) return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
+    const blocked = this.hexBlocked(me, hex);
+    if (blocked) return this.flashHint(blocked);
+    this.closeInventory();
+    this.resetSelection();
+    const aim = hexAim(hex);
+    if (aim !== 'none') {
+      const reach = Math.round(hexRange(hex) / RANGE_UNIT);
+      this.hexPending = itemId;
+      this.mode = 'aiming-hex';
+      this.flashHint(`${getItem(itemId).name}: click ${aim === 'unit' ? 'a unit' : 'a point'} within ${reach}cm.`, false, 'info');
+      this.redraw();
+      return;
+    }
+    const problem = hexAimProblem(this.gs, me, hex, { target: null, point: null });
+    if (problem) return this.flashHint(problem);
+    this.mode = 'busy';
+    this.submitTurn({ t: 'hex', itemId, target: null });
+  }
+
+  private pendingHex(): HexRecipe | undefined {
+    return this.hexPending ? hexOf(this.hexPending) : undefined;
+  }
+
+  private pendingHexAim(): HexAimKind | null {
+    const hex = this.pendingHex();
+    return hex ? hexAim(hex) : null;
+  }
+
+  /** Loose the aimed Hexzettel at a unit or a point, as its first target rune asks. */
+  private aimHex(at: Vec2, unit: Mage | null): void {
+    const itemId = this.hexPending;
+    const hex = this.pendingHex();
+    if (!itemId || !hex) return;
+    const me = this.gs.current;
+    if (hexAim(hex) === 'unit') {
+      const problem = unit ? hexAimProblem(this.gs, me, hex, { target: unit, point: null }) : 'Click a unit.';
+      if (problem || !unit) return this.flashHint(problem ?? 'Click a unit.');
+      this.hexPending = null;
+      this.mode = 'busy';
+      this.submitTurn({ t: 'hex', itemId, target: this.seatOf(unit) });
+      return;
+    }
+    const point = stepTowards(me.pos, at, hexRange(hex));
+    this.hexPending = null;
+    this.mode = 'busy';
+    this.submitTurn({ t: 'hex', itemId, target: null, x: point.x, y: point.y });
+  }
+
   private shakeEdgelordLantern(): void {
     if (this.mode === 'reaction' || !this.humanActive) return;
     const me = this.gs.current;
@@ -8693,6 +8813,22 @@ export class GameScene extends Phaser.Scene {
         enabled: (me.actions.bonus > 0 || inf) && !me.swordFormLocked(),
         reason: me.swordFormLocked() ? 'Locked in sword form.' : 'Needs a bonus action.',
         run: () => this.beginThrowFirst(),
+      });
+    }
+
+    // Hexzettel (the first carried; the inventory holds the rest).
+    const hexId = me.utility.find((id) => !!hexOf(id) && !me.isItemBanned(id));
+    const hex = hexId ? hexOf(hexId) : undefined;
+    if (hexId && hex) {
+      const blocked = this.hexBlocked(me, hex);
+      entries.push({
+        id: 'hex',
+        label: `Loose ${getItem(hexId).name}`,
+        hotkey: '—',
+        desc: `${{ main: 'Main', bonus: 'Bonus', full: 'Main + bonus' }[hexAction(hex)]} action · ${hexManaCost(hex)} mana. Other sheets wait in the inventory.`,
+        enabled: !blocked && !me.swordFormLocked(),
+        reason: me.swordFormLocked() ? 'Locked in sword form.' : blocked ?? '',
+        run: () => this.beginHex(hexId),
       });
     }
 
@@ -9257,6 +9393,7 @@ export class GameScene extends Phaser.Scene {
     this.pendingFirstPoint = null;
     this.aimingSource = null;
     this.throwPendingItem = null;
+    this.hexPending = null;
     this.mode = 'idle';
     this.redraw();
   }
@@ -9610,6 +9747,8 @@ export class GameScene extends Phaser.Scene {
         return `Tethered to ${this.gs.mages[s.anchorIndex]?.name ?? 'something'}: cannot move further than ${Math.round(s.leash / RANGE_UNIT)}cm from it. (${turns})`;
       case 'stifle':
         return `Stifled. The next action you declare, other than moving, fails${s.spec ? ` and deals ${s.spec} ${s.type ?? 'corrosive'} to you` : ''}. (${turns})`;
+      case 'regen':
+        return `Regeneration. Heals ${s.spec} at the start of your turn. (${turns})`;
       default:
         return turns;
     }
@@ -9653,6 +9792,7 @@ export class GameScene extends Phaser.Scene {
         const actions: InventoryItemView['actions'] = [];
         if (definition.potion) actions.push({ kind: 'consume', label: 'Consume', tone: 'positive' });
         if (definition.throwable) actions.push({ kind: 'throw', label: 'Throw' });
+        if (definition.hexzettel) actions.push({ kind: 'hex', label: `Loose (${hexManaCost(definition.hexzettel)} mana)`, tone: 'positive' });
         return item(id, 'Supply', actions);
       }),
       ...(mage.arrows > 0
@@ -9700,6 +9840,7 @@ export class GameScene extends Phaser.Scene {
     switch (kind) {
       case 'consume': this.consumeItem(id); break;
       case 'throw': this.beginThrow(id); break;
+      case 'hex': this.beginHex(id); break;
       case 'equip': this.equipItem(id); break;
       case 'unequip': this.unequipItem(id); break;
       case 'drop-hand': this.dropItemById(id); break;
@@ -9851,6 +9992,10 @@ export class GameScene extends Phaser.Scene {
       } else {
         this.flashHint('No enemy within throwing range there.');
       }
+      return;
+    }
+    if (this.mode === 'aiming-hex') {
+      this.aimHex(pt, this.clickedMage(pt, null));
       return;
     }
     if (this.mode === 'aiming-eldritch') {
@@ -10493,6 +10638,10 @@ export class GameScene extends Phaser.Scene {
         return this.gs.canMelee(me, m);
       case 'aiming-throw':
         return !!this.throwPendingItem && this.canThrowAt(me, m, this.throwPendingItem);
+      case 'aiming-hex': {
+        const hex = this.pendingHex();
+        return !!hex && hexAim(hex) === 'unit' && !hexAimProblem(this.gs, me, hex, { target: m, point: null });
+      }
       case 'aiming-eldritch':
         return m.team !== me.team;
       case 'aiming-staff':
@@ -10531,6 +10680,9 @@ export class GameScene extends Phaser.Scene {
         } else this.flashHint('That foe is out of throwing range.');
         return;
       }
+      case 'aiming-hex':
+        this.aimHex(foe.pos, foe);
+        return;
       case 'aiming-eldritch':
         if (foe.team !== me.team) {
           this.mode = 'busy';
@@ -13482,7 +13634,7 @@ export class GameScene extends Phaser.Scene {
       show(`mv${z.id}`, z.x, z.y - z.radius - 10, z.turnsLeft, z.owner);
     for (const pool of this.gs.corrosionPools)
       show(`cp${pool.id}`, pool.x, pool.y - pool.radius - 10, pool.roundsLeft, pool.ownerTeam);
-    for (const zone of this.gs.hazardZones)
+    for (const zone of this.gs.hazardZones.filter((z) => z.untilTurn == null))
       show(
         `hz${zone.id}`,
         zone.toX != null ? (zone.x + zone.toX) / 2 : zone.x,
@@ -14114,6 +14266,9 @@ export class GameScene extends Phaser.Scene {
       if (this.pendingSpell) range = this.gs.spellReach(this.pendingSpell, me);
     } else if (this.mode === 'aiming-staff' && this.staffPending) {
       range = getItem(this.staffPending.item).staffBolts?.[this.staffPending.bolt]?.rangePx ?? 0;
+    } else if (this.mode === 'aiming-hex') {
+      const hex = this.pendingHex();
+      if (hex) range = hexRange(hex);
     } else {
       const spell = this.currentComboSpell();
       if (spell && spell.range > 0) range = this.gs.spellReach(spell, me);
@@ -14154,6 +14309,23 @@ export class GameScene extends Phaser.Scene {
       const toward = stepTowards(me.pos, this.pointer, range);
       g.fillStyle(0x160f22, 0.22).fillCircle(toward.x, toward.y, 5 * RANGE_UNIT);
       g.lineStyle(2, 0x8a5aa5, 0.9).strokeCircle(toward.x, toward.y, 5 * RANGE_UNIT);
+    }
+    if (aiming && this.mode === 'aiming-hex') {
+      const hex = this.pendingHex();
+      if (hex && hexAim(hex) === 'point') {
+        const at = stepTowards(me.pos, this.pointer, hexRange(hex));
+        const radius = hexRadius(hex);
+        const color = hexColor(hex);
+        const spin = (this.time.now / 1400) % (Math.PI * 2);
+        g.fillStyle(color, 0.12).fillCircle(at.x, at.y, radius);
+        g.lineStyle(2, color, 0.9).strokeCircle(at.x, at.y, radius);
+        g.lineStyle(1, color, 0.5).strokeCircle(at.x, at.y, radius * 0.78);
+        for (let mark = 0; mark < 12; mark++) {
+          const angle = spin + (mark / 12) * Math.PI * 2;
+          const inner = radius * (mark % 3 === 0 ? 0.66 : 0.72);
+          g.lineBetween(at.x + Math.cos(angle) * inner, at.y + Math.sin(angle) * inner, at.x + Math.cos(angle) * radius * 0.78, at.y + Math.sin(angle) * radius * 0.78);
+        }
+      }
     }
 
     // Rotatable rectangular wall preview (blue Wall ability).
@@ -16590,6 +16762,11 @@ export class GameScene extends Phaser.Scene {
     }
     for (const zone of this.gs.hazardZones) {
       if (hazardDistance(zone, p) > zone.radius) continue;
+      if (zone.hex) return `${zone.name} - a laid Hexzettel. ${zone.hex.text}`;
+      if (zone.crossOnly) {
+        const who = zone.foesOnly ? 'An enemy of its caster' : 'A unit';
+        return `${zone.name} - ${who} moving through it takes ${zone.damageSpecs[0]} ${zone.damageType}.`;
+      }
       const parts = [`${zone.name} - affects every unit inside, allies included.`];
       const spec = zone.damageSpecs[Math.min(zone.escalateIndex, zone.damageSpecs.length - 1)];
       parts.push(
@@ -16606,12 +16783,17 @@ export class GameScene extends Phaser.Scene {
     }
     for (const field of this.gs.desecrationFields) {
       if (Math.hypot(p.x - field.x, p.y - field.y) > field.radius) continue;
-      const parts = [`${field.name} - affects every unit inside except black and minion units.`];
+      const who = field.hostile ? 'Enemies of its caster' : 'Affected units';
+      const parts = [
+        field.hostile
+          ? `${field.name} - harms the enemies of whoever laid it.`
+          : `${field.name} - affects every unit inside except black and minion units.`,
+      ];
       for (const tick of field.ticks) {
-        parts.push(`Affected units take ${tick.spec} ${tick.type} at turn start.`);
+        parts.push(`${who} take ${tick.spec} ${tick.type} at turn start.`);
       }
       if (field.rot) parts.push(`Turn start also applies ${field.rot.spec} rot, stacking to ${field.rot.maxStacks} and spreading.`);
-      if (field.blocksHealing) parts.push('Affected units cannot be healed.');
+      if (field.blocksHealing) parts.push(`${who} cannot be healed.`);
       if (field.lifesteal) parts.push('The caster heals for the damage dealt.');
       if (field.healKin) parts.push('Black and minion units inside are healed instead.');
       if (field.sealed) parts.push('Affected units cannot walk out.');

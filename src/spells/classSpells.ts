@@ -51,6 +51,10 @@ import './waves/drainClass';
 import './waves/bindClass';
 import './waves/curseClass';
 import './waves/deathClass';
+import './waves/cornerClass';
+import './waves/stopClass';
+import './waves/realityClass';
+import './waves/desecrateClass';
 
 /** Abstract range number (5 / 10 / 15) to pixels. */
 const R = (units: number): number => units * RANGE_UNIT;

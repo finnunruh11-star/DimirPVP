@@ -17,7 +17,8 @@ import { RANGE_UNIT } from '../../config/constants';
 import { getItem, type ItemId } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
 import type { WordId } from '../../core/Words';
-import { addImbue, HEX_LAW_NAMES, IMBUES, makeMinion, minionDrinks, MINIONS, type HexLawKind } from '../../effects/classKit';
+import { addImbue, HEX_LAW_NAMES, IMBUES, makeMinion, minionDrinks, MINIONS, type HexLawKind, type ImbueDef, type MinionDef, type RuleLawKind } from '../../effects/classKit';
+import { RULE_LAWS, type RuleLaw } from '../../effects/ruleLaws';
 import { rollDice, type EffectContext } from '../../effects/effects';
 import { registerClassSpellVariants, type ClassSpellVariant } from '../registry';
 import { attachSummonRider } from '../summonRiders';
@@ -191,6 +192,32 @@ export function variants(
   hexcraft: ClassSpellVariant
 ): void {
   registerClassSpellVariants({ words, variants: { life, objects, hexcraft } });
+}
+
+// ---- Data registered with its spell -------------------------------------------
+
+/** A minion defined right beside its spell. */
+export function raise(
+  kind: string,
+  def: MinionDef,
+  o: Priced & { after?: (ctx: EffectContext, unit: Mage) => void }
+): ClassSpellVariant {
+  MINIONS[kind] = def;
+  return minion(kind, o);
+}
+
+/** Gear defined right beside its spell. */
+export function gear(id: string, def: ImbueDef, o: Priced): ClassSpellVariant {
+  IMBUES[id] = def;
+  return imbue(id, o);
+}
+
+/** A data law (effects/ruleLaws.ts) defined right beside its spell. */
+export function rule(id: string, def: RuleLaw, o: Priced): ClassSpellVariant {
+  const kind: RuleLawKind = `rule:${id}`;
+  RULE_LAWS[kind] = def;
+  HEX_LAW_NAMES[kind] = def.name;
+  return law(kind, o);
 }
 
 // ---- Shared wording -----------------------------------------------------------

@@ -300,8 +300,8 @@ export const WORD_KIND: Record<WordId, WordKind> = {
   subtle: 'modifier',
   delay: 'modifier',
   channel: 'modifier',
-  // Stop is not part of either class-spell category.
-  stop: 'other',
+  // Stop is a command: a verb like any other.
+  stop: 'verb',
 };
 
 /** Modifier words every mage knows; they never count against the loadout limit. */

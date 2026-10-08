@@ -92,6 +92,8 @@ import {
   UNTAMED,
   woundRites,
 } from '../effects/deathKit';
+import { ruleAfterHit, ruleOnDeath, ruleRoundEnd, ruleTurnEnd, ruleTurnRefilled, ruleTurnStart } from '../effects/ruleLaws';
+import { godDeathRites, godStops, godTurnEnd } from '../effects/godKit';
 import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_TURNS } from '../pve/goblins';
 import { BARAL_MARK, DENIAL_RELOCATION_DAMAGE, DENIAL_STIFLE_MILL, denialArmed } from '../pve/baral';
 import { applyMineEnemyTraits, type MineEnemyKind } from '../pve/minerun';
@@ -105,8 +107,11 @@ import type { Scarab } from './Scarab';
 import { scarabAlive, scarabFlying } from './Scarab';
 import type { BarrierBurst, BarrierZone } from './Barrier';
 import { barrierContains, barrierDistance } from './Barrier';
+import type { HexGroundSpec } from './hexcraft/runes';
+import { hexEcho } from '../effects/hexzettel';
 import {
   addOrExtendStatus,
+  type HexEcho,
   type AuraDotStatus,
   type BindCurseAuraStatus,
   type BlindSpotStatus,
@@ -153,7 +158,7 @@ import {
 } from './Status';
 
 /** Distance from `at` to a hazard's body — its centre, or its line if it has one. */
-export function hazardDistance(zone: HazardZone, at: Vec2): number {
+export function hazardDistance(zone: Pick<HazardZone, 'x' | 'y' | 'toX' | 'toY'>, at: Vec2): number {
   if (zone.toX == null || zone.toY == null) return dist(at, { x: zone.x, y: zone.y });
   const dx = zone.toX - zone.x;
   const dy = zone.toY - zone.y;
@@ -161,6 +166,16 @@ export function hazardDistance(zone: HazardZone, at: Vec2): number {
   if (lengthSq <= 0.001) return dist(at, { x: zone.x, y: zone.y });
   const t = Math.max(0, Math.min(1, ((at.x - zone.x) * dx + (at.y - zone.y) * dy) / lengthSq));
   return Math.hypot(at.x - (zone.x + dx * t), at.y - (zone.y + dy * t));
+}
+
+/** Closest approach between a hazard's body and the path segment `a`-`b`. */
+function hazardPathGap(zone: HazardZone, a: Vec2, b: Vec2): number {
+  const c = { x: zone.x, y: zone.y };
+  const d = { x: zone.toX ?? zone.x, y: zone.toY ?? zone.y };
+  const side = (o: Vec2, p: Vec2, q: Vec2): number => Math.sign((p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x));
+  if (side(c, d, a) * side(c, d, b) < 0 && side(a, b, c) * side(a, b, d) < 0) return 0;
+  const path = { x: a.x, y: a.y, toX: b.x, toY: b.y };
+  return Math.min(hazardDistance(zone, a), hazardDistance(zone, b), hazardDistance(path, c), hazardDistance(path, d));
 }
 
 /**
@@ -388,6 +403,10 @@ export interface DesecrationField {
   carrierIndex?: number;
   /** An affected unit that dies inside bursts over affected units around its corpse. */
   burstOnDeath?: { spec: string; type: DamageType; radius: number };
+  /** Harms the owner's enemies, whatever their colour or kind, instead of the units Desecrate may harm. */
+  hostile?: boolean;
+  /** Index of the minion growing this field; overlapping fields of one grower bite a unit once. */
+  heartIndex?: number;
 }
 
 /**
@@ -422,6 +441,26 @@ export interface HazardZone {
   /** Carries whoever it bites `px`: toward its centre, or out of it. */
   drift?: { px: number; inward: boolean };
   color: number;
+  /** A Hexzettel laid on the ground: it gives this instead of `damageSpecs`. */
+  hex?: HexGround;
+  /** Index of the unit the zone rides on (a Hexzettel Aura); it stays where its carrier falls. */
+  carrierIndex?: number;
+  /** Bites only a unit that moves into it, never one starting its turn there. */
+  crossOnly?: boolean;
+  /** Spares the owner's side. */
+  foesOnly?: boolean;
+  /** Gone once `turnSeq` reaches this. */
+  untilTurn?: number;
+}
+
+/** What a laid Hexzettel gives each unit that starts a turn on it. */
+export interface HexGround extends Omit<HexGroundSpec, 'drift'> {
+  /** Only this side of whoever laid it is touched; absent touches everyone. */
+  side?: 'allies' | 'enemies';
+  /** The ground's tooltip. */
+  text: string;
+  /** The coupled part that fires on whoever the ground bites. */
+  hexEcho?: HexEcho;
 }
 
 /**
@@ -1247,6 +1286,9 @@ export class GameState {
   beginTurn(): void {
     const m = this.current;
     this.turnSeq += 1;
+    if (this.hazardZones.some((zone) => zone.untilTurn != null)) {
+      this.hazardZones = this.hazardZones.filter((zone) => zone.untilTurn == null || zone.untilTurn > this.turnSeq);
+    }
     m.turnStartState = { x: m.x, y: m.y, hp: m.hp, sanity: m.sanity };
     this.releaseOrphanedTimeStops();
     this.refreshSandFooting();
@@ -1276,6 +1318,7 @@ export class GameState {
     this.applyDesecrations(m);
     this.applyDesecrationFields(m);
     lawTurnStart(this, m);
+    ruleTurnStart(this, m);
     this.applyFeedingDarks(m);
     this.applyRottingDarks(m);
     this.applyWoundShades(m);
@@ -1297,6 +1340,7 @@ export class GameState {
     this.applyBlueflareDamage(m);
     this.applySoulRendDamage(m);
     this.applyDotDamage(m);
+    this.applyRegen(m);
     this.tickDeathCurse(m, 'turn start');
     this.advanceDoom(m, 'turn start');
     this.tickDeathMark(m);
@@ -1330,6 +1374,19 @@ export class GameState {
       m.actions.main = m.mine.heads ?? 3;
     }
     this.applyDesecrationActionTax(m);
+    ruleTurnRefilled(this, m);
+  }
+
+  /** Regeneration heals its bearer as each of its turns begins. */
+  private applyRegen(m: Mage): void {
+    const echoes: HexEcho[] = [];
+    for (const status of m.statuses) {
+      if (status.kind !== 'regen' || !m.alive) continue;
+      const owner = this.mages[status.ownerIndex] ?? m;
+      heal(this.effectContext(owner, m, null), m, this.rng.roll(status.spec).total);
+      if (status.hexEcho) echoes.push(status.hexEcho);
+    }
+    for (const echo of echoes) hexEcho(this, m, echo);
   }
 
   /**
@@ -2025,25 +2082,58 @@ export class GameState {
     if (!m.alive || this.hazardZones.length === 0) return;
     const spent = new Set<number>();
     for (const zone of this.hazardZonesAt(m.pos)) {
+      if (zone.crossOnly) continue;
       // Read before Mage.beginTurn() clears it, so this is the turn just ended.
       if (zone.movedOnly && !m.movedThisTurn) continue;
+      if (zone.hex?.side && (zone.hex.side === 'allies') !== (m.team === zone.ownerTeam)) continue;
       // Overlapping pieces of one cast are a single field, not many hazards.
       if (zone.groupId != null) {
         if (spent.has(zone.groupId)) continue;
         spent.add(zone.groupId);
       }
       const owner = this.mages[zone.ownerIndex] ?? m;
-      const spec = zone.damageSpecs[Math.min(zone.escalateIndex, zone.damageSpecs.length - 1)];
-      dealDamage(
-        this.effectContext(owner, m, m.pos),
-        m,
-        dmg(this.rng.roll(spec).total, zone.damageType),
-        { canMiss: false, aoe: true }
-      );
-      this.log(`${m.name} is caught in ${zone.name}.`);
+      if (zone.hex) {
+        this.applyHexGround(m, zone, zone.hex, owner);
+      } else {
+        const spec = zone.damageSpecs[Math.min(zone.escalateIndex, zone.damageSpecs.length - 1)];
+        dealDamage(
+          this.effectContext(owner, m, m.pos),
+          m,
+          dmg(this.rng.roll(spec).total, zone.damageType),
+          { canMiss: false, aoe: true }
+        );
+        this.log(`${m.name} is caught in ${zone.name}.`);
+      }
+      if (m.alive && zone.drift) this.driftInHazard(m, zone, owner);
+      if (zone.hex?.hexEcho) hexEcho(this, m, zone.hex.hexEcho);
       if (!m.alive) return;
-      if (zone.drift) this.driftInHazard(m, zone, owner);
-      if (!m.alive) return;
+    }
+  }
+
+  /** A laid Hexzettel: its hits, its healing and what it does to the turn ahead. */
+  private applyHexGround(m: Mage, zone: HazardZone, ground: HexGround, owner: Mage): void {
+    this.log(`${m.name} starts the turn on ${zone.name}.`);
+    const ctx = this.effectContext(owner, m, m.pos);
+    let dealt = 0;
+    for (const hit of ground.hits) {
+      if (!m.alive) break;
+      dealt += dealDamage(ctx, m, dmg(this.rng.roll(hit.spec).total, hit.type), { canMiss: false, aoe: true });
+    }
+    if (ground.drink && dealt > 0 && owner.alive && owner !== m) heal(this.quietContext(owner, owner), owner, dealt);
+    if (!m.alive) return;
+    if (ground.heal) heal(ctx, m, this.rng.roll(ground.heal).total);
+    if (ground.wither) this.wither(m, ground.wither, 6);
+    // Laid before the turn's statuses age, so two turns cover exactly the turn ahead.
+    if (ground.noHeal) applyDebuff(ctx, m, { name: 'Festering', key: 'debuff:hex-ground-rot', duration: 2, mods: {}, healMult: 0 });
+    if (ground.root) applyStun(ctx, m, { duration: 2, type: 'movement' });
+    if (ground.spin) this.orbitAround(m, { x: zone.x, y: zone.y }, this.rng.chance(0.5));
+    if (!ground.pace) return;
+    const shift = Math.round(m.baseMoveRange() * ground.pace);
+    if (shift < 0) {
+      applyDebuff(ctx, m, { name: 'Mired', key: 'debuff:hex-ground-pace', duration: 2, mods: { moveRange: shift } });
+    } else {
+      addOrExtendStatus(m.statuses, { key: 'debuff:hex-ground-pace', name: 'Tailwind', kind: 'debuff', duration: 2, mods: { moveRange: shift } }, false);
+      this.log(`${m.name} is carried by a tailwind.`);
     }
   }
 
@@ -2059,6 +2149,30 @@ export class GameState {
     }
     const dir = gap < 1 ? { x: 1, y: 0 } : { x: (m.x - centre.x) / gap, y: (m.y - centre.y) / gap };
     this.forceMove(owner, m, { x: m.x + dir.x * zone.drift.px, y: m.y + dir.y * zone.drift.px });
+  }
+
+  /** Line hazards that bite whatever moves into them along `points`, once per field. */
+  private crossHazardLines(mover: Mage, points: readonly Vec2[]): void {
+    if (points.length < 2) return;
+    const bitten = new Set<number>();
+    for (const zone of [...this.hazardZones]) {
+      if (!mover.alive) return;
+      const group = zone.groupId ?? zone.id;
+      if (!zone.crossOnly || bitten.has(group) || (zone.foesOnly && mover.team === zone.ownerTeam)) continue;
+      const reach = zone.radius + mover.bodyRadius();
+      // Stepping off a line it already stands on is not moving through it.
+      if (hazardDistance(zone, points[0]) <= reach) continue;
+      if (!points.slice(1).some((p, i) => hazardPathGap(zone, points[i], p) <= reach)) continue;
+      bitten.add(group);
+      const owner = this.mages[zone.ownerIndex] ?? mover;
+      this.log(`${mover.name} runs into ${zone.name}.`);
+      dealDamage(
+        this.effectContext(owner, mover, mover.pos),
+        mover,
+        dmg(this.rng.roll(zone.damageSpecs[0]).total, zone.damageType),
+        { canMiss: false, aoe: true }
+      );
+    }
   }
 
   /** Age every hazard once per round and deepen the ones that escalate. */
@@ -2088,9 +2202,13 @@ export class GameState {
 
   /** Whether any desecration currently forbids `m` from being healed at all. */
   desecrationBlocksHealing(m: Mage): boolean {
-    if (!this.isDesecrationAffected(m)) return false;
-    if (this.desecrations.some((law) => law.blocksHealing)) return true;
-    return this.desecrationFieldsAt(m.pos).some((field) => field.blocksHealing);
+    if (this.isDesecrationAffected(m) && this.desecrations.some((law) => law.blocksHealing)) return true;
+    return this.desecrationFieldsAt(m.pos).some((field) => field.blocksHealing && this.fieldHarms(field, m));
+  }
+
+  /** Whether fouled ground harms `m`. */
+  private fieldHarms(field: DesecrationField, m: Mage): boolean {
+    return field.hostile ? m.alive && m.team !== field.ownerTeam : this.isDesecrationAffected(m);
   }
 
   /** The owner a desecration hands `m`'s healing to instead, if one is stealing it. */
@@ -2184,9 +2302,14 @@ export class GameState {
   /** Fouled-ground upkeep at the start of a unit's turn. */
   private applyDesecrationFields(m: Mage): void {
     if (this.desecrationFields.length === 0) return;
+    const grown = new Set<number>();
     for (const field of this.desecrationFieldsAt(m.pos)) {
       if (!m.alive) return;
-      if (!this.isDesecrationAffected(m)) continue;
+      if (!this.fieldHarms(field, m)) continue;
+      if (field.heartIndex != null) {
+        if (grown.has(field.heartIndex)) continue;
+        grown.add(field.heartIndex);
+      }
       const owner = this.mages[field.ownerIndex] ?? m;
       const { dealt, corrosive } = this.rollDesecrationTicks(m, owner, field.ticks);
       if (dealt > 0) {
@@ -2194,7 +2317,7 @@ export class GameState {
         if (field.healKin) {
           for (const kin of this.mages) {
             if (!kin.alive || kin === m) continue;
-            if (this.isMinion(kin) || kin.profile.primary === 'black') {
+            if (field.hostile ? kin.team === field.ownerTeam : this.isMinion(kin) || kin.profile.primary === 'black') {
               heal(this.effectContext(owner, kin, null), kin, dealt);
             }
           }
@@ -2229,7 +2352,7 @@ export class GameState {
    */
   applyDesecrationActionTax(m: Mage): void {
     if (!m.alive) return;
-    const taxed = this.desecrationFieldsAt(m.pos).some((field) => field.stripsActions);
+    const taxed = this.desecrationFieldsAt(m.pos).some((field) => field.stripsActions && this.fieldHarms(field, m));
     if (!taxed) return;
     if (m.actions.bonus <= 0 && m.reactedThisCycle) return;
     m.actions.bonus = Math.max(0, m.actions.bonus - 1);
@@ -2269,7 +2392,9 @@ export class GameState {
         field.y = victim.y;
         this.log(`${field.name} settles where ${victim.name} fell.`);
       }
-      if (inside && unhallowed && field.burstOnDeath) this.burstCorpse(victim, owner, field);
+      if (inside && (field.hostile ? victim.team !== field.ownerTeam : unhallowed) && field.burstOnDeath) {
+        this.burstCorpse(victim, owner, field);
+      }
       if (inside && field.growOnDeath) {
         const room = Math.max(0, (field.growOnDeathCap ?? Infinity) - (field.grownByDeath ?? 0));
         const grow = Math.min(field.growOnDeath, room);
@@ -2316,7 +2441,7 @@ export class GameState {
       if (field.withersWhenEmpty) {
         const fed = this.mages.some(
           (m) =>
-            this.isDesecrationAffected(m) &&
+            this.fieldHarms(field, m) &&
             dist(m.pos, { x: field.x, y: field.y }) <= field.radius
         );
         if (!fed) field.turnsLeft -= 1;
@@ -2329,7 +2454,7 @@ export class GameState {
   clampToDesecrationFields(mover: Mage, from: Vec2, to: Vec2): Vec2 {
     let dest = to;
     for (const field of this.desecrationFields) {
-      if (!field.sealed) continue;
+      if (!field.sealed || !this.fieldHarms(field, mover)) continue;
       const centre = { x: field.x, y: field.y };
       if (dist(from, centre) > field.radius) continue;
       if (dist(dest, centre) <= field.radius) continue;
@@ -3341,6 +3466,7 @@ export class GameState {
       dealDamage(this.quietContext(faeri, bearer), bearer, dmg(1, 'sanity'), { canMiss: false });
       return true;
     }
+    if (godStops(this, item)) return true;
     const fore = bearer.statuses.find((status) => status.kind === 'foreknown') as
       | ForeknownStatus
       | undefined;
@@ -3453,9 +3579,7 @@ export class GameState {
   private burstCorpse(victim: Mage, owner: Mage, field: DesecrationField): void {
     const burst = field.burstOnDeath;
     if (!burst) return;
-    const struck = this.magesInRadius(victim.pos, burst.radius, victim).filter((m) =>
-      this.isDesecrationAffected(m)
-    );
+    const struck = this.magesInRadius(victim.pos, burst.radius, victim).filter((m) => this.fieldHarms(field, m));
     this.log(`${victim.name} bursts.`);
     this.vfxSink?.godFx?.('skull', victim.pos, { size: burst.radius * 2 });
     if (struck.length === 0) return;
@@ -3472,7 +3596,7 @@ export class GameState {
     if (!collapse) return;
     const centre = { x: field.x, y: field.y };
     const crushed = this.mages.filter(
-      (m) => this.isDesecrationAffected(m) && dist(m.pos, centre) <= field.radius
+      (m) => this.fieldHarms(field, m) && dist(m.pos, centre) <= field.radius
     );
     this.vfxSink?.godFx?.('implode', centre, { size: field.radius * 2.4 });
     if (crushed.length === 0) return;
@@ -3489,7 +3613,7 @@ export class GameState {
     if (field.carrierIndex != null) return;
     const centre = { x: field.x, y: field.y };
     const prey = this.mages
-      .filter((m) => this.isDesecrationAffected(m))
+      .filter((m) => this.fieldHarms(field, m))
       .sort((a, b) => dist(a.pos, centre) - dist(b.pos, centre))[0];
     if (!prey) return;
     const to = stepTowards(centre, prey.pos, px);
@@ -3589,6 +3713,8 @@ export class GameState {
     this.advancePetrification(current);
     this.applyThorns(current);
     lawTurnEnd(this, current);
+    ruleTurnEnd(this, current);
+    godTurnEnd(this, current);
     this.resumeTimeAfterTurn(current);
   }
 
@@ -3619,6 +3745,7 @@ export class GameState {
         this.turnPtr = 0;
         this.round += 1;
         lawRoundEnd(this);
+        ruleRoundEnd(this);
         this.tickShadows();
         this.tickTotems();
         this.tickBarriers();
@@ -3794,6 +3921,7 @@ export class GameState {
 
   lawAfterHit(ctx: EffectContext, target: Mage, type: DamageType, dealt: number, targetVeiled: boolean): void {
     lawAfterHit(ctx, target, type, dealt, targetVeiled);
+    ruleAfterHit(ctx, target, type, dealt);
   }
 
   lawBlocksHealing(target: Mage): boolean {
@@ -4949,6 +5077,8 @@ export class GameState {
     this.transferReapOnDeath(target, owner);
     this.onDesecrationDeath(target, owner);
     lawOnDeath(this, target, source, this.wasDesecrationAffected(target));
+    ruleOnDeath(this, target);
+    godDeathRites(this, target);
     deathRites(this, target, source);
     if (target.baral) this.dismantleBaralWorks(target);
     this.onMageDefeated?.(target, source);
@@ -5074,6 +5204,12 @@ export class GameState {
     physicalTravel: boolean,
     path?: readonly Vec2[]
   ): void {
+    const carrier = this.mages.indexOf(mover);
+    for (const zone of this.hazardZones) {
+      if (zone.carrierIndex !== carrier) continue;
+      zone.x = mover.x;
+      zone.y = mover.y;
+    }
     if (physicalTravel && mover.venomStacks > 0) {
       const travelled = mover.venomDistance + dist(origin, destination);
       mover.venomDistance = travelled % RANGE_UNIT;
@@ -5130,6 +5266,7 @@ export class GameState {
     if (mover.denial && mover.alive && dist(origin, destination) > 1) this.crackMovedArtifact(mover);
     this.dragRivetPartner(mover);
     this.carryDesecration(mover);
+    if (physicalTravel) this.crossHazardLines(mover, points);
 
     const lightRadius = this.effectiveLightRadius(mover);
     if (!mover.alive || lightRadius <= 0) return;
@@ -5948,6 +6085,8 @@ export class GameState {
     if (!m.alive) return;
     const opponent = this.opponentOf(m);
     const dots = m.statuses.filter((s) => s.kind === 'dot') as DotStatus[];
+    // Couplings fire once every wound has ticked, so they never reshape the list mid-tick.
+    const echoes: HexEcho[] = [];
     for (const s of dots) {
       const source = s.sourceIndex == null ? undefined : this.mages[s.sourceIndex];
       if (source) this.triggerOniAmbush(source, m);
@@ -6002,6 +6141,7 @@ export class GameState {
         });
       }
       this.log(`${m.name} suffers ${total} ${s.damage.type} from ${s.name}.`);
+      if (s.hexEcho) echoes.push(s.hexEcho);
       if (s.reapPerTick) this.applyReap(m, s.reapPerTick, source ?? m);
       if (total > 0) this.checkReapDeath(m, source ?? m);
       // An emptied mind cannot hold the virus, so it moves on even in death.
@@ -6069,6 +6209,7 @@ export class GameState {
         s.freshStack = false;
       }
     }
+    for (const echo of echoes) hexEcho(this, m, echo);
   }
 
   /** Dice this escalating DoT rolls now, advancing it one step toward its cap. */
@@ -6195,9 +6336,10 @@ export class GameState {
    * Displace an unwilling `target` toward `rawDest`. Barriers, Mutivarg zones
    * and bodies all stop the slide, but only a wall or the field edge counts as
    * an immovable obstacle: being stopped by one slams the target for 2d6
-   * shatter, matching Twist's quarter-turn rule. Returns whether it slammed.
+   * shatter, matching Twist's quarter-turn rule. Returns whether it slammed
+   * (with `noSlam`, whether a wall or the edge stopped it, unharmed).
    */
-  forceMove(source: Mage, target: Mage, rawDest: Vec2): boolean {
+  forceMove(source: Mage, target: Mage, rawDest: Vec2, opts: { noSlam?: boolean } = {}): boolean {
     if (!target.alive) return false;
     if (target.displacementImmune || target.holdsGround()) {
       this.log(`${target.name} cannot be moved.`);
@@ -6226,7 +6368,7 @@ export class GameState {
     this.updateAttachedScarabs();
     this.dropTrailShadows(target);
     const slammed = hitBorder || barrier.blocked;
-    if (slammed) {
+    if (slammed && !opts.noSlam) {
       this.log(`${target.name} is slammed into something immovable!`);
       this.slamDamage(this.effectContext(source, target, null), target, this.rng.roll('2d6').total, 'shatter');
     }
@@ -7611,6 +7753,22 @@ export class GameState {
       `on ${target.name} for ${storedDamage} stored damage; the impact opens a shadow ` +
       `${nonDamageCount} step${nonDamageCount === 1 ? '' : 's'} larger.`
     );
+  }
+
+  /** Every damage-over-time on `target` lands at once, one hit per kind of damage, and is spent. */
+  burstDots(source: Mage, target: Mage): number {
+    const dots = target.statuses.filter((status): status is DotStatus => status.kind === 'dot');
+    if (dots.length === 0) return 0;
+    target.statuses = target.statuses.filter((status) => status.kind !== 'dot');
+    const stored = new Map<DamageType, number>();
+    for (const dot of dots) stored.set(dot.damage.type, (stored.get(dot.damage.type) ?? 0) + this.rollBlackBellDot(dot));
+    this.log(`${dots.length} lingering wound${dots.length === 1 ? '' : 's'} on ${target.name} burst at once.`);
+    const ctx = this.effectContext(source, target, target.pos);
+    let dealt = 0;
+    for (const [type, amount] of stored) {
+      if (amount > 0 && target.alive) dealt += dealDamage(ctx, target, dmg(amount, type), { canMiss: false });
+    }
+    return dealt;
   }
 
   /** Remove a held item from a mage's hands (Gambler's Blade self-destruct). */

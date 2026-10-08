@@ -11,6 +11,8 @@
 import type { DamageType } from './Damage';
 import type { HitEffect } from '../effects/classKit';
 import { isCraftedItemId, resolveCraftedItem, type CraftedInfo } from './crafting/item';
+import { isHexItemId, PAPER_COST, resolveHexItem } from './hexcraft/item';
+import type { HexRecipe, PaperKind } from './hexcraft/runes';
 import {
   BASE_CARRY_KG,
   MELEE_RANGE,
@@ -243,6 +245,9 @@ export type ItemId =
   | 'smallBag'
   | 'goodBag'
   | 'mineMap'
+  // ---- Hexcraft paper ----
+  | 'paper'
+  | 'finePaper'
   // ---- Bloodmoon boss materials ----
   | 'moonshardWhite'
   | 'moonshardBlue'
@@ -264,7 +269,9 @@ export type ItemId =
   | 'hexStaff'
   | 'prismStaff'
   // ---- Crafted at a bench: the id spells the whole item out (crafting/item.ts) ----
-  | `craft:${string}`;
+  | `craft:${string}`
+  // ---- A drawn Hexzettel: the id spells the sheet out (hexcraft/item.ts) ----
+  | `hex:${string}`;
 
 /**
  * Rarity tiers, ordered from most common to rarest. The shop draft rolls a
@@ -590,6 +597,10 @@ export interface ItemDef {
   tool?: boolean;
   /** Made at a crafting bench: how, of what, and with which roll. */
   crafted?: CraftedInfo;
+  /** A blank sheet a Hexcraft mage can draw a hex on. */
+  paper?: PaperKind;
+  /** A drawn Hexzettel: the hex it looses. */
+  hexzettel?: HexRecipe;
   /** Staff bolts held in hand: each is one main-action choice. */
   staffBolts?: StaffBolt[];
   /** Changes every word spell cast while this is held. */
@@ -2669,6 +2680,28 @@ export const ITEM_DEFS: ItemDef[] = [
     adventureOnly: true,
     keyItem: true,
   },
+  {
+    id: 'paper',
+    name: 'Paper',
+    slot: 'utility',
+    rarity: 'consumeable',
+    cost: PAPER_COST.plain,
+    weight: 0.1,
+    blurb: 'A sheet ruled with three peg grids. A Hexcraft mage draws a hex on it from the pack, 1 mana a line.',
+    adventureOnly: true,
+    paper: 'plain',
+  },
+  {
+    id: 'finePaper',
+    name: 'Fine Paper',
+    slot: 'utility',
+    rarity: 'rare',
+    cost: PAPER_COST.fine,
+    weight: 0.1,
+    blurb: 'Heavy vellum ruled with five peg grids. A Hexcraft mage draws a hex on it from the pack, 1 mana a line.',
+    adventureOnly: true,
+    paper: 'fine',
+  },
   ...(
     [
       ['moonshardWhite', 'White Moonshard'],
@@ -2781,13 +2814,15 @@ const ITEM_BY_ID: Record<ItemId, ItemDef> = ITEM_DEFS.reduce((acc, def) => {
 
 export function getItem(id: ItemId): ItemDef {
   if (isCraftedItemId(id)) return resolveCraftedItem(id) as ItemDef;
+  if (isHexItemId(id)) return resolveHexItem(id) as ItemDef;
   return ITEM_BY_ID[id];
 }
 
-/** A catalogue id, or a crafted id that reads as a whole item. */
+/** A catalogue id, or a crafted or drawn id that reads as a whole item. */
 export function isItemId(value: unknown): value is ItemId {
   if (typeof value !== 'string') return false;
   if (isCraftedItemId(value)) return !!resolveCraftedItem(value);
+  if (isHexItemId(value)) return !!resolveHexItem(value);
   return Object.prototype.hasOwnProperty.call(ITEM_BY_ID, value);
 }
 

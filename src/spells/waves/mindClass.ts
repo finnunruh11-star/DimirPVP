@@ -5,35 +5,21 @@
 //  (builders in classWave.ts). Reality only joins blue words, and red, black
 //  and blue never meet in one spell, so Mind has five: Reality, Fire,
 //  Lightning and Shadow Mind, plus Lightning Mind Fire (whose Objects version
-//  lives in classSpells.ts).
+//  lives in classSpells.ts). Reality Mind lives with the other Reality class
+//  spells (realityClass.ts).
 //  Mind is blue and spoils minds: sanity, burning thoughts (Blueflare),
-//  conducting stacks (Mindconduct), figments, swapped minds and nightmares.
+//  conducting stacks (Mindconduct) and nightmares.
 //  Fire and Lightning add red damage and risk; Lightning always scales with the
 //  roll. Shadow amplifies and breaks minds.
 // =============================================================================
 
-import { critScale, swapMinds } from '../../effects/effects';
+import { critScale } from '../../effects/effects';
 import type { ClassSpellVariant } from '../registry';
 import { registerClassSpellVariants } from '../registry';
 import { castPower, imbue, law, minion, R, variants } from './classWave';
 
 const BOLT = 'gains 1 Mindconduct stack, then takes';
 const SCALED = '50% more for every stack after the first';
-
-/** Reality Mind · Hexcraft: trade control of minds with an enemy. */
-const SWAP_MINDS: ClassSpellVariant = {
-  name: 'Reality Mind',
-  actionType: 'main',
-  range: R(20),
-  targeting: 'enemy',
-  dc: 14,
-  noCrit: true,
-  description: 'Swap control with one enemy within 20cm for 2 turns: you control its mage and it controls yours.',
-  visual: { preset: 'beam', color: 0xff5599, size: 7, speed: 1 },
-  cast(ctx) {
-    if (ctx.target) swapMinds(ctx, ctx.target, 2);
-  },
-};
 
 /** Fire Mind · Objects: a weapon that sets thoughts alight. */
 const FIRE_MIND_EDGE: ClassSpellVariant = {
@@ -96,25 +82,6 @@ const LIGHTNING_MIND_EDGE: ClassSpellVariant = {
 // =============================================================================
 //  TWO WORDS
 // =============================================================================
-
-variants(
-  ['reality', 'mind'],
-  minion('figment', {
-    dc: 12,
-    color: 0xff5599,
-    text:
-      'It cannot attack. While it lives, every enemy single-target spell or basic attack aimed at you has a 50% ' +
-      'chance to strike it instead. Every hit that lands on it sends a shock through the minds around it: every ' +
-      'enemy within 3cm of it takes 1d4 sanity.',
-  }),
-  imbue('mirroredMind', {
-    dc: 12,
-    ally: true,
-    color: 0xff5599,
-    text: 'The next 2 single-target spells an enemy aims at the bearer turn back: each is cast at its own caster instead.',
-  }),
-  SWAP_MINDS
-);
 
 variants(
   ['fire', 'mind'],

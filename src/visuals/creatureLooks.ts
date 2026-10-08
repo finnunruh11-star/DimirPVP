@@ -95,6 +95,31 @@ group('spirit', 0x889eb0, 'hex-vortex');
 group('humanoid', 0x8da697, 'puppeteer', 'staff');
 group('spirit', 0x8f7a9e, 'requiem', 'crown');
 group('humanoid', 0x4a4458, 'fetch');
+group('humanoid', 0xb8c878, 'shard-dervish');
+group('plant', 0x7a6e5a, 'charnel-root', 'spikes');
+group('bat', 0xe0603a, 'brand-imp');
+group('eye', 0xd1475c, 'migraine');
+// Stop: clockwork, glass and stilled spirits.
+group('spirit', 0xb8dcef, 'hush-warden still-warden glass-wraith');
+group('construct', 0x9fc4d6, 'clockwork-jailer shatterwarden clockwork-ballista hourglass-golem');
+group('wheel', 0xa8c8d8, 'second-hand pendulum mirage-clock gyroscope');
+group('relic', 0xa8d8e8, 'stasis-bell');
+group('humanoid', 0x9cbdd0, 'pinning-clockwork clockhand-duelist', 'spear');
+group('insect', 0xb0d4e4, 'silent-needle');
+// Reality: doubles and dreaming tides.
+group('humanoid', 0xd46bb0, 'doppelganger');
+group('spirit', 0x6fa8e8, 'elsewhere-tide dream-tide');
+// Desecrate: plague, bone and blood.
+group('slime', 0x6e8d4d, 'plague-mother');
+group('spirit', 0x6e4d7d, 'gravecaller', 'staff');
+group('humanoid', 0x7a6e5a, 'plague-saint nail-priest', 'staff');
+group('relic', 0x8b7f6a, 'blood-altar ossuary-bell');
+group('construct', 0x9b8f7a, 'bone-colossus');
+group('humanoid', 0x7f9a5a, 'acid-lancer bloodspike', 'spear');
+group('humanoid', 0x9b8f7a, 'ossified-thrower', 'bow');
+group('toad', 0x9b8f7a, 'bone-spitter');
+group('worm', 0x8a6a6a, 'leech-mother soul-leech');
+group('wolf', 0x9b8f7a, 'marrow-drinker');
 
 export type PlaceholderSpriteKind = `pixel-${string}`;
 export const PLACEHOLDER_LOOKS: Record<PlaceholderSpriteKind, CreatureLook> = {};

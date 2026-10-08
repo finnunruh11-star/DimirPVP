@@ -5,20 +5,16 @@
 //  yet. Curse is black and heavy: it takes a blow, makes it far bigger and
 //  pays it out over the turns that follow, or it lays something that lasts.
 //  Its minions hurt everything near them every round, your side included,
-//  and leave curses behind. Twist beside Curse moves bodies. Curse Twist
-//  Desecrate is left out, as Twist never meets Desecrate.
+//  and leave curses behind. Twist beside Curse moves bodies. The Desecrate
+//  combos live with the other Desecrate class spells (desecrateClass.ts).
 // =============================================================================
 
-import { AFFECTED, conjure, imbue, law, minion, rotText, TURN, variants } from './classWave';
+import { imbue, law, minion, rotText, TURN, variants } from './classWave';
 
 const HEX = 0x7a3b8f;
 const FAULT = 0x9a7a6a;
-const GRAVE = 0x4a3a5a;
 
 const FAULT_LINES = rotText('Fault Lines', '1d2', 5, 6, 'shatter');
-const KNELL = rotText('Knell', '1d3', 6, 6, 'shadow');
-const BONE_ROT = rotText('Bone Rot', '1d4', 5, 5, 'shatter');
-const FRACTURE = rotText('Fracture', '1d4', 6, 5, 'shatter');
 
 // =============================================================================
 //  TWO WORDS
@@ -76,29 +72,6 @@ variants(
   })
 );
 
-variants(
-  ['curse', 'desecrate'],
-  minion('mourning-bell', {
-    dc: 13,
-    color: GRAVE,
-    text: `It cannot attack. At the start of your turns it tolls: ${AFFECTED} within 5cm of it take 1d6 shadow and gain ${KNELL}.`,
-  }),
-  imbue('graveDirtBlade', {
-    dc: 13,
-    color: GRAVE,
-    text:
-      `For the rest of the fight, your landed basic attacks on ${AFFECTED} lay the Grave Curse: half the damage dealt ` +
-      '(rounded up) as shadow at the start of its turns for 6 turns, and it cannot be healed for 6 turns.',
-  }),
-  law('longCurse', {
-    dc: 13,
-    color: GRAVE,
-    text:
-      `damage over time on ${AFFECTED} rolls its damage twice, and when one of them dies, its curses pass to the nearest ` +
-      'affected unit within 5cm.',
-  })
-);
-
 // =============================================================================
 //  THREE WORDS
 // =============================================================================
@@ -127,30 +100,5 @@ variants(
     text:
       'whenever a unit is moved by force or turned, every damage over time on it deals its damage at once (once a round ' +
       'for each unit).',
-  })
-);
-
-variants(
-  ['curse', 'shatter', 'desecrate'],
-  minion('bone-reliquary', {
-    dc: 15,
-    color: GRAVE,
-    text:
-      `It cannot attack. At the start of your turns, ${AFFECTED} within 4cm of it take 1d6 shatter and gain ${BONE_ROT}. ` +
-      'When it breaks, affected units within 4cm gain 2 stacks.',
-  }),
-  conjure('conjuredOssuaryMaul', {
-    dc: 15,
-    color: GRAVE,
-    text:
-      'Conjure an Ossuary Maul into both hands until the fight ends. Two-handed: you cannot cast while holding it; ' +
-      'your hand items go to your bag and return when it fades. 150% Strength shatter. ' +
-      `On hit against one of the ${AFFECTED}: the whole hit again as shatter at the start of its next 3 turns, and it ` +
-      'cannot be healed meanwhile.',
-  }),
-  law('fracturingCurse', {
-    dc: 15,
-    color: GRAVE,
-    text: `every hit on one of the ${AFFECTED} cracks it: ${FRACTURE}.`,
   })
 );

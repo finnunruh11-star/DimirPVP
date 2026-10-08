@@ -5,6 +5,7 @@ import Phaser from 'phaser';
 import { playSound } from '../../audio';
 import { MAGE_CLASS_DEFS, type MageClass } from '../../core/Classes';
 import { getItem, type ItemId } from '../../core/Items';
+import type { PaperKind } from '../../core/hexcraft/runes';
 import type { Mage } from '../../core/Mage';
 import { packLabel, slotsForCount } from '../../core/Pack';
 import { isModifierWord, WORDS } from '../../core/Words';
@@ -24,6 +25,7 @@ import { itemIconTexture } from '../../visuals/itemIconTextures';
 import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
 import { addCabinetBackdrop, addRecess, addSectionRule, MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
 import { addJourneyStrip } from './JourneyStrip';
+import { HexDrawView } from './HexDrawView';
 import { itemDetail } from './ShopView';
 
 const PER_PAGE = 8;
@@ -47,6 +49,8 @@ export class PackView extends Phaser.GameObjects.Container {
   private working = false;
   private inspectorTitle!: Phaser.GameObjects.Text;
   private inspectorBody!: Phaser.GameObjects.Text;
+  /** The Draw Hex table, open over the pack. */
+  private table: HexDrawView | null = null;
 
   constructor(
     scene: Phaser.Scene,
@@ -59,16 +63,19 @@ export class PackView extends Phaser.GameObjects.Container {
     scene.add.existing(this);
     this.setDepth(120);
     this.sceneInput = new SceneInput(scene);
+    const pack = (run: (event: KeyboardEvent) => void) => (event: KeyboardEvent): void => {
+      if (!this.table) run(event);
+    };
     this.sceneInput.bindKeys([
-      { key: 'LEFT', capture: true, run: () => this.focus.move(-1) },
-      { key: 'UP', capture: true, run: () => this.focus.move(-1) },
-      { key: 'RIGHT', capture: true, run: () => this.focus.move(1) },
-      { key: 'DOWN', capture: true, run: () => this.focus.move(1) },
-      { key: 'TAB', capture: true, run: (event) => this.focus.move(event.shiftKey ? -1 : 1) },
-      { key: 'SPACE', capture: true, run: () => this.focus.activate() },
-      { key: 'ENTER', capture: true, run: () => this.focus.activate() },
-      { key: 'ESC', capture: true, run: () => this.hooks.close() },
-      { key: 'I', run: () => this.hooks.close() },
+      { key: 'LEFT', capture: true, run: pack(() => this.focus.move(-1)) },
+      { key: 'UP', capture: true, run: pack(() => this.focus.move(-1)) },
+      { key: 'RIGHT', capture: true, run: pack(() => this.focus.move(1)) },
+      { key: 'DOWN', capture: true, run: pack(() => this.focus.move(1)) },
+      { key: 'TAB', capture: true, run: pack((event) => this.focus.move(event.shiftKey ? -1 : 1)) },
+      { key: 'SPACE', capture: true, run: pack(() => this.focus.activate()) },
+      { key: 'ENTER', capture: true, run: pack(() => this.focus.activate()) },
+      { key: 'ESC', capture: true, run: pack(() => this.hooks.close()) },
+      { key: 'I', run: pack(() => this.hooks.close()) },
     ]);
     this.render();
   }
@@ -76,6 +83,8 @@ export class PackView extends Phaser.GameObjects.Container {
   override destroy(fromScene?: boolean): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.table?.destroy();
+    this.table = null;
     this.sceneInput.destroy();
     super.destroy(fromScene);
   }
@@ -94,7 +103,30 @@ export class PackView extends Phaser.GameObjects.Container {
 
   /** Redraw from the run as it now stands (another player's change landed). */
   refresh(): void {
-    if (!this.disposed && !this.working) this.render();
+    if (this.disposed) return;
+    if (this.table) this.table.refresh();
+    else if (!this.working) this.render();
+  }
+
+  /** Lay a sheet on the table and draw a hex on it. */
+  private openTable(paper: PaperKind): void {
+    if (this.table || this.working) return;
+    playSound('ui.open');
+    this.setVisible(false);
+    const table: HexDrawView = new HexDrawView(this.scene, this.run, paper, {
+      actions: this.hooks.actions,
+      changed: () => this.hooks.changed(),
+      close: () => {
+        if (this.table !== table) return;
+        table.destroy();
+        this.table = null;
+        if (this.disposed) return;
+        playSound('ui.close');
+        this.setVisible(true);
+        this.render();
+      },
+    });
+    this.table = table;
   }
 
   private render(): void {
@@ -305,23 +337,31 @@ export class PackView extends Phaser.GameObjects.Container {
       });
     }
     const target = this.giveTo ? partyOf(this.run).find((mage) => mage.mageClass === this.giveTo) : undefined;
+    const scribes = leader.alive && leader.spellClass === 'hexcraft';
     for (const [id, count] of counts) {
       const def = getItem(id);
       const equippable = def.slot !== 'utility' && leader.canEquipFromBag(id);
+      const drawable = this.mode === 'use' && !!def.paper && scribes;
       const action = this.mode === 'drop' ? '  /  drop one'
         : this.mode === 'give' ? `  /  give one to ${target?.name ?? 'nobody'}`
-        : equippable ? '  /  equip' : '';
+        : equippable ? '  /  equip' : drawable ? '  /  draw a hex' : '';
       const slots = slotsForCount(id, count);
       entries.push({
         label: `${def.name}${count > 1 ? ` x${count}` : ''}${slots > 1 ? ` (${slots} slots)` : ''}${action}`,
         detail: itemDetail(def),
-        enabled: this.mode === 'drop' ? !def.permanentlyBinding && !def.keyItem : this.mode === 'give' ? !!target : equippable,
+        enabled: this.mode === 'drop' ? !def.permanentlyBinding && !def.keyItem : this.mode === 'give' ? !!target : equippable || drawable,
         icon: id,
-        run: () => void this.apply(
-          this.mode === 'drop' ? { op: 'drop', item: id }
-            : this.mode === 'give' && this.giveTo ? { op: 'give', item: id, to: this.giveTo }
-            : { op: 'equip', item: id },
-        ),
+        run: () => {
+          if (drawable && def.paper) {
+            this.openTable(def.paper);
+            return;
+          }
+          void this.apply(
+            this.mode === 'drop' ? { op: 'drop', item: id }
+              : this.mode === 'give' && this.giveTo ? { op: 'give', item: id, to: this.giveTo }
+              : { op: 'equip', item: id },
+          );
+        },
       });
     }
     if (leader.arrows > 0) {

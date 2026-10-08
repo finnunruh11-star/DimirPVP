@@ -26,7 +26,9 @@ import {
   robeOf,
   runHitEffects,
   runPulse,
+  UNREALITY_KEY,
 } from '../effects/classKit';
+import { ruleRoundEnd } from '../effects/ruleLaws';
 import { offerToShikigami, shoulderTurn } from '../effects/deathKit';
 import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
 import { castChance, spellCastDc, spellCastOdds } from '../spells/castOdds';
@@ -1783,7 +1785,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     stopped.stack.push(stopped.makeMeleeItem(other, caster));
     equal(stopped.canCastSpellNow(world), false, 'It never answers anything');
 
-    const coffin = getSpell(['stop', 'veil', 'shatter']);
+    const coffin = getSpell(['stop', 'veil', 'shatter'], null);
     assert(coffin, 'Expected Stop Veil Shatter to be registered.');
     const sealed = godUnit('Sealed', 2, 600);
     const beside = godUnit('Beside', 2, 600 + 2 * RANGE_UNIT);
@@ -1931,7 +1933,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const warded = godUnit('Warded', 1, 300);
     const striker = godUnit('Striker', 2, 500);
     const still = new GameState([warded, striker], 131);
-    void getSpell(['stop', 'bind', 'veil'])!.cast(still.effectContext(warded, warded, null));
+    void getSpell(['stop', 'bind', 'veil'], null)!.cast(still.effectContext(warded, warded, null));
     equal(
       dealDamage(still.effectContext(striker, warded, null), warded, dmg(8, 'pierce'), { canMiss: false }),
       0,
@@ -1954,7 +1956,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const stalled = godUnit('Stalled', 2, 600);
     const clock = new GameState([godUnit('Clockstopper', 1, 200), stalled], 139);
     applyStun(clock.effectContext(clock.mages[0], stalled, null), stalled, { duration: 2, type: 'main' });
-    void getSpell(['stop', 'bind', 'pierce'])!.cast(clock.effectContext(clock.mages[0], stalled, null));
+    void getSpell(['stop', 'bind', 'pierce'], null)!.cast(clock.effectContext(clock.mages[0], stalled, null));
     clock.currentIndex = 1;
     for (let turn = 0; turn < 3; turn++) clock.beginTurn();
     equal(stalled.isStunned('main'), true, 'Nothing wears off while its clock is stopped');
@@ -1971,7 +1973,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     blinker.x += 3 * RANGE_UNIT;
     equal(eyes.isUntargetable(blinker, seer), true, 'What moved is gone from its picture');
 
-    const reflexes = getSpell(['stop', 'veil', 'pierce']);
+    const reflexes = getSpell(['stop', 'veil', 'pierce'], null);
     assert(reflexes?.unanswerable, 'Expected Stop Veil Pierce to be unanswerable.');
     const numb = godUnit('Numb', 2, 600);
     const frozen = new GameState([godUnit('Needler', 1, 200), numb], 151);
@@ -2025,13 +2027,13 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const striker = godUnit('Striker', 2, 700);
     const duel = new GameState([caster, striker], 159);
     duel.counteredItem = duel.makeMeleeItem(striker, caster);
-    void getSpell(['stop', 'shatter', 'pierce'])!.cast(duel.effectContext(caster, striker, null));
+    void getSpell(['stop', 'shatter', 'pierce'], null)!.cast(duel.effectContext(caster, striker, null));
     assert(300 - striker.hp >= 4, 'The counterstrike lands 2d6 pierce and 2d6 shatter');
     equal(striker.isStunned('full'), true, 'and a blow aimed at the caster leaves its source stunned');
     const struck = godUnit('Struck', 2, 800);
     const aside = new GameState([caster, struck], 161);
     aside.counteredItem = aside.makeSpellItem(struck, pierce, godUnit('Bystander', 1, 650), null);
-    void getSpell(['stop', 'shatter', 'pierce'])!.cast(aside.effectContext(caster, struck, null));
+    void getSpell(['stop', 'shatter', 'pierce'], null)!.cast(aside.effectContext(caster, struck, null));
     equal(struck.isStunned('full'), false, 'A blow aimed elsewhere is only cancelled');
     game.counteredItem = null;
   }],
@@ -2230,7 +2232,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     runner.x += 6 * RANGE_UNIT;
     halt.currentIndex = 2;
     halt.beginTurn();
-    void getSpell(['stop', 'bind', 'shatter'])!.cast(halt.effectContext(halt.mages[0], null, null));
+    void getSpell(['stop', 'bind', 'shatter'], null)!.cast(halt.effectContext(halt.mages[0], null, null));
     assert(300 - runner.hp >= 4, 'Momentum breaks the runner for 4d6');
     assert(300 - idle.hp <= 6, 'The idle take only 1d6');
     equal(runner.isStunned('movement') && idle.isStunned('movement'), true, 'and everything stops');
@@ -2498,39 +2500,11 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(board.isVeiled(pinned), true, "and hits cannot tear a rooted unit's veil");
   }],
 
-  ['spoils minds: figments, mirrors, unreality, burning thoughts, conducting storms, nightmares and brainstorms', async () => {
+  ['spoils minds: unreality, burning thoughts, conducting storms, nightmares and brainstorms', async () => {
     await import('../spells/classSpells');
     const strike = getSpell(['pierce'], null)!;
     const flare = (m: Mage): number =>
       (m.statuses.find((s) => s.kind === 'blueflare') as { stacks: number } | undefined)?.stacks ?? 0;
-
-    const dreamer = godUnit('Dreamer', 1, 300);
-    const doubter = godUnit('Doubter', 2, 420);
-    const dream = new GameState([dreamer, doubter], 501);
-    void getSpell(['reality', 'mind'], 'life')!.cast(dream.effectContext(dreamer, null, { x: 340, y: 320 }));
-    const figment = dream.summonsOf(dreamer)[0];
-    equal(figment?.summonKind, 'figment', 'Life raises a Figment');
-    let fooled = 0;
-    for (let i = 0; i < 40; i++) {
-      const item = dream.makeSpellItem(doubter, strike, dreamer, null);
-      dream.pushStack(item);
-      if (item.target === figment) fooled += 1;
-      dream.stack.length = 0;
-    }
-    assert(fooled > 8 && fooled < 32, `About half the spells aimed at you strike the Figment instead (${fooled}/40)`);
-    const doubterSanity = doubter.sanity;
-    dealDamage(dream.effectContext(doubter, figment, null), figment, dmg(1, 'heat'), { canMiss: false });
-    assert(doubter.sanity < doubterSanity && figment.alive, 'Every hit landing on the Figment shocks the enemy minds near it');
-
-    const glass = godUnit('Glass', 1, 300);
-    const thrower = godUnit('Thrower', 2, 400);
-    const hall = new GameState([glass, thrower], 503);
-    void getSpell(['reality', 'mind'], 'objects')!.cast(hall.effectContext(glass, glass, null));
-    const turned = hall.makeSpellItem(thrower, strike, glass, null);
-    hall.pushStack(turned);
-    assert(turned.target === thrower, 'Mirrored Mind turns a spell back on its caster');
-    await turned.resolve(hall);
-    assert(thrower.hp < 300 && glass.hp === 300, 'who takes it instead');
 
     const thinker = godUnit('Thinker', 1, 300);
     const lighter = godUnit('Lighter', 2, 400);
@@ -2538,9 +2512,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     void getSpell(['fire', 'mind'], 'hexcraft')!.cast(focus.effectContext(lighter, lighter, null));
     focus.pushStack(focus.makeSpellItem(thinker, getSpell(['mind', 'shadow'], null)!, lighter, null));
     equal(flare(thinker), 2, 'Burning Focus: a two-word spell kindles 2 Blueflare on its caster');
-
-    const swap = getSpell(['reality', 'mind'], 'hexcraft')!;
-    assert(swap.codename === 'Reality Mind' && swap.targeting === 'enemy', 'Hexcraft Reality Mind swaps minds with an enemy');
 
     const seer = godUnit('Seer', 1, 300);
     const dazed = godUnit('Dazed', 2, 400);
@@ -2812,12 +2783,12 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const kinds: [WordId[], string][] = [
       [['water', 'mind'], 'undine'],
       [['water', 'shadow'], 'drowner'],
-      [['water', 'reality'], 'riptide-spirit'],
+      [['water', 'reality'], 'elsewhere-tide'],
       [['water', 'fire'], 'geyser'],
       [['water', 'lightning'], 'storm-eel'],
       [['water', 'pain'], 'drowned-thrall'],
       [['water', 'mind', 'shadow'], 'abyssal-eye'],
-      [['water', 'mind', 'reality'], 'tide-clock'],
+      [['water', 'mind', 'reality'], 'dream-tide'],
       [['water', 'mind', 'fire'], 'kettle-spirit'],
       [['water', 'mind', 'lightning'], 'brine-synapse'],
       [['water', 'mind', 'pain'], 'siren'],
@@ -2839,14 +2810,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     assert(listener.x < 500 - R(1), 'The Undine draws the nearest enemy toward it');
     equal(forgot(listener), 1, 'and makes it forget a word');
 
-    const caller = godUnit('Caller', 1, 200);
-    const swept = godUnit('Swept', 2, 600);
-    const rip = new GameState([caller, swept], 703);
-    const spirit = summon(rip, caller, ['water', 'reality'], { x: 400, y: 270 });
-    runPulse(rip, spirit, caller, MINIONS['riptide-spirit'].pulse!);
-    assert(Math.abs(swept.x - 400) < 1 && Math.abs(spirit.x - 600) < 1, 'A Riptide Spirit trades places with the nearest enemy');
-    assert(swept.hp < 300, 'which takes water');
-
     const keeper = godUnit('Keeper', 1, 200);
     const scalded = godUnit('Scalded', 2, 470);
     const spring = new GameState([keeper, scalded], 705);
@@ -2863,14 +2826,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     assert(friend.x < 500 && friend.sanity < 300, 'The Abyssal Maw drags in and frightens allies too');
     assert(prey.y < 370 && prey.sanity < 300, 'as well as enemies');
     equal(deep.sanity, 300, 'but never its summoner');
-
-    const clocker = godUnit('Clocker', 1, 200);
-    const strayed = godUnit('Strayed', 2, 600);
-    const clock = new GameState([clocker, strayed], 709);
-    const tick = summon(clock, clocker, ['water', 'mind', 'reality'], { x: 500, y: 370 });
-    strayed.turnStartState = { x: 800, y: 270, hp: 300, sanity: 300 };
-    runPulse(clock, tick, clocker, MINIONS['tide-clock'].pulse!);
-    assert(strayed.x > 600 + R(3), 'A Tide Clock carries an enemy back toward where its turn began');
 
     const watcher = godUnit('Watcher', 1, 200);
     const dreamer = godUnit('Dreamer', 2, 500, 270, ['mind', 'veil']);
@@ -2933,10 +2888,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     void getSpell(['water', 'mind'], 'objects')!.cast(ward.effectContext(warden, warden, null));
     imbueAfterStrike(ward, brute, warden, 3);
     assert(brute.x > 360 + R(2) && forgot(brute) === 1, 'Undertow Mantle throws an attacker back and steals a word');
-    void getSpell(['water', 'reality'], 'objects')!.cast(ward.effectContext(warden, warden, null));
-    const bruteX = brute.x;
-    assert(imbueDeflects(ward, brute, warden), 'Tidal Ward turns a basic attack aside');
-    assert(brute.x > bruteX + R(3), 'and throws the attacker 4cm away');
 
     const smith = godUnit('Smith', 1, 300);
     const anvil = godUnit('Anvil', 2, 360);
@@ -2974,16 +2925,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     imbueAfterStrike(dock, hooker, hooked, 2);
     assert(hooked.hp < 300, 'and cuts into one standing in a shadow');
 
-    const ebber = godUnit('Ebber', 1, 300);
-    const ebbed = godUnit('Ebbed', 2, 600, 270, ['shatter']);
-    const strand = new GameState([ebber, ebbed], 729);
-    void getSpell(['water', 'mind', 'reality'], 'objects')!.cast(strand.effectContext(ebber, ebber, null));
-    assert(robeOf(ebber), 'Objects Water Mind Reality is a robe');
-    strand.rng.chance = () => true;
-    castRobe(strand, ebber);
-    assert(Math.abs(ebber.x - 600) < 1 && Math.abs(ebbed.x - 300) < 1, 'The Robe of Ebb trades places with the nearest enemy');
-    equal(forgot(ebbed), 1, 'which forgets a word');
-
     // ---- Laws ----
     const tider = godUnit('Tider', 1, 300);
     const drifter = godUnit('Drifter', 2, 400, 270, ['shatter', 'pierce', 'veil']);
@@ -3004,15 +2945,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     under.beginTurn();
     assert(underlord.hp < 300, 'soaking one that starts its turn in a shadow, its caster included');
 
-    const turner = godUnit('Turner', 1, 300);
-    const boat = godUnit('Boat', 2, 600);
-    const tide = new GameState([turner, boat], 735);
-    void getSpell(['water', 'reality'], 'hexcraft')!.cast(tide.effectContext(turner, turner, null));
-    lawRoundEnd(tide);
-    assert(Math.abs(boat.x - (600 + R(3))) < 1 && Math.abs(turner.x - (300 + R(3))) < 1, 'Turning Tide carries everyone 3cm right');
-    lawRoundEnd(tide);
-    assert(Math.abs(boat.y - (270 + R(3))) < 1, 'then down');
-
     const boiler = godUnit('Boiler', 1, 300);
     const pot = godUnit('Pot', 2, 500);
     const steam = new GameState([boiler, pot], 737);
@@ -3023,14 +2955,36 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     assert(Math.abs(pot.x - (500 + R(1))) < 1, 'and a heat hit pushes its victim 1cm away');
 
     const sparker = godUnit('Sparker', 1, 300);
-    const wet = godUnit('Wet', 2, 600);
-    const wetter = godUnit('Wetter', 2, 600 + R(1.5));
-    const sea = new GameState([sparker, wet, wetter], 739);
-    sea.spellRollThisCast = 12;
+    const jolted = godUnit('Jolted', 2, 600);
+    const runner = godUnit('Runner', 2, 600, 400);
+    const pal = godUnit('Pal', 1, 560, 420);
+    const sea = new GameState([sparker, jolted, runner, pal], 739);
     void getSpell(['water', 'lightning'], 'hexcraft')!.cast(sea.effectContext(sparker, sparker, null));
-    dealDamage(sea.effectContext(sparker, wet, null), wet, dmg(1, 'water'), { canMiss: false });
-    assert(wetter.hp < 300, 'Conductive Sea: a water hit arcs to the nearest other unit');
-    equal(sparker.hp, 300, 'not to a caster further away');
+    dealDamage(sea.effectContext(sparker, jolted, null), jolted, dmg(1, 'pierce'), { canMiss: false });
+    const knocked = jolted.x - 600;
+    assert(Math.abs(jolted.y - 270) < 1 && knocked > R(1) - 1 && knocked < R(4) + 1, 'Conductive Sea: a hit knocks an enemy back 1d4cm');
+    const trail = sea.hazardZones.find((z) => z.name === 'Lightning Trail');
+    assert(trail?.crossOnly && trail.toX != null && Math.abs(trail.toX - jolted.x) < 1, 'leaving a lightning trail behind it');
+    equal(trail.untilTurn, sea.turnSeq + 4, 'for one full turn cycle');
+    sea.forceMove(sparker, pal, { x: 640, y: 120 });
+    equal(pal.hp, 300, 'your own side crosses it unharmed');
+    sea.forceMove(sparker, runner, { x: 600, y: 200 });
+    assert(runner.hp < 300 && runner.hp >= 290, 'an enemy moving through it takes 1d10 heat');
+    sea.turnSeq = trail.untilTurn! - 1;
+    sea.currentIndex = 0;
+    sea.beginTurn();
+    equal(sea.hazardZones.includes(trail), false, 'and then it is gone');
+
+    const bouncer = godUnit('Bouncer', 1, FIELD.x + FIELD.w - 200);
+    const pinball = godUnit('Pinball', 2, FIELD.x + FIELD.w - 25);
+    const rim = new GameState([bouncer, pinball], 740);
+    void getSpell(['water', 'lightning'], 'hexcraft')!.cast(rim.effectContext(bouncer, bouncer, null));
+    dealDamage(rim.effectContext(bouncer, pinball, null), pinball, dmg(1, 'pierce'), { canMiss: false });
+    const trails = rim.hazardZones.filter((z) => z.name === 'Lightning Trail');
+    assert(
+      pinball.hp === 299 && trails.length === 2 && trails[0].groupId === trails[1].groupId && pinball.x < FIELD.x + FIELD.w - 1,
+      'knocked into the field edge, it bounces off it unharmed, its trail bending with it'
+    );
 
     const panicker = godUnit('Panicker', 1, 600, 300);
     const cornered = godUnit('Cornered', 2, 600, FIELD.y + FIELD.h - 10);
@@ -3053,16 +3007,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     forgetful.x = 1000;
     lawRoundEnd(memory);
     assert(memory.shadows[0].x > 700 + R(1), 'and at round end the shadow drifts after its enemy');
-
-    const rememberer = godUnit('Rememberer', 1, 300);
-    const runner = godUnit('Runner', 2, 600);
-    const recall = new GameState([rememberer, runner], 745);
-    void getSpell(['water', 'mind', 'reality'], 'hexcraft')!.cast(recall.effectContext(rememberer, rememberer, null));
-    runner.x = 900;
-    lawRoundEnd(recall);
-    assert(Math.abs(runner.x - (900 - R(3))) < 1, 'The Tide Remembers draws a unit 3cm back toward where the round began');
-    lawRoundEnd(recall);
-    assert(Math.abs(runner.x - (900 - R(3))) < 1, 'and then remembers its new place');
 
     const brewer = godUnit('Brewer', 1, 300);
     const brewed = godUnit('Brewed', 2, 400);
@@ -3736,14 +3680,12 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(waveAlly.hp, 300, 'Conducting Wave keeps its lightning off your side');
 
     const seaCaster = godUnit('SeaCaster', 1, 300);
-    const soakedFoe = godUnit('SoakedFoe', 2, 600);
-    const seaAlly = godUnit('SeaAlly', 1, 600 + R(1));
-    const seaFoe = godUnit('SeaFoe', 2, 600, 340);
-    const tide = new GameState([seaCaster, soakedFoe, seaAlly, seaFoe], 931);
-    tide.spellRollThisCast = 12;
+    const seaFoe = godUnit('SeaFoe', 2, 600);
+    const seaAlly = godUnit('SeaAlly', 1, 660);
+    const tide = new GameState([seaCaster, seaFoe, seaAlly], 931);
     lay(tide, seaCaster, ['water', 'lightning']);
-    dealDamage(tide.effectContext(seaCaster, soakedFoe, null), soakedFoe, dmg(1, 'water'), { canMiss: false });
-    assert(seaAlly.hp === 300 && seaFoe.hp < 300, "Conductive Sea arcs only within its victim's side");
+    dealDamage(tide.effectContext(seaFoe, seaAlly, null), seaAlly, dmg(1, 'pierce'), { canMiss: false });
+    assert(seaAlly.hp === 299 && seaAlly.x === 660 && tide.hazardZones.length === 0, 'Conductive Sea never throws your own side');
 
     const tridentBearer = godUnit('TridentBearer', 1, 300);
     const speared = godUnit('Speared', 2, 360);
@@ -3781,7 +3723,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       [['pierce', 'shatter'], 'scorpion', 'conjuredSplinterJavelin', 'splintering'],
       [['pierce', 'curse'], 'thorn-fiend', 'conjuredThornbow', 'openWounds'],
       [['pierce', 'drain'], 'bloodfang-stalker', 'conjuredLeechingRapier', 'bloodscent'],
-      [['pierce', 'desecrate'], 'grave-stalker', 'conjuredBoneLongbow', 'graveStakes'],
       [['pierce', 'twist', 'bind'], 'needle-sentry', 'conjuredSilencerCrossbow', 'pinningLaw'],
       [['pierce', 'twist', 'shatter'], 'spinning-top', 'conjuredCorkscrewLance', 'whirlwind'],
       [['pierce', 'twist', 'drain'], 'leech-dervish', 'conjuredLeechingChakram', 'circlingThirst'],
@@ -3791,10 +3732,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       [['pierce', 'bind', 'curse'], 'thornbinder', 'conjuredThornwhip', 'thornedFetters'],
       [['pierce', 'shatter', 'drain'], 'marrow-archer', 'boneMail', 'marrowThirst'],
       [['pierce', 'shatter', 'curse'], 'shardhound', 'conjuredSplinterbow', 'splinterCurse'],
-      [['pierce', 'shatter', 'desecrate'], 'bone-thrower', 'conjuredBonebreakerPike', 'boneGarden'],
       [['pierce', 'drain', 'curse'], 'vampire-bat', 'bloodthirstyEdge', 'vampiricWounds'],
-      [['pierce', 'drain', 'desecrate'], 'blood-harvester', 'conjuredHarvestersGlaive', 'bloodHarvest'],
-      [['pierce', 'curse', 'desecrate'], 'thorn-archer', 'conjuredThornspitter', 'stigmata'],
     ];
     for (const [words, kind, gear, rule] of roster) {
       const label = words.join(' ');
@@ -3939,16 +3877,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     pierceHit(trail, scent, bleeding, 2);
     assert(scent.hp > 200 && bleeding.hp < 148, 'but drains one at half health or less into its attacker');
 
-    const staker = godUnit('Staker', 1, 300);
-    const ghoul = creature('Ghoul', 400);
-    const hero = godUnit('Hero', 2, 500, 340);
-    const graveyard = new GameState([staker, ghoul, hero], 967);
-    lay(graveyard, staker, ['pierce', 'desecrate']);
-    pierceHit(graveyard, staker, ghoul, 2);
-    pierceHit(graveyard, staker, hero, 2);
-    assert(ghoul.isStunned('movement') && ghoul.hp <= 297 && ghoul.healMult() === 0, 'Grave Stakes stakes an affected unit');
-    equal(hero.isStunned('movement'), false, 'but never a unit Desecrate spares');
-
     const pinner = godUnit('Pinner', 1, 300);
     const pinned = godUnit('Pinned', 2, 400);
     const friend = godUnit('Friend', 1, 300, 340);
@@ -4029,15 +3957,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     dealDamage(quarry.effectContext(shardCaster, shardFoe, null), shardFoe, dmg(2, 'shatter'), { canMiss: false });
     equal(has(shardFoe, 'dot:law-splinters'), true, 'Splinter Curse leaves splinters in every shatter hit');
 
-    const gardener = godUnit('Gardener', 1, 300);
-    const corpse = creature('Corpse', 600);
-    corpse.hp = 1;
-    const nearby = creature('Nearby', 600 + R(2));
-    const garden = new GameState([gardener, corpse, nearby], 987);
-    lay(garden, gardener, ['pierce', 'shatter', 'desecrate']);
-    pierceHit(garden, gardener, corpse, 5);
-    assert(!corpse.alive && nearby.hp < 300, 'Bone Garden bursts bone spikes from an affected corpse into the affected near it');
-
     const vampire = godUnit('Vampire', 1, 300);
     const veins = godUnit('Veins', 2, 400);
     const crypt = new GameState([vampire, veins], 989);
@@ -4045,26 +3964,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     pierceHit(crypt, vampire, veins, 2);
     const letting = veins.statuses.find((s) => s.key === 'dot:law-bloodletting') as { lifestealToIndex?: number } | undefined;
     equal(letting?.lifestealToIndex, 0, 'Vampiric Wounds bleeds a pierced unit into its attacker');
-
-    const harvester = godUnit('Harvester', 1, 300);
-    harvester.hp = 200;
-    const sheaf = creature('Sheaf', 400);
-    sheaf.hp = 3;
-    const field = new GameState([harvester, sheaf], 991);
-    lay(field, harvester, ['pierce', 'drain', 'desecrate']);
-    pierceHit(field, harvester, sheaf, 5);
-    assert(!sheaf.alive && harvester.hp >= 202, 'Blood Harvest feeds whoever kills an affected unit');
-
-    const scourge = godUnit('Scourge', 1, 300);
-    const beast = creature('Beast', 400);
-    const altar = new GameState([scourge, beast], 993);
-    lay(altar, scourge, ['pierce', 'curse', 'desecrate']);
-    applyDot(altar.effectContext(scourge, beast, null), beast, { name: 'Sore', duration: 3, damage: dmg(1, 'corrosive') });
-    pierceHit(altar, scourge, beast, 3);
-    equal(beast.hp, 294, 'Stigmata doubles a pierce hit on an afflicted affected unit');
-    altar.currentIndex = 1;
-    altar.beginTurn();
-    assert(beast.hp <= 292, 'and its damage over time pierces as it ticks');
 
     // ---- Ordinary spells ----
     const flanker = godUnit('Flanker', 1, 200);
@@ -4131,15 +4030,12 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       [['drain', 'bind'], 'blood-slime', 'leechingChains', 'clingingThirst'],
       [['drain', 'shatter'], 'leech-brute', 'conjuredBloodhammer', 'brittleThirst'],
       [['drain', 'curse'], 'blood-idol', 'thirstingCurse', 'curseOfThirst'],
-      [['drain', 'desecrate'], 'blood-wight', 'gorgingEdge', 'gorgingWorld'],
       [['drain', 'twist', 'bind'], 'bloodjaw', 'bloodGag', 'gnawingLockdown'],
       [['drain', 'twist', 'shatter'], 'bloodmill', 'leechspring', 'grindingThirst'],
       [['drain', 'twist', 'curse'], 'leech-wheel', 'thirstingSpindle', 'passingThirst'],
       [['drain', 'bind', 'shatter'], 'blood-warden', 'conjuredLeechingBuckler', 'calcifiedThirst'],
       [['drain', 'bind', 'curse'], 'fetter-leech', 'thirstingFetters', 'festeringThirst'],
       [['drain', 'shatter', 'curse'], 'gorged-toad', 'blightdrinker', 'crackedVessels'],
-      [['drain', 'shatter', 'desecrate'], 'marrow-colossus', 'conjuredGravedrinker', 'marrowFeast'],
-      [['drain', 'curse', 'desecrate'], 'blood-herald', 'bloodCenser', 'eternalThirst'],
     ];
     for (const [words, kind, gear, rule] of roster) {
       const label = words.join(' ');
@@ -4193,19 +4089,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     assert(idolPal.hp < 300 && idolFoe.hp < 300, 'A Blood Idol drains everyone near it but its summoner, your side included');
     equal([idolOwner.hp, idol.hp], [200 + bled, Math.min(8, 3 + bled)], 'and both it and its summoner drink all of it');
 
-    const wightOwner = thirsty('WightOwner', 200);
-    const thrall = creature('Thrall', 520);
-    const barrow = new GameState([wightOwner, thrall], 1109);
-    const wight = summon(barrow, wightOwner, ['drain', 'desecrate'], { x: 500, y: 270 });
-    wight.hp = 4;
-    barrow.currentIndex = 1;
-    barrow.beginTurn();
-    const fouled = 300 - thrall.hp;
-    assert(
-      fouled >= 2 && wightOwner.hp - 200 === fouled && wight.hp === Math.min(14, 4 + fouled),
-      "A Blood Wight's fouled ground drains the affected into the wight and its summoner"
-    );
-
     // ---- Gear drinks a share of the blow ----
     const chained = thirsty('Chained');
     const brute = godUnit('Brute', 2, 360);
@@ -4249,14 +4132,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(imbueDeflects(springYard, sprung, springer, 10), true, 'Leechspring negates a basic attack');
     assert(sprung.hp <= 294 && springer.hp === 205, 'shatters the attacker and drains half the blow it turned aside');
 
-    const gorger = thirsty('Gorger');
-    const carcass = creature('Carcass', 360);
-    const shambles = new GameState([gorger, carcass], 1121);
-    wear(shambles, gorger, ['drain', 'desecrate']);
-    imbueAfterStrike(shambles, gorger, carcass, 8);
-    equal([300 - carcass.hp, gorger.hp], [4, 204], 'Gorging Edge drains half a blow on one of the affected');
-    equal(shambles.desecrationFields[0]?.lifesteal, true, 'and fouls the ground around it with drinking rot');
-
     // ---- Laws heal what corrosion takes ----
     const twister = thirsty('Twister');
     const twisted = godUnit('Twisted', 2, 400);
@@ -4293,15 +4168,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     desert.currentIndex = 1;
     desert.beginTurn();
     assert(thirster.hp > 200 && 300 - parched.hp - 1 === thirster.hp - 200, 'and every tick drains 1d3 more into whoever laid it');
-
-    const glutton = thirsty('Glutton');
-    const swine = creature('Swine', 400);
-    const sty = new GameState([glutton, swine], 1131);
-    lay(sty, glutton, ['drain', 'desecrate']);
-    hit(sty, glutton, swine, 8, 'pierce');
-    equal([300 - swine.hp, glutton.hp], [12, 204], 'The Gorging World drains half again any hit on one of the affected');
-    heal(sty.effectContext(swine, swine, null), swine, 5);
-    equal(swine.hp, 288, 'and they cannot be healed');
 
     const jailer = thirsty('Jailer');
     const jailed = godUnit('Jailed', 2, 400);
@@ -4358,26 +4224,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     applyDot(kilnyard.effectContext(potter, vessel, null), vessel, { name: 'Sore', duration: 3, damage: dmg(2, 'corrosive') });
     hit(kilnyard, potter, vessel, 1, 'shatter');
     equal([300 - vessel.hp, potter.hp], [3, 202], 'Cracked Vessels sets corrosion off at a shatter hit and feeds its attacker');
-
-    const feaster = thirsty('Feaster');
-    const marrow = creature('Marrow', 400);
-    const ossuary = new GameState([feaster, marrow], 1145);
-    lay(ossuary, feaster, ['drain', 'shatter', 'desecrate']);
-    hit(ossuary, feaster, marrow, 3, 'shatter');
-    const feast = 300 - marrow.hp - 6;
-    assert(
-      marrow.isStunned('full') && feast >= 1 && feaster.hp - 200 === feast,
-      'Marrow Feast doubles a shatter hit on the affected, stuns it and drains it'
-    );
-
-    const ancient = thirsty('Ancient');
-    const undying = creature('Undying', 400);
-    const tomb = new GameState([ancient, undying], 1147);
-    lay(tomb, ancient, ['drain', 'curse', 'desecrate']);
-    applyDot(tomb.effectContext(ancient, undying, null), undying, { name: 'Sore', duration: 2, damage: dmg(2, 'corrosive') });
-    tomb.currentIndex = 1;
-    tomb.beginTurn();
-    equal(ancient.hp, 202, 'Eternal Thirst feeds whoever laid a damage over time on the affected');
 
     // ---- Ordinary spells ----
     const sipper = thirsty('Sipper', 200);
@@ -4665,9 +4511,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const roster: [WordId[], string, string, string][] = [
       [['curse', 'shatter'], 'fault-idol', 'faultlineEdge', 'aftershocks'],
       [['curse', 'twist'], 'hex-vortex', 'hangmansKnot', 'gyreOfCurses'],
-      [['curse', 'desecrate'], 'mourning-bell', 'graveDirtBlade', 'longCurse'],
       [['curse', 'shatter', 'twist'], 'puppeteer', 'spiralFracture', 'rattlingCurses'],
-      [['curse', 'shatter', 'desecrate'], 'bone-reliquary', 'conjuredOssuaryMaul', 'fracturingCurse'],
     ];
     for (const [words, kind, gear, rule] of roster) {
       const label = words.join(' ');
@@ -4706,14 +4550,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       'A Hex Vortex spins, hurts and curses whoever is near it'
     );
 
-    const bellOwner = godUnit('BellOwner', 1, 200);
-    const mourner = creature('Mourner', 600);
-    const spared = godUnit('Spared', 2, 650, 330);
-    const belfry = new GameState([bellOwner, mourner, spared], 1307);
-    const bell = summon(belfry, bellOwner, ['curse', 'desecrate'], { x: 500, y: 270 });
-    runPulse(belfry, bell, bellOwner, MINIONS['mourning-bell'].pulse!);
-    assert(mourner.hp < 300 && dotOf(mourner, 'dot:Knell') && spared.hp === 300, 'A Mourning Bell tolls for the affected only');
-
     const puppetOwner = godUnit('PuppetOwner', 1, 200);
     const puppetPal = godUnit('PuppetPal', 1, 500 + R(1.5));
     const marionette = godUnit('Marionette', 2, 500 + R(4));
@@ -4724,15 +4560,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const strungFrom = { ...marionette.pos };
     turnOf(stage, marionette);
     assert(marionette.hp < 300 && dist(marionette.pos, strungFrom) > R(0.5), 'and every tick of the strings turns it around the puppeteer');
-
-    const relicOwner = godUnit('RelicOwner', 1, 200);
-    const pilgrim = creature('Pilgrim', 600);
-    const crypt = new GameState([relicOwner, pilgrim], 1311);
-    const reliquary = summon(crypt, relicOwner, ['curse', 'shatter', 'desecrate'], { x: 500, y: 270 });
-    runPulse(crypt, reliquary, relicOwner, MINIONS['bone-reliquary'].pulse!);
-    equal(dotOf(pilgrim, 'dot:Bone Rot')?.stacks, 1, 'A Bone Reliquary rots the bones of the affected near it');
-    dealDamage(crypt.effectContext(relicOwner, reliquary, null), reliquary, dmg(99, 'pierce'), { canMiss: false, trueDamage: true });
-    equal(dotOf(pilgrim, 'dot:Bone Rot')?.stacks, 3, 'and breaking it rots them two stacks deeper');
 
     // ---- Blows that keep hurting ----
     const smith = godUnit('Smith', 1, 300);
@@ -4751,16 +4578,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     turnOf(gallows, hanged);
     assert(hanged.hp === 297 && dist(hanged.pos, hangman.pos) < 300 - R(1.5), "Hangman's Knot chokes for half the blow and drags the target in");
 
-    const digger = godUnit('Digger', 1, 300);
-    const corpse = creature('Corpse', 360);
-    const graveyard = new GameState([digger, corpse], 1317);
-    wear(graveyard, digger, ['curse', 'desecrate']);
-    imbueAfterStrike(graveyard, digger, corpse, 8);
-    equal(dotOf(corpse, 'dot:kit:Grave Curse')?.damage.amount, 4, 'Grave-Dirt Blade lays half the blow on the affected as a long curse');
-    corpse.hp = 290;
-    heal(graveyard.effectContext(corpse, corpse, null), corpse, 5);
-    equal(corpse.hp, 290, 'and they cannot be healed');
-
     const spinner = godUnit('Spinner', 1, 300);
     const spun = godUnit('Spun', 2, 400);
     const loom = new GameState([spinner, spun], 1319);
@@ -4769,14 +4586,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const spunFrom = { ...spun.pos };
     turnOf(loom, spun);
     assert(spun.hp === 297 && dist(spun.pos, spunFrom) > R(0.5), 'Spiral Fracture cracks for half the blow and turns the target at every tick');
-
-    const sexton = godUnit('Sexton', 1, 300);
-    const bones = creature('Bones', 360);
-    const ossuary = new GameState([sexton, bones], 1321);
-    wear(ossuary, sexton, ['curse', 'shatter', 'desecrate']);
-    equal(sexton.hands, ['conjuredOssuaryMaul'], 'Objects Curse Shatter Desecrate conjures an Ossuary Maul');
-    imbueAfterStrike(ossuary, sexton, bones, 6, getItem('conjuredOssuaryMaul').onHit);
-    equal(dotOf(bones, 'dot:kit:Splitting Curse')?.damage.amount, 6, 'whose blows split the affected for the whole hit again, every turn');
 
     // ---- Laws ----
     const quaker = godUnit('Quaker', 1, 300);
@@ -4798,17 +4607,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     turnOf(gyre, gyred);
     assert(dist(gyred.pos, gyredFrom) > R(0.5), 'Gyre of Curses turns every cursed unit around whoever cursed it');
 
-    const elder = godUnit('Elder', 1, 300);
-    const doomed = creature('Doomed', 500);
-    const heir = creature('Heir', 500 + R(2));
-    const barrow = new GameState([elder, doomed, heir], 1327);
-    lay(barrow, elder, ['curse', 'desecrate']);
-    curse(barrow, elder, doomed, 2);
-    turnOf(barrow, doomed);
-    equal(300 - doomed.hp, 4, 'The Long Curse rolls curses on the affected twice');
-    dealDamage(barrow.effectContext(elder, doomed, null), doomed, dmg(999, 'pierce'), { canMiss: false, trueDamage: true });
-    assert(!doomed.alive && dotOf(heir, 'dot:Sore'), 'and when one dies, its curses pass to the nearest affected unit');
-
     const rattler = godUnit('Rattler', 1, 300);
     const rattled = godUnit('Rattled', 2, 400);
     const chains = new GameState([rattler, rattled], 1329);
@@ -4818,14 +4616,6 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(rattled.hp, 297, 'Rattling Curses: a turned unit takes its curses at once');
     chains.forceMove(rattler, rattled, { x: rattled.x + R(2), y: rattled.y });
     equal(rattled.hp, 297, 'once a round');
-
-    const mason = godUnit('Mason', 1, 300);
-    const brittle = creature('Brittle', 400);
-    const quarry = new GameState([mason, brittle], 1331);
-    lay(quarry, mason, ['curse', 'shatter', 'desecrate']);
-    hit(quarry, mason, brittle, 2, 'pierce');
-    hit(quarry, mason, brittle, 2, 'pierce');
-    equal(dotOf(brittle, 'dot:Fracture')?.stacks, 2, 'Fracturing Curse cracks the affected deeper with every hit');
 
     // ---- Ordinary spells ----
     const noose = godUnit('Noose', 1, 200);
@@ -5069,6 +4859,338 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       "The Great Mourning: the dead one's side grieves a quarter of its health, and grief that kills is mourned in turn"
     );
     assert(keener.sanity >= 292 && keener.sanity <= 298, 'its enemies 1d4 for each death');
+  }],
+
+  ['the last corners: Shatter Twist, Shatter Desecrate, Fire Pain and Mind Pain get all three class variants', async () => {
+    await import('../spells/classSpells');
+    for (const combo of [['shatter', 'twist'], ['shatter', 'desecrate'], ['fire', 'pain'], ['mind', 'pain']] as WordId[][]) {
+      const label = combo.join(' ');
+      for (const mageClass of MAGE_CLASSES) {
+        assert(getSpell(combo, mageClass)?.id.endsWith(`@${mageClass}`), `${label} has a ${mageClass} variant`);
+        equal(spellForSelection(combo, mageClass)?.id, getSpell(combo, mageClass)?.id, `${label} casts its ${mageClass} variant`);
+      }
+      equal(new Set(MAGE_CLASSES.map((c) => getSpell(combo, c)?.description)).size, 3, `${label} has three different variants`);
+    }
+    const summon = (game: GameState, owner: Mage, words: WordId[], at: { x: number; y: number }): Mage => {
+      void getSpell(words, 'life')!.cast(game.effectContext(owner, null, at));
+      const raised = game.summonsOf(owner);
+      return raised[raised.length - 1];
+    };
+    const lay = (game: GameState, caster: Mage, words: WordId[]): void => {
+      void getSpell(words, 'hexcraft')!.cast(game.effectContext(caster, caster, null));
+    };
+    const wear = (game: GameState, bearer: Mage, words: WordId[]): void => {
+      void getSpell(words, 'objects')!.cast(game.effectContext(bearer, bearer, null));
+    };
+    const turnOf = (game: GameState, m: Mage): void => {
+      game.currentIndex = game.mages.indexOf(m);
+      game.beginTurn();
+    };
+
+    const spinner = godUnit('Spinner', 1, 200);
+    const close = godUnit('Close', 2, 430);
+    const whirl = new GameState([spinner, close], 1501);
+    const dervish = summon(whirl, spinner, ['shatter', 'twist'], { x: 400, y: 270 });
+    const stood = { ...close.pos };
+    runPulse(whirl, dervish, spinner, MINIONS[dervish.summonKind!].pulse!);
+    assert(close.hp < 300 && dist(close.pos, stood) > 1, 'Shard Dervish: the enemies near it are turned around it and take shatter');
+
+    const smith = godUnit('Smith', 1, 400);
+    const anvil = godUnit('Anvil', 2, 460);
+    const forge = new GameState([smith, anvil], 1502);
+    wear(forge, smith, ['shatter', 'twist']);
+    const set = { ...anvil.pos };
+    imbueAfterStrike(forge, smith, anvil, 3);
+    assert(dist(anvil.pos, set) > 1, 'Torsion Hammer: a landed blow turns the target around you');
+
+    const gardener = godUnit('Gardener', 1, 200);
+    const tender = godUnit('Tender', 1, 420, 300);
+    const sitter = godUnit('Sitter', 2, 450);
+    const yonder = godUnit('Yonder', 2, 900);
+    const yard = new GameState([gardener, tender, sitter, yonder], 1503);
+    const root = summon(yard, gardener, ['shatter', 'desecrate'], { x: 400, y: 270 });
+    const blight = () => yard.desecrationFields.filter((f) => f.heartIndex === yard.mages.indexOf(root));
+    equal(blight().length, 1, 'Charnel Root: the ground under it rots at once');
+    runPulse(yard, root, gardener, MINIONS[root.summonKind!].pulse!);
+    runPulse(yard, root, gardener, MINIONS[root.summonKind!].pulse!);
+    const patches = blight();
+    assert(patches.length === 3 && patches[0].radius > RANGE_UNIT * 2.5, 'every turn the blight widens and breaks out further');
+    assert(dist(patches[2], yonder.pos) < dist(patches[1], yonder.pos), 'reaching for the enemy it does not cover yet');
+    turnOf(yard, sitter);
+    turnOf(yard, tender);
+    assert(300 - sitter.hp >= 2 && 300 - sitter.hp <= 10 && tender.hp === 300, 'enemies on it take 1d6 shatter and 1d4 shadow once, your side nothing');
+    sitter.hp = 100;
+    heal(yard.effectContext(sitter, sitter, null), sitter, 10);
+    equal(sitter.hp, 100, 'and cannot be healed there');
+
+    const wearer = godUnit('Wearer', 1, 400);
+    const friend = godUnit('Friend', 1, 500);
+    const foe = godUnit('Foe', 2, 600);
+    const distant = godUnit('Distant', 2, 1100);
+    const vigil = new GameState([wearer, friend, foe, distant], 1504);
+    wear(vigil, wearer, ['shatter', 'desecrate']);
+    const shroud = vigil.desecrationFields[0];
+    assert(
+      shroud.carrierIndex === 0 && shroud.turnsLeft >= 2 && shroud.turnsLeft <= 7 && shroud.radius === RANGE_UNIT * 6,
+      'Ossuary Shroud: a 6cm fouling worn for 1d6+1 turns'
+    );
+    turnOf(vigil, foe);
+    turnOf(vigil, friend);
+    turnOf(vigil, distant);
+    assert(
+      300 - foe.hp >= 2 && 300 - foe.hp <= 12 && friend.hp === 300 && distant.hp === 300,
+      'enemies starting a turn within 6cm take 2d6, half shatter and half shadow'
+    );
+    foe.hp = 100;
+    heal(vigil.effectContext(foe, foe, null), foe, 10);
+    equal(foe.hp, 100, 'and cannot be healed there');
+    teleport(vigil.effectContext(wearer, wearer, null), wearer, { x: 900, y: 270 });
+    assert(dist(shroud, wearer.pos) < 1, 'the shroud goes wherever its wearer goes');
+
+    const tyrant = godUnit('Tyrant', 1, 200);
+    const subject = godUnit('Subject', 2, 600);
+    const neighbour = godUnit('Neighbour', 2, 650);
+    const reign = new GameState([tyrant, subject, neighbour], 1505);
+    lay(reign, tyrant, ['shatter', 'desecrate']);
+    turnOf(reign, subject);
+    turnOf(reign, tyrant);
+    assert(
+      300 - subject.hp >= 2 && 300 - subject.hp <= 12 && subject.sanity >= 296 && subject.sanity < 300 && tyrant.hp === 300,
+      'Reign of Bones: the ground breaks under your enemies and dread eats their sanity'
+    );
+    assert(subject.statuses.some((s) => s.key === 'debuff:broken-bones'), 'their bones stay broken');
+    subject.hp = 100;
+    heal(reign.effectContext(subject, subject, null), subject, 10);
+    equal(subject.hp, 100, 'and cannot be healed');
+    reign.hexLaw('rule:reignOfBones')!.roundsLeft = 2;
+    turnOf(reign, neighbour);
+    assert(300 - neighbour.hp >= 6, 'by the end the ground breaks for 3d6 and 3d6');
+    const standing = neighbour.hp;
+    dealDamage(reign.effectContext(tyrant, subject, null), subject, dmg(999, 'pierce'), { canMiss: false, trueDamage: true });
+    assert(standing - neighbour.hp >= 4 && standing - neighbour.hp <= 14, 'and a dead one bursts over its side for 2d6 shatter');
+
+    const dreamer = godUnit('Dreamer', 1, 200);
+    const frayed = godUnit('Frayed', 2, 430);
+    const ward = new GameState([dreamer, frayed], 1504);
+    frayed.sanity = 100;
+    const migraine = summon(ward, dreamer, ['mind', 'pain'], { x: 400, y: 270 });
+    runPulse(ward, migraine, dreamer, MINIONS[migraine.summonKind!].pulse!);
+    assert(frayed.sanity <= 98 && frayed.sanity >= 93, 'Migraine: 1d3 sanity to the enemies near it, 1d4 more on a shaken mind');
+
+    const pyre = godUnit('Pyre', 2, 600);
+    const agony = new GameState([godUnit('Brander', 1, 200), pyre], 1511);
+    lay(agony, agony.mages[0], ['fire', 'pain']);
+    agony.applyFireStacks(pyre, 3, agony.mages[0]);
+    turnOf(agony, pyre);
+    equal(pyre.sanity, 297, 'Agonizing Flames: the burning lose sanity equal to their Fire');
+
+    const struck = godUnit('Struck', 2, 600);
+    const beside = godUnit('Beside', 2, 640);
+    const ache = new GameState([godUnit('Thinker', 1, 200), struck, beside], 1512);
+    lay(ache, ache.mages[0], ['mind', 'pain']);
+    dealDamage(ache.effectContext(ache.mages[0], struck, null), struck, dmg(5, 'sanity'), { canMiss: false });
+    equal([beside.sanity, ache.mages[0].sanity], [299, 300], 'Splitting Headaches: sanity hits splinter to everyone close but the attacker');
+  }],
+
+  ['god words: Stop answers and stops time, Reality rewrites the field, Desecrate fouls, stakes and raises', async () => {
+    await import('../spells/classSpells');
+    const pairs = (words: WordId[]): WordId[][] => words.flatMap((a, i) => words.slice(i + 1).map((b) => [a, b]));
+    const STOP_WITH: WordId[] = ['veil', 'bind', 'pierce', 'shatter', 'twist'];
+    const DESECRATE_WITH: WordId[] = ['corrode', 'curse', 'drain', 'pierce', 'shatter'];
+    const stopCombos: WordId[][] = [...STOP_WITH.map((w) => ['stop', w] as WordId[]), ...pairs(STOP_WITH).map((p) => ['stop', ...p] as WordId[])];
+    const realityCombos: WordId[][] = [['reality', 'mind'], ['reality', 'water'], ['reality', 'mind', 'water']];
+    const desecrateCombos: WordId[][] = [
+      ...DESECRATE_WITH.map((w) => [w, 'desecrate'] as WordId[]),
+      ...pairs(DESECRATE_WITH).map((p) => [...p, 'desecrate'] as WordId[]),
+    ];
+    equal([stopCombos.length, desecrateCombos.length], [15, 15], 'every Stop and Desecrate combo is counted');
+    for (const combo of [...stopCombos, ...realityCombos, ...desecrateCombos]) {
+      const label = combo.join(' ');
+      for (const mageClass of MAGE_CLASSES) {
+        assert(getSpell(combo, mageClass)?.id.endsWith(`@${mageClass}`), `${label} has a ${mageClass} variant`);
+        equal(spellForSelection(combo, mageClass)?.id, getSpell(combo, mageClass)?.id, `${label} casts its ${mageClass} variant`);
+      }
+      equal(new Set(MAGE_CLASSES.map((c) => getSpell(combo, c)?.description)).size, 3, `${label} has three different variants`);
+    }
+    for (const combo of stopCombos) {
+      for (const mageClass of MAGE_CLASSES) {
+        const spell = getSpell(combo, mageClass)!;
+        assert(spell.reaction && spell.counters, `${combo.join(' ')} (${mageClass}) is also an answer that cancels what it answers`);
+      }
+    }
+
+    const summon = (game: GameState, owner: Mage, words: WordId[], at: { x: number; y: number }): Mage => {
+      void getSpell(words, 'life')!.cast(game.effectContext(owner, null, at));
+      const raised = game.summonsOf(owner);
+      return raised[raised.length - 1];
+    };
+    const lay = (game: GameState, caster: Mage, words: WordId[]): void => {
+      void getSpell(words, 'hexcraft')!.cast(game.effectContext(caster, caster, null));
+    };
+    const wear = (game: GameState, bearer: Mage, words: WordId[]): void => {
+      void getSpell(words, 'objects')!.cast(game.effectContext(bearer, bearer, null));
+    };
+    const turnOf = (game: GameState, m: Mage): void => {
+      game.currentIndex = game.mages.indexOf(m);
+      game.beginTurn();
+    };
+    const kill = (game: GameState, by: Mage, m: Mage): void => {
+      dealDamage(game.effectContext(by, m, null), m, dmg(999, 'pierce'), { canMiss: false, trueDamage: true });
+    };
+    const bolt = getSpell(['pierce'], null)!;
+    const R = (cm: number): number => cm * RANGE_UNIT;
+
+    // ---- Stop ----
+    const keeper = godUnit('Keeper', 1, 200);
+    const talker = godUnit('Talker', 2, 500);
+    const hush = new GameState([keeper, talker], 1601);
+    summon(hush, keeper, ['stop', 'veil'], { x: 400, y: 270 });
+    equal(hush.stopDeclaredAction(hush.makeMoveItem(talker, { x: 520, y: 270 })), false, 'Hush Warden never stops a walk');
+    equal(hush.stopDeclaredAction(hush.makeSpellItem(talker, bolt, keeper, null)), true, 'Hush Warden stops what an enemy near it declares');
+    const unseen = keeper.statuses.find((s) => s.kind === 'invisibility') as { mode?: string } | undefined;
+    equal(unseen?.mode, 'full', 'and its summoner vanishes into a full veil');
+    equal(hush.stopDeclaredAction(hush.makeSpellItem(talker, bolt, keeper, null)), false, 'once a round');
+
+    const cloaked = godUnit('Cloaked', 1, 300);
+    const brute = godUnit('Brute', 2, 360);
+    const still = new GameState([cloaked, brute], 1602);
+    wear(still, cloaked, ['stop', 'veil']);
+    equal(still.stopDeclaredAction(still.makeMeleeItem(brute, cloaked)), true, 'Stillcloak stops the first attack aimed at its wearer');
+    equal(still.stopDeclaredAction(still.makeMeleeItem(brute, cloaked)), false, 'only the first each round');
+    still.round += 1;
+    equal(still.stopDeclaredAction(still.makeMeleeItem(brute, cloaked)), true, 'and the first again next round');
+
+    const smith = godUnit('Smith', 1, 300);
+    const anvil = godUnit('Anvil', 2, 360);
+    const clockwork = new GameState([smith, anvil], 1603);
+    wear(clockwork, smith, ['stop', 'shatter']);
+    imbueAfterStrike(clockwork, smith, anvil, 3);
+    assert(clockwork.isTimeStopped(anvil), 'Shatterclock Hammer freezes what it strikes in time');
+    dealDamage(clockwork.effectContext(smith, anvil, null), anvil, dmg(5, 'pierce'), { canMiss: false });
+    equal(anvil.hp, 300, 'blows on a frozen body are held');
+    turnOf(clockwork, anvil);
+    clockwork.finishCurrentTurn();
+    const resumed = 300 - anvil.hp;
+    assert(!clockwork.isTimeStopped(anvil) && resumed >= 7 && resumed <= 17, 'and when time resumes they land at once with 2d6 shatter');
+
+    const looper = godUnit('Looper', 1, 300);
+    const loop = new GameState([looper, godUnit('Watcher', 2, 1000)], 1604);
+    wear(loop, looper, ['stop', 'twist']);
+    turnOf(loop, looper);
+    teleport(loop.effectContext(looper, looper, null), looper, { x: 520, y: 300 });
+    looper.hp = 250;
+    looper.sanity = 280;
+    loop.finishCurrentTurn();
+    assert(
+      dist(looper.pos, { x: 300, y: 270 }) < 1 && looper.hp === 300 && looper.sanity === 300,
+      'Möbius Loop: an ended turn loops back to where it began, and what was lost comes back'
+    );
+
+    const glazier = godUnit('Glazier', 1, 200);
+    const idle = godUnit('Idle', 2, 600);
+    const runner = godUnit('Runner', 2, 800);
+    const brittle = new GameState([glazier, idle, runner], 1605);
+    lay(brittle, glazier, ['stop', 'shatter']);
+    turnOf(brittle, idle);
+    brittle.finishCurrentTurn();
+    turnOf(brittle, runner);
+    runner.movedThisTurn = true;
+    brittle.finishCurrentTurn();
+    equal([brittle.isTimeStopped(idle), brittle.isTimeStopped(runner)], [true, false], 'Brittle Time freezes an enemy that ends its turn without moving');
+
+    for (let seed = 1620; seed < 1626; seed++) {
+      const clockmaker = godUnit('Clockmaker', 1, 200);
+      const skipped = godUnit('Skipped', 2, 600);
+      const broken = new GameState([clockmaker, skipped], seed);
+      lay(broken, clockmaker, ['stop', 'shatter', 'twist']);
+      turnOf(broken, skipped);
+      const { move, main, bonus } = skipped.actions;
+      assert(
+        main === 0 || move === 0 || bonus === 0 || skipped.hp < 300,
+        'The Broken Clock skips an action at the start of every enemy turn, or wrenches the enemy around'
+      );
+    }
+
+    // ---- Reality ----
+    const original = godUnit('Original', 1, 300);
+    original.hp = 120;
+    const twin = new GameState([original, godUnit('Fooled', 2, 1000)], 1606);
+    const double = summon(twin, original, ['reality', 'mind'], { x: 400, y: 270 });
+    equal([double.maxHp, double.hp], [60, 60], 'Doppelganger rises with half your current health');
+
+    const mirrorer = godUnit('Mirrorer', 1, 200);
+    const lost = godUnit('Lost', 2, 700);
+    const hall = new GameState([mirrorer, lost], 1607);
+    lay(hall, mirrorer, ['reality', 'mind']);
+    turnOf(hall, lost);
+    assert(lost.x < 450 && mirrorer.x > 450, 'Hall of Mirrors: an enemy starting its turn trades places with another unit');
+    assert(lost.statuses.some((s) => s.key === UNREALITY_KEY), 'and slips half out of reality');
+
+    const tilter = godUnit('Tilter', 1, 300);
+    const braced = godUnit('Braced', 1, 640);
+    const sliding = godUnit('Sliding', 2, 980);
+    const deck = new GameState([tilter, braced, sliding], 1608);
+    lay(deck, tilter, ['reality', 'water']);
+    const slidFrom = { ...sliding.pos };
+    const bracedAt = { ...braced.pos };
+    ruleRoundEnd(deck);
+    assert(dist(sliding.pos, slidFrom) > R(2) && dist(braced.pos, bracedAt) < 1, 'World Tilt slides the field, but your units that stood still brace');
+
+    // ---- Desecrate ----
+    const plaguer = godUnit('Plaguer', 1, 300);
+    const carrier = godUnit('Carrier', 2, 360);
+    const ward = new GameState([plaguer, carrier], 1609);
+    wear(ward, plaguer, ['corrode', 'desecrate']);
+    imbueAfterStrike(ward, plaguer, carrier, 3);
+    const plague = ward.desecrationFields.find((f) => f.name === 'Plague Carrier');
+    assert(plague?.carrierIndex === 1 && plague.hostile, "Plaguebringer's Gauntlet makes what it strikes a plague carrier");
+    teleport(ward.effectContext(carrier, carrier, null), carrier, { x: 800, y: 270 });
+    assert(dist(plague, carrier.pos) < 1, 'the plague rides on its carrier');
+    turnOf(ward, carrier);
+    assert(carrier.hp < 300, 'and rots it at the start of its turns');
+
+    const digger = godUnit('Digger', 1, 300);
+    const doomed = godUnit('Doomed', 2, 360);
+    const crypt = new GameState([digger, doomed], 1610);
+    wear(crypt, digger, ['curse', 'desecrate']);
+    imbueAfterStrike(crypt, digger, doomed, 3);
+    assert(doomed.statuses.some((s) => s.kind === 'dot' && s.name === 'Unburied Curse'), "Ghoul's Kiss lays the Unburied Curse");
+    kill(crypt, digger, doomed);
+    equal(crypt.summonsOf(digger).length, 1, 'and whatever dies under it rises again as your Remnant');
+
+    const impaler = godUnit('Impaler', 1, 200);
+    const staked = godUnit('Staked', 2, 700);
+    const stockade = new GameState([impaler, staked], 1611);
+    lay(stockade, impaler, ['pierce', 'desecrate']);
+    ruleRoundEnd(stockade);
+    const ring = stockade.desecrationFieldsAt(staked.pos)[0];
+    assert(
+      ring?.sealed && ring.hostile && stockade.desecrationFieldsAt(impaler.pos).length === 0,
+      'Field of Stakes: a sealed ring of stakes erupts around each of your enemies'
+    );
+    turnOf(stockade, staked);
+    assert(staked.hp < 300, 'and it bleeds inside');
+
+    const tither = godUnit('Tither', 1, 200);
+    tither.hp = 100;
+    const tithed = godUnit('Tithed', 2, 700);
+    tithed.hp = 76;
+    const tithe = new GameState([tither, tithed], 1612);
+    lay(tithe, tither, ['drain', 'desecrate']);
+    turnOf(tithe, tithed);
+    assert(!tithed.alive && tither.hp === 176, 'The Blood Tithe drains an enemy at a quarter of its health dry, and you drink all of it');
+
+    const feaster = godUnit('Feaster', 1, 200);
+    feaster.hp = 100;
+    const meal = godUnit('Meal', 2, 600);
+    const mourner = godUnit('Mourner', 2, 650);
+    const feast = new GameState([feaster, meal, mourner], 1613);
+    lay(feast, feaster, ['drain', 'shatter', 'desecrate']);
+    kill(feast, feaster, meal);
+    assert(
+      feaster.hp === 175 && mourner.hp >= 294 && mourner.hp < 300,
+      'The Bone Feast: a dead enemy splinters into its own side, and you feast on a quarter of its health'
+    );
   }],
 ];
 

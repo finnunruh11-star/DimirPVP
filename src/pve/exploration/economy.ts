@@ -15,6 +15,8 @@ import type { ExplorationRun } from './run';
 import { shopById, stockCandidates, type ShopDef } from './shops';
 import { designProblem, rollCraft } from '../../core/crafting/craft';
 import { craftItemId, type CraftDesign } from '../../core/crafting/item';
+import { hexItemId } from '../../core/hexcraft/item';
+import { readHex } from '../../core/hexcraft/runes';
 import { claimXpLevels } from '../progression';
 
 export interface ShopResult {
@@ -402,6 +404,31 @@ export function craftItem(run: ExplorationRun, shopId: string, design: CraftDesi
     run.crafts += 1;
     grantToMage(smith, id);
     return { ok: true, message: `Crafted ${made.name}.`, item: id };
+  });
+}
+
+/**
+ * Draw a hex on a sheet of `paper` the scribe carries: a Hexcraft mage on their
+ * feet pays 1 mana a line, and the sheet becomes a Hexzettel in their belt.
+ */
+export function drawHex(run: ExplorationRun, paper: ItemId, grids: readonly number[], member?: MageClass | null): CraftResult {
+  const kind = (getItem(paper) as ItemDef | undefined)?.paper;
+  if (!kind) return { ok: false, message: 'That is nothing to draw on.' };
+  const reading = readHex(kind, grids);
+  if (!reading.recipe) return { ok: false, message: reading.problem ?? 'That is no hex.' };
+  const lines = reading.recipe.lines;
+  return withMember(run, member, (scribe): CraftResult => {
+    if (scribe.spellClass !== 'hexcraft') return { ok: false, message: 'Only a Hexcraft mage can draw a hex.' };
+    if (!scribe.alive) return { ok: false, message: `${scribe.name} has fallen.` };
+    const at = scribe.utility.indexOf(paper);
+    if (at < 0) return { ok: false, message: `No ${getItem(paper).name} to draw on.` };
+    if (scribe.mana < lines) return { ok: false, message: `Needs ${lines} mana.` };
+    const id = hexItemId(kind, grids);
+    if (!packFits(scribe, [id], [paper])) return { ok: false, message: 'No room in the pack.' };
+    scribe.utility.splice(at, 1);
+    scribe.spendMana(lines);
+    grantToMage(scribe, id);
+    return { ok: true, message: `Drew ${getItem(id).name} for ${lines} mana.`, item: id };
   });
 }
 
