@@ -429,13 +429,14 @@ export class ShopView extends Phaser.GameObjects.Container {
       : '';
     const leads = this.hooks.actions.leads;
     const rooms = party.length > 1 ? `Rooms for the party (${party.length}), ${LONG_REST_HOURS} hours` : `A room for ${LONG_REST_HOURS} hours`;
-    const risen = fallen.length ? ` ${fallen.join(' and ')} get${fallen.length > 1 ? '' : 's'} up with 1 HP, 1 sanity, no mana and no charges.` : '';
+    const risen = fallen.length && hoursBeforeBloodmoon(this.run, LONG_REST_HOURS) < LONG_REST_HOURS
+      ? ` ${fallen.join(' and ')} get${fallen.length > 1 ? '' : 's'} up with 1 HP, 1 sanity, no mana and no charges.` : '';
     const due = bloodmoonDue(this.run);
     const hours = hoursBeforeBloodmoon(this.run, LONG_REST_HOURS);
     const nextDay = this.run.hour + hours >= 24;
     const night = hours < LONG_REST_HOURS
       ? `The bloodmoon rises in ${spanLabel(hours)} and will wake you: only the hours slept count.`
-      : `Sleep until ${clockTime((this.run.hour + hours) % 24)}${nextDay ? ` on day ${this.run.day + 1}` : ''}: 75% of health, mana, sanity and word charges back.${nextDay ? ' Every shop restocks at midnight.' : ''}`;
+      : `Sleep until ${clockTime((this.run.hour + hours) % 24)}${nextDay ? ` on day ${this.run.day + 1}` : ''}: fully restore health, mana, sanity and words. Earned XP levels up here.${nextDay ? ' Shops restock at midnight.' : ''}`;
     const button = new CabinetButton(this.scene, 290, 204, {
       width: 700,
       height: 104,

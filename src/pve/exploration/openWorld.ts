@@ -10,7 +10,7 @@ import { cellHash } from '../../world/kenney';
 import { buildLocaleModel, type BuildingPlacement, type ExitDef, type LocaleDef, type LocaleModel, type PropPlacement } from '../../world/locale';
 import { floodReach, type Cell } from '../../world/pathfind';
 import { areaBounds, areaBoundsOf, inAreaBounds } from './area';
-import { hashString } from './economy';
+import { hashString, shikigamiRides } from './economy';
 import { describeSpawns, packPace, rollEncounter, spawnTint, troubleIn } from './encounters';
 import { rollFind } from './finds';
 import type { Landmark, LocaleTravel, ResolvedLocale, Secret, SecretResult, WildPack } from './locales';
@@ -605,6 +605,7 @@ function enterPlace(run: ExplorationRun, exit: ExitDef): LocaleTravel {
   if (!place) return { t: 'stay', notice: 'Nothing here.' };
   if (place.dungeon) return { t: 'dungeon', place: place.id };
   if (!place.locale) return { t: 'stay', notice: place.note ?? `${place.name} is closed.` };
+  if (shikigamiRides(run)) return { t: 'stay', notice: `${place.name} keeps its gates shut to the Shikigami on your shoulder.` };
   // Inside the walls the walk is over; the party leaves by the map again.
   run.area = null;
   run.pos = { x: place.x, y: place.y };

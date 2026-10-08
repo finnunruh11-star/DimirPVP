@@ -4,8 +4,8 @@ import type { CreatureBody, CreatureDetail, CreatureLook } from './creatures';
 
 export const MINE_LOOKS: Record<MineEnemyKind, CreatureLook> = {
   rockling: { body: 'construct', color: 0x929783 },
-  kobold: { body: 'humanoid', color: 0x998552, detail: 'horns' },
-  'elite-kobold': { body: 'humanoid', color: 0xb6a169, accent: 0xdca450, detail: 'spear' },
+  kobold: { body: 'kobold', color: 0xafa076, detail: 'horns' },
+  'elite-kobold': { body: 'kobold', color: 0xb6a169, accent: 0xdca450, detail: 'spear' },
   golem: { body: 'construct', color: 0x88909a, accent: 0x83e5dc },
   sentinel: { body: 'construct', color: 0x979eac, accent: 0x73c7ea },
   'magma-sentinel': { body: 'construct', color: 0x695458, accent: 0xffbc57 },
@@ -52,9 +52,9 @@ export const ENEMY_LOOKS: Partial<Record<EnemyKind, CreatureLook>> = {
   beastDemon: { body: 'wolf', color: 0xa26365, detail: 'spikes' },
   oni: { body: 'humanoid', color: 0xb1799b, detail: 'horns' },
   deathknightSpear: { body: 'humanoid', color: 0x788793, accent: 0x93d0cd, detail: 'spear' },
-  goblinChief: { body: 'humanoid', color: 0x91a96d, detail: 'crown' },
-  goblinRaider: { body: 'humanoid', color: 0x91a96d, detail: 'spear' },
-  goblinShaman: { body: 'humanoid', color: 0x91a96d, detail: 'staff' },
+  goblinChief: { body: 'goblin', color: 0x7da964, detail: 'crown' },
+  goblinRaider: { body: 'goblin', color: 0x7da964, detail: 'club' },
+  goblinShaman: { body: 'goblin', color: 0x7da964, detail: 'staff' },
   baral: { body: 'humanoid', color: 0x779ab2, detail: 'staff' },
   denialArtifact: { body: 'relic', color: 0x88a8b7, accent: 0xe1d299 },
   baralDrake: { body: 'bat', color: 0x79a2b4 },
@@ -70,7 +70,7 @@ function group(body: CreatureBody, color: number, kinds: string, detail: Creatur
 
 group('spider', 0x929366, 'gag-mite blood-tick rivet-beetle bore-beetle veil-spider web-lurker gag-spider');
 group('slime', 0x827766, 'tar-slime blood-slime');
-group('spirit', 0x87aaa1, 'ghost caustic-fume hushwraith mistweaver murk-wisp siphon-wraith muttering-shade shatter-wisp figment candlewight stormmind-wisp undine drowner riptide-spirit geyser kettle-spirit siren thundercloud cinder-shade wailing-shade grave-shade ashcloud pyre-wraith haunt banshee ball-lightning hellspark shackle-wraith');
+group('spirit', 0x87aaa1, 'ghost caustic-fume hushwraith mistweaver murk-wisp siphon-wraith muttering-shade shatter-wisp figment candlewight stormmind-wisp undine drowner riptide-spirit geyser kettle-spirit siren thundercloud cinder-shade wailing-shade ashcloud pyre-wraith haunt ball-lightning hellspark shackle-wraith');
 group('construct', 0x919889, 'slag-brute clay-warden shardling grave-colossus dread-sentinel gloom-brute glass-warden bone-thrower leech-brute blood-warden marrow-colossus bulwark');
 group('humanoid', 0x91a58b, 'blight-walker fetter-ghoul drowned-thrall blood-wight remnant sand-cadett blade-dervish leech-dervish blood-harvester standardbearer');
 group('humanoid', 0x8bab9a, 'archer barb-archer plague-archer hexbow-phantom hush-archer pin-archer hooked-archer marrow-archer thorn-archer', 'bow');
@@ -90,6 +90,11 @@ group('relic', 0x9ea58b, 'sentry needle-sentry blood-idol warding-obelisk silenc
 group('plant', 0x81a579, 'thorn-fiend thornbinder desertblight', 'spikes');
 group('crab', 0xb5a079, 'scorpion');
 group('reptile', 0x88a273, 'basilisk');
+group('relic', 0x9b9fa8, 'fault-idol mourning-bell bone-reliquary');
+group('spirit', 0x889eb0, 'hex-vortex');
+group('humanoid', 0x8da697, 'puppeteer', 'staff');
+group('spirit', 0x8f7a9e, 'requiem', 'crown');
+group('humanoid', 0x4a4458, 'fetch');
 
 export type PlaceholderSpriteKind = `pixel-${string}`;
 export const PLACEHOLDER_LOOKS: Record<PlaceholderSpriteKind, CreatureLook> = {};

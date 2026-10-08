@@ -4,7 +4,7 @@ import { Dice } from './Dice';
 import { GameState } from './GameState';
 import { Mage } from './Mage';
 import { hasMonsters, livesIn, rollEncounter, ZONE_ROSTERS, type EncounterKind, type EncounterSpawn, type EncounterZone } from '../pve/exploration/encounters';
-import { foe } from '../pve/exploration/eventKit';
+import { foe } from '../pve/exploration/scenes';
 import { isSceneUnitKind, parseSceneFight, sceneRoster, type SceneFight } from '../pve/exploration/sceneFight';
 import { SCENES, scenesFor, stageScene } from '../pve/exploration/scenes';
 import { shopById, SHOPS, WAYSIDE_DISCOUNT, WAYSIDE_KINDS, waysideShopId } from '../pve/exploration/shops';

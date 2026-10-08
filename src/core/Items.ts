@@ -156,6 +156,7 @@ export type ItemId =
   | 'conjuredBloodhammer'
   | 'conjuredLeechingBuckler'
   | 'conjuredGravedrinker'
+  | 'conjuredOssuaryMaul'
   // ---- Mine creatures (never offered to players) ----
   | 'crudeSpear'
   | 'stoneSpear'
@@ -1278,6 +1279,25 @@ export const ITEM_DEFS: ItemDef[] = [
     onHit: [{
       k: 'affected',
       then: [{ k: 'siphon', pct: 1 }, { k: 'foul', radius: 2 * U, turns: 2, spec: '1d6', drink: true }],
+    }],
+  },
+  // ---- Conjured for one fight by the Curse class spells (Objects) ----------
+  {
+    id: 'conjuredOssuaryMaul',
+    name: 'Ossuary Maul',
+    slot: 'hand',
+    set: 'conjured',
+    rarity: 'common',
+    cost: g(0),
+    weight: 0,
+    weaponFamily: 'hammer',
+    blurb: 'Two-handed, 150% Strength shatter. On hit against units Desecrate harms: the whole hit again as shatter at the start of their next 3 turns, and no healing meanwhile. Fades after the fight.',
+    fleeting: true,
+    twoHanded: true,
+    weapon: { rangePx: MELEE_RANGE, kind: 'strength', multiplier: 1.5, damageType: 'shatter' },
+    onHit: [{
+      k: 'affected',
+      then: [{ k: 'dot', name: 'Splitting Curse', pct: 1, turns: 3, type: 'shatter' }, { k: 'noHeal', turns: 3 }],
     }],
   },
   // ---- Legendary ----------------------------------------------------------

@@ -101,6 +101,21 @@ const tests: [name: string, run: () => void][] = [
     assert(openWorldPace(tree.x, tree.y + 1) < 1, 'off the road is slower');
   }],
 
+  ['keeps towns shut while a Shikigami rides with the party, until the day is over', () => {
+    const def = openWorldDef();
+    const run = freshRun();
+    const place = resolveLocale(run, OPEN_WORLD_ID);
+    const town = PLACES.find((p) => p.locale && regionAt(world, p.x, p.y) !== 'white');
+    const gate = def.exits.find((e) => e.place === town?.id);
+    assert(place?.travel && town && gate, 'a town with a gate');
+    const party = restoreParty(run.party);
+    party[0].shikigami = { points: 0, day: run.day, lifePaid: 0, itemsPaid: false };
+    run.party = capturePartySnapshot(party);
+    equal(place.travel(run, gate).t, 'stay', `${town.name} turns the Shikigami away`);
+    run.day += 1;
+    equal(place.travel(run, gate).t, 'locale', 'and opens again the next day');
+  }],
+
   ['makes reachable places gates, and leaves desert gates behind the wall', () => {
     const def = openWorldDef();
     const run = freshRun();

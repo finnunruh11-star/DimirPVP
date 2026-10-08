@@ -7,9 +7,10 @@ import { playSound } from '../../audio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
 import { MAGE_CLASSES, type MageClass } from '../../core/Classes';
 import { STAT_DEFS, type StatKey } from '../../core/Stats';
-import { MODIFIER_WORDS, WORDS, type WordId } from '../../core/Words';
+import { isModifierWord, MODIFIER_WORDS, WORDS, type WordId } from '../../core/Words';
 import { CREATION_WORD_ROUNDS, type CreationPick } from '../../pve/exploration/creation';
-import { START_STAT_BONUS } from '../../pve/progression';
+import { rackIsFull, START_STAT_BONUS } from '../../pve/progression';
+import { isReducedMotion } from '../cabinet/motion';
 import { MENU_FONT, MENU_HEX } from '../cabinet/theme';
 
 export interface AwakeningModel {
@@ -128,6 +129,7 @@ interface Offer {
   sub: string;
   detail: string;
   color: number;
+  sigil?: boolean;
 }
 
 interface Orb {
@@ -141,6 +143,16 @@ interface Orb {
 /** Play the awakening over `scene`; resolves with the words and modifier picked. */
 export function playAwakening(scene: Phaser.Scene, model: AwakeningModel): Promise<CreationPick> {
   return new Awakening(scene, model).run();
+}
+
+export type LevelWordPick = { word: WordId; replace?: number; ascend?: never }
+  | { ascend: WordId; replace: number; word?: never };
+
+export function playLevelWordChoice(
+  scene: Phaser.Scene, level: number, offers: readonly WordId[], loadout: readonly WordId[], godWords: readonly WordId[],
+): Promise<LevelWordPick> {
+  return new Awakening(scene, { reducedMotion: isReducedMotion(), offers: () => [] })
+    .runLevelWordChoice(level, offers, loadout, godWords);
 }
 
 class Awakening {
@@ -258,6 +270,47 @@ class Awakening {
     return { calling, words, modifier, stat };
   }
 
+  async runLevelWordChoice(
+    level: number, offers: readonly WordId[], loadout: readonly WordId[], godWords: readonly WordId[],
+  ): Promise<LevelWordPick> {
+    this.root.setAlpha(0);
+    await this.tween({ targets: this.root, alpha: 1, duration: 500 });
+    await this.say(`Level ${level}. A new word stirs.`, 0, true);
+    const options: Offer[] = offers.map((word) => ({
+      id: word, title: WORDS[word].label, sub: '', detail: WORDS[word].blurb, color: WORDS[word].color,
+    }));
+    if (godWords.length) options.push({
+      id: 'phyrexia', title: '', sub: '', detail: 'Surrender a word. Claim a god word in its place.',
+      color: 0xc55365, sigil: true,
+    });
+    const picked = await this.choose(options);
+    let choice: LevelWordPick;
+    if (picked === 'phyrexia') {
+      await this.say('One of your words must be surrendered.', 0, true);
+      const replace = await this.choose(this.knownWords(loadout));
+      await this.say('What will take its place?', 0, true);
+      const ascend = await this.choose(godWords.map((word): Offer => ({
+        id: word, title: WORDS[word].label, sub: '', detail: WORDS[word].blurb, color: WORDS[word].color,
+      })));
+      choice = { ascend: ascend as WordId, replace: Number(replace) };
+    } else if (rackIsFull(loadout)) {
+      await this.say('A word for a word. Which one fades?', 0, true);
+      const replace = await this.choose(this.knownWords(loadout));
+      choice = { word: picked as WordId, replace: Number(replace) };
+    } else {
+      choice = { word: picked as WordId };
+    }
+    await this.tween({ targets: this.root, alpha: 0, duration: 500 });
+    this.destroy();
+    return choice;
+  }
+
+  private knownWords(loadout: readonly WordId[]): Offer[] {
+    return loadout.flatMap((word, index) => isModifierWord(word) ? [] : [{
+      id: String(index), title: WORDS[word].label, sub: '', detail: WORDS[word].blurb, color: WORDS[word].color,
+    }]);
+  }
+
   // --- Voice ---
 
   /** Type `text` out, then wait for a click or long enough to read it. `ask` keeps it up. */
@@ -343,12 +396,27 @@ class Awakening {
       ring.fillStyle(offer.color, 0.9);
       ring.fillCircle(Math.cos(start + 0.8) * 66, Math.sin(start + 0.8) * 66, 2);
     }
-    const title = scene.add.text(0, 0, offer.title, {
+    const title = offer.sigil ? scene.add.graphics() : scene.add.text(0, 0, offer.title, {
       fontFamily: MENU_FONT.display,
       fontSize: offer.title.length > 8 ? '19px' : '24px',
       fontStyle: 'bold',
       color: '#ffffff',
     }).setOrigin(0.5).setShadow(0, 0, Phaser.Display.Color.IntegerToColor(offer.color).rgba, 10, true, true);
+    if (offer.sigil && title instanceof Phaser.GameObjects.Graphics) {
+      title.lineStyle(5, 0xf2c7bd, 1);
+      title.beginPath();
+      title.arc(0, 4, 27, -Math.PI * 0.85, Math.PI * 0.85);
+      title.strokePath();
+      title.beginPath();
+      title.moveTo(0, -35);
+      title.lineTo(0, 28);
+      title.moveTo(-13, -30);
+      title.lineTo(0, -40);
+      title.lineTo(13, -30);
+      title.strokePath();
+      title.fillStyle(0xc55365, 1);
+      title.fillCircle(0, 4, 5);
+    }
     const key = scene.add.text(0, -98, `${index + 1}`, {
       fontFamily: MENU_FONT.control,
       fontSize: '13px',

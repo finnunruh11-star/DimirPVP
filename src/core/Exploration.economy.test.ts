@@ -19,13 +19,11 @@ import {
   withParty,
 } from '../pve/exploration/economy';
 import { encounterCap, rollEncounter, ZONE_ROSTERS, type EncounterZone } from '../pve/exploration/encounters';
-import { stage } from '../pve/exploration/eventKit';
-import { ROAD_EVENTS, variantsFor } from '../pve/exploration/events';
 import { capturePartySnapshot } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import { parseRun } from '../pve/exploration/save';
 import { shopById, SHOPS } from '../pve/exploration/shops';
-import { addXp, killXp, levelCoreStatGain, levelReward, rackIsFull, xpToNext } from '../pve/progression';
+import { addXp, claimXpLevels, killXp, levelCoreStatGain, levelReward, rackIsFull, xpToNext } from '../pve/progression';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -66,8 +64,16 @@ const tests: [name: string, run: () => void][] = [
     equal(levelReward(5), { stats: 0, statGain: 1, word: true }, 'every fifth level also teaches a word');
     equal([2, 3, 4, 5, 6, 7].map(levelCoreStatGain), [1, 0, 1, 0, 0, 1], 'rounded cumulative 0.4 growth');
     const track = { level: 1, xp: 0, pendingLevels: 0 };
-    equal(addXp(track, 30), 2, 'a big payout can roll two levels');
-    equal(track, { level: 3, xp: 3, pendingLevels: 2 }, 'leftover XP carries');
+    equal(addXp(track, 30), 0, 'a big payout banks XP without leveling');
+    equal(track, { level: 1, xp: 30, pendingLevels: 0 }, 'XP waits for long rest');
+    equal(claimXpLevels(track), 1, 'a completed rest claims a level');
+    equal(track, { level: 2, xp: 6, pendingLevels: 1 }, 'one-third of the overflow carries toward the next level');
+    addXp(track, 11);
+    equal(claimXpLevels(track), 1, 'carried XP can complete the next level');
+    equal(track, { level: 3, xp: 0, pendingLevels: 2 }, 'exact thresholds have no overflow');
+    const large = { level: 1, xp: 100, pendingLevels: 0 };
+    equal(claimXpLevels(large), 2, 'large awards can still grant multiple levels');
+    equal(large, { level: 3, xp: 4, pendingLevels: 2 }, 'overflow is divided by three at each level');
   }],
 
   ['pays XP by creature, a zombie being 1, and nothing for a boss\'s retinue', () => {
@@ -227,26 +233,6 @@ const tests: [name: string, run: () => void][] = [
     run.day = 99;
     const extra = bountyBoard(run, 'capitol')[0];
     assert(!acceptBounty(run, 'capitol', extra.id).ok, 'one more is refused');
-  }],
-
-  ['every road event resolves every choice in every zone', () => {
-    for (const event of ROAD_EVENTS) {
-      for (const zone of event.zones ?? ZONES) {
-        for (const variant of variantsFor(event, zone)) variant.choices.forEach((_, index) => {
-          for (let seed = 1; seed <= 6; seed++) {
-            const run = freshRun(seed, 20);
-            withParty(run, (leader) => leader.utility.push('healthPotion'));
-            const choice = stage(event, variant, new Dice(seed)).choices[index];
-            const ctx = { run, zone, depth: 2, dice: new Dice(seed * 31 + index) };
-            if (choice.available && !choice.available(ctx)) continue;
-            const outcome = choice.resolve(ctx);
-            assert(outcome.message.length > 0, `${event.id}/${choice.label} says something`);
-            assert(run.gold >= 0, `${event.id}/${choice.label} never goes into debt`);
-            assert(partyOf(run)[0].hp >= 1, `${event.id}/${choice.label} never kills`);
-          }
-        });
-      }
-    }
   }],
 
   ['a version 1 save upgrades; a broken one is refused', () => {

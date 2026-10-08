@@ -4,7 +4,6 @@ import { dayNews } from '../pve/exploration/calendar';
 import { hoursToTurn, spanLabel } from '../pve/exploration/clock';
 import { stormOnDay } from '../pve/exploration/desert';
 import { hasMonsters } from '../pve/exploration/encounters';
-import { ROAD_EVENTS } from '../pve/exploration/events';
 import { gatherHerbs, HERBS, rollCache } from '../pve/exploration/finds';
 import { emptyRoad, findSighting, LEG_TILES, rollBeat, stopsAlong, walkStep, type Beat } from '../pve/exploration/journey';
 import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
@@ -73,7 +72,7 @@ function gateCell(): Cell {
 }
 
 function beatsFor(mode: TravelMode, road: { danger: number; luck: number }, cell: Cell, rolls = 300): Record<Beat['kind'], number> {
-  const counts: Record<Beat['kind'], number> = { fight: 0, loot: 0, event: 0, sighting: 0, rest: 0 };
+  const counts: Record<Beat['kind'], number> = { fight: 0, loot: 0, sighting: 0, rest: 0 };
   for (let seed = 0; seed < rolls; seed++) {
     const run = freshRun(seed);
     run.road = { tiles: LEG_TILES, ...road };
@@ -107,29 +106,46 @@ const tests: [name: string, run: () => void][] = [
     equal(a.steps, 1, 'the next stop rolls fresh');
   }],
 
+  ['sprint and sneak roll encounters but never loot', () => {
+    const sprint = beatsFor('sprint', { danger: 0.3, luck: 10 }, wild, 1000);
+    const sneak = beatsFor('sneak', { danger: 0.3, luck: 10 }, wild, 1000);
+    assert(sprint.fight > sneak.fight, `sneaking triggers fewer fights (${sneak.fight} vs ${sprint.fight})`);
+    equal([sprint.loot, sneak.loot], [0, 0], 'even a full luck meter gives no road loot');
+    let harder = 0;
+    for (let seed = 0; seed < 400; seed++) {
+      const run = freshRun(seed);
+      run.road = { tiles: LEG_TILES, danger: 1, luck: 10 };
+      const beat = rollBeat(world, run, stepAt(wild), 'sprint', []);
+      if (beat.kind === 'fight' && beat.depth > stepAt(wild).depth) harder++;
+    }
+    assert(harder > 0, 'high sprint encounter rolls raise the enemy depth');
+  }],
+
   ['never springs a fight at the town gates, and fights more the riskier the road', () => {
     const gates = beatsFor('sprint', { danger: 6, luck: 0 }, gateCell());
     equal(gates.fight, 0, 'nothing attacks by the walls');
     const risky = beatsFor('sprint', { danger: 1.5, luck: 0 }, wild);
     const calm = beatsFor('sprint', { danger: 0.05, luck: 0 }, wild);
-    assert(risky.fight > calm.fight * 4, `a dangerous leg brings far more fights (${risky.fight} vs ${calm.fight})`);
-    assert(calm.fight < 30, `a quiet leg rarely does (${calm.fight}/300)`);
+    assert(risky.fight > calm.fight * 1.5, `a dangerous leg brings more fights (${risky.fight} vs ${calm.fight})`);
+    assert(calm.fight < 120, `a quiet leg still has quieter rolls (${calm.fight}/300)`);
   }],
 
-  ['keeps some quiet stretches, brings roadside events often, and turns up more when exploring', () => {
+  ['keeps quiet stretches and turns up more finds when exploring', () => {
     const sprint = beatsFor('sprint', { danger: 0, luck: 0.15 }, wild);
+    const sneak = beatsFor('sneak', { danger: 0, luck: 0.15 }, wild);
     const explore = beatsFor('explore', { danger: 0, luck: 0.15 }, wild);
-    assert(sprint.rest > 60 && sprint.rest < 180, `a quiet sprint still has quiet stretches (${sprint.rest}/300)`);
-    assert(sprint.event > 40, `roadside events are common (${sprint.event}/300)`);
-    assert(sprint.sighting > 30 && sprint.sighting < 140, `something is spotted now and then (${sprint.sighting}/300)`);
-    assert(explore.sighting > sprint.sighting, `exploring spots more (${explore.sighting} vs ${sprint.sighting})`);
+    assert(sprint.rest > 60 && sprint.rest < 300, `a quiet sprint still has quiet stretches (${sprint.rest}/300)`);
+    assert(sprint.sighting > 0 && sprint.sighting < 25, `sprinting seldom spots anything (${sprint.sighting}/300)`);
+    assert(sneak.sighting < sprint.sighting, `sneaking spots even less (${sneak.sighting} vs ${sprint.sighting})`);
+    assert(explore.sighting > sprint.sighting * 5, `exploring spots far more (${explore.sighting} vs ${sprint.sighting})`);
     assert(explore.rest < sprint.rest, `exploring is rarely quiet (${explore.rest} vs ${sprint.rest})`);
-    assert(sprint.loot > 0, 'finds still turn up');
+    equal([sprint.loot, sneak.loot], [0, 0], 'non-exploring modes have no road loot');
+    assert(explore.loot > 0, 'exploring still finds loot');
   }],
 
   ['spots things a short walk off the way, never on the route ahead nor in a town', () => {
     const ahead: Cell[] = Array.from({ length: 6 }, (_, i) => ({ x: wild.x + i + 1, y: wild.y }));
-    const kinds: Record<string, number> = { herbs: 0, pack: 0, cache: 0, event: 0 };
+    const kinds: Record<string, number> = { herbs: 0, pack: 0, cache: 0 };
     let seen = 0;
     for (let seed = 0; seed < 400; seed++) {
       const sighting = findSighting(world, stepAt(wild), ahead, new Dice(seed));
@@ -145,14 +161,9 @@ const tests: [name: string, run: () => void][] = [
       if (sighting.kind === 'pack') assert(sighting.spawns?.length, `seed ${seed}: a pack has members`);
       if (sighting.kind === 'herbs') assert(sighting.herb && HERBS[sighting.zone].includes(sighting.herb), `seed ${seed}: a local herb`);
       if (sighting.kind === 'cache') assert(sighting.site, `seed ${seed}: a ruin has a name`);
-      if (sighting.kind === 'event') {
-        assert(ROAD_EVENTS.some((event) => event.id === sighting.eventId && event.sighted), `seed ${seed}: a real event that sits off the road`);
-        const scene = sighting.scene;
-        assert(scene && scene.id === sighting.eventId && scene.title === sighting.title && scene.text === sighting.text, `seed ${seed}: the card shows the scene that will play`);
-      }
     }
     assert(seen > 380, `open country always has somewhere to look (${seen}/400)`);
-    assert(Object.values(kinds).every((n) => n > 0), `herbs, packs, ruins and scenes all turn up (${JSON.stringify(kinds)})`);
+    assert(Object.values(kinds).every((n) => n > 0), `herbs, packs and ruins all turn up (${JSON.stringify(kinds)})`);
     for (let seed = 0; seed < 100; seed++) {
       const near = findSighting(world, stepAt(gateCell()), [], new Dice(seed));
       assert(!near || near.kind !== 'pack' || !nearTown(near.cell.x, near.cell.y), `seed ${seed}: no pack waits by the walls`);

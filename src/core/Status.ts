@@ -24,6 +24,7 @@ export type StatusKind =
   | 'blueflare'
   | 'soulRend'
   | 'reap'
+  | 'dread'
   | 'shadowAnchor'
   | 'memoryShackle'
   | 'shadowHook'
@@ -375,6 +376,12 @@ export interface ReapStatus extends BaseStatus {
   stacks: number;
 }
 
+/** Reap for the mind: the bearer dies at or below this much sanity. */
+export interface DreadStatus extends BaseStatus {
+  kind: 'dread';
+  stacks: number;
+}
+
 /**
  * Death Curse: `stacks` counters that fall on shadow/corrosive damage and at the
  * bearer's turn start, each granting Reap. While it lasts, executions become Reap
@@ -644,6 +651,8 @@ export interface ImbueStatus extends BaseStatus {
   stored?: number;
   /** The unit a bound weapon answers to (index into GameState.mages). */
   boundIndex?: number;
+  /** Kills a weapon that grows on them has taken. */
+  souls?: number;
 }
 
 /** Bound to an anchor: the bearer cannot walk further than `leash` from it. */
@@ -685,6 +694,7 @@ export type Status =
   | BlueflareStatus
   | SoulRendStatus
   | ReapStatus
+  | DreadStatus
   | ShadowAnchorStatus
   | MemoryShackleStatus
   | ShadowHookStatus

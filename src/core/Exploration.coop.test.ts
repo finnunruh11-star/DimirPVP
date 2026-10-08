@@ -22,10 +22,8 @@ import {
 } from '../pve/exploration/creation';
 import { armsPending, gateRefusal, lodgeWaiting, starterPicks, takeStarterWeapon, weaponsShared } from '../pve/exploration/arms';
 import { START_PLACE } from '../pve/exploration/world';
-import { giveItem, grantToParty, memberIn, partyOf, rest, roomPrice, withParty } from '../pve/exploration/economy';
+import { exchangeItems, giveItem, grantToParty, memberIn, partyOf, rest, roomPrice, withParty } from '../pve/exploration/economy';
 import { rollReinforcements } from '../pve/exploration/encounters';
-import { stage } from '../pve/exploration/eventKit';
-import { ROAD_EVENTS } from '../pve/exploration/events';
 import { applyIntent, parseIntent } from '../pve/exploration/intents';
 import { applyLevelChoice, levelWordOffers } from '../pve/exploration/levels';
 import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
@@ -141,14 +139,19 @@ const tests: [name: string, run: () => void][] = [
     equal(xpToNext(1, partyScale(2)), Math.ceil(10 * 1.75), 'two need 75% more');
     const run = partyRun(2);
     equal(addRunXp(run, 17), 0, 'seventeen XP is not yet a level for two');
-    equal(addRunXp(run, 1), 1, 'eighteen is');
-    equal([run.level, run.xp, run.pendingLevels], [2, 0, 1], 'the level is owed');
+    equal(addRunXp(run, 1), 0, 'eighteen waits for rest');
+    equal([run.level, run.xp, run.pendingLevels], [1, 18, 0], 'the XP is banked');
+    run.gold = 10;
+    assert(rest(run, 'capitol-guild').ok, 'a completed night');
+    equal([run.level, run.xp, run.pendingLevels], [2, 0, 1], 'the level is owed after rest');
     equal(levelsOwed(run, 'objects'), 1, 'each member owes it');
   }],
 
   ['takes each member\'s level rewards on their own, checking the offers', () => {
     const run = partyRun(2);
     addRunXp(run, 18);
+    run.gold = 10;
+    assert(rest(run, 'capitol-guild').ok, 'a completed night earns the rewards');
     const offers = levelWordOffers(run, 'life', 2, memberIn(run, 'life')!.loadout);
     assert(!applyLevelChoice(run, 'life', { level: 3, stats: ['hp'] }).ok, 'only the next level');
     assert(!applyLevelChoice(run, 'life', { level: 2, stats: ['hp', 'int'], word: offers[0] }).ok, 'one stat a level');
@@ -176,7 +179,7 @@ const tests: [name: string, run: () => void][] = [
     equal([grown.maxHp, grown.maxMana, grown.maxLuck], [hpBefore + 9, manaBefore + 6, luckBefore], 'vitals grow and luck stays fixed');
   }],
 
-  ['a night at an inn raises the fallen with 1 HP, 1 sanity and nothing to cast with', () => {
+  ['a complete night at an inn fully restores the fallen', () => {
     const run = partyRun(2, 3, 5);
     withParty(run, (_leader, party) => {
       party[0].hp = 3;
@@ -187,8 +190,8 @@ const tests: [name: string, run: () => void][] = [
     assert(rest(run, guild.id).ok, 'the party rests');
     const [standing, risen] = partyOf(run);
     assert(standing.hp > 3, 'the living heal');
-    equal([risen.alive, risen.hp, risen.sanity, risen.mana], [true, 1, 1, 0], 'the fallen get up spent');
-    assert(Object.values(risen.charges).every((charge) => charge === 0), 'no word charges');
+    equal([risen.alive, risen.hp, risen.sanity, risen.mana], [true, risen.maxHp, risen.maxSanity, risen.maxMana], 'the fallen get up fully restored');
+    assert(risen.loadout.every((word) => risen.charges[word] === risen.maxWordCharges(word)), 'all word charges restored');
     const fresh = traveller('life', 'Fresh');
     fresh.hp = 0;
     respawnFallen(fresh);
@@ -204,20 +207,6 @@ const tests: [name: string, run: () => void][] = [
     fighters[1].hp = 0;
     const after = restoreParty(mergeFightParty(run.party, fighters));
     equal(after.map((mage) => [mage.mageClass, mage.hp]), [['objects', 2], ['life', 0], ['hexcraft', 0]], 'order and state kept');
-  }],
-
-  ['road events hit every standing member and test the best of them', () => {
-    const run = partyRun(2, 4, 20);
-    withParty(run, (_leader, party) => {
-      party[0].statStrength = 0;
-      party[1].statStrength = 30;
-    });
-    const carter = ROAD_EVENTS.find((event) => event.id === 'carter')!;
-    stage(carter, carter.variants[0], new Dice(1)).choices[0].resolve({ run, zone: 'capitol', depth: 1, dice: new Dice(1) });
-    const shrine = ROAD_EVENTS.find((event) => event.id === 'shrine')!;
-    withParty(run, (_leader, party) => { for (const mage of party) mage.hp = 2; });
-    stage(shrine, shrine.variants[0], new Dice(2)).choices[0].resolve({ run, zone: 'capitol', depth: 1, dice: new Dice(2) });
-    assert(partyOf(run).every((mage) => mage.hp > 2), 'prayer heals everyone');
   }],
 
   ['hands finds to whoever can carry them, and lets members pass items on', () => {
@@ -243,6 +232,27 @@ const tests: [name: string, run: () => void][] = [
     assert(!applyIntent(run, 'hexcraft', { op: 'drop', item: 'torch' }).ok, 'nobody of that class travels');
     withParty(run, (_leader, party) => { party[1].bag.push('torch'); });
     assert(applyIntent(run, 'life', { op: 'drop', item: 'torch' }).ok, 'members act for themselves');
+  }],
+
+  ['exchanges two offers atomically, including one-sided gifts', () => {
+    const run = partyRun(2);
+    withParty(run, (_leader, party) => {
+      party.find((mage) => mage.mageClass === 'life')!.bag.push('oreIron', 'oreIron');
+      party.find((mage) => mage.mageClass === 'objects')!.bag.push('torch');
+    });
+    const exchanged = exchangeItems(run, 'life', 'objects', ['oreIron'], ['torch']);
+    assert(exchanged.ok, `two-sided exchange: ${exchanged.message}`);
+    assert(memberIn(run, 'life')!.hands.includes('torch'), 'first received and equipped torch');
+    assert(memberIn(run, 'objects')!.bag.includes('oreIron'), 'second received ore');
+    const before = JSON.stringify(run.party);
+    assert(!exchangeItems(run, 'life', 'objects', ['oreIron', 'oreIron'], []).ok, 'cannot offer more than owned');
+    equal(JSON.stringify(run.party), before, 'failed exchange moved nothing');
+    assert(exchangeItems(run, 'life', 'objects', ['oreIron'], []).ok, 'gift with empty receiving offer');
+    assert(!exchangeItems(run, 'life', 'objects', [], []).ok, 'empty deal changes nothing');
+    withParty(run, (_leader, party) => { party.find((mage) => mage.mageClass === 'life')!.statStrength = -20; });
+    const beforeHeavy = JSON.stringify(run.party);
+    assert(!exchangeItems(run, 'objects', 'life', ['oreIron'], []).ok, 'overweight gift refused');
+    equal(JSON.stringify(run.party), beforeHeavy, 'overweight gift changes neither pack');
   }],
 
   ['saves the creation state and per-member levels, and upgrades single-count saves', () => {

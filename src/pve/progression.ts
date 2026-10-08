@@ -107,12 +107,17 @@ export interface LevelTrack {
   pendingLevels: number;
 }
 
-/** Add XP and roll over any levels it completes. Returns the number of levels gained. */
-export function addXp(track: LevelTrack, amount: number, scale = 1): number {
+/** Bank XP until a completed long rest. */
+export function addXp(track: LevelTrack, amount: number): number {
   track.xp += Math.max(0, Math.floor(amount));
+  return 0;
+}
+
+/** Claim levels after a completed long rest, carrying one-third of each level's overflow. */
+export function claimXpLevels(track: LevelTrack, scale = 1): number {
   let gained = 0;
   while (track.xp >= xpToNext(track.level, scale)) {
-    track.xp -= xpToNext(track.level, scale);
+    track.xp = Math.floor((track.xp - xpToNext(track.level, scale)) / 3);
     track.level += 1;
     track.pendingLevels += 1;
     gained += 1;

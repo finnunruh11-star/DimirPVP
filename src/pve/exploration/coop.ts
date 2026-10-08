@@ -40,9 +40,9 @@ export function partyXpScale(run: ExplorationRun): number {
   return partyScale(partySize(run));
 }
 
-/** Add XP to the shared track. Returns the levels gained. */
+/** Bank XP on the shared track until a completed long rest. */
 export function addRunXp(run: ExplorationRun, amount: number): number {
-  const gained = addXp(run, amount, partyXpScale(run));
+  const gained = addXp(run, amount);
   syncPendingLevels(run);
   return gained;
 }

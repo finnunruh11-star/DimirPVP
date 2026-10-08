@@ -180,9 +180,9 @@ export const WORDS: Record<WordId, WordDef> = {
     id: 'storm',
     label: 'Storm',
     grantsReaction: false,
-    charges: 4,
+    charges: 3,
     color: 0x72d7ff,
-    blurb: 'SNIFF-only apex word. Amplifies coloured spell effects to absurd scale.',
+    blurb: 'Three red/blue pairs per day, spending only the other word; two free solo releases of those stored effects.',
   },
   stop: {
     id: 'stop',

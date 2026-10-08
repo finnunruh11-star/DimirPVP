@@ -111,7 +111,6 @@ const tests: [name: string, run: () => void][] = [
     assert(creatures[0].standing === 'native' && creatures[0].dc === 11, 'a native creature is DC 11');
     assert(creatures.every((target) => target.standing !== 'foreign'), 'nothing that lives elsewhere can be found here');
     assert(creatures.every((target) => target.id.startsWith('bandit')), `the capitol has only its robbers (${creatures.map((target) => target.id).join(', ')})`);
-    equal(targets.events.map((target) => target.dc), [8], 'anything nearby is DC 8');
   }],
 
   ['makes each search of the same ground on the same day harder', () => {
@@ -119,7 +118,7 @@ const tests: [name: string, run: () => void][] = [
     equal(pickedOver(run, capitolTile), 0, 'fresh ground');
     run.searched.push(searchKey(capitolTile, run.day), searchKey(capitolTile, run.day));
     equal(pickedOver(run, capitolTile), 4, 'two searches today: +4');
-    equal(searchTargets(run, capitolTile).events[0].dc, 12, 'and every target is harder');
+    equal(searchTargets(run, capitolTile).resource[0].dc, 14, 'and every target is harder');
     equal(pickedOver(run, { x: capitolTile.x + 1, y: capitolTile.y }), 0, 'the next tile over is fresh');
     run.day += 1;
     equal(pickedOver(run, capitolTile), 0, 'the next day it has grown back');
@@ -130,12 +129,12 @@ const tests: [name: string, run: () => void][] = [
     equal(findSearchTarget(run, capitolTile, 'resource', 'constructor'), null, 'no prototype keys');
     equal(findSearchTarget(run, capitolTile, 'weapons', 'huntingBow'), null, 'no unknown categories');
     equal(findSearchTarget(run, capitolTile, 'resource', 'huntingBow'), null, 'a bow is no resource');
-    equal(findSearchTarget(run, capitolTile, 'events', 'events')?.dc, 8, 'events are always there');
+    equal(findSearchTarget(run, capitolTile, 'events', 'events'), null, 'roadside events cannot be searched for');
   }],
 
   ['rolls half the searcher\'s knack, up to +6, and the best of the party leads', () => {
     const sharp = traveller('objects', 'Sharp', 9);
-    equal([searchBonus(sharp, 'resource'), searchBonus(sharp, 'creature'), searchBonus(sharp, 'events')], [4, 4, 4], 'half of 9, rounded down');
+    equal([searchBonus(sharp, 'resource'), searchBonus(sharp, 'creature')], [4, 4], 'half of 9, rounded down');
     equal(searchBonus(traveller('life', 'Sage', 30), 'resource'), 6, 'never more than +6');
     const run = createRun(3, capturePartySnapshot([traveller('objects', 'Dull', 1), traveller('life', 'Keen', 8)]));
     equal(bestSearcher(run, 'creature')?.name, 'Keen', 'the keenest tracker searches');
@@ -182,8 +181,6 @@ const tests: [name: string, run: () => void][] = [
     const found = searchUntil(run, capitolTile, creature, 6, 'found');
     assert(found.pack && found.pack.spawns.every((spawn) => kindOf(spawn) === creature.id), 'the pack is what was sought');
     equal(found.pack.zone, searchSite(run, capitolTile).zone, 'fought on this ground');
-    const events = searchUntil(partyRun(), capitolTile, searchTargets(run, capitolTile).events[0], 6, 'found');
-    assert(events.event && !events.pack, 'looking about turns up something going on');
   }],
 
   ['gives back a quarter of everything on a short rest, rounded up, in one to two hours', () => {

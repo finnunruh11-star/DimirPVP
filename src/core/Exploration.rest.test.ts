@@ -4,6 +4,8 @@ import { LONG_REST_HOURS, partyOf, rest, withParty } from '../pve/exploration/ec
 import { napHours, parseRestNap } from '../pve/exploration/nap';
 import { capturePartySnapshot } from '../pve/exploration/party';
 import { createRun } from '../pve/exploration/run';
+import { addRunXp } from '../pve/exploration/coop';
+import { applyLevelChoice, levelWordOffers } from '../pve/exploration/levels';
 import { takeShortRest } from '../pve/exploration/shortRest';
 import {
   DREAMS, PANE, renderBubble, renderDream, renderRoom, renderSleeper, ROOM_H, ROOM_W, SLEEPER_FRAMES, type SleeperAnim,
@@ -41,6 +43,43 @@ const tests: [name: string, run: () => void][] = [
     run.hour = 20;
     assert(rest(run, 'capitol-guild').ok, 'another night');
     equal([run.day, run.hour], [2, 4], 'from eight in the evening to four the next morning');
+  }],
+
+  ['banks combat XP until a complete night, then restores and offers level rewards', () => {
+    const run = freshRun();
+    withParty(run, (mage) => {
+      mage.setLoadout(['shadow', 'mind']);
+      mage.hp = 1;
+      mage.mana = 0;
+      mage.sanity = 1;
+      mage.charges.shadow = 0;
+      mage.charges.mind = 0;
+    });
+    equal(addRunXp(run, 30), 0, 'XP does not level in combat');
+    equal([run.level, run.xp, run.pendingLevels], [1, 30, 0], 'XP is banked');
+    assert(rest(run, 'capitol-guild').ok, 'a completed night');
+    equal([run.level, run.xp, run.pendingLevels], [2, 6, 1], 'one level to choose, with one-third of excess XP carried');
+    const mage = partyOf(run)[0];
+    equal([mage.hp, mage.mana, mage.sanity], [mage.maxHp, mage.maxMana, mage.maxSanity], 'vitals fully restored');
+    equal(mage.loadout.map((word) => mage.charges[word]), mage.loadout.map((word) => mage.maxWordCharges(word)), 'words fully restored');
+    const word = levelWordOffers(run, mage.mageClass, 2, mage.loadout)[0];
+    assert(applyLevelChoice(run, mage.mageClass, { level: 2, stats: ['strength'], word }).ok, 'stat and word reward available');
+    const trained = partyOf(run)[0];
+    equal(trained.statStrength, mage.statStrength + 2, 'core and chosen strength growth');
+    assert(trained.loadout.includes(word), 'new word learned');
+    equal(trained.charges[word], trained.maxWordCharges(word), 'new word starts full');
+    equal(run.pendingLevels, 0, 'reward claimed');
+    assert(rest(run, 'capitol-guild').ok, 'another rest without new XP');
+    equal(run.level, 2, 'rest does not repeat the level');
+  }],
+
+  ['an interrupted night cannot claim banked XP', () => {
+    const run = freshRun();
+    run.day = 4;
+    run.hour = 20;
+    addRunXp(run, 10);
+    assert(rest(run, 'capitol-guild').ok, 'the bloodmoon interrupts the night');
+    equal([run.level, run.xp, run.pendingLevels], [1, 10, 0], 'XP waits for a complete night');
   }],
 
   ['wakes the party when the bloodmoon rises, with only the hours slept to show for it', () => {

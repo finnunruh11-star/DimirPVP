@@ -21,7 +21,7 @@ import { WORDS, isModifierWord } from './Words';
 import type { Dice } from './Dice';
 import type { FleeEdge } from './Flee';
 import type { ColorName, ColorProfile } from './Colors';
-import { computeColorProfile } from './Colors';
+import { computeColorProfile, stormWordsCompatible } from './Colors';
 import type { MageClass } from './Classes';
 import { DEFAULT_MAGE_CLASS } from './Classes';
 import type { DieResult, StatKey } from './Stats';
@@ -73,6 +73,10 @@ export class Mage {
 
   loadout: WordId[];
   charges: Record<string, number> = {};
+  stormDay = 1;
+  stormDualcastsUsed = 0;
+  stormMonocastsUsed = 0;
+  stormLoadedWords: WordId[] = [];
   /** Spell held by Channel; it unleashes at this mage's next turn start. */
   channeledCast?: PendingCast;
   /** Spell held by Delay; it fires at this mage's next turn start. */
@@ -352,6 +356,10 @@ export class Mage {
   denial?: { charges: number; threshold: number };
   /** A drake's own turns left before it falls apart. */
   drakeTurns?: number;
+  /** Death's rites: a Requiem's verse, the souls it took, a Fetch's original (mage index). */
+  deathRite?: { level: number; souls?: number; originalIndex?: number };
+  /** The Shikigami on this mage's shoulder: its points, the day it came, and what was given for it. */
+  shikigami?: { points: number; day: number; lifePaid: number; itemsPaid: boolean };
 
   // ---- Life-class summons ----------------------------------------------------
   // A summon is a real mage (so it reuses movement, items, melee, rendering and
@@ -860,19 +868,46 @@ export class Mage {
 
   /** Normal charge capacity: Blue grants one per word and Red removes one. */
   maxWordCharges(word: WordId): number {
+    if (word === 'storm') return 3;
     const blueBonus = this.profile.bluePrimaryTier ? 1 : 0;
     const redPenalty = this.profile.redPrimaryTier ? 1 : 0;
     return Math.max(1, WORDS[word].charges + blueBonus - redPenalty);
   }
 
   hasCharges(words: WordId[]): boolean {
-    return words.every((w) => (this.charges[w] ?? 0) > 0);
+    if (words.includes('storm')) {
+      if (!stormWordsCompatible(words)) return false;
+      if (words.length === 1) {
+        if (this.stormMonocastsUsed >= 2 || this.stormLoadedWords.length === 0) return false;
+      } else if (this.stormDualcastsUsed >= 3) return false;
+    }
+    return words.every((word) => word === 'storm' || (this.charges[word] ?? 0) > 0);
   }
 
   spendCharges(words: WordId[]): void {
-    for (const w of words) {
-      this.charges[w] = Math.max(0, (this.charges[w] ?? 0) - 1);
+    if (words.includes('storm')) {
+      if (words.length === 1) this.stormMonocastsUsed += 1;
+      else if (words.length === 2) this.stormDualcastsUsed += 1;
     }
+    for (const word of words) {
+      if (word === 'storm') continue;
+      this.charges[word] = Math.max(0, (this.charges[word] ?? 0) - 1);
+    }
+  }
+
+  recordStormDualcast(word: WordId): void {
+    if (stormWordsCompatible(['storm', word]) && this.stormLoadedWords.length < 3) {
+      this.stormLoadedWords.push(word);
+    }
+  }
+
+  startStormDay(day: number): void {
+    if (this.shikigami && this.shikigami.day !== day) this.releaseShikigami();
+    if (day === this.stormDay) return;
+    this.stormDay = day;
+    this.stormDualcastsUsed = 0;
+    this.stormMonocastsUsed = 0;
+    this.stormLoadedWords = [];
   }
 
   /** Mantle of Eldritch Truth (Restore): grant `n` charges of each loadout word. */
@@ -1454,9 +1489,21 @@ export class Mage {
     return true;
   }
 
-  /** Is weapon/item `id` disabled for this mage by a Needle of Serenity? */
+  /** Is weapon/item `id` disabled for this mage by a Needle of Serenity, or a carried item given to the Shikigami? */
   isItemBanned(id: ItemId): boolean {
-    return this.bannedItemIds.has(id);
+    return this.bannedItemIds.has(id) || (this.itemsSacrificed() && this.utility.includes(id));
+  }
+
+  /** The use of carried items was given to the Shikigami for the day. */
+  itemsSacrificed(): boolean {
+    return !!this.shikigami?.itemsPaid;
+  }
+
+  /** The Shikigami leaves with the day, giving back the health it was offered. */
+  releaseShikigami(): void {
+    if (!this.shikigami) return;
+    this.maxHp += this.shikigami.lifePaid;
+    this.shikigami = undefined;
   }
 
   /** Is colour-ability `id` disabled for this mage by a Needle of Serenity? */

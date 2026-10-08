@@ -8,8 +8,9 @@
 
 import { FIELD } from '../../config/constants';
 import type { Dice } from '../../core/Dice';
+import { MINE_ENEMY_DEFS, mineEnemyLevel, type MineEnemyKind } from '../minerun';
+import type { EnemyKind } from '../swamprun';
 import type { EncounterKind, EncounterSpawn, EncounterZone } from './encounters';
-import { foe, type FoeKind } from './eventKit';
 import type { SceneFight, SceneProp, SceneSide, SceneUnit, SceneUnitKind } from './sceneFight';
 import { WAYSIDE_KINDS, type WaysideKind } from './shops';
 
@@ -17,6 +18,13 @@ import { WAYSIDE_KINDS, type WaysideKind } from './shops';
 export const SCENE_CHANCE = 0.3;
 /** Offsets the step dice that stage a scene from every other roll of that step. */
 export const SCENE_SALT = 1_000_003;
+
+export type FoeKind = EnemyKind | MineEnemyKind;
+
+export const foe = (kind: FoeKind, depth: number): EncounterSpawn =>
+  kind in MINE_ENEMY_DEFS
+    ? { family: 'mine', spec: { kind: kind as MineEnemyKind, level: mineEnemyLevel(depth) } }
+    : { family: 'swamp', kind: kind as EnemyKind };
 
 interface Built {
   /** What the party sees as it comes on the scene, and the fight's first log line. */

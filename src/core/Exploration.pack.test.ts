@@ -1,6 +1,7 @@
 import { dealDamage } from '../effects/effects';
 import { RANGE_UNIT } from '../config/constants';
 import { dmg } from './Damage';
+import { Dice } from './Dice';
 import { GameState } from './GameState';
 import { getItem, staffDice, type ItemId, type StaffBolt } from './Items';
 import { Mage } from './Mage';
@@ -8,6 +9,7 @@ import { packCapacity, packFits, packSlotsUsed, slotsFor, slotsForCount, stackSi
 import type { Spell } from '../spells/Spell';
 import { BOSSES, MOONSHARD } from '../pve/exploration/bloodmoon';
 import { buyItem, dropItem, grantToParty, partyOf, sellItem, sellOffers, shopStock, withParty } from '../pve/exploration/economy';
+import { rollExploreFindLoot } from '../pve/exploration/finds';
 import { enterMines, markMineKnown, mineCycle, minePassageDice, parseExplorationMines } from '../pve/exploration/mines';
 import { capturePartySnapshot } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
@@ -100,6 +102,67 @@ const tests: [name: string, run: () => void][] = [
     equal(grantToParty(run, 'herbMoonglow', 2), 2, 'both herbs stay on the ground');
     equal(grantToParty(run, 'oreIron', 2), 0, 'iron joins its stack');
     equal(partyOf(run)[0].bag.filter((id) => id === 'oreIron').length, 3, 'three iron now');
+  }],
+
+  ['keeps an open-world find available until a pack slot is freed', () => {
+    const run = freshRun(23);
+    withParty(run, (mage) => {
+      mage.statStrength = 1000;
+      mage.hands.push('ironShortsword', 'huntingBow');
+      mage.head = 'ironCap';
+      mage.torso = 'paddedJerkin';
+      mage.boots = 'leatherBoots';
+      mage.accessories.push('copperRing', 'ironBand');
+      mage.bag.push(...TEN_KINDS);
+    });
+    const loot = rollExploreFindLoot(run, 'forest', 11, undefined, new Dice(23));
+    assert(loot?.left === 1, 'the crafted find waits when every pack slot is filled');
+    assert(!partyOf(run)[0].bag.includes(loot.item), 'the item was not silently granted');
+    assert(dropItem(run, 'oreCoal').ok, 'the player can free a slot');
+    equal(grantToParty(run, loot.item, loot.left), 0, 'the original find fits after dropping something');
+    assert(partyOf(run)[0].bag.includes(loot.item), 'the same find is now carried');
+  }],
+
+  ['lets a traveller make weight for the same open-world find', () => {
+    const run = freshRun(24);
+    withParty(run, (mage) => {
+      mage.statStrength = 0;
+      mage.bag.push('pickaxe', 'pickaxe', 'pickaxe', 'pickaxe');
+    });
+    const loot = rollExploreFindLoot(run, 'forest', 11, undefined, new Dice(23));
+    assert(loot?.left === 1, 'the crafted find is too heavy despite free slots');
+    assert(packSlotsUsed(partyOf(run)[0]) < packCapacity(partyOf(run)[0]), 'slots were not the limit');
+    assert(dropItem(run, 'pickaxe').ok, 'a carried item can be dropped');
+    equal(grantToParty(run, loot.item, loot.left), 0, 'the waiting find can now be carried');
+    assert(partyOf(run)[0].hands.includes(loot.item), 'the exact find was picked up');
+  }],
+
+  ['exchanges a carried item for a pickup only when the replacement fits', () => {
+    const mage = traveller();
+    mage.statStrength = 0;
+    mage.hands.push('pickaxe');
+    const game = new GameState([mage], 4);
+    assert(game.dropItem(mage, 'pickaxe'), 'place the pickup nearby');
+    const dropId = game.droppedItems[0].id;
+    while (mage.canCarry(getItem('pickaxe').weight)) mage.bag.push('pickaxe');
+    assert(!mage.canCarry(getItem('pickaxe').weight), 'pickup exceeds carry limit');
+    assert(game.canSwapDroppedItem(mage, dropId, 'pickaxe'), 'one discarded pickaxe frees enough weight');
+    assert(!game.swapDroppedItem(mage, dropId, 'smallBag'), 'cannot exchange an item not carried');
+    assert(game.swapDroppedItem(mage, dropId, 'pickaxe'), 'exchange succeeds');
+    assert(mage.hands.includes('pickaxe'), 'the pickup is held');
+    assert(!game.droppedItems.some((entry) => entry.id === dropId), 'original pickup is gone');
+    assert(game.droppedItems.some((entry) => entry.itemId === 'pickaxe'), 'discarded item stays on the ground');
+
+    mage.bag = [];
+    mage.hands.push('surgeStaff');
+    const nextDrop = game.droppedItems.find((entry) => entry.itemId === 'pickaxe')!;
+    assert(game.canSwapDroppedItem(mage, nextDrop.id, 'surgeStaff'), 'a held item can free a hand');
+    assert(game.swapDroppedItem(mage, nextDrop.id, 'surgeStaff'), 'full hands can exchange');
+    assert(mage.hands.includes('pickaxe') && !mage.hands.includes('surgeStaff'), 'the chosen hand item was exchanged');
+
+    mage.bag = [...TEN_KINDS, 'herbMoonglow'];
+    mage.utility.push('smallBag');
+    assert(!game.canSwapDroppedItem(mage, game.droppedItems[0].id, 'smallBag'), 'cannot discard a bag holding the extra slot');
   }],
 
   ['sells bags and the Minemap at every guild, the Minemap only once', () => {

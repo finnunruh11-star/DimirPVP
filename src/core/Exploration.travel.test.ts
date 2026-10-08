@@ -1,14 +1,18 @@
 import { RANGE_UNIT } from '../config/constants';
 import { wordSpellMana } from '../core/Colors';
 import { Dice } from '../core/Dice';
+import { getItem } from '../core/Items';
 import { Mage } from '../core/Mage';
+import { craftScore, designProblem } from '../core/crafting/craft';
+import { POWER_LEVELS } from '../core/crafting/data';
+import { parseCraftedId } from '../core/crafting/item';
 import type { WordId } from '../core/Words';
 import { isSandstorm, stormOnDay } from '../pve/exploration/desert';
 import { packExplored, revealTiles, unpackExplored } from '../pve/exploration/explored';
 import {
   AMBUSH_MAX_TILES, FIELD_RULES, fieldCombos, fieldHealAmount, fieldSpellMana, reachTiles,
 } from '../pve/exploration/fieldWords';
-import { rollFind } from '../pve/exploration/finds';
+import { HERBS, localCraftMaterials, rollExploreCraft, rollExploreFind, rollFind } from '../pve/exploration/finds';
 import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import {
@@ -18,7 +22,7 @@ import {
   rollTrip,
   TRAVEL_MODES,
 } from '../pve/exploration/travel';
-import { createWorld, line4, placeById, terrainAt } from '../pve/exploration/world';
+import { createWorld, placeById, terrainAt } from '../pve/exploration/world';
 import type { Cell } from '../world/pathfind';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -68,7 +72,6 @@ const tests: [name: string, run: () => void][] = [
     const onRoad = route.filter((cell) => ['road', 'bridge'].includes(terrainAt(world, cell.x, cell.y))).length;
     assert(onRoad / route.length > 0.7, `the Northway carries most of the trip (${onRoad}/${route.length})`);
     equal(findRoute(world, run, { x: 40, y: 48 }), null, 'nobody walks into the lake');
-    for (const id of ['nerogril', 'theocracy']) equal(findRoute(world, run, placeById(id)!), null, `${id} is behind the wall`);
   }],
 
   ['makes sneaking slow and safe, and exploring slow, risky and rich', () => {
@@ -162,6 +165,42 @@ const tests: [name: string, run: () => void][] = [
     }
   }],
 
+  ['exploring finds crafted gear of the rolled rarity, usually made from local materials', () => {
+    let localCount = 0;
+    let foreignCount = 0;
+    for (const zone of Object.keys(HERBS) as (keyof typeof HERBS)[]) {
+      const local = localCraftMaterials(zone);
+      for (const level of POWER_LEVELS) {
+        for (let seed = 1; seed <= 12; seed++) {
+          const id = rollExploreCraft(zone, level, new Dice(seed));
+          const spec = parseCraftedId(id);
+          assert(spec && !designProblem(spec), `${zone}: a valid crafted ${level.name} item`);
+          equal(craftScore(spec, spec.dice).total, spec.score, `${zone}: the crafting score is real`);
+          equal(getItem(id).crafted?.level.level, level.level, `${zone}: the item has the rolled rarity`);
+          equal(rollExploreCraft(zone, level, new Dice(seed)), id, 'the same exploration roll finds the same item');
+          if (level.level <= 4) {
+            for (const material of [...spec.parts, ...spec.sockets]) {
+              if (local.includes(material)) localCount++;
+              else foreignCount++;
+            }
+          }
+        }
+      }
+    }
+    assert(localCount > foreignCount * 4, `regional materials dominate (${localCount} local, ${foreignCount} foreign)`);
+    assert(foreignCount > 0, 'rare foreign materials also turn up');
+    const run = freshRun();
+    equal(rollExploreFind(run, 'forest', 10, undefined, new Dice(1)), null, 'a miss awards nothing');
+    for (const [roll, rare, level] of [[11, undefined, 1], [14, undefined, 2], [17, undefined, 3], [19, undefined, 4], [20, 1, 5], [20, 20, 6]] as const) {
+      const before = restoreParty(run.party)[0].bag.length + restoreParty(run.party)[0].hands.length;
+      const message = rollExploreFind(run, 'forest', roll, rare, new Dice(21));
+      const mage = restoreParty(run.party)[0];
+      const carried = [...mage.bag, ...mage.hands];
+      assert(message && carried.length > before, `a ${roll} find was granted: ${message}`);
+      assert(carried.some((id) => getItem(id).crafted?.level.level === level), `d20 ${roll} awards tier ${level}`);
+    }
+  }],
+
   ['blows sandstorms over the desert about every other day', () => {
     const run = freshRun(31);
     let stormy = 0;
@@ -186,7 +225,7 @@ const tests: [name: string, run: () => void][] = [
     const nerogril = placeById('nerogril')!;
     run.pos = { x: nerogril.x, y: nerogril.y };
     const theocracy = placeById('theocracy')!;
-    const route = line4(nerogril, theocracy);
+    const route = findRoute(world, run, theocracy)!;
     walked(run, route);
     const plan = planTrip(world, run, route, 'sprint');
     const first = plan.steps[0];

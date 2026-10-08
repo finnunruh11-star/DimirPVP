@@ -45,10 +45,11 @@ export const WORD_COLOR: Record<WordId, WordColor> = {
   channel: 'none',
 };
 
-/** Storm may amplify coloured words, but never another colourless word or modifier. */
+/** Storm is cast alone or paired with one red/blue word, never as a three-word spell. */
 export function stormWordsCompatible(words: readonly WordId[]): boolean {
   return !words.includes('storm') ||
-    words.every((word) => word === 'storm' || WORD_COLOR[word] !== 'none');
+    (words.length === 1 ||
+      (words.length === 2 && words.some((word) => WORD_COLOR[word] === 'red' || WORD_COLOR[word] === 'blue')));
 }
 
 /**
@@ -214,6 +215,7 @@ export function computeColorProfile(
  * spells / charges, handled elsewhere).
  */
 export function wordSpellMana(words: WordId[], profile: ColorProfile): number {
+  if (words.includes('storm') && words.length <= 2) return 0;
   let total = SPELL_MANA[comboKey(words)] ?? defaultSpellMana(words);
   if (profile.blackPrimaryTier) total += 2;
   if (profile.whitePrimaryTier) total -= 2;

@@ -533,6 +533,19 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(craftItem(fallen, FORGE.id, SWORD, null, 'objects').message, 'Smith has fallen.', 'the fallen do not craft');
   }],
 
+  ['crafting follows the chosen class, not the party identifier', () => {
+    const run = workshopRun();
+    withParty(run, (_leader, party) => {
+      party[0].calling = 'life';
+      party[1].calling = 'objects';
+    });
+    equal(craftersIn(run).map((mage) => mage.name), ['Healer'], 'only the Objects calling can use the bench');
+    equal(craftersIn(run, 'objects'), [], 'the former Objects mage cannot use the bench');
+    equal(craftItem(run, FORGE.id, SWORD, null, 'objects').message, 'Only an Objects mage can craft.', 'the former Objects mage cannot craft');
+    equal(applyIntent(run, 'objects', { op: 'craft', shop: FORGE.id, design: SWORD }).message, 'Only an Objects mage can craft.', 'the former Objects mage cannot craft over the wire');
+    equal(craftItem(run, FORGE.id, SWORD, 'life').message.startsWith('Needs 1x'), true, 'the Objects caller reaches material checks');
+  }],
+
   ['a craft travels the wire as an intent', () => {
     const intent = { op: 'craft', shop: FORGE.id, design: SWORD };
     equal(parseIntent(intent), intent, 'a sound craft');

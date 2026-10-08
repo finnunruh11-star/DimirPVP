@@ -19,7 +19,7 @@
 
 import { FIELD } from '../config/constants';
 import { Dice } from './Dice';
-import type { ColorName } from './Colors';
+import { stormWordsCompatible, type ColorName } from './Colors';
 import type { MageClass } from './Classes';
 import { MAGE_CLASSES, toMageClass } from './Classes';
 import { asItemIds, type ItemId } from './Items';
@@ -146,6 +146,8 @@ export interface ScenarioEntity {
     maxColorCharges: number;
   };
   charges: Record<string, number>;
+  storm?: { day: number; dualcastsUsed: number; monocastsUsed: number; loaded: WordId[] };
+  shikigami?: { points: number; day: number; lifePaid: number; itemsPaid: boolean };
   abilityCastsUsed: Record<string, number>;
   actions: { move: number; main: number; bonus: number };
   gear: {
@@ -293,6 +295,13 @@ function captureEntity(m: Mage, index: Map<Mage, number>): ScenarioEntity {
       maxColorCharges: m.maxColorCharges,
     },
     charges: { ...m.charges },
+    storm: {
+      day: m.stormDay,
+      dualcastsUsed: m.stormDualcastsUsed,
+      monocastsUsed: m.stormMonocastsUsed,
+      loaded: [...m.stormLoadedWords],
+    },
+    shikigami: m.shikigami ? { ...m.shikigami } : undefined,
     abilityCastsUsed: { ...m.abilityCastsUsed },
     actions: { ...m.actions },
     gear: {
@@ -534,6 +543,8 @@ function parseEntity(raw: unknown): ScenarioEntity {
   const maxSanity = int(vitals.maxSanity, 20, 1, BIG);
   const maxLuck = int(vitals.maxLuck, 0, 0, BIG);
   const maxColorCharges = int(vitals.maxColorCharges, 12, 0, BIG);
+  const storm = isRecord(e.storm) ? e.storm : {};
+  const shikigami = isRecord(e.shikigami) ? e.shikigami : null;
   const role = mine?.role;
   return {
     name: str(e.name, 'Entity') || 'Entity',
@@ -564,6 +575,20 @@ function parseEntity(raw: unknown): ScenarioEntity {
       maxColorCharges,
     },
     charges: numberRecord(e.charges),
+    storm: {
+      day: int(storm.day, 1, 1, BIG),
+      dualcastsUsed: int(storm.dualcastsUsed, 0, 0, 3),
+      monocastsUsed: int(storm.monocastsUsed, 0, 0, 2),
+      loaded: words(storm.loaded).filter((word) => stormWordsCompatible(['storm', word])).slice(0, 3),
+    },
+    shikigami: shikigami
+      ? {
+          points: int(shikigami.points, 0, 0, BIG),
+          day: int(shikigami.day, 1, 1, BIG),
+          lifePaid: int(shikigami.lifePaid, 0, 0, 12),
+          itemsPaid: bool(shikigami.itemsPaid, false),
+        }
+      : undefined,
     abilityCastsUsed: numberRecord(e.abilityCastsUsed),
     actions: {
       move: int(actions.move, 1, 0, 99),
@@ -765,6 +790,11 @@ function buildMage(e: ScenarioEntity, rng: Dice): Mage {
   m.maxColorCharges = e.vitals.maxColorCharges;
   m.colorCharges = e.vitals.colorCharges;
   m.charges = { ...e.charges };
+  m.stormDay = e.storm?.day ?? 1;
+  m.stormDualcastsUsed = e.storm?.dualcastsUsed ?? 0;
+  m.stormMonocastsUsed = e.storm?.monocastsUsed ?? 0;
+  m.stormLoadedWords = [...(e.storm?.loaded ?? [])];
+  m.shikigami = e.shikigami ? { ...e.shikigami } : undefined;
   m.abilityCastsUsed = { ...e.abilityCastsUsed };
   m.actions = { ...e.actions };
 

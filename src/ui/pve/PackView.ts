@@ -52,8 +52,10 @@ export class PackView extends Phaser.GameObjects.Container {
     scene: Phaser.Scene,
     private readonly run: ExplorationRun,
     private readonly hooks: { changed(): void; close(): void; actions: ExplorationActions },
+    private readonly pendingFind?: ItemId,
   ) {
     super(scene, 0, 0);
+    if (pendingFind) this.mode = 'drop';
     scene.add.existing(this);
     this.setDepth(120);
     this.sceneInput = new SceneInput(scene);
@@ -110,6 +112,13 @@ export class PackView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.bone,
     }));
+    if (this.pendingFind) this.add(scene.add.text(424, 48, `PICKUP WAITING  /  ${getItem(this.pendingFind).name}`, {
+      fontFamily: MENU_FONT.control,
+      fontSize: '14px',
+      color: MENU_HEX.brassLight,
+      fixedWidth: 640,
+      align: 'right',
+    }));
 
     // The inspector must exist before the first button takes focus and writes to it.
     addRecess(scene, this, 58, 586, 1164, 82, MENU_COLOR.woodDeep);
@@ -119,7 +128,9 @@ export class PackView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.brassLight,
     });
-    this.inspectorBody = scene.add.text(76, 614, 'Choose worn gear to stow it, or carried gear to equip it.', {
+    this.inspectorBody = scene.add.text(76, 614, this.pendingFind
+      ? `Drop carried gear to make room for ${getItem(this.pendingFind).name}, then close the pack to pick it up.`
+      : 'Choose worn gear to stow it, or carried gear to equip it.', {
       fontFamily: MENU_FONT.body,
       fontSize: '12px',
       color: MENU_HEX.boneDim,

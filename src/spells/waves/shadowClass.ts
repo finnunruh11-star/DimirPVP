@@ -2,7 +2,8 @@
 //  SHADOW WAVE · CLASS SPELLS
 // -----------------------------------------------------------------------------
 //  Life / Objects / Hexcraft versions of the all-noun Shadow combos not covered
-//  yet (Mind Shadow lives in mindClass.ts, the Water ones in waterClass.ts).
+//  yet (Mind Shadow lives in mindClass.ts, the Water ones in waterClass.ts,
+//  the Death ones in deathClass.ts).
 //  Shadow is black and amplifies: the two-word Objects are trinkets that make
 //  their other word stronger, the laws make it stronger for everyone, and the
 //  minions lean on shadow damage. Only now and then do they care whether a
@@ -15,7 +16,6 @@ import { castPower, imbue, law, minion, variants } from './classWave';
 const DUSK = 0x6a5acd;
 const EMBER = 0xc0502a;
 const DREAD = 0x8a3b6b;
-const GRAVE = 0x5b4a6b;
 const ASH = 0x9a8f8a;
 const NERVE = 0xb86bd8;
 const SEAR = 0xd1475c;
@@ -99,33 +99,6 @@ variants(
     text:
       'every sanity hit echoes: every other unit within 2cm of its victim, allies included, takes half as much ' +
       'sanity (rounded down).',
-  })
-);
-
-variants(
-  ['death', 'shadow'],
-  minion('grave-shade', {
-    dc: 12,
-    color: GRAVE,
-    text:
-      'It is immune to shadow. Its touch deals 1d4 shadow and marks the target with 1 Reap, 3 if it stands in a shadow. At the start of your ' +
-      'turns, if an enemy stands in one of your shadows, it steps out of that shadow beside the nearest such enemy. ' +
-      'When it dies, every enemy within 3cm of it gains 2 Reap.',
-  }),
-  imbue('blackSigil', {
-    dc: 12,
-    ally: true,
-    color: GRAVE,
-    text:
-      'For the rest of the fight, every Reap the bearer marks a unit with is 1 higher, and its executions reach 2 ' +
-      'more health.',
-  }),
-  law('longNight', {
-    dc: 13,
-    color: GRAVE,
-    text:
-      'every Reap stack counts double: a unit dies at or below twice its Reap, and executions reach 4 more health ' +
-      'per Reap instead of 2.',
   })
 );
 
@@ -238,31 +211,5 @@ variants(
     dc: 13,
     color: DREAD,
     text: 'every sanity hit deals 1 more for every word or deed its victim has forgotten.',
-  })
-);
-
-variants(
-  ['death', 'shadow', 'pain'],
-  minion('banshee', {
-    dc: 13,
-    color: GRAVE,
-    text:
-      'It cannot attack and is immune to shadow. At the start of your turns it wails: every unit within 3cm of it but you, allies included, ' +
-      'takes 1d6 sanity, and one left at half its sanity or less gains 2 Reap.',
-  }),
-  imbue('shroudOfMourning', {
-    dc: 13,
-    ally: true,
-    color: GRAVE,
-    text:
-      'For the rest of the fight, a unit landing a basic attack on the bearer takes 1d4 sanity and gains 1 Reap, 3 ' +
-      'if it is at half its sanity or less.',
-  }),
-  law('dyingLight', {
-    dc: 13,
-    color: GRAVE,
-    text:
-      'every sanity hit of 4 or more marks its victim with 1 Reap, and a unit at half its sanity or less that starts ' +
-      'its turn in a shadow gains 2 Reap.',
   })
 );

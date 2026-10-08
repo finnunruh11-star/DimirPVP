@@ -11,6 +11,8 @@ import { bountyProgress } from '../pve/exploration/bounties';
 import { dayNews } from '../pve/exploration/calendar';
 import { levelsOwed } from '../pve/exploration/coop';
 import { memberIn, money, partyOf } from '../pve/exploration/economy';
+import { getItem, type ItemId } from '../core/Items';
+import type { AdventureSession } from '../net/AdventureSession';
 import type { ExplorationActions } from '../pve/exploration/intents';
 import { armsLines } from '../pve/exploration/arms';
 import type { ExplorationRun } from '../pve/exploration/run';
@@ -795,7 +797,7 @@ export class LocaleHudScene extends Phaser.Scene {
     });
   }
 
-  openPack(run: ExplorationRun, changed: () => void, actions: ExplorationActions): Promise<void> {
+  openPack(run: ExplorationRun, changed: () => void, actions: ExplorationActions, pendingFind?: ItemId): Promise<void> {
     return this.hold<void>((done) => {
       const view: PackView = new PackView(this, run, {
         changed,
@@ -808,7 +810,7 @@ export class LocaleHudScene extends Phaser.Scene {
           view.destroy();
           done();
         },
-      });
+      }, pendingFind);
       this.window = view;
       this.windowClose = () => {
         if (this.window !== view) return;
@@ -924,6 +926,81 @@ export class LocaleHudScene extends Phaser.Scene {
         view.destroy();
         done(cancel);
       } : undefined);
+    });
+  }
+
+  openTrade(session: AdventureSession, run: ExplorationRun, place: string): Promise<void> {
+    return this.hold<void>((done) => {
+      let view: ChoiceMenuView<string> | null = null;
+      let closed = false;
+      let joined = false;
+      let page = 0;
+      const finish = (): void => {
+        if (closed) return;
+        closed = true;
+        offCouncil();
+        offRun();
+        view?.destroy();
+        done();
+      };
+      const render = (): void => {
+        if (closed) return;
+        const trade = session.council.trade;
+        const me = session.localSeat;
+        if (!trade || trade.place !== place || (trade.by !== me && trade.with !== me)) {
+          if (joined || (trade && (trade.place !== place || trade.with != null))) return finish();
+          view?.destroy();
+          const cancel = (): void => { session.say({ op: 'trade-cancel' }); finish(); };
+          view = new ChoiceMenuView<string>(this, 'PLAYER TRADE', 'Waiting for the host...', [{ id: 'close', label: 'Back', detail: '' }], cancel, cancel);
+          return;
+        }
+        joined = true;
+        const other = trade.by === me ? trade.with : trade.by;
+        const mine = trade.offers[me];
+        const theirs = other == null ? [] : trade.offers[other];
+        const owner = session.member ? memberIn(run, session.member) : undefined;
+        const carried = [...(owner?.bag ?? []), ...(owner?.utility ?? [])];
+        const items: { id: string; label: string; detail: string; enabled?: boolean }[] = [];
+        const seen = new Set<ItemId>();
+        for (const id of carried) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const def = getItem(id);
+          if (def.permanentlyBinding || def.hpMult != null || def.hpFlat != null || def.sanityMult != null) continue;
+          const quantity = carried.filter((entry) => entry === id).length;
+          const offered = mine.filter((entry) => entry === id).length;
+          if (offered < quantity && mine.length < 8) items.push({ id: `add:${id}`, label: `+ ${def.name}  ${offered}/${quantity}`, detail: 'Add one to offer' });
+          if (offered) items.push({ id: `remove:${id}`, label: `- ${def.name}  ${offered}/${quantity}`, detail: 'Remove one from offer' });
+        }
+        page = Math.min(page, Math.max(0, Math.ceil(items.length / 4) - 1));
+        const options = items.slice(page * 4, page * 4 + 4);
+        if (page > 0) options.push({ id: 'previous', label: 'Previous items', detail: '' });
+        if ((page + 1) * 4 < items.length) options.push({ id: 'next', label: 'More items', detail: '' });
+        if (other != null) options.push({ id: 'ready', label: trade.ready[me] ? 'Confirmed' : 'Confirm exchange', detail: 'Both players must confirm the displayed offers.', enabled: !trade.ready[me] });
+        options.push({ id: 'close', label: 'Close stall', detail: 'Cancel without moving items.' });
+        const label = (items: readonly ItemId[]): string => items.length ? items.map((id) => getItem(id).name).join(', ') : 'Nothing (gift)';
+        const subtitle = other == null ? 'Waiting for another player to join.'
+          : `Your offer: ${label(mine)}\n${session.nameOf(other)}: ${label(theirs)}\n${trade.ready[me] ? 'You confirmed. ' : ''}${trade.ready[other] ? 'They confirmed.' : 'Waiting for their confirmation.'}`;
+        view?.destroy();
+        view = new ChoiceMenuView<string>(this, 'PLAYER TRADE', subtitle, options, (id) => {
+          if (id === 'close') session.say({ op: 'trade-cancel' });
+          else if (id === 'ready') session.say({ op: 'trade-ready' });
+          else if (id === 'previous') page -= 1;
+          else if (id === 'next') page += 1;
+          else if (id.startsWith('add:') || id.startsWith('remove:')) {
+            const item = id.slice(id.indexOf(':') + 1) as ItemId;
+            const next = [...mine];
+            const index = next.indexOf(item);
+            if (id.startsWith('remove:') && index >= 0) next.splice(index, 1);
+            else if (id.startsWith('add:') && next.length < 8 && next.filter((entry) => entry === item).length < carried.filter((entry) => entry === item).length) next.push(item);
+            session.say({ op: 'trade-offer', items: next });
+          }
+          if (id === 'previous' || id === 'next') render();
+        }, () => session.say({ op: 'trade-cancel' }));
+      };
+      const offCouncil = session.on('x-council', render);
+      const offRun = session.on('x-run', render);
+      render();
     });
   }
 }

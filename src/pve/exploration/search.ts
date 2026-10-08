@@ -1,6 +1,6 @@
 // Searching the country round you. The searcher says what they are after: a
-// resource, a creature, or whatever is going on nearby. One d20 decides it, helped
-// by their knack for it (Int for resources, Dex for tracking, Luck for events).
+// resource or a creature. One d20 decides it, helped by their knack for it
+// (Int for resources, Dex for tracking).
 // What belongs to the ground is found far more easily than what does not, every
 // search of the same ground on the same day makes the next one harder, and a roll
 // that falls just short still turns up something good. Pure and seeded.
@@ -29,7 +29,7 @@ import { GEMS, HERBS, ORES } from './finds';
 import type { ExplorationRun } from './run';
 import { createWorld, depthAt, REGIONS, regionAt, TERRAIN, terrainAt, type RegionId } from './world';
 
-export type SearchCategory = 'resource' | 'creature' | 'events';
+export type SearchCategory = 'resource' | 'creature';
 /** How much a target belongs where the search is made. */
 export type SearchStanding = 'native' | 'scarce' | 'foreign';
 export type ResourceKind = 'herb' | 'gem' | 'ore';
@@ -38,7 +38,7 @@ export type SearchStat = 'int' | 'dex' | 'luck';
 
 export interface SearchTarget {
   category: SearchCategory;
-  /** An item id, a creature kind, or 'events'. */
+  /** An item id or a creature kind. */
   id: string;
   label: string;
   standing: SearchStanding;
@@ -64,12 +64,11 @@ export const NEAR_MISS = 5;
 export const PICKED_OVER = 2;
 /** Extra DC for anything that does not belong where it is sought. */
 export const FOREIGN_DC = 8;
-export const SEARCH_STAT: Record<SearchCategory, SearchStat> = { resource: 'int', creature: 'dex', events: 'luck' };
+export const SEARCH_STAT: Record<SearchCategory, SearchStat> = { resource: 'int', creature: 'dex' };
 export const STAT_LABEL: Record<SearchStat, string> = { int: 'Int', dex: 'Dex', luck: 'Luck' };
 
 const RESOURCE_DC: Record<ResourceKind, number> = { herb: 10, ore: 12, gem: 14 };
 const CREATURE_DC: Record<SearchStanding, number> = { native: 11, scarce: 15, foreign: 19 };
-const EVENTS_DC = 8;
 const MAX_BONUS = 6;
 
 const REGION_IDS: readonly RegionId[] = ['capitol', 'forest', 'red', 'black', 'lake', 'white'];
@@ -158,20 +157,12 @@ export function searchTargets(run: ExplorationRun, tile: Cell): Record<SearchCat
       home: regionList(REGION_IDS.filter((region) => creatureStanding(region, kind, 10) !== 'foreign')),
     };
   }).filter((target) => target.standing !== 'foreign').sort(byStanding);
-  const events: SearchTarget[] = [{
-    category: 'events',
-    id: 'events',
-    label: 'Anything nearby',
-    standing: 'native',
-    dc: EVENTS_DC + extra,
-    home: 'Travellers, ruins, trouble: whatever the country holds today.',
-  }];
-  return { resource, creature, events };
+  return { resource, creature };
 }
 
 /** One target as sought here, or null when there is no such thing. */
 export function findSearchTarget(run: ExplorationRun, tile: Cell, category: unknown, id: unknown): SearchTarget | null {
-  if (category !== 'resource' && category !== 'creature' && category !== 'events') return null;
+  if (category !== 'resource' && category !== 'creature') return null;
   return searchTargets(run, tile)[category].find((target) => target.id === id) ?? null;
 }
 
@@ -254,7 +245,7 @@ export function searchShelves(run: ExplorationRun, tile: Cell, searcher: Mage | 
       };
     });
   };
-  return { resource: shelf('resource'), creature: shelf('creature'), events: shelf('events') };
+  return { resource: shelf('resource'), creature: shelf('creature') };
 }
 
 // -----------------------------------------------------------------------------
@@ -330,13 +321,11 @@ export interface SearchResolution {
   levels: number;
   /** A creature was tracked down: the group, still unaware of the searcher. */
   pack?: { spawns: EncounterSpawn[]; label: string; zone: RegionId; depth: number };
-  /** Something is going on nearby: the caller plays an event. */
-  event?: boolean;
 }
 
 /**
  * Search `tile` for `target` as `member` with `bonus`. Resources and lucky turns
- * are handed out here; a tracked pack or an event is the caller's to play.
+ * are handed out here; a tracked pack is the caller's to play.
  * The caller moves the clock on.
  */
 export function resolveSearch(run: ExplorationRun, tile: Cell, target: SearchTarget, member: MageClass | null, bonus: number, dice: Dice): SearchResolution {
@@ -350,11 +339,9 @@ export function resolveSearch(run: ExplorationRun, tile: Cell, target: SearchTar
       const label = describeSpawns(spawns);
       return { roll, message: `Tracks lead to ${label}. They have not noticed you.`, levels: 0, pack: { spawns, label, zone: site.zone, depth: site.depth } };
     }
-    return { roll, message: 'Something is going on nearby.', levels: 0, event: true };
   }
   if (roll.outcome === 'near') return { roll, ...luckyTurn(run, member, site.zone, dice) };
-  const miss = target.category === 'events' ? 'All quiet. Nothing is going on here.'
-    : target.category === 'creature' ? `No sign of any ${target.label}.`
+  const miss = target.category === 'creature' ? `No sign of any ${target.label}.`
     : `No ${target.label} here.`;
   return { roll, message: miss, levels: 0 };
 }

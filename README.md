@@ -64,12 +64,16 @@ For online, LAN, Creative Swamprun, and Campaign hosting instructions, see
 
 Enemies and Life summons without authored sheets use shared pixel-art families.
 The assignments live in [creatureLooks.ts](src/visuals/creatureLooks.ts), with
-body shapes and animation poses in [creatures.ts](src/visuals/creatures.ts).
+authored pixel maps in [creaturePixels.ts](src/visuals/creaturePixels.ts) and
+jointed animation poses in [creatures.ts](src/visuals/creatures.ts). The raised
+three-quarter view uses staggered feet and shaded far limbs. Eight-frame idles
+bounce with delayed head and arm motion; weapons follow the hand through
+wind-up, swing, and recovery. Goblin boss and roadside art use the same rig.
 Existing authored sprites take precedence. Generated sheets are cached by
 appearance and built only when needed, without changing combat or save data.
 Hydra artwork follows its current head count, and Sentinel accents show its role.
 
-Run `npm run test:creatures` to check roster coverage, frame bounds, loop seams,
+Run `npm run test:creatures` to check roster coverage, joint motion, swing range, frame bounds, loop seams,
 attack/hurt recovery, and completed death animations. This also runs before
 `npm test`. New creature kinds should receive an explicit family assignment.
 

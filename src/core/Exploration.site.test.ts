@@ -74,10 +74,9 @@ function enter(run: ExplorationRun, site: EncounterSite): void {
 }
 
 const tests: [name: string, run: () => void][] = [
-  ['turns herbs, packs and caches into sites, and leaves events on the map', () => {
+  ['turns herbs, packs and caches into sites', () => {
     const run = freshRun();
     const cell = SPOTS[0];
-    assert(createSite(run, sighting('event', cell)) === null, 'events stay on the map');
     const a = createSite(run, sighting('herbs', cell));
     const b = createSite(run, sighting('herbs', cell));
     equal(a, b, 'the same sighting makes the same site');

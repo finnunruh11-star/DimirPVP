@@ -100,7 +100,7 @@ export function addJourneyStrip(scene: Phaser.Scene, parent: Phaser.GameObjects.
     }).setOrigin(1, 0),
     scene.add.text(xpX + 14, top + 46, pending > 0
       ? `Level up! ${pending > 1 ? `${pending} rewards` : 'A reward'} to choose`
-      : `${Math.max(0, view.next - view.xp)} XP to level ${view.level + 1}`, {
+      : view.xp >= view.next ? 'Level ready at long rest' : `${view.next - view.xp} XP to level ${view.level + 1}`, {
       fontFamily: MENU_FONT.control, fontSize: '11px', fontStyle: pending > 0 ? 'bold' : 'normal',
       color: pending > 0 ? '#f0d27a' : MENU_HEX.boneDim,
     }),

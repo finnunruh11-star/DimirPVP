@@ -1,5 +1,6 @@
 import { Dice, type RollResult } from './Dice';
 import { Mage } from './Mage';
+import { packFits } from './Pack';
 import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
 import { applyMindLightningStack, mindLightningBoltTarget, mindLightningDamage } from '../spells/mindLightning';
@@ -56,6 +57,7 @@ import {
   lawOnDeath,
   lawOnRoot,
   lawOnShoved,
+  lawOnTurned,
   lawOnVeilBroken,
   lawOnVeilGained,
   lawQuarantines,
@@ -71,7 +73,6 @@ import {
   minionStruck,
   onDeclare,
   reapBonus,
-  reapWeight,
   runDeath,
   runHitEffects,
   runPulse,
@@ -81,6 +82,16 @@ import {
   type HitEffect,
   type LawPrep,
 } from '../effects/classKit';
+import {
+  cheatDeath,
+  deathLawEnds,
+  deathRites,
+  deathWordFell,
+  shoulderExecutes,
+  shoulderTurn,
+  UNTAMED,
+  woundRites,
+} from '../effects/deathKit';
 import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_TURNS } from '../pve/goblins';
 import { BARAL_MARK, DENIAL_RELOCATION_DAMAGE, DENIAL_STIFLE_MILL, denialArmed } from '../pve/baral';
 import { applyMineEnemyTraits, type MineEnemyKind } from '../pve/minerun';
@@ -439,6 +450,26 @@ export class GameState {
   round = 1;
   stack: StackItem[] = [];
   rng: Dice;
+  private mindStormQueue: Mage[] = [];
+  private mindStormRollStack: boolean[] = [];
+
+  queueMindStorm(caster: Mage): void {
+    this.mindStormQueue.push(caster);
+  }
+
+  beginMindStormAction(actor: Mage): void {
+    this.mindStormRollStack.push(this.rng.consistentRolls);
+    this.rng.consistentRolls = false;
+    const caster = this.mindStormQueue.shift();
+    if (!caster) return;
+    this.log(`Mind Storm steadies ${actor.name}'s next action.`);
+    dealDamage(this.effectContext(caster, actor, null), actor, dmg(2, 'sanity'), { canMiss: false });
+    this.rng.consistentRolls = true;
+  }
+
+  endMindStormAction(): void {
+    this.rng.consistentRolls = this.mindStormRollStack.pop() ?? false;
+  }
 
   /**
    * Initiative turn order: mage indices sorted by their start-of-match roll
@@ -584,7 +615,7 @@ export class GameState {
    */
   showRoll(spec: string, label: string, target?: Mage): RollResult {
     const result = this.rng.roll(spec);
-    this.vfxSink?.diceRoll(spec, result.total, result.rolls, label, target);
+    this.vfxSink?.diceRoll(this.rng.consistentSpec(spec), result.total, result.rolls, label, target);
     return result;
   }
 
@@ -719,6 +750,7 @@ export class GameState {
    */
   canCommandSummon(owner: Mage, summon: Mage): boolean {
     if (summon.summonKind === 'silencing-spike') return false;
+    if (UNTAMED.has(summon.summonKind ?? '')) return false;
     if (summon.summonKind === 'remnant' && owner.mana < 3) return false;
     return true;
   }
@@ -1036,7 +1068,7 @@ export class GameState {
           };
           const barrier = game.clampToBarriers(origin, fieldDest);
           const mutivarg = game.clampToMutivargZones(knight, origin, barrier.dest);
-          const destination = game.clampToMages(knight, origin, mutivarg.dest);
+          const destination = game.nearestFreePosition(knight, game.clampToMages(knight, origin, mutivarg.dest), origin, true);
           knight.x = destination.x;
           knight.y = destination.y;
           game.notifyMageRelocation(knight, origin, destination, true);
@@ -1050,14 +1082,18 @@ export class GameState {
           const dy = attacker.y - knight.y;
           const length = Math.hypot(dx, dy) || 1;
           const spacing = knight.bodyRadius() + attacker.bodyRadius() + 12;
-          attacker.x = Math.min(
-            FIELD.x + FIELD.w,
-            Math.max(FIELD.x, knight.x + (dx / length) * spacing)
-          );
-          attacker.y = Math.min(
-            FIELD.y + FIELD.h,
-            Math.max(FIELD.y, knight.y + (dy / length) * spacing)
-          );
+          const landing = game.nearestFreePosition(attacker, {
+            x: Math.min(
+              FIELD.x + FIELD.w,
+              Math.max(FIELD.x, knight.x + (dx / length) * spacing)
+            ),
+            y: Math.min(
+              FIELD.y + FIELD.h,
+              Math.max(FIELD.y, knight.y + (dy / length) * spacing)
+            ),
+          });
+          attacker.x = landing.x;
+          attacker.y = landing.y;
           game.notifyMageRelocation(attacker, origin, attacker.pos, false);
           game.log(`${knight.name} drags ${attacker.name} directly in front of its spear.`);
         }
@@ -1248,6 +1284,7 @@ export class GameState {
     this.applyTotemAuras(m);
     this.applyOwnedSummonAuras(m);
     this.applyMinionPulses(m);
+    shoulderTurn(this, m);
     this.applySandSummonUpkeep(m);
     this.applyAuraDots(m);
     this.applyBindCurseAuras(m);
@@ -1594,6 +1631,7 @@ export class GameState {
     this.notifyMageRelocation(target, origin, turn.dest, true, turn.path);
     this.updateAttachedScarabs();
     this.dropTrailShadows(target);
+    lawOnTurned(this, target);
     return { moved: true, slammed: turn.wallSlam };
   }
 
@@ -3373,8 +3411,12 @@ export class GameState {
     if (!snap || !m.alive) return false;
     if (!this.isImmovable(m) && !m.displacementImmune) {
       const origin = m.pos;
-      m.x = Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, snap.x));
-      m.y = Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, snap.y));
+      const landing = this.nearestFreePosition(m, {
+        x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, snap.x)),
+        y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, snap.y)),
+      });
+      m.x = landing.x;
+      m.y = landing.y;
       this.notifyMageRelocation(m, origin, m.pos, false);
       this.vfxSink?.blink?.(origin, m.pos, 0xff5599);
     }
@@ -3758,6 +3800,16 @@ export class GameState {
     return this.hexcraftGlobals.length > 0 && lawBlocksHealing(this, target);
   }
 
+  /** Death's rites may refuse a death that just landed: true leaves `target` standing. */
+  cheatDeath(target: Mage, source: Mage): boolean {
+    return cheatDeath(this, target, source);
+  }
+
+  /** A landed wound answers to Death's rites: a Fetch's mirror, Dread, the Mortal Coil. */
+  woundRites(source: Mage, target: Mage, type: DamageType, amount: number): void {
+    woundRites(this, source, target, type, amount);
+  }
+
   lawBlocksRoot(target: Mage): boolean {
     return this.hexcraftGlobals.length > 0 && lawBlocksRoot(this, target);
   }
@@ -3844,6 +3896,7 @@ export class GameState {
       );
     }
     this.hexcraftGlobals = this.hexcraftGlobals.filter((effect) => effect.roundsLeft > 0);
+    for (const effect of ended) if (isHexLawKind(effect.kind)) deathLawEnds(this, effect.kind, this.mages[effect.ownerIndex ?? -1]);
   }
 
   /** Place a range-5 Veil Bind circle, replacing this team's previous circle. */
@@ -4896,6 +4949,7 @@ export class GameState {
     this.transferReapOnDeath(target, owner);
     this.onDesecrationDeath(target, owner);
     lawOnDeath(this, target, source, this.wasDesecrationAffected(target));
+    deathRites(this, target, source);
     if (target.baral) this.dismantleBaralWorks(target);
     this.onMageDefeated?.(target, source);
   }
@@ -5519,8 +5573,9 @@ export class GameState {
 
   /** A reaped victim dies the moment its health falls to its Reap count (twice that under Long Night). */
   checkReapDeath(target: Mage, source: Mage): boolean {
-    const reap = this.reapOn(target) * reapWeight(this);
-    if (reap <= 0 || !target.alive || target.hp > reap) return false;
+    const reap = this.reapOn(target);
+    if (reap <= 0 || !target.alive) return false;
+    if (target.hp > reap) return shoulderExecutes(this, target);
     this.log(`${target.name} sinks to ${target.hp} health under ${reap} Reap.`);
     return this.killByDeathWord(target, source);
   }
@@ -5536,7 +5591,7 @@ export class GameState {
       this.applyReap(target, amount, source);
       return false;
     }
-    const threshold = amount + executeBonus(source) + 2 * this.reapOn(target) * reapWeight(this);
+    const threshold = amount + executeBonus(source) + 2 * this.reapOn(target);
     if (target.hp > threshold) {
       this.log(`${target.name} escapes execution (${target.hp} health above ${threshold}).`);
       return false;
@@ -5545,8 +5600,8 @@ export class GameState {
     return this.killByDeathWord(target, source);
   }
 
-  /** Death-word kill that still honours unkillable targets and a phylactery. */
-  private killByDeathWord(target: Mage, source: Mage): boolean {
+  /** Death-word kill that still honours unkillable targets, a phylactery and Death's own rites. */
+  killByDeathWord(target: Mage, source: Mage): boolean {
     if (target.unkillable) return false;
     if (target.reviveAtHalfAvailable) {
       target.reviveAtHalfAvailable = false;
@@ -5555,10 +5610,12 @@ export class GameState {
       this.log(`${target.name} revives at half HP.`);
       return false;
     }
+    if (cheatDeath(this, target, source)) return false;
     target.hp = 0;
     this.vfxSink?.spellEffect?.(target, 'vanish');
     this.notifyMageDefeated(target, source);
     this.restoreEdgelordCaptives();
+    deathWordFell(this, target);
     return true;
   }
 
@@ -6912,6 +6969,9 @@ export class GameState {
       requestReroll: this.subTargeter?.requestReroll
         ? (opts) => this.subTargeter!.requestReroll!(source, opts)
         : undefined,
+      requestOffering: this.subTargeter?.requestOffering
+        ? (opts) => this.subTargeter!.requestOffering!(source, opts)
+        : undefined,
       reactionWindow: this.subTargeter
         ? (label, at) => this.subTargeter!.reactionWindow(source, label, at)
         : undefined,
@@ -7158,6 +7218,37 @@ export class GameState {
     this.notifyLightActivation(source);
     this.log(`${source.name} picks up ${def.name}.`);
     return true;
+  }
+
+  /** Whether giving up one carried item makes a nearby pickup possible. */
+  canSwapDroppedItem(source: Mage, dropId: number, discard: ItemId): boolean {
+    const drop = this.droppedItems.find((entry) => entry.id === dropId);
+    if (!drop || drop.owner !== source.team || source.summonItemLimited(drop.itemId) ||
+      dist(source.pos, { x: drop.x, y: drop.y }) > PICKUP_RANGE || getItem(discard).permanentlyBinding || getItem(discard).keyItem ||
+      (discard === 'bastionSword' && !source.bastionShieldForm)) return false;
+    const held = source.hands.includes(discard);
+    const collection = held ? source.hands : source.bag.includes(discard) ? source.bag : source.utility;
+    const index = collection.indexOf(discard);
+    if (index < 0 || (!held && !packFits(source, [], [discard]))) return false;
+    collection.splice(index, 1);
+    const fits = source.hasFreeHand() && source.canCarry(getItem(drop.itemId).weight);
+    collection.splice(index, 0, discard);
+    return fits;
+  }
+
+  /** Replace one loose or held item with a nearby dropped item in one pickup action. */
+  swapDroppedItem(source: Mage, dropId: number, discard: ItemId): boolean {
+    if (!this.canSwapDroppedItem(source, dropId, discard)) return false;
+    const held = source.hands.includes(discard);
+    const collection = held ? source.hands : source.bag.includes(discard) ? source.bag : source.utility;
+    const index = collection.indexOf(discard);
+    if (held) this.dropItem(source, discard);
+    else {
+      collection.splice(index, 1);
+      this.droppedItems.push({ id: this.nextId++, itemId: discard, x: source.pos.x, y: source.pos.y, owner: source.team });
+      this.log(`${source.name} drops ${getItem(discard).name}.`);
+    }
+    return this.pickUpItem(source, dropId);
   }
 
   /** The nearest of this mage's own dropped items within pickup range, if any. */
@@ -8291,8 +8382,12 @@ export class GameState {
         // arm a single Greed gain for this cast (Gambler's Blade dedup).
         source.spellcastActive = true;
         source.greedArmed = true;
-        const done = () => {
+        const done = (completed: boolean) => {
           source.spellcastActive = false;
+          if (completed && spell.words.length === 2 && spell.words.includes('storm')) {
+            const word = spell.words.find((part) => part !== 'storm');
+            if (word) source.recordStormDualcast(word);
+          }
         };
         const result = spell.cast(ctx);
         // White-secondary casters mend themselves and their nearest ally each
@@ -8300,14 +8395,14 @@ export class GameState {
         this.applyWhiteSecondaryHeal(source, spell);
         if (result && typeof (result as Promise<void>).then === 'function') {
           return (result as Promise<void>).then(
-            () => done(),
+            () => done(true),
             (err) => {
-              done();
+              done(false);
               throw err;
             }
           );
         }
-        done();
+        done(true);
         return result;
       },
     };

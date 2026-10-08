@@ -1,5 +1,5 @@
 // The search window. Say what you are after, see your odds, and roll for it.
-// Three shelves (resources, creatures, anything nearby) list every target, each
+// Two shelves (resources and creatures) list every target, each
 // marked by how much it belongs here. The roll plays out on a d20 over a meter
 // that shows where "nothing", "a lucky turn" and "found" begin.
 
@@ -74,7 +74,6 @@ export interface SearchViewHooks {
 const SHELVES: readonly { id: SearchCategory; label: string; blurb: string }[] = [
   { id: 'resource', label: 'Resources', blurb: 'Herbs, ore and stones.' },
   { id: 'creature', label: 'Creatures', blurb: 'Track something down.' },
-  { id: 'events', label: 'Anything nearby', blurb: 'See what is going on.' },
 ];
 
 const STANDING: Record<SearchStanding, { label: string; color: number }> = {
@@ -124,7 +123,6 @@ function tintOf(target: SearchTarget): number {
     if (Object.prototype.hasOwnProperty.call(ENEMY_DEFS, target.id)) return ENEMY_DEFS[target.id as EnemyKind].tint ?? 0xe25b4c;
     return 0xe25b4c;
   }
-  if (target.category === 'events') return 0xb58be0;
   return ITEM_TINT[target.id] ?? 0xd8cbae;
 }
 
@@ -133,7 +131,6 @@ function drawTargetGlyph(g: Phaser.GameObjects.Graphics, target: SearchTarget, s
   const s = size / 40;
   const color = tintOf(target);
   if (target.category === 'creature') return drawSightingGlyph(g, 'pack', size);
-  if (target.category === 'events') return drawSightingGlyph(g, 'event', size);
   if (target.resource === 'herb') return drawSightingGlyph(g, 'herbs', size);
   const pts = (list: [number, number][], dx = 0, dy = 0): Phaser.Math.Vector2[] =>
     list.map(([x, y]) => new Phaser.Math.Vector2((x + dx) * s, (y + dy) * s));
@@ -370,7 +367,7 @@ export class SearchView extends Phaser.GameObjects.Container {
       const chip = new CabinetChip(scene, 58 + index * 214, 132, {
         width: 200,
         height: 38,
-        label: `${entry.label}${entry.id === 'events' ? '' : `  (${count})`}`,
+        label: `${entry.label}  (${count})`,
         tone: this.shelf === entry.id ? 'primary' : 'normal',
         enabled: count > 0,
         onActivate: () => this.setShelf(entry.id),
@@ -525,14 +522,14 @@ export class SearchView extends Phaser.GameObjects.Container {
     while (name.width > CARD.w - 196 && size > 16) name.setFontSize(--size);
     const kind = target.category === 'resource'
       ? { herb: 'Herb', ore: 'Ore', gem: 'Gemstone' }[target.resource ?? 'herb']
-      : target.category === 'creature' ? 'Creature' : 'Events';
+      : 'Creature';
     const tag = scene.add.text(177, 68, `${kind.toUpperCase()}  ·  ${standing.label}`, {
       fontFamily: MENU_FONT.control,
       fontSize: '12px',
       fontStyle: 'bold',
       color: cssColor(standing.color),
     }).setLetterSpacing(2);
-    const home = scene.add.text(177, 90, target.category === 'events' ? target.home : `At home in: ${target.home}`, {
+    const home = scene.add.text(177, 90, `At home in: ${target.home}`, {
       fontFamily: MENU_FONT.body,
       fontSize: '13px',
       color: MENU_HEX.boneDim,

@@ -37,6 +37,7 @@ import {
   ActionMenuView,
   ChoiceMenuView,
   MultiSelectView,
+  OfferingMenuView,
   PagedChoiceMenuView,
 } from '../ui/combat/CombatMenus';
 import { EndCardView, type EndCardOptions } from '../ui/combat/EndCardView';
@@ -195,8 +196,11 @@ import type {
   SubTargetPointOpts,
   SubTargetEnemyOpts,
   SubTargetRerollOpts,
+  OfferingChoice,
+  OfferingOpts,
 } from '../effects/effects';
 import { HEX_LAW_NAMES, IMBUES, MINIONS, robeOf } from '../effects/classKit';
+import { SHIKIGAMI_TIERS, shikigamiTier } from '../effects/deathKit';
 import {
   ACTION_FX_PRESETS,
   BOW_SHOT,
@@ -517,6 +521,7 @@ export type InputMode =
   | 'assign'
   | 'shop'
   | 'inventory'
+  | 'pickup-menu'
   | 'eldritch-menu'
   | 'thunder-menu'
   | 'action-menu'
@@ -607,6 +612,7 @@ type TurnCommand =
   | { t: 'spell'; spellId: string; ability: boolean; target: number | null; x?: number; y?: number; x2?: number; y2?: number; angle?: number; mods?: WordId[] }
   | { t: 'item-drop'; itemId: string }
   | { t: 'item-pickup'; dropId: number }
+  | { t: 'item-pickup-swap'; dropId: number; discard: ItemId }
   | { t: 'item-use'; itemId: string }
   | { t: 'item-equip'; itemId: string }
   | { t: 'item-unequip'; itemId: string }
@@ -647,6 +653,7 @@ type SubCommand =
   | { t: 'sub-point'; x: number; y: number }
   | { t: 'sub-enemy'; target: number }
   | { t: 'sub-reroll'; reroll: boolean }
+  | { t: 'sub-offering'; life: number; items: boolean; summons: number[] }
   | { t: 'sub-none' };
 
 /** A mid-resolution draft pick (Gambler's Blade cash-out): the chosen card index. */
@@ -1096,6 +1103,7 @@ export class GameScene extends Phaser.Scene {
 
   // Inventory overlay (items + status effects, opened with [I]).
   private invPanel?: Phaser.GameObjects.Container | InventoryView;
+  private pickupMenu?: PagedChoiceMenuView<ItemId>;
 
   // Mantle of Eldritch Truth action menu.
   private eldritchMenu?: ChoiceMenuView<'attack' | 'defend' | 'restore'>;
@@ -1519,6 +1527,10 @@ export class GameScene extends Phaser.Scene {
           })
       );
 
+    if (this.explorationCombat) {
+      for (const mage of mages) mage.startStormDay(this.explorationCombat.run.day);
+    }
+
     this.gs = new GameState(mages, config.seed);
     this.combatFeedback = new CombatFeedbackLayer(this, () => this.reducedMotion);
     this.spellVfx = new SpellVfx(this, () => this.reducedMotion, () => this.combatSpeed);
@@ -1686,6 +1698,10 @@ export class GameScene extends Phaser.Scene {
       requestReroll: async (source, opts) => {
         await this.playPendingDice();
         return this.requestStormReroll(source, opts);
+      },
+      requestOffering: async (source, opts) => {
+        await this.playPendingDice();
+        return this.requestShikigamiOffering(source, opts);
       },
       reactionWindow: (source, label, at) => this.offerReactionWindow(source, label, { at }),
       resolveImpacts: () => this.resolveImpacts(),
@@ -1928,6 +1944,7 @@ export class GameScene extends Phaser.Scene {
       case 'eldritch-menu':
       case 'thunder-menu':
       case 'dodge-bonus':
+      case 'pickup-menu':
       case 'dev-resources':
       case 'training':
       case 'scenario-lab':
@@ -2388,9 +2405,8 @@ export class GameScene extends Phaser.Scene {
       if (hauled.taken.length) this.gs.log(`The boss leaves ${this.materialTally(hauled.taken)}.`);
       if (hauled.left.length) this.gs.log(`No room to carry, left behind: ${this.materialTally(hauled.left)}.`);
       this.addRunXp(this.xpToNextLevel() - this.runXp);
-      this.gs.log(`The bloodmoon sets. The party reaches level ${this.runLevel}.`);
+      this.gs.log('The bloodmoon sets. The party can claim its earned levels at long rest.');
     }
-    await this.resolveLevelUps();
     this.explorationWon = true;
     this.endGame();
   }
@@ -2442,7 +2458,6 @@ export class GameScene extends Phaser.Scene {
 
   /** Between the waves of a dive: training, then deeper or back the way the party came. */
   private async runDungeonInterlude(): Promise<boolean> {
-    await this.resolveLevelUps();
     if (this.dungeonRetreating) return this.advanceDungeonRetreat();
     if ((await this.promptDungeonChoice()) === 'deeper') {
       this.spawnWave(this.swamprunWave + 1);
@@ -2504,7 +2519,6 @@ export class GameScene extends Phaser.Scene {
 
   /** Out of the dungeon alive. */
   private async leaveDungeon(): Promise<void> {
-    await this.resolveLevelUps();
     this.explorationWon = true;
     this.endGame();
   }
@@ -3779,7 +3793,6 @@ export class GameScene extends Phaser.Scene {
       }
       if (this.dungeon && !this.mineRun) return this.runDungeonInterlude();
       if (this.mineRun) {
-        if (this.dungeon) await this.resolveLevelUps();
         const room = this.mineActiveRoomId == null ? undefined : this.mineMaze?.nodes[this.mineActiveRoomId]?.room;
         if (room) room.resolved = true;
         this.mineInCombat = false;
@@ -3959,7 +3972,7 @@ export class GameScene extends Phaser.Scene {
 
   private addRunXp(amount: number): void {
     const track = { level: this.runLevel, xp: this.runXp, pendingLevels: this.pendingLevels };
-    addXp(track, amount, this.xpScale());
+    addXp(track, amount);
     this.runLevel = track.level;
     this.runXp = track.xp;
     this.pendingLevels = track.pendingLevels;
@@ -6056,11 +6069,22 @@ export class GameScene extends Phaser.Scene {
         );
         break;
       }
+      case 'item-pickup-swap': {
+        if (!this.gs.canSwapDroppedItem(me, cmd.dropId, cmd.discard)) break;
+        spend('bonus');
+        await runAction(this.gs.makeActionItem({
+          source: me,
+          label: 'Exchange',
+          description: `${me.name} exchanges items.`,
+          resolve: (game) => { game.swapDroppedItem(me, cmd.dropId, cmd.discard); },
+        }));
+        break;
+      }
       case 'item-use': {
         const itemId = cmd.itemId as ItemId;
         if (me.isItemBanned(itemId)) {
           this.gs.log(
-            `${me.name} reaches for ${getItem(itemId).name}, but it has been stifled forever.`
+            `${me.name} reaches for ${getItem(itemId).name}, but ${me.itemsSacrificed() ? 'the Shikigami holds it until the day is over' : 'it has been stifled forever'}.`
           );
           break;
         }
@@ -6120,7 +6144,7 @@ export class GameScene extends Phaser.Scene {
         const itemId = cmd.itemId as ItemId;
         if (me.isItemBanned(itemId)) {
           this.gs.log(
-            `${me.name} reaches for ${getItem(itemId).name}, but it has been stifled forever.`
+            `${me.name} reaches for ${getItem(itemId).name}, but ${me.itemsSacrificed() ? 'the Shikigami holds it until the day is over' : 'it has been stifled forever'}.`
           );
           break;
         }
@@ -6590,6 +6614,24 @@ export class GameScene extends Phaser.Scene {
     this.net?.send({ k: 'sub', cmd });
   }
 
+  private async recvSubOffering(opts: OfferingOpts): Promise<OfferingChoice> {
+    const msg = await this.net!.recv();
+    const cmd = msg.cmd as SubCommand | undefined;
+    if (cmd?.t !== 'sub-offering') return { life: 0, items: false, summons: [] };
+    const summons = cmd.summons.map((seat) => this.mageBySeat(seat)).filter((m) => opts.summons.includes(m));
+    return { life: Number(cmd.life) || 0, items: cmd.items === true, summons };
+  }
+
+  private sendSubOffering(choice: OfferingChoice): void {
+    const cmd: SubCommand = {
+      t: 'sub-offering',
+      life: choice.life,
+      items: choice.items,
+      summons: choice.summons.map((m) => this.seatOf(m)),
+    };
+    this.net?.send({ k: 'sub', cmd });
+  }
+
   // --- Gambler's Blade cash-out (interactive mid-combat draft) ---------------
 
   /**
@@ -7041,7 +7083,13 @@ export class GameScene extends Phaser.Scene {
         }
         if (choice && choice.dodge) {
           // A dodge rolls to slip aside; on a hit the whole action is negated.
-          const dodgeTier = await this.performDodge(reactor, top);
+          this.gs.beginMindStormAction(reactor);
+          let dodgeTier: DodgeTier;
+          try {
+            dodgeTier = await this.performDodge(reactor, top);
+          } finally {
+            this.gs.endMindStormAction();
+          }
           if (dodgeTier !== 'none') {
             this.gs.removeStackItem(top.id);
             if (dodgeGrantsBonusAction(dodgeTier)) {
@@ -7062,8 +7110,13 @@ export class GameScene extends Phaser.Scene {
         } else if (choice && choice.shield === 'bash') {
           // A bash answers the blow, smashing the attacker; the action still lands.
           reactor.reactedThisCycle = true;
-          if (this.gs.shieldBash(reactor, top.source)) {
-            await this.playShieldBash(reactor, top.source);
+          this.gs.beginMindStormAction(reactor);
+          try {
+            if (this.gs.shieldBash(reactor, top.source)) {
+              await this.playShieldBash(reactor, top.source);
+            }
+          } finally {
+            this.gs.endMindStormAction();
           }
           this.redraw();
           passed.add(key);
@@ -7080,7 +7133,12 @@ export class GameScene extends Phaser.Scene {
           if (strike.isStillValid(this.gs)) {
             await this.playActionVisual(strike);
             this.pendingDice = [];
-            await strike.resolve(this.gs);
+            this.gs.beginMindStormAction(reactor);
+            try {
+              await strike.resolve(this.gs);
+            } finally {
+              this.gs.endMindStormAction();
+            }
             await this.playPendingDice();
             void this.flushHits();
           }
@@ -7100,7 +7158,13 @@ export class GameScene extends Phaser.Scene {
       }
 
       // Resolve the top item now that the reaction window has closed.
-      const resolved = await this.resolveTop();
+      if (!top.windowTrigger) this.gs.beginMindStormAction(top.source);
+      let resolved: StackItem | null;
+      try {
+        resolved = await this.resolveTop();
+      } finally {
+        if (!top.windowTrigger) this.gs.endMindStormAction();
+      }
       await this.raisePendingDrakes();
       const oniTrigger = this.buildOniTurnEndTrigger();
       if (oniTrigger) this.gs.pushStack(oniTrigger);
@@ -7291,6 +7355,7 @@ export class GameScene extends Phaser.Scene {
     // Focus grants advantage on this one cast: roll the DC twice, keep the best.
     const focused = source.focusNextSpell;
     const first = this.gs.rollD20(source);
+    const dieSpec = this.gs.rng.consistentSpec('1d20');
     let best = first;
     let naturalRolls = [first];
     if (focused) {
@@ -7300,7 +7365,7 @@ export class GameScene extends Phaser.Scene {
       source.focusNextSpell = false;
     }
     this.pendingDice.push({
-      spec: focused ? '2d20 (keep higher)' : '1d20',
+      spec: focused ? `2 x (${dieSpec}) (keep higher)` : dieSpec,
       total: best,
       rolls: naturalRolls,
       label: `${spell.name} — success?${focused ? ' (focus)' : ''}`,
@@ -7321,8 +7386,8 @@ export class GameScene extends Phaser.Scene {
     // (Life / Hexcraft class variants) succeed on a 20 but never double.
     const crit = ok && best === 20 && !spell.noCrit;
     const rollText = focused
-      ? `2d20=[${naturalRolls.join(', ')}], kept ${best}`
-      : `1d20=${best}`;
+      ? `2 x (${dieSpec})=[${naturalRolls.join(', ')}], kept ${best}`
+      : `${dieSpec}=${best}`;
     this.gs.log(
       `${source.name}'s ${spell.name}: ${rollText} vs DC ${dc} — ${ok ? 'success!' : 'fizzles.'}${luckNote}${crit ? ' CRITICAL — natural 20!' : ''}`
     );
@@ -8012,7 +8077,11 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (!me.hasCharges(spell.words)) {
-      this.flashHint('Not enough charges.');
+      this.flashHint(spell.words.length === 1 && spell.words[0] === 'storm'
+        ? 'Load Storm with a paired cast before releasing it (two releases per day).'
+        : spell.words.includes('storm') && me.stormDualcastsUsed >= 3
+          ? 'No Storm dualcasts left today.'
+          : 'Not enough charges.');
       return;
     }
     const mods = this.selectedModifiers();
@@ -8257,6 +8326,11 @@ export class GameScene extends Phaser.Scene {
     return best;
   }
 
+  /** Why `me` cannot use a banned item. */
+  private bannedItemHint(me: Mage): string {
+    return me.itemsSacrificed() ? 'Your items belong to the Shikigami until the day is over.' : 'That item has been stifled forever.';
+  }
+
   /** Whether `me` can throw `itemId` at `target` (enemy alive, within throw range). */
   private canThrowAt(me: Mage, target: Mage, itemId: ItemId): boolean {
     const def = getItem(itemId);
@@ -8269,7 +8343,7 @@ export class GameScene extends Phaser.Scene {
     if (this.mode === 'reaction') return;
     if (!this.humanActiveOrInventory) return;
     const me = this.gs.current;
-    if (me.isItemBanned(itemId)) return this.flashHint('That item has been stifled forever.');
+    if (me.isItemBanned(itemId)) return this.flashHint(this.bannedItemHint(me));
     if (me.swordFormLocked()) return this.flashHint('Locked in sword form — cannot throw.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Throwing takes a bonus action.');
@@ -8850,16 +8924,19 @@ export class GameScene extends Phaser.Scene {
     const drop = this.gs.nearestDropFor(me);
     if (drop) {
       const summonFull = me.summonItemLimited(drop.itemId);
+      const room = me.hasFreeHand() && me.canCarry(getItem(drop.itemId).weight);
+      const exchange = !room && [...new Set([...me.hands, ...me.bag, ...me.utility])]
+        .some((id) => this.gs.canSwapDroppedItem(me, drop.id, id));
       entries.push({
         id: 'pickup',
         label: `Pick up ${getItem(drop.itemId).name}`,
         hotkey: 'H',
-        desc: 'Retrieve one of your dropped items (bonus action).',
-        enabled: (me.actions.bonus > 0 || inf) && me.hasFreeHand() && !me.swordFormLocked() && !summonFull,
-        reason: !me.hasFreeHand()
-          ? 'Both hands full.'
-          : summonFull
-            ? 'A summon can carry only one item.'
+        desc: 'Retrieve a nearby item; exchange something carried if you need room (bonus action).',
+        enabled: (me.actions.bonus > 0 || inf) && (room || exchange) && !me.swordFormLocked() && !summonFull,
+        reason: summonFull
+          ? 'A summon can carry only one item.'
+          : !room && !exchange
+            ? 'No carried item can make room.'
             : me.swordFormLocked()
               ? 'Sword form locks your bag.'
               : 'Needs a bonus action.',
@@ -9226,15 +9303,34 @@ export class GameScene extends Phaser.Scene {
     const me = this.gs.current;
     if (me.swordFormLocked())
       return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
-    if (!me.hasFreeHand()) return this.flashHint('Both hands are full.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Picking up an item needs a bonus action.');
     const drop = this.gs.nearestDropFor(me);
     if (!drop) return this.flashHint('No dropped item of yours within reach.');
     if (me.summonItemLimited(drop.itemId))
       return this.flashHint('A summon can carry only one item.');
-    if (!me.canCarry(getItem(drop.itemId).weight))
-      return this.flashHint('Too heavy to carry that as well.');
+    if (!me.hasFreeHand() || !me.canCarry(getItem(drop.itemId).weight)) {
+      const candidates = [...new Set([...me.hands, ...me.bag, ...me.utility])]
+        .filter((id) => this.gs.canSwapDroppedItem(me, drop.id, id));
+      if (!candidates.length) return this.flashHint('No item can be dropped to make room for this pickup.');
+      const dismiss = (): void => {
+        this.pickupMenu?.destroy();
+        this.pickupMenu = undefined;
+        this.mode = 'idle';
+        this.redraw();
+      };
+      this.mode = 'pickup-menu';
+      this.pickupMenu = new PagedChoiceMenuView(this, 'MAKE ROOM FOR THE PICKUP',
+        `Pick up ${getItem(drop.itemId).name} (${getItem(drop.itemId).weight} kg). Choose an item to leave at your feet.`,
+        candidates.map((id) => ({ id, label: getItem(id).name, detail: `${getItem(id).weight} kg  /  Drop one and pick up ${getItem(drop.itemId).name}` })),
+        (discard) => {
+          dismiss();
+          this.resetSelection();
+          this.submitTurn({ t: 'item-pickup-swap', dropId: drop.id, discard });
+        }, dismiss);
+      this.redraw();
+      return;
+    }
     this.resetSelection();
     this.submitTurn({ t: 'item-pickup', dropId: drop.id });
   }
@@ -9243,7 +9339,7 @@ export class GameScene extends Phaser.Scene {
   private consumeItem(itemId: ItemId): void {
     if (!this.humanActiveOrInventory) return;
     const me = this.gs.current;
-    if (me.isItemBanned(itemId)) return this.flashHint('That item has been stifled forever.');
+    if (me.isItemBanned(itemId)) return this.flashHint(this.bannedItemHint(me));
     if (me.swordFormLocked())
       return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
     if (!me.utility.includes(itemId) || !getItem(itemId).potion) return;
@@ -9396,6 +9492,8 @@ export class GameScene extends Phaser.Scene {
         return `Soul Rend: ${s.stacks} stack${s.stacks === 1 ? '' : 's'}. At turn start, deals 1d3 true HP and 1d3 true sanity per stack, then loses 1 stack.`;
       case 'reap':
         return `Reap: ${s.stacks} stack${s.stacks === 1 ? '' : 's'}. You die at or below ${s.stacks} HP. Execution thresholds against you are increased by ${2 * s.stacks}.`;
+      case 'dread':
+        return `Dread: ${s.stacks}. Your mind breaks, and you die, at or below ${s.stacks} sanity.`;
       case 'shadowAnchor':
         return `Chained. At turn start you are dragged 5cm toward the anchor, then checked: inside the caster's shadow you forget 1 random word or action; outside it you take 1d4 sanity. (${turns})`;
       case 'memoryShackle':
@@ -9912,12 +10010,14 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spellManaCost(mage: Mage, spell: Spell): number {
+    if (spell.words.includes('storm') && spell.words.length <= 2) return 0;
     return Math.max(0, wordSpellMana(spell.words, mage.profile) + mage.spellManaDelta()) + (mage.swamprunCurse === 'feeding' ? 1 : 0);
   }
 
   private payForSpell(mage: Mage, spell: Spell, free = false, modifiers: WordId[] = []): void {
     mage.spendCharges(spell.words);
     if (modifiers.length > 0) mage.spendCharges(modifiers);
+    const stormCast = spell.words.includes('storm') && spell.words.length <= 2;
     let mana = wordSpellMana(spell.words, mage.profile);
     // Focus: the empowered word spell costs 50% less mana.
     if (mage.focusNextSpell) mana = Math.ceil(mana * 0.5);
@@ -9935,8 +10035,8 @@ export class GameScene extends Phaser.Scene {
       mana = 0;
       this.gs.log(`${mage.name}'s Dark Mage's Cape makes the spell free.`);
     }
-    if (free && mage.swamprunCurse === 'feeding') mana += 1;
-    mage.spendMana(mana);
+    if (free && mage.swamprunCurse === 'feeding' && !stormCast) mana += 1;
+    if (!stormCast) mage.spendMana(mana);
     // A free cast costs no action and does not use the one-spell-per-turn
     // allowance, but still pays charges, mana and blood.
     if (!free) {
@@ -9947,7 +10047,7 @@ export class GameScene extends Phaser.Scene {
       }
     }
     // Blood Charm: every spell is paid for in blood as well as mana.
-    const bloodPct = mage.spellHealthCostPct();
+    const bloodPct = stormCast ? 0 : mage.spellHealthCostPct();
     if (bloodPct > 0) {
       const bloodCost = Math.max(1, Math.round(mage.maxHp * bloodPct));
       mage.hp = Math.max(0, mage.hp - bloodCost);
@@ -10611,7 +10711,7 @@ export class GameScene extends Phaser.Scene {
     const roll = this.gs.rng.roll(`${n}d6`);
     this.pendingDice = [];
     this.pendingDice.push({
-      spec: `${n}d6`,
+      spec: this.gs.rng.consistentSpec(`${n}d6`),
       total: roll.total,
       rolls: roll.rolls,
       label: `${reactor.name} dodge`,
@@ -11257,6 +11357,34 @@ export class GameScene extends Phaser.Scene {
     });
     if (this.online) this.sendSubReroll(value);
     return value;
+  }
+
+  /** What the caster gives its Shikigami: the AI gives its minions; a player picks from the offering menu. */
+  private async requestShikigamiOffering(source: Mage, opts: OfferingOpts): Promise<OfferingChoice> {
+    if (this.controllerIsAI(source)) return { life: 0, items: false, summons: [...opts.summons] };
+    if (this.online && !this.isLocalDecider(source)) return this.recvSubOffering(opts);
+    const previousMode = this.mode;
+    this.mode = 'shop';
+    const describe = (points: number): string => {
+      const rank = shikigamiTier(points);
+      return `${points} point${points === 1 ? '' : 's'}: rank ${rank}. Each turn it ${SHIKIGAMI_TIERS.slice(0, rank).join('; ')}.`;
+    };
+    const choice = await new Promise<OfferingChoice>((resolve) => {
+      const panel = new OfferingMenuView(this, {
+        lifeMax: opts.lifeMax,
+        items: opts.items,
+        summons: opts.summons.map((m) => m.name),
+        points: opts.points,
+        describe,
+        confirm: (life, items, picked) => {
+          panel.destroy();
+          this.mode = previousMode;
+          resolve({ life, items, summons: picked.map((index) => opts.summons[index]) });
+        },
+      });
+    });
+    if (this.online) this.sendSubOffering(choice);
+    return choice;
   }
 
   private canPickSubtargetMage(target: Mage): boolean {
@@ -15734,6 +15862,7 @@ export class GameScene extends Phaser.Scene {
         .strokeEllipse(m.x, m.y, MAGE_RADIUS * 2.4, MAGE_RADIUS * 3.1);
     }
     g.fillStyle(MENU_COLOR.pitch, 0.62 * alpha).fillEllipse(m.x + 2, bodyY + 3, MAGE_RADIUS * 2.1, 13);
+    if (m.shikigami && m.alive) this.drawShikigami(g, m, alpha);
     g.fillStyle(teamColor, 0.12 * alpha).fillEllipse(m.x, bodyY, MAGE_RADIUS * 2.35, 16);
     g.lineStyle(active ? 3 : 2, active ? MENU_COLOR.brassLight : teamColor, active ? alpha : 0.72 * alpha)
       .strokeEllipse(m.x, bodyY, MAGE_RADIUS * 2.4, 17);
@@ -15781,6 +15910,18 @@ export class GameScene extends Phaser.Scene {
   }
 
   private barStates = new Map<Mage, { hp: number; hpChip: number; sanity: number; sanityChip: number }>();
+
+  /** The Shikigami on its rider's shoulder: a shade with two pale eyes that grows with its rank. */
+  private drawShikigami(g: Phaser.GameObjects.Graphics, m: Mage, alpha: number): void {
+    const rank = shikigamiTier(m.shikigami?.points ?? 0);
+    const size = 5 + rank * 1.5;
+    const sway = this.reducedMotion ? 0 : Math.sin(this.time.now / 420) * 1.5;
+    const x = m.x + MAGE_RADIUS * 0.85;
+    const y = m.y - MAGE_RADIUS * 0.55 + sway;
+    g.fillStyle(0x140b1f, 0.92 * alpha).fillEllipse(x, y, size * 2, size * 2.3);
+    g.lineStyle(1, 0x8f7ab8, 0.7 * alpha).strokeEllipse(x, y, size * 2, size * 2.3);
+    g.fillStyle(0xe8e0ff, alpha).fillCircle(x - size * 0.35, y - size * 0.2, 1.4).fillCircle(x + size * 0.35, y - size * 0.2, 1.4);
+  }
 
   /**
    * Ease each bar toward its true value, with a slower trailing "chip" bar so a
@@ -15968,6 +16109,7 @@ export class GameScene extends Phaser.Scene {
     }
     const statusEntries = [
       ...(m.lightningMindStacks > 0 ? [`MIND LIGHTNING ×${m.lightningMindStacks}`] : []),
+      ...(m.shikigami ? [`SHIKIGAMI ${m.shikigami.points}`] : []),
       ...m.statuses
       .map((s) =>
         s.kind === 'fire' ||
@@ -15975,6 +16117,7 @@ export class GameScene extends Phaser.Scene {
         s.kind === 'blueflare' ||
         s.kind === 'soulRend' ||
         s.kind === 'reap' ||
+        s.kind === 'dread' ||
         s.kind === 'deathCurse'
           ? `${s.name} ×${s.stacks}`
           : s.kind === 'imbue'
@@ -16175,7 +16318,7 @@ export class GameScene extends Phaser.Scene {
       plate.setVisible(true);
       const w = me.loadout[i];
       const on = this.selectedIdx.includes(i);
-      const charges = me.charges[w] ?? 0;
+      const charges = w === 'storm' ? 3 - me.stormDualcastsUsed : me.charges[w] ?? 0;
       const wordColor = WORD_COLOR[w];
       const accent = isModifierWord(w)
         ? MENU_COLOR.amethyst
@@ -16186,10 +16329,12 @@ export class GameScene extends Phaser.Scene {
             : wordColor === 'black'
               ? MENU_COLOR.amethyst
               : MENU_COLOR.brass;
-      const meta = `${charges} CHARGE${charges === 1 ? '' : 'S'}${WORDS[w].grantsReaction ? ' · REACTION' : ''}`;
+      const meta = w === 'storm'
+        ? `${charges}P / ${2 - me.stormMonocastsUsed}S`
+        : `${charges} CHARGE${charges === 1 ? '' : 'S'}${WORDS[w].grantsReaction ? ' · REACTION' : ''}`;
       plate.setCopy(`${i + 1}  ${WORDS[w].label}`, meta, accent);
       plate.setSelectedOrder(on ? this.selectedIdx.indexOf(i) + 1 : 0);
-      plate.setAlpha(charges > 0 || isModifierWord(w) ? 1 : 0.58);
+      plate.setAlpha(charges > 0 || (w === 'storm' && me.hasCharges(['storm'])) || isModifierWord(w) ? 1 : 0.58);
     }
 
     // The action-menu button: shown only when the local player can actually act.

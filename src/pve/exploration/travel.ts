@@ -8,10 +8,10 @@ import { isNight } from './clock';
 import { absoluteHour, inDesert, stormAt, STORM_DANGER, STORM_TIME } from './desert';
 import { hasMonsters, troubleIn } from './encounters';
 import { isExplored, packExplored, revealTiles, unpackExplored } from './explored';
+import type { Sighting } from './journey';
 import { stepDice, type ExplorationRun } from './run';
 import {
   depthAt,
-  isPassable,
   MIN_TERRAIN_TIME,
   nearTown,
   placeAt,
@@ -63,6 +63,11 @@ const MAX_CHANCE = 0.9;
 /** A tile's chance as a share of the risk a leg builds up: summed over a leg, 1 - exp(-sum) is the stop's chance. */
 export const legHazard = (chance: number): number => (chance > 0 ? -Math.log(1 - Math.min(0.95, chance)) : 0);
 
+export function encounterThreshold(mode: TravelMode, danger: number): number {
+  const chance = Math.min(1, (1 - Math.exp(-Math.max(0, danger))) * TRAVEL_MODES[mode].enemies);
+  return 21 - Math.round(20 * chance);
+}
+
 export type StopKind = 'robbery' | 'monsters' | 'loot' | 'event';
 
 export interface TripStep {
@@ -92,13 +97,9 @@ export interface TripPlan {
   storm: boolean;
 }
 
-export interface TripStop {
-  /** Index into the plan's steps where it happens. */
-  index: number;
-  kind: StopKind;
-  zone: RegionId;
-  depth: number;
-}
+export type TripStop =
+  | { index: number; kind: StopKind; zone: RegionId; depth: number }
+  | { index: number; kind: 'sighting'; sighting: Sighting };
 
 const tileKnown = (mask: Uint8Array, cell: Cell): boolean => isExplored(mask, cell.x, cell.y);
 
@@ -106,7 +107,7 @@ const tileKnown = (mask: Uint8Array, cell: Cell): boolean => isExplored(mask, ce
 export function findRoute(world: WorldMap, run: ExplorationRun, to: Cell, from: Cell = run.pos): Cell[] | null {
   const mask = unpackExplored(run.explored);
   const cost = (x: number, y: number): number =>
-    isPassable(world, x, y) ? TERRAIN[terrainAt(world, x, y)].time * (isExplored(mask, x, y) ? 1 : UNEXPLORED_TIME) : Infinity;
+    TERRAIN[terrainAt(world, x, y)].time * (isExplored(mask, x, y) ? 1 : UNEXPLORED_TIME);
   return findWeightedPath(world.w, world.h, cost, from, to, world.w * world.h * 2, MIN_TERRAIN_TIME);
 }
 

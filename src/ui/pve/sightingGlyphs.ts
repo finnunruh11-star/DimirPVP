@@ -1,5 +1,5 @@
 // Emblems for what the party can spot off the way, shared by the sighting card
-// and the beacon over the map: a leaf, claw marks, a chest and a compass star.
+// and the beacon over the map: a leaf, claw marks and a chest.
 
 import Phaser from 'phaser';
 import type { SightingKind } from '../../pve/exploration/journey';
@@ -8,7 +8,6 @@ export const SIGHTING_COLORS: Record<SightingKind, number> = {
   herbs: 0x8fd16a,
   pack: 0xe25b4c,
   cache: 0xe6bd5c,
-  event: 0xb58be0,
 };
 
 const SHADOW = 0x120d09;
@@ -61,19 +60,6 @@ export function drawSightingGlyph(g: Phaser.GameObjects.Graphics, kind: Sighting
       g.fillRect(-10 * s, -10 * s, 3 * s, 23 * s).fillRect(7 * s, -10 * s, 3 * s, 23 * s);
       g.fillStyle(0xfff0b0, 1).fillRect(-3 * s, -3 * s, 6 * s, 7 * s);
       g.fillStyle(SHADOW, 1).fillRect(-1 * s, -0.5 * s, 2 * s, 2.5 * s);
-      return;
-    }
-    case 'event': {
-      const star: [number, number][] = [];
-      for (let i = 0; i < 8; i++) {
-        const a = -Math.PI / 2 + (i * Math.PI) / 4;
-        const r = i % 2 ? 5.5 : 17;
-        star.push([Math.cos(a) * r, Math.sin(a) * r]);
-      }
-      g.fillStyle(SHADOW, 0.85).fillPoints(shape(star, 1.6, 2.2), true);
-      g.fillStyle(color, 1).fillPoints(shape(star, 0, 0), true);
-      g.fillStyle(0xf0e2ff, 0.55).fillPoints(shape([star[0], star[1], [0, 0], star[7]], 0, 0), true);
-      g.fillStyle(0xfff6ff, 1).fillCircle(0, 0, 3 * s);
       return;
     }
   }

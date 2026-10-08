@@ -140,8 +140,11 @@ export class SimpleAI {
       if (scarab) return { type: 'scarab', scarab };
     }
     // 4. Move toward the enemy if we still have a move and aren't close enough.
-    if (acts.move > 0 && dist(this.self.pos, enemy.pos) > MELEE_RANGE + 20) {
+    if (acts.move > 0 && !this.game.canMelee(this.self, enemy)) {
       const point = stepTowards(this.self.pos, enemy.pos, this.self.moveRange());
+      const reachable = this.game.clampToMages(this.self, this.self.pos, point);
+      const landing = this.game.nearestFreePosition(this.self, reachable, this.self.pos, true);
+      if (dist(landing, enemy.pos) >= dist(this.self.pos, enemy.pos) - 0.5) return { type: 'end' };
       return { type: 'move', point };
     }
     return { type: 'end' };

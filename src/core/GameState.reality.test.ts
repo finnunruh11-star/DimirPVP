@@ -6,6 +6,7 @@ import { getSpell } from '../spells/registry';
 import type { WordId } from './Words';
 import { GameState } from './GameState';
 import { Mage } from './Mage';
+import { dist } from './utils';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -44,6 +45,39 @@ async function cast(
 }
 
 const tests: [name: string, run: () => Promise<void>][] = [
+  ['keeps walking and lantern landings free without blocking allied passage', async () => {
+    const walker = mage('Walker', 2, 300, 270);
+    const ally = mage('Ally', 2, 390, 270);
+    const foe = mage('Foe', 1, 700, 270);
+    const game = new GameState([walker, ally, foe], 1);
+    equal(game.makeMoveItem(walker, { x: 470, y: 270 }).targetPoint, { x: 470, y: 270 }, 'Allies are passable');
+    const crowded = game.makeMoveItem(walker, ally.pos).targetPoint!;
+    assert(dist(crowded, ally.pos) >= walker.bodyRadius() + ally.bodyRadius(), 'An ally cannot share the landing');
+    const blocked = game.makeMoveItem(walker, foe.pos).targetPoint!;
+    assert(dist(blocked, foe.pos) >= walker.bodyRadius() + foe.bodyRadius(), 'Enemies block the route');
+
+    const bearer = mage('Bearer', 1, 400, 270);
+    bearer.hands = ['edgelordLantern'];
+    bearer.edgelordLanternActive = true;
+    const first = mage('First', 2, 600, 270);
+    const second = mage('Second', 2, 640, 270);
+    const lantern = new GameState([bearer, first, second], 1);
+    await lantern.shakeEdgelordLantern(bearer);
+    assert(dist(first.pos, bearer.pos) >= first.bodyRadius() + bearer.bodyRadius(), 'The bearer stays free');
+    assert(dist(second.pos, bearer.pos) >= second.bodyRadius() + bearer.bodyRadius(), 'The bearer stays free for every target');
+    assert(dist(first.pos, second.pos) >= first.bodyRadius() + second.bodyRadius(), 'Pulled enemies do not overlap');
+  }],
+
+  ['lets a melee weapon hit an oversized enemy at its collision boundary', async () => {
+    const striker = mage('Striker', 1, 300, 270);
+    const defender = mage('Defender', 2, 400, 270);
+    defender.intrinsicBodyRadius = 54;
+    const game = new GameState([striker, defender], 1);
+    equal(game.canMelee(striker, defender), true, 'The large body extends its melee hurtbox');
+    defender.x = 405;
+    equal(game.canMelee(striker, defender), false, 'The enlarged hurtbox still has a boundary');
+  }],
+
   ['damages every enemy inside the authored Reality Shatter wedge', async () => {
     const pivot = { x: FIELD.x + FIELD.w / 2, y: FIELD.y + FIELD.h / 2 };
     const caster = mage('Caster', 1, pivot.x, pivot.y);

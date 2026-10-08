@@ -9,12 +9,13 @@ import type { Mage } from '../../core/Mage';
 import { packCanStow, packFits } from '../../core/Pack';
 import { advanceHours, clockTime, spanLabel } from './clock';
 import { hoursBeforeBloodmoon } from './bloodmoon';
-import { leadMember, livingMembers, memberOf, respawnFallen } from './coop';
+import { leadMember, livingMembers, memberOf, partyXpScale, respawnFallen, syncPendingLevels } from './coop';
 import { capturePartySnapshot, restoreParty } from './party';
 import type { ExplorationRun } from './run';
 import { shopById, stockCandidates, type ShopDef } from './shops';
 import { designProblem, rollCraft } from '../../core/crafting/craft';
 import { craftItemId, type CraftDesign } from '../../core/crafting/item';
+import { claimXpLevels } from '../progression';
 
 export interface ShopResult {
   ok: boolean;
@@ -71,6 +72,7 @@ export function runDice(run: ExplorationRun, purpose: string): Dice {
 /** Restore the party, let `fn` change it, and store the result back on the run. The leader is the first member standing. */
 export function withParty<T>(run: ExplorationRun, fn: (leader: Mage, party: Mage[]) => T): T {
   const party = restoreParty(run.party);
+  for (const mage of party) mage.startStormDay(run.day);
   const leader = leadMember(party);
   if (!leader) throw new Error('The party is empty.');
   const result = fn(leader, party);
@@ -91,7 +93,14 @@ function actingMember(party: readonly Mage[], member: MageClass | null | undefin
 }
 
 export function partyOf(run: ExplorationRun): Mage[] {
-  return restoreParty(run.party);
+  const party = restoreParty(run.party);
+  for (const mage of party) mage.startStormDay(run.day);
+  return party;
+}
+
+/** Someone still carries today's Shikigami: towns will not open to the party. */
+export function shikigamiRides(run: ExplorationRun): boolean {
+  return partyOf(run).some((mage) => !!mage.shikigami);
 }
 
 /** One member as stored; no member means the leader. */
@@ -306,13 +315,12 @@ export function roomPrice(run: ExplorationRun, shop: ShopDef | undefined): numbe
 
 /** Hours a night in a room lasts. */
 export const LONG_REST_HOURS = 8;
-/** Share of every maximum a whole night gives back. */
+/** Share of every maximum an interrupted night gives back. */
 const LONG_REST_SHARE = 0.75;
 
 /**
- * Eight hours in a room: 75% of everything back, and the fallen get up with 1 HP,
- * 1 sanity, no mana and no word charges. A rising bloodmoon wakes the party, and
- * a night cut short gives back only the share of it that was slept.
+ * Eight hours in a room fully restore the party and claim banked XP levels.
+ * A rising bloodmoon wakes the party early, giving only a partial recovery.
  */
 export function rest(run: ExplorationRun, shopId: string): ShopResult {
   const shop = shopById(shopId);
@@ -328,17 +336,29 @@ export function rest(run: ExplorationRun, shopId: string): ShopResult {
     const fallen = party.filter((mage) => !mage.alive);
     for (const mage of party) {
       if (!mage.alive) continue;
-      if (whole) mage.swamprunRest(dice);
+      if (whole) {
+        mage.restoreShare(1);
+        mage.luck = mage.maxLuck;
+        mage.swamprunRest(dice);
+      }
       else mage.restoreShare((LONG_REST_SHARE * hours) / LONG_REST_HOURS);
     }
-    for (const mage of fallen) respawnFallen(mage);
+    for (const mage of fallen) {
+      respawnFallen(mage);
+      if (whole) {
+        mage.restoreShare(1);
+        mage.luck = mage.maxLuck;
+      }
+    }
     return fallen.map((mage) => mage.name);
   });
+  const levels = whole ? claimXpLevels(run, partyXpScale(run)) : 0;
+  if (levels) syncPendingLevels(run);
   const days = advanceHours(run, hours);
   const slept = whole ? `Slept ${LONG_REST_HOURS} hours` : `The bloodmoon wakes the party after ${spanLabel(hours)}`;
   const restock = days > 0 ? ' A new day: the shops have restocked.' : '';
   const back = risen.length ? ` ${risen.join(' and ')} ${risen.length > 1 ? 'are' : 'is'} back on their feet.` : '';
-  return { ok: true, message: `${slept}. Day ${run.day}, ${clockTime(run.hour)}.${restock}${back}` };
+  return { ok: true, message: `${slept}. Day ${run.day}, ${clockTime(run.hour)}.${restock}${back}${levels ? ` ${levels} level${levels === 1 ? '' : 's'} earned!` : ''}` };
 }
 
 export interface CraftResult extends ShopResult {
@@ -459,5 +479,40 @@ export function giveItem(run: ExplorationRun, id: ItemId, from: MageClass, to: M
     list.splice(list.indexOf(id), 1);
     grantToMage(taker, id);
     return { ok: true, message: `Gave ${def.name} to ${taker.name}.` };
+  });
+}
+
+/** Exchange carried items at once; either offer may be empty. Nothing moves if either side cannot complete it. */
+export function exchangeItems(run: ExplorationRun, first: MageClass, second: MageClass, firstItems: readonly ItemId[], secondItems: readonly ItemId[]): ShopResult {
+  if (first === second || (!firstItems.length && !secondItems.length)) return { ok: false, message: 'Nothing to exchange.' };
+  return withParty(run, (_leader, party) => {
+    const left = memberOf(party, first);
+    const right = memberOf(party, second);
+    if (!left || !right) return { ok: false, message: 'No such party member.' };
+    const transferable = (items: readonly ItemId[], owner: Mage): boolean => {
+      const bag = [...owner.bag];
+      const utility = [...owner.utility];
+      for (const id of items) {
+        const def = getItem(id);
+        if (def.permanentlyBinding || def.hpMult != null || def.hpFlat != null || def.sanityMult != null) return false;
+        const list = bag.includes(id) ? bag : utility.includes(id) ? utility : null;
+        if (!list) return false;
+        list.splice(list.indexOf(id), 1);
+      }
+      return true;
+    };
+    if (!transferable(firstItems, left) || !transferable(secondItems, right)) return { ok: false, message: 'An offered item is no longer available.' };
+    if (!packFits(left, secondItems, firstItems) || !packFits(right, firstItems, secondItems)) return { ok: false, message: 'Not enough room in a pack.' };
+    const weightLeft = firstItems.reduce((total, id) => total + getItem(id).weight, 0);
+    const weightRight = secondItems.reduce((total, id) => total + getItem(id).weight, 0);
+    if (!left.canCarry(weightRight - weightLeft) || !right.canCarry(weightLeft - weightRight)) return { ok: false, message: 'Too heavy to carry.' };
+    for (const [giver, items, taker] of [[left, firstItems, right], [right, secondItems, left]] as const) {
+      for (const id of items) {
+        const list = giver.bag.includes(id) ? giver.bag : giver.utility;
+        list.splice(list.indexOf(id), 1);
+        grantToMage(taker, id);
+      }
+    }
+    return { ok: true, message: `${left.name} and ${right.name} exchanged items.` };
   });
 }

@@ -61,7 +61,7 @@ export function lightningGamble(ctx: EffectContext): number {
 
 export function minion(
   kind: string,
-  o: Priced & { after?: (ctx: EffectContext, unit: Mage) => void; lightning?: boolean }
+  o: Priced & { after?: (ctx: EffectContext, unit: Mage) => void; lightning?: boolean; untamed?: boolean }
 ): ClassSpellVariant {
   const def = MINIONS[kind];
   return {
@@ -76,7 +76,7 @@ export function minion(
     description:
       `Summon a ${def.name} within ${MINION_RANGE}cm. ${o.text} ` +
       (minionDrinks(kind) ? 'Whatever it drains heals it as well as you. ' : '') +
-      `HP ${def.hp}, move ${def.move}cm${def.armor ? `, armour ${def.armor}` : ''}. Obeys Command.`,
+      `HP ${def.hp}, move ${def.move}cm${def.armor ? `, armour ${def.armor}` : ''}. ${o.untamed ? 'It obeys no one.' : 'Obeys Command.'}`,
     visual: { preset: 'conjure', color: o.color, size: 26, speed: 1 },
     cast(ctx) {
       if (!ctx.targetPoint) return;
@@ -196,8 +196,8 @@ export function variants(
 // ---- Shared wording -----------------------------------------------------------
 
 /** Rules text for a stacking rot. */
-export const rotText = (name: string, spec: string, max: number, turns: number): string =>
-  `a stack of ${name} (${spec} corrosive per stack at the start of its turns, up to ${max} stacks, ${turns} turns)`;
+export const rotText = (name: string, spec: string, max: number, turns: number, type = 'corrosive'): string =>
+  `a stack of ${name} (${spec} ${type} per stack at the start of its turns, up to ${max} stacks, ${turns} turns)`;
 export const TURN = 'is turned a quarter circle around';
 export const SLAM = 'stopped by a wall or the field edge';
 export const AFFECTED = 'affected units (Desecrate spares black units and minions)';

@@ -3,7 +3,8 @@ import { ENEMY_DEFS } from '../pve/swamprun';
 import { MINE_ENEMY_DEFS } from '../pve/minerun';
 import { Canvas } from './bosses/raster';
 import { BOSS_ANIMS, renderAnim } from './bosses/rig';
-import { creatureArt } from './creatures';
+import { creatureArt, creaturePose } from './creatures';
+import { CREATURE_PIXELS } from './creaturePixels';
 import { PLACEHOLDER_LOOKS, SUMMON_LOOKS, placeholderSpriteFor } from './creatureLooks';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -21,6 +22,14 @@ for (const kind of ['ghost', 'sentry', 'binder', 'archer', 'neural-leech', 'thou
 assert(placeholderSpriteFor(undefined) === null, 'Players keep their original art');
 assert(placeholderSpriteFor('unknown') === null, 'Unknown kinds retain a safe fallback');
 assert(new Set([3, 4, 5, 6].map(heads => placeholderSpriteFor('hydra', heads))).size === 4, 'Hydra head counts have distinct sheets');
+
+const idlePoses = Array.from({ length: 8 }, (_, frame) => creaturePose({ anim: 'idle', t: frame / 8, f: frame, n: 8 }));
+for (const joint of ['lift', 'lean', 'head', 'nearArm', 'farArm', 'elbow', 'stride'] as const) {
+  assert(new Set(idlePoses.map(pose => pose[joint])).size >= 3, `Idle must articulate ${joint}`);
+}
+const swings = Array.from({ length: 8 }, (_, frame) => creaturePose({ anim: 'attack', t: frame / 7, f: frame, n: 8 }).nearArm);
+assert(Math.max(...swings) - Math.min(...swings) > 2, 'Attack must swing the arm through more than 110 degrees');
+assert(CREATURE_PIXELS.goblin.join() !== CREATURE_PIXELS.kobold.join(), 'Goblin and kobold silhouettes must be distinct');
 
 for (const [key, look] of Object.entries(PLACEHOLDER_LOOKS)) {
   const art = creatureArt(look);

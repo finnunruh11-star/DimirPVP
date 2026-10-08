@@ -84,6 +84,28 @@ const tests: [name: string, run: () => void][] = [
     assert(say(council, 1, { op: 'camp-cancel' }).changed && !council.camp, 'called off');
   }],
 
+  ['trades: a visitor joins, offers reset consent, and strangers cannot change the deal', () => {
+    const council = emptyCouncil(3);
+    const at = { x: 3, y: 4 };
+    assert(say(council, 0, { op: 'trade', place: 'wilds', at }).changed, 'stall opens');
+    assert(!say(council, 1, { op: 'trade', place: 'wilds', at }).changed, 'only one stall');
+    assert(say(council, 1, { op: 'trade-join' }).changed, 'a visitor joins');
+    assert(!say(council, 2, { op: 'trade-join' }).changed, 'a third player cannot join');
+    say(council, 0, { op: 'trade-offer', items: ['oreIron', 'oreIron'] });
+    say(council, 1, { op: 'trade-ready' });
+    assert(!say(council, 2, { op: 'trade-offer', items: ['torch'] }).changed, 'a stranger cannot offer');
+    say(council, 0, { op: 'trade-offer', items: ['oreIron'] });
+    equal(council.trade?.ready, [false, false, false], 'editing an offer resets both confirmations');
+    assert(!say(council, 2, { op: 'trade-cancel' }).changed, 'a stranger cannot cancel');
+    equal(parseCouncil(JSON.parse(JSON.stringify(council)), 3)?.trade, council.trade, 'stall survives the wire');
+    equal(parseCouncilOp({ op: 'trade', place: 'wilds', at }), { op: 'trade', place: 'wilds', at }, 'location parses');
+    equal(parseCouncilOp({ op: 'trade-offer', items: ['constructor'] }), null, 'invalid item refused');
+    say(council, 0, { op: 'trade-ready' });
+    say(council, 1, { op: 'trade-ready' });
+    assert(council.trade!.ready[0] && council.trade!.ready[1], 'both confirm');
+    assert(say(council, 1, { op: 'trade-cancel' }).changed && !council.trade, 'visitor can leave');
+  }],
+
   ['leaves only when everyone wants to, by the first one\'s way', () => {
     const council = emptyCouncil(2);
     say(council, 1, { op: 'leave', place: 'kerusai', exit: { x: 9, y: 0 } });

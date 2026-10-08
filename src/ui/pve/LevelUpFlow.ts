@@ -8,14 +8,14 @@ import type Phaser from 'phaser';
 import type { ColorName } from '../../core/Colors';
 import type { Mage } from '../../core/Mage';
 import { STAT_DEFS, type StatKey } from '../../core/Stats';
-import { isModifierWord, WORDS, type WordId } from '../../core/Words';
 import { levelsOwed, levelTaken } from '../../pve/exploration/coop';
 import { memberIn, partyOf } from '../../pve/exploration/economy';
 import type { ExplorationActions } from '../../pve/exploration/intents';
-import { colorTies, learnedLoadout, levelWordOffers, type LevelChoice } from '../../pve/exploration/levels';
+import { colorTies, godWordChoices, learnedLoadout, levelWordOffers, type LevelChoice } from '../../pve/exploration/levels';
 import type { ExplorationRun } from '../../pve/exploration/run';
-import { levelReward, rackIsFull } from '../../pve/progression';
+import { levelReward } from '../../pve/progression';
 import { ChoiceMenuView } from '../combat/CombatMenus';
+import { playLevelWordChoice } from './Awakening';
 
 /** Walk the acting member (or, in solo, everyone) through every level still owed. True when anything changed. */
 export async function resolvePendingLevels(scene: Phaser.Scene, run: ExplorationRun, actions: ExplorationActions): Promise<boolean> {
@@ -43,10 +43,15 @@ async function promptLevel(scene: Phaser.Scene, run: ExplorationRun, mage: Mage,
   if (reward.word) {
     const offers = levelWordOffers(run, mage.mageClass, level, loadout);
     if (offers.length) {
-      const full = rackIsFull(loadout);
-      choice.word = await promptWord(scene, level, offers, full);
-      if (full) choice.replace = await promptReplacement(scene, loadout, choice.word);
-      loadout = learnedLoadout(loadout, choice.word, choice.replace) ?? loadout;
+      const picked = await playLevelWordChoice(scene, level, offers, loadout, godWordChoices(loadout));
+      choice.replace = picked.replace;
+      if (picked.ascend) {
+        choice.ascend = picked.ascend;
+        loadout[picked.replace] = picked.ascend;
+      } else {
+        choice.word = picked.word;
+        loadout = learnedLoadout(loadout, picked.word, picked.replace) ?? loadout;
+      }
     }
   }
   const ties = colorTies(loadout);
@@ -64,33 +69,6 @@ function promptStat(scene: Phaser.Scene, level: number, gain: number): Promise<S
       (stat) => {
         panel.destroy();
         resolve(stat);
-      });
-  });
-}
-
-function promptWord(scene: Phaser.Scene, level: number, offers: WordId[], full: boolean): Promise<WordId> {
-  return new Promise((resolve) => {
-    const panel = new ChoiceMenuView<WordId>(scene, `LEVEL ${level} / NEW WORD`,
-      full ? 'Choose a word, then replace one of your five.' : 'Choose one of three words.',
-      offers.map((word) => ({ id: word, label: WORDS[word].label, detail: WORDS[word].blurb })),
-      (word) => {
-        panel.destroy();
-        resolve(word);
-      });
-  });
-}
-
-function promptReplacement(scene: Phaser.Scene, loadout: readonly WordId[], gained: WordId): Promise<number> {
-  return new Promise((resolve) => {
-    const choices = loadout.flatMap((word, index) => isModifierWord(word) ? [] : [{
-      id: String(index),
-      label: WORDS[word].label,
-      detail: `Replace ${WORDS[word].label} with ${WORDS[gained].label}.`,
-    }]);
-    const panel = new ChoiceMenuView(scene, `LEARN ${WORDS[gained].label.toUpperCase()}`,
-      'Choose a known word to replace.', choices, (indexText) => {
-        panel.destroy();
-        resolve(Number(indexText) | 0);
       });
   });
 }

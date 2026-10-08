@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { RANGE_UNIT } from '../config/constants';
-import { stormWordsCompatible } from './Colors';
+import { computeColorProfile, stormWordsCompatible, wordSpellMana } from './Colors';
 import { GameState } from './GameState';
 import { Mage } from './Mage';
+import { parseScenario } from './Scenario';
+import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
 import '../spells/sampleSpells';
 import { getSpell } from '../spells/registry';
 
@@ -19,6 +21,12 @@ assert.equal(getSpell(['veil', 'storm']), undefined, 'Veil Storm must remain uni
 assert.equal(getSpell(['pierce', 'storm']), undefined, 'Storm has no colorless-word spell.');
 assert.equal(stormWordsCompatible(['lightning', 'storm']), true);
 assert.equal(stormWordsCompatible(['lightning', 'storm', 'subtle']), false);
+assert.equal(stormWordsCompatible(['lightning', 'mind', 'storm']), false);
+assert.equal(getSpell(['lightning', 'mind', 'storm']), undefined, 'Storm has no three-word spells.');
+assert.equal(stormWordsCompatible(['shadow', 'storm']), false);
+assert.equal(wordSpellMana(['mind', 'storm'], computeColorProfile(['mind', 'storm'])), 0);
+assert.equal(wordSpellMana(['fire', 'storm'], computeColorProfile(['fire', 'storm', 'shadow'])), 0);
+assert(getSpell(['storm']), 'Storm must be castable on its own.');
 
 const lightningStorm = getSpell(['lightning', 'storm']);
 assert(lightningStorm, 'Lightning Storm must be registered.');
@@ -92,6 +100,62 @@ for (const target of [fireAlly, fireEnemy]) {
 assert(!fireCaster.statuses.some((status) => status.kind === 'fire'));
 assert(!fireFar.statuses.some((status) => status.kind === 'fire'));
 
+const dailyCaster = mage('Daily storm', 1, 100);
+dailyCaster.setLoadout(['fire', 'storm']);
+const startingFireCharges = dailyCaster.charges.fire;
+const dailyTarget = mage('Daily target', 2, 150);
+const dailyGame = new GameState([dailyCaster, dailyTarget], 25);
+dailyGame.rng.roll = () => ({ total: 1, rolls: [1], modifier: 0 });
+assert.equal(dailyCaster.hasCharges(['storm']), false, 'Solo Storm needs a previous dualcast.');
+for (let cast = 0; cast < 3; cast += 1) {
+  assert(dailyCaster.hasCharges(['fire', 'storm']));
+  dailyCaster.spendCharges(['fire', 'storm']);
+  await dailyGame.makeSpellItem(dailyCaster, fireStorm, null, dailyTarget.pos).resolve(dailyGame);
+}
+assert.equal(dailyCaster.charges.fire, startingFireCharges - 3, 'Only the paired word spends charges.');
+assert.equal(dailyCaster.charges.storm, 3, 'Storm has its own daily uses.');
+assert.deepEqual(dailyCaster.stormLoadedWords, ['fire', 'fire', 'fire']);
+assert.equal(dailyCaster.hasCharges(['fire', 'storm']), false, 'No fourth dualcast on this day.');
+const soloStorm = getSpell(['storm']);
+assert(soloStorm);
+const releases: string[] = [];
+const overflows: string[] = [];
+dailyGame.onLog = (line) => {
+  if (line.includes('Storm releases')) releases.push(line);
+  if (line.includes('Fire overflows')) overflows.push(line);
+};
+for (let cast = 0; cast < 2; cast += 1) {
+  assert(dailyCaster.hasCharges(['storm']));
+  dailyCaster.spendCharges(['storm']);
+  await dailyGame.makeSpellItem(dailyCaster, soloStorm, dailyCaster, null).resolve(dailyGame);
+  if (cast === 0) {
+    const firstFire = dailyTarget.statuses.find((status) => status.kind === 'fire');
+    assert(firstFire && firstFire.kind === 'fire');
+    assert.equal(firstFire.stacks, 6, 'The first solo release reapplies each stored Fire Storm.');
+  }
+}
+assert.equal(releases.length, 6, 'Each solo cast releases all three previous dualcasts.');
+const renewedFire = dailyTarget.statuses.find((status) => status.kind === 'fire');
+assert(renewedFire && renewedFire.kind === 'fire');
+assert.equal(renewedFire.stacks, 5, 'The second release drives Fire past six and resets it after detonation.');
+assert(overflows.length > 0 && dailyTarget.hp < 100, 'Replaying Fire Storm can detonate stored Fire.');
+assert.equal(dailyCaster.hasCharges(['storm']), false, 'Solo Storm is limited to twice per day.');
+const stored = parseScenario(JSON.stringify(capturePartySnapshot([dailyCaster, dailyTarget])));
+const [restored] = restoreParty(stored);
+assert.deepEqual(
+  [restored.stormDualcastsUsed, restored.stormMonocastsUsed, restored.stormLoadedWords],
+  [3, 2, ['fire', 'fire', 'fire']],
+  'The daily uses and stored spells survive a party save.'
+);
+dailyCaster.resetForNewCombat();
+assert.equal(dailyCaster.stormDualcastsUsed, 3, 'A new combat does not reset the daily limit.');
+dailyCaster.startStormDay(2);
+assert.deepEqual(dailyCaster.stormLoadedWords, [], 'A new day clears stored dualcasts.');
+assert.equal(dailyCaster.stormMonocastsUsed, 0);
+dailyCaster.charges.fire = 1;
+assert(dailyCaster.hasCharges(['fire', 'storm']), 'Three dualcasts are available on the new day.');
+assert.equal(dailyCaster.hasCharges(['storm']), false, 'A new day must be loaded before a solo release.');
+
 const mindStorm = getSpell(['mind', 'storm']);
 assert(mindStorm, 'Mind Storm must be registered.');
 const mindCaster = mage('Mindcaster', 1, 100);
@@ -99,44 +163,20 @@ const mindAlly = mage('Mind ally', 1, 150);
 const mindEnemy = mage('Mind enemy', 2, 200);
 const mindFar = mage('Mind far', 2, 100 + 12 * RANGE_UNIT);
 const mindGame = new GameState([mindCaster, mindAlly, mindEnemy, mindFar], 23);
-await mindStorm.cast(mindGame.effectContext(mindCaster, null, mindCaster.pos));
-for (const target of [mindAlly, mindEnemy]) {
-  const control = target.statuses.find((status) => status.kind === 'control');
-  assert(control && control.kind === 'control');
-  assert.equal(control.mode, 'expose');
-  assert.equal(control.duration, 10);
-  assert.equal(target.modifier('damageTaken'), 20);
-}
-assert.equal(mindCaster.statuses.length, 0);
-assert.equal(mindFar.statuses.length, 0);
-
-const lightningMindStorm = getSpell(['lightning', 'mind', 'storm']);
-assert(lightningMindStorm, 'Lightning Mind Storm must be registered.');
-const mindBoltCaster = mage('Mind stormcaller', 1, 100);
-const mindBoltAlly = mage('Mind ally', 1, 120);
-const mindBoltA = mage('Mind target A', 2, 150);
-const mindBoltB = mage('Mind target B', 2, 180);
-const mindBoltGame = new GameState([mindBoltCaster, mindBoltAlly, mindBoltA, mindBoltB], 24);
-let pickIndex = 0;
-mindBoltGame.rng.pick = <T>(items: readonly T[]): T => items[pickIndex++ % items.length];
-mindBoltGame.rng.roll = (spec) => {
-  const total = spec === '1d10' ? 3 : spec === '1d3' ? 2 : 1;
-  return { total, rolls: [total], modifier: 0 };
-};
-let bolts = 0;
-mindBoltGame.vfxSink = {
-  diceRoll: () => undefined,
-  mindLightningBolt: async () => { bolts += 1; },
-};
-await lightningMindStorm.cast(mindBoltGame.effectContext(mindBoltCaster, mindBoltCaster, null));
-assert.equal(mindBoltA.lightningMindStacks, 8);
-assert.equal(mindBoltB.lightningMindStacks, 8);
-assert.equal(
-  mindBoltA.lightningMindStacks + mindBoltB.lightningMindStacks,
-  16,
-  'Four living entities cause eight separate two-stack applications.'
-);
-assert.equal(bolts, 3);
-assert.equal(mindBoltCaster.sanity, 97, 'A route roll of 1 sends each normal bolt into the caster.');
+await mindGame.makeSpellItem(mindCaster, mindStorm, mindCaster, null).resolve(mindGame);
+const rolledSides: number[] = [];
+mindGame.rng.die = (sides) => { rolledSides.push(sides); return 1; };
+mindGame.beginMindStormAction(mindEnemy);
+assert.equal(mindEnemy.sanity, 98, 'The next creature to act takes 2 sanity damage.');
+assert.equal(mindGame.rng.consistentSpec('1d20'), '1d10+10');
+assert.equal(mindGame.rng.consistentSpec('1d3'), '1d2+1');
+assert.equal(mindGame.rng.roll('1d20').total, 11, 'A d20 becomes d10+10.');
+assert.equal(mindGame.rng.roll('1d3').total, 2, 'A d3 becomes d2+1.');
+assert.equal(mindGame.rng.roll('2d6+1').total, 9, 'Every die in a larger roll uses its upper half.');
+mindGame.endMindStormAction();
+assert.deepEqual(rolledSides, [10, 2, 3, 3]);
+assert.equal(mindGame.rng.roll('1d20').total, 1, 'Later actions roll normally.');
+assert.equal(mindAlly.sanity, 100);
+assert.equal(mindFar.sanity, 100);
 
 console.log('Storm checks passed.');

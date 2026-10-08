@@ -399,6 +399,158 @@ export class PagedChoiceMenuView<T extends string> extends Phaser.GameObjects.Co
   }
 }
 
+export interface OfferingMenuOptions {
+  /** Most maximum health that may be given, in steps of 4. */
+  lifeMax: number;
+  /** Whether the day's items may be given. */
+  items: boolean;
+  /** Names of the minions that may be given. */
+  summons: readonly string[];
+  /** Points already held. */
+  points: number;
+  /** What a total of points wakes, for the preview line. */
+  describe: (points: number) => string;
+  confirm: (life: number, items: boolean, summons: number[]) => void;
+}
+
+/** The Shikigami's offering: toggle what to give, see what it wakes, then offer. */
+export class OfferingMenuView extends Phaser.GameObjects.Container {
+  private readonly sceneInput: SceneInput;
+  private readonly focus = new MenuFocusGroup();
+  private readonly preview: Phaser.GameObjects.Text;
+  private readonly lifeButton: CabinetButton;
+  private readonly itemsButton: CabinetButton;
+  private readonly picked = new Set<number>();
+  private life = 0;
+  private items = false;
+  private disposed = false;
+
+  constructor(scene: Phaser.Scene, private readonly options: OfferingMenuOptions) {
+    super(scene, 0, 0);
+    scene.add.existing(this);
+    this.setDepth(97);
+    const dim = scene.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.8).setOrigin(0).setInteractive();
+    const width = 660;
+    const rows = 2 + options.summons.length;
+    const fixed = 98 + 40 + 64 + 64;
+    const step = Math.max(46, Math.min(74, Math.floor((GAME_HEIGHT - 40 - fixed) / rows)));
+    const buttonH = step - 10;
+    const height = fixed + rows * step;
+    const left = (GAME_WIDTH - width) / 2;
+    const top = Math.max(12, (GAME_HEIGHT - height) / 2);
+    const frame = scene.add.graphics();
+    drawWindow(frame, left, top, width, height, MENU_COLOR.amethyst);
+    drawRule(frame, GAME_WIDTH / 2, top + 70, 170);
+    const title = scene.add.text(GAME_WIDTH / 2, top + 30, 'THE SHIKIGAMI', {
+      fontFamily: MENU_FONT.display,
+      fontSize: '24px',
+      fontStyle: 'bold',
+      color: MENU_HEX.brassLight,
+    }).setOrigin(0.5, 0).setLetterSpacing(1);
+    const subtitle = scene.add.text(GAME_WIDTH / 2, top + 84, 'It settles on your shoulder. What will you give it for the day?', {
+      fontFamily: MENU_FONT.body,
+      fontSize: '13px',
+      color: MENU_HEX.boneDim,
+      fixedWidth: width - 70,
+      align: 'center',
+    }).setOrigin(0.5, 0);
+    this.add([dim, frame, title, subtitle]);
+
+    const detail = buttonH >= 60;
+    let y = top + 98 + 40;
+    const row = (label: string, info: string, enabled: boolean, onActivate: () => void, onAdjust?: (d: -1 | 1) => void): CabinetButton => {
+      const button = new CabinetButton(scene, left + 38, y, {
+        width: width - 76,
+        height: buttonH,
+        label,
+        detail: detail ? info : undefined,
+        enabled,
+        onActivate,
+        onAdjust,
+      });
+      y += step;
+      this.add(button);
+      this.focus.add(button);
+      return button;
+    };
+    this.lifeButton = row('Maximum health', ' ', options.lifeMax > 0, () => this.setLife(this.life >= options.lifeMax ? 0 : this.life + 4), (d) =>
+      this.setLife(Math.max(0, Math.min(options.lifeMax, this.life + d * 4)))
+    );
+    this.itemsButton = row(
+      'Your items, for the day',
+      options.items ? '+2 points. No potions or throws until the day is over.' : 'Already given today.',
+      options.items,
+      () => {
+        this.items = !this.items;
+        this.itemsButton.setSelected(this.items);
+        this.refresh();
+      }
+    );
+    options.summons.forEach((name, index) => {
+      const button = row(name, '+1 point. The Shikigami devours it.', true, () => {
+        if (this.picked.has(index)) this.picked.delete(index);
+        else this.picked.add(index);
+        button.setSelected(this.picked.has(index));
+        this.refresh();
+      });
+    });
+
+    this.preview = scene.add.text(GAME_WIDTH / 2, y + 4, '', {
+      fontFamily: MENU_FONT.body,
+      fontSize: '13px',
+      color: MENU_HEX.bone,
+      fixedWidth: width - 70,
+      align: 'center',
+      wordWrap: { width: width - 70 },
+    }).setOrigin(0.5, 0);
+    const offer = new CabinetChip(scene, GAME_WIDTH / 2 - 80, top + height - 58, {
+      width: 160,
+      height: 38,
+      label: 'Offer',
+      tone: 'primary',
+      onActivate: () => options.confirm(this.life, this.items, [...this.picked].sort((a, b) => a - b)),
+    });
+    this.add([this.preview, offer]);
+    this.focus.add(offer);
+    this.setLife(0);
+
+    this.sceneInput = new SceneInput(scene);
+    this.sceneInput.bindKeys([
+      { key: 'UP', capture: true, run: () => this.focus.move(-1) },
+      { key: 'DOWN', capture: true, run: () => this.focus.move(1) },
+      { key: 'TAB', capture: true, run: (event) => this.focus.move(event.shiftKey ? -1 : 1) },
+      { key: 'LEFT', capture: true, run: () => this.focus.adjust(-1) },
+      { key: 'RIGHT', capture: true, run: () => this.focus.adjust(1) },
+      { key: 'SPACE', capture: true, run: () => this.focus.activate() },
+      { key: 'ENTER', capture: true, run: () => this.focus.activate() },
+    ]);
+  }
+
+  private setLife(life: number): void {
+    this.life = life;
+    this.lifeButton.setCopy(
+      this.options.lifeMax > 0 ? `Maximum health: -${life}` : 'Maximum health',
+      this.options.lifeMax > 0
+        ? `+${life / 4} points. Up to ${this.options.lifeMax}, in fours (left / right).`
+        : 'Nothing more to give today.'
+    );
+    this.lifeButton.setSelected(life > 0);
+    this.refresh();
+  }
+
+  private refresh(): void {
+    const points = this.options.points + this.life / 4 + (this.items ? 2 : 0) + this.picked.size;
+    this.preview.setText(this.options.describe(points));
+  }
+
+  override destroy(fromScene?: boolean): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.sceneInput.destroy();
+    super.destroy(fromScene);
+  }
+}
+
 export interface MultiSelectOption<T extends string> {
   id: T;
   label: string;

@@ -9,6 +9,7 @@ export interface RollResult {
 
 export class Dice {
   private next: () => number;
+  consistentRolls = false;
 
   constructor(seed?: number) {
     if (seed === undefined) {
@@ -36,12 +37,24 @@ export class Dice {
     return this.next();
   }
 
+  consistentSpec(spec: string): string {
+    if (!this.consistentRolls) return spec;
+    const match = /^\s*(\d*)d(\d+)\s*([+-]\s*\d+)?\s*$/i.exec(spec);
+    if (!match) return spec;
+    const count = match[1] ? parseInt(match[1], 10) : 1;
+    const sides = parseInt(match[2], 10);
+    const modifier = match[3] ? parseInt(match[3].replace(/\s+/g, ''), 10) : 0;
+    const floor = Math.floor(sides / 2);
+    const bonus = modifier + count * floor;
+    return `${count}d${sides - floor}${bonus > 0 ? `+${bonus}` : bonus < 0 ? bonus : ''}`;
+  }
+
   /**
    * Roll a dice spec such as "2d6+1", "d20", "3d8-2" or "1d4".
    * Returns the total plus the individual rolls.
    */
   roll(spec: string): RollResult {
-    const m = /^\s*(\d*)d(\d+)\s*([+-]\s*\d+)?\s*$/i.exec(spec);
+    const m = /^\s*(\d*)d(\d+)\s*([+-]\s*\d+)?\s*$/i.exec(this.consistentSpec(spec));
     if (!m) {
       const flat = Number(spec);
       return { total: isNaN(flat) ? 0 : flat, rolls: [], modifier: 0 };

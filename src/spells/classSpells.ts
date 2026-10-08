@@ -49,6 +49,8 @@ import './waves/lightningClass';
 import './waves/pierceClass';
 import './waves/drainClass';
 import './waves/bindClass';
+import './waves/curseClass';
+import './waves/deathClass';
 
 /** Abstract range number (5 / 10 / 15) to pixels. */
 const R = (units: number): number => units * RANGE_UNIT;

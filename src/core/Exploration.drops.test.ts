@@ -5,8 +5,6 @@ import { bountyBoard, BOUNTY_CAP } from '../pve/exploration/bounties';
 import { DROP_TABLES, depthLuck, dropTable, rollDrops } from '../pve/exploration/drops';
 import { grantToMage, rest, sellItem, sellPrice, withParty } from '../pve/exploration/economy';
 import { ZONE_ROSTERS } from '../pve/exploration/encounters';
-import { stage } from '../pve/exploration/eventKit';
-import { ROAD_EVENTS, variantsFor } from '../pve/exploration/events';
 import { capturePartySnapshot } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import { ROOM_PRICE, SHOPS, shopById } from '../pve/exploration/shops';
@@ -109,26 +107,6 @@ const tests: [name: string, run: () => void][] = [
     equal(run.gold, 0.5, 'and costs two');
   }],
 
-  ['roadside events never pay gold or experience', () => {
-    const zones = ['capitol', 'black', 'red', 'forest', 'wilds', 'lake', 'white'] as const;
-    for (const event of ROAD_EVENTS) {
-      for (const zone of zones) {
-        for (const variant of variantsFor(event, zone)) variant.choices.forEach((_, index) => {
-          for (let seed = 1; seed <= 6; seed++) {
-            const run = freshRun(seed);
-            run.gold = 10;
-            const choice = stage(event, variant, new Dice(seed)).choices[index];
-            const ctx = { run, zone, depth: 3, dice: new Dice(seed * 31 + index) };
-            withParty(run, (leader) => grantToMage(leader, 'healthPotion'));
-            if (choice.available && !choice.available(ctx)) continue;
-            choice.resolve(ctx);
-            assert(run.gold <= 10, `${event.id}/${choice.label} pays no gold`);
-            equal([run.xp, run.pendingLevels], [0, 0], `${event.id}/${choice.label} teaches nothing`);
-          }
-        });
-      }
-    }
-  }],
 ];
 
 for (const [name, run] of tests) {

@@ -5,6 +5,7 @@
 // network.
 
 import { TRAVEL_ORDER, type TravelMode } from './travel';
+import { asItemIds, type ItemId } from '../../core/Items';
 
 export interface Spot {
   x: number;
@@ -63,12 +64,22 @@ export interface InnCall {
   answers: (Answer | null)[];
 }
 
+export interface TradeCall {
+  by: number;
+  place: string;
+  at: Spot;
+  with: number | null;
+  offers: ItemId[][];
+  ready: boolean[];
+}
+
 export interface Council {
   size: number;
   travel: TravelVote[];
   camp: CampCall | null;
   leave: LeaveCall | null;
   inn: InnCall | null;
+  trade: TradeCall | null;
   poll: Poll | null;
 }
 
@@ -83,6 +94,11 @@ export type CouncilOp =
   | { op: 'stay' }
   | { op: 'inn'; shop: string }
   | { op: 'inn-answer'; answer: Answer }
+  | { op: 'trade'; place: string; at: Spot }
+  | { op: 'trade-join' }
+  | { op: 'trade-cancel' }
+  | { op: 'trade-offer'; items: ItemId[] }
+  | { op: 'trade-ready' }
   | { op: 'vote'; poll: number; choice: number };
 
 export interface CouncilChange {
@@ -94,7 +110,7 @@ export interface CouncilChange {
 const noVote = (): TravelVote => ({ dest: null, mode: null, hover: null });
 
 export function emptyCouncil(size: number): Council {
-  return { size, travel: Array.from({ length: size }, noVote), camp: null, leave: null, inn: null, poll: null };
+  return { size, travel: Array.from({ length: size }, noVote), camp: null, leave: null, inn: null, trade: null, poll: null };
 }
 
 /** Host: put a choice to the whole party. */
@@ -205,6 +221,36 @@ export function applyCouncil(council: Council, seat: number, op: CouncilOp, name
       const joined = count(inn.answers, (answer) => answer === 'join');
       return { changed: true, note: `${who} is in for the night (${joined}/${council.size}).` };
     }
+    case 'trade':
+      if (council.trade || council.size < 2) return { changed: false };
+      council.trade = { by: seat, place: op.place, at: { ...op.at }, with: null, offers: Array.from({ length: council.size }, () => []), ready: Array.from({ length: council.size }, () => false) };
+      return { changed: true, note: `${who} sets up a stall. Come join to trade.` };
+    case 'trade-join': {
+      const trade = council.trade;
+      if (!trade || trade.by === seat || trade.with != null) return { changed: false };
+      trade.with = seat;
+      return { changed: true, note: `${who} joins ${name(trade.by)}'s stall.` };
+    }
+    case 'trade-cancel': {
+      const trade = council.trade;
+      if (!trade || (trade.by !== seat && trade.with !== seat)) return { changed: false };
+      council.trade = null;
+      return { changed: true, note: `${who} closes the trade.` };
+    }
+    case 'trade-offer': {
+      const trade = council.trade;
+      if (!trade || (trade.by !== seat && trade.with !== seat) || (trade.ready[trade.by] && trade.ready[trade.with ?? trade.by])) return { changed: false };
+      if (JSON.stringify(trade.offers[seat]) === JSON.stringify(op.items)) return { changed: false };
+      trade.offers[seat] = [...op.items];
+      trade.ready.fill(false);
+      return { changed: true, note: `${who} changes their offer. Both players must confirm again.` };
+    }
+    case 'trade-ready': {
+      const trade = council.trade;
+      if (!trade || trade.with == null || (trade.by !== seat && trade.with !== seat) || trade.ready[seat]) return { changed: false };
+      trade.ready[seat] = true;
+      return { changed: true, note: `${who} confirms the trade.` };
+    }
   }
 }
 
@@ -313,7 +359,20 @@ export function parseCouncilOp(value: unknown): CouncilOp | null {
     }
     case 'camp-cancel':
     case 'stay':
+    case 'trade-join':
+    case 'trade-cancel':
+    case 'trade-ready':
       return { op: raw.op };
+    case 'trade': {
+      const place = text(raw.place);
+      const at = spot(raw.at);
+      return place && at ? { op: 'trade', place, at } : null;
+    }
+    case 'trade-offer': {
+      if (!Array.isArray(raw.items) || raw.items.length > 8) return null;
+      const items = asItemIds(raw.items);
+      return items.length === raw.items.length ? { op: 'trade-offer', items } : null;
+    }
     case 'leave': {
       const place = text(raw.place);
       if (!place) return null;
@@ -402,6 +461,22 @@ export function parseCouncil(value: unknown, size: number): Council | null {
     const shop = text(inn.shop);
     const said = answers(inn.answers, size);
     if (by != null && shop && said) council.inn = { by, shop, answers: said };
+  }
+  const trade = raw.trade && typeof raw.trade === 'object' ? raw.trade as Record<string, unknown> : null;
+  if (trade) {
+    const by = seat(trade.by, size);
+    const place = text(trade.place);
+    const at = spot(trade.at);
+    const partner = trade.with == null ? null : seat(trade.with, size);
+    const offers = Array.isArray(trade.offers) && trade.offers.length === size ? trade.offers.map((list) => {
+      if (!Array.isArray(list) || list.length > 8) return null;
+      const items = asItemIds(list);
+      return items.length === list.length ? items : null;
+    }) : null;
+    const ready = Array.isArray(trade.ready) && trade.ready.length === size && trade.ready.every((entry) => typeof entry === 'boolean') ? trade.ready as boolean[] : null;
+    if (by != null && place && at && (trade.with == null || partner != null) && partner !== by && offers?.every((list) => list != null) && ready) {
+      council.trade = { by, place, at, with: partner, offers: offers as ItemId[][], ready };
+    }
   }
   return council;
 }
