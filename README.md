@@ -57,6 +57,11 @@ For online, LAN, Creative Swamprun, and Campaign hosting instructions, see
    inspect). Before anything resolves, the opponent may **react** if eligible. Items
    resolve last-in-first-out and **fizzle** if their target is gone, dead or unseen on
    resolution.
+6. **Shoulder summons**: open the action menu and choose **Carry** for a nearby
+  summon. You can carry up to two, one on each shoulder. They follow you and
+  cannot be targeted or damaged, but their actions and passive effects pause.
+  **Set down** returns them to the field. Both commands cost one bonus action;
+  carried summons drop automatically if you are defeated.
 
 ## Interface
 

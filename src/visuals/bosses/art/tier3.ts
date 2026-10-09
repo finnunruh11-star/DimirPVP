@@ -3,124 +3,7 @@
 import { attackCurve, DEFAULT_FRAMES, DEFAULT_RATE, FRAME_H, GROUND, ramp, recoil, type BossArt, type Pose } from '../rig';
 import { Canvas, ease, lerp, rotate, span, TAU, type Pt, type Ramp } from '../raster';
 import { ball, blade, cloth, eye, limb, plate, puffs, ring, rod } from '../parts';
-
-// ---------------------------------------------------------------------------
-//  EVIL FIGHTER OF EVIL TRICKS
-// ---------------------------------------------------------------------------
-
-const SHADE = ramp('#050409', '#0e0b15', '#1b1626', '#2c243c', '#433858', '#63567e');
-const SCARF = ramp('#1a0626', '#3a0c52', '#62178a', '#9030c0', '#c469ef', '#ecb8ff');
-const MASK = ramp('#3e3a42', '#77727e', '#b3adb8', '#e3dee6', '#ffffff');
-const KNIFE = ramp('#141621', '#30354a', '#5a6380', '#93a0c4', '#d4dcf4', '#ffffff');
-const SMOG = ramp('#0c0812', '#1c1428', '#2e2240', '#453560');
-
-export const trickster: BossArt = {
-  w: 132,
-  h: FRAME_H,
-  frames: DEFAULT_FRAMES,
-  rate: { ...DEFAULT_RATE, idle: 10, attack: 16 },
-  ink: 0x030205,
-  ember: 0xc469ef,
-  draw(c, p) {
-    c.rim = { color: 0xe04868, strength: 0.55 };
-    const cyc = p.t * TAU;
-    let bob = Math.abs(Math.sin(cyc * 2)) * 1.5;
-    let dash = 0;
-    let front: Pt = [42, 78];
-    let back: Pt = [82, 74];
-    let spin = cyc;
-    let crouch = 0;
-    let slash = 0;
-    let wind = 0;
-    if (p.anim === 'walk') {
-      bob = Math.abs(Math.sin(cyc)) * 3;
-      crouch = 2;
-      front = [40, 80];
-      back = [84, 76];
-      spin = 0;
-    } else if (p.anim === 'attack') {
-      const curve = attackCurve(p.t);
-      wind = curve.wind;
-      dash = -26 * ease.out(span(p.t, 0.36, 0.5)) * (1 - ease.inOut(span(p.t, 0.66, 1)));
-      crouch = 5 * curve.wind;
-      front = [44 + curve.wind * 8 - curve.hit * 18, 76 - curve.wind * 10 + curve.hit * 6];
-      back = [84 - curve.hit * 30, 72 + curve.hit * 4];
-      spin = -1.2 + curve.hit * 3.4;
-      slash = span(p.t, 0.4, 0.62);
-    } else if (p.anim === 'hurt' || p.anim === 'death') {
-      const k = recoil(p);
-      dash = 6 * k;
-      crouch = 3;
-      front = [48, 82];
-      back = [80, 80];
-      spin = 0.8;
-    }
-    const x = 62 + dash;
-    const g = GROUND - bob;
-    const hip: Pt = [x + 2, g - 34 + crouch];
-    // Afterimages streak behind a dash.
-    if (dash < -4) {
-      for (let k = 1; k <= 3; k++) {
-        const sx = x + k * 9;
-        c.line(sx, g - 58, sx + 14, g - 58, SCARF[2 + (k % 2)]);
-        c.line(sx + 4, g - 40, sx + 20, g - 40, SCARF[1 + (k % 2)]);
-        c.line(sx, g - 20, sx + 12, g - 20, SCARF[2]);
-      }
-    }
-    if (p.anim === 'idle') puffs(c, [x + 10, GROUND - 2], p.t, 3, SMOG, 10, 6);
-    // The scarf streams out behind.
-    const trail = Array.from({ length: 8 }, (_, i) => {
-      const t = i / 7;
-      return [x + 6 + t * 46 - dash * t * 0.6, g - 62 + Math.sin(cyc * 1.5 - t * 4) * (2 + t * 5) + t * 8 + wind * t * 6, 2.4 - t * 1.3] as const;
-    });
-    c.layer((part) => {
-      part.tube(trail, SCARF, { flatten: 0.4 });
-      const [ex, ey] = trail[trail.length - 1];
-      part.tube([[ex - 6, ey - 1, 1.2], [ex + 4, ey + 4 + Math.sin(cyc * 2) * 2, 0.6]], SCARF, { flatten: 0.4 });
-    }, null, 0.5);
-    // Far leg braced behind, near leg lunging in front.
-    limb(c, hip, [x + 20, GROUND - 1], [16, 16], [4, 3.2, 2.8], SHADE, 1, -0.15);
-    limb(c, [hip[0] - 3, hip[1]], [x - 16, GROUND - 1], [16, 16], [4.2, 3.4, 3], SHADE, 1, 0);
-    for (const fx of [x + 20, x - 16]) plate(c, [[fx - 6, GROUND], [fx - 4, GROUND - 4], [fx + 3, GROUND - 4], [fx + 3, GROUND]], SHADE, 0.45);
-    // The far arm's knife, held reversed.
-    const backHand = limb(c, [x + 6, g - 58 + crouch], back, [12, 12], [3, 2.5, 2.4], SHADE, 1, -0.18);
-    blade(c, backHand, Math.PI / 2 + 0.5 + spin * 0.2, 16, 3.5, KNIFE, { curve: 1, guard: SCARF, guardWidth: 3 });
-    // Torso: lean, strapped, a belt of little vials.
-    c.layer((part) => {
-      part.ellipse(x + 1, g - 48 + crouch, 9.5, 14, SHADE, { rot: 0.25 });
-      part.line(x - 7, g - 58 + crouch, x + 8, g - 40 + crouch, SHADE[0], 2);
-      part.rect(x - 8, g - 38 + crouch, 17, 3, SHADE[4]);
-      for (let k = 0; k < 3; k++) part.rect(x - 5 + k * 5, g - 37 + crouch, 2, 3, [0x58e070, 0xe05858, 0x5898e0][k]);
-    }, null, 0.5);
-    // The hooded head and its grinning mask.
-    const hx = x - 4;
-    const hy = g - 70 + crouch;
-    c.layer((part) => {
-      part.ellipse(hx + 2, hy, 11, 11, SHADE);
-      part.poly([[hx + 6, hy - 8], [hx + 22, hy - 4 + Math.sin(cyc) * 2], [hx + 10, hy + 2]], SHADE, 0.45);
-    }, null, 0.5);
-    c.layer((part) => {
-      part.ellipse(hx - 3, hy + 1, 6.5, 8, MASK);
-      part.poly([[hx - 8, hy - 2], [hx - 4, hy - 4], [hx - 3, hy - 1], [hx - 7, hy]], [0x14081e, 0x14081e], 0.5);
-      part.poly([[hx - 1, hy - 3], [hx + 2, hy - 5], [hx + 2, hy - 2], [hx, hy - 1]], [0x14081e, 0x14081e], 0.5);
-      for (let k = 0; k <= 6; k++) part.dot(hx - 7 + k * 1.5, hy + 4 + Math.sin((k / 6) * Math.PI) * 2, 0x14081e);
-      part.line(hx - 6, hy - 1, hx - 7, hy + 3, SCARF[3]);
-    }, null, 0.5);
-    eye(c, hx - 6, hy - 2, SCARF[5], SCARF[3], 1);
-    eye(c, hx, hy - 3, SCARF[5], SCARF[3], 1);
-    // The near arm's knife.
-    const hand = limb(c, [x - 5, g - 58 + crouch], front, [12, 12], [3.2, 2.6, 2.5], SHADE, -1, 0);
-    blade(c, hand, spin + Math.PI * 0.55, 18, 3.5, KNIFE, { curve: 1, guard: SCARF, guardWidth: 3 });
-    if (slash > 0 && slash < 1) {
-      for (let k = 0; k < 14; k++) {
-        const a = lerp(-1.4, 1.6, k / 13);
-        const r = 20 - Math.abs(k - 7) * 0.4;
-        if (k / 13 > slash + 0.2) continue;
-        c.dot(front[0] - 6 + Math.cos(a + Math.PI) * r, front[1] - 4 + Math.sin(a + Math.PI) * r, k % 2 ? SCARF[5] : KNIFE[5]);
-      }
-    }
-  },
-};
+import { lillithOrb } from './lillithOrb';
 
 // ---------------------------------------------------------------------------
 //  PLANETAR
@@ -351,4 +234,13 @@ export const selga: BossArt = {
   },
 };
 
-export const TIER3: Record<string, BossArt> = { trickster, planetar, selga };
+// ---------------------------------------------------------------------------
+//  LILLITH BELVUS, THE NICE AND FRIENDLY: authored sheets, see ../authored;
+//  her orb is 32x32 pixel art, see ./lillithOrb
+// ---------------------------------------------------------------------------
+
+export const TIER3: Record<string, BossArt> = { planetar, selga };
+
+export const UNITS3: Record<string, BossArt> = {
+  'lillith-orb': lillithOrb,
+};

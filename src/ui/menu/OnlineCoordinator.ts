@@ -21,7 +21,7 @@ import {
 } from '../../config/MatchConfig';
 import { Net, type NetMessage } from '../../net/Net';
 import { ADVENTURE_PROTOCOL } from '../../net/AdventureSession';
-import { RAID_BOSS_KINDS, type RaidBossKind } from '../../pve/swamprun';
+import { isRaidTarget, type RaidTarget } from '../../pve/raidTargets';
 import { MenuModel } from './MenuModel';
 
 export type OnlineStage =
@@ -72,10 +72,8 @@ export function sanitizeOnlineItemSets(value: unknown): ItemSetSelection {
   return sets;
 }
 
-export function sanitizeOnlineRaidBoss(value: unknown): RaidBossKind {
-  return RAID_BOSS_KINDS.includes(value as RaidBossKind)
-    ? value as RaidBossKind
-    : 'deathknightSpear';
+export function sanitizeOnlineRaidBoss(value: unknown): RaidTarget {
+  return isRaidTarget(value) ? value : 'deathknightSpear';
 }
 
 export function sanitizeOnlineSeats(value: unknown, size: number): SeatConfig[] {

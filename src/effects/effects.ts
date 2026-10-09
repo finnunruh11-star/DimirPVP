@@ -178,24 +178,6 @@ export interface SubTargetRerollOpts {
   sides: number;
 }
 
-/** What a Shikigami may be offered (see effects/deathKit.ts). */
-export interface OfferingOpts {
-  /** Most maximum health that may still be given, in steps of 4. */
-  lifeMax: number;
-  /** Whether the use of items for the day may still be given. */
-  items: boolean;
-  /** Minions that may be given. */
-  summons: readonly Mage[];
-  /** Points the Shikigami already holds. */
-  points: number;
-}
-
-export interface OfferingChoice {
-  life: number;
-  items: boolean;
-  summons: Mage[];
-}
-
 /**
  * Optional bridge the scene supplies so a spell can ask for *additional* targets
  * while it resolves (e.g. "now pick a point, then an enemy"). Because these run
@@ -208,7 +190,6 @@ export interface SubTargeter {
   requestEnemy(source: Mage, opts: SubTargetEnemyOpts): Promise<Mage | null>;
   requestCombatant(source: Mage, opts: SubTargetCombatantOpts): Promise<Mage | null>;
   requestReroll?(source: Mage, opts: SubTargetRerollOpts): Promise<boolean>;
-  requestOffering?(source: Mage, opts: OfferingOpts): Promise<OfferingChoice>;
   /**
    * Open a reaction window mid-resolution so opponents may spend their reaction
    * in response to the current step (e.g. one blink of a multi-step flurry).
@@ -257,8 +238,6 @@ export interface EffectContext {
   requestCombatant?(opts: SubTargetCombatantOpts): Promise<Mage | null>;
   /** Ask whether one Storm die should be kept or rerolled once. */
   requestReroll?(opts: SubTargetRerollOpts): Promise<boolean>;
-  /** Ask what the caster gives its Shikigami. */
-  requestOffering?(opts: OfferingOpts): Promise<OfferingChoice>;
   /**
    * Open a reaction window mid-resolution so opponents may respond to the
    * current step. Absent in headless logic — call as `await ctx.reactionWindow?.(...)`.
@@ -344,12 +323,11 @@ export function rollDice(
   victim?: Mage | null,
 ): number {
   const r = ctx.rng.roll(spec);
-  const shownSpec = ctx.rng.consistentSpec(spec);
   const detail = r.rolls.length
     ? ` [${r.rolls.join(', ')}${r.modifier ? (r.modifier > 0 ? `+${r.modifier}` : r.modifier) : ''}]`
     : '';
-  ctx.log(`${ctx.caster.name} rolls ${shownSpec}${reason ? ` for ${reason}` : ''}: ${r.total}${detail}`);
-  ctx.vfx?.diceRoll(shownSpec, r.total, r.rolls, reason, victim ?? undefined);
+  ctx.log(`${ctx.caster.name} rolls ${spec}${reason ? ` for ${reason}` : ''}: ${r.total}${detail}`);
+  ctx.vfx?.diceRoll(spec, r.total, r.rolls, reason, victim ?? undefined);
   return r.total;
 }
 
@@ -719,7 +697,7 @@ function dealOneHit(
   if (amount > 0) ctx.game.feedDeathMark(target, damage.type);
   if (amount > 0 && damage.type === 'shatter') ctx.game.advanceDoom(target, 'shatter');
   if (amount > 0) ctx.game.echoSoulPact(ctx.caster, target, amount);
-  if (amount > 0) ctx.game.woundRites(ctx.caster, target, damage.type, amount);
+  if (amount > 0) ctx.game.echoFetch(ctx.caster, target, damage.type, amount);
 
   // A landed hit can shatter veils. The victim's veil may be torn off; the
   // attacker may reveal themselves by striking. DoT ticks (canMiss === false)
@@ -1063,7 +1041,11 @@ export function dash(
   };
   // A reality-break barrier stops a dash at its edge (the dash/spell ends).
   const bc = ctx.game.clampToBarriers(from, fieldDest);
-  const landing = ctx.game.nearestFreePosition(mover, ctx.game.clampToMages(mover, from, bc.dest), from, true);
+  const passage = ctx.game.clampDashToMages(mover, from, bc.dest);
+  const candidate = ctx.game.nearestFreePosition(mover, passage, from);
+  const landing = dist(from, candidate) <= dist(from, bc.dest) + 0.1 &&
+    dist(ctx.game.clampDashToMages(mover, from, candidate), candidate) < 0.2
+    ? candidate : passage;
   mover.x = landing.x;
   mover.y = landing.y;
   ctx.game.notifyMageRelocation(mover, from, landing, true);

@@ -18,12 +18,14 @@ import type { Scenario } from '../../core/Scenario';
 import { MODIFIER_WORDS, WORDS, type WordId } from '../../core/Words';
 import { SceneInput } from '../../engine/SceneInput';
 import { loadRun } from '../../pve/exploration/save';
-import { RAID_BOSS_KINDS, type RaidBossKind } from '../../pve/swamprun';
+import { BOSS_IDS } from '../../pve/exploration/bloodmoon';
+import { RAID_BOSS_KINDS } from '../../pve/swamprun';
+import type { RaidTarget } from '../../pve/raidTargets';
 import { pickScenarioFile } from '../scenarioFile';
 import { MenuModel } from './MenuModel';
 import { addMenuMageStage, type MenuMageStage } from './art';
 import { CabinetButton, CabinetChip, MenuFocusGroup, WordPlate } from '../cabinet/controls';
-import { CATEGORY_COPY, MODE_COPY, PREP_COPY, RAID_BOSS_COPY, SPELLBOOK_COPY, type MenuEntryCopy } from './content';
+import { CATEGORY_COPY, MODE_COPY, PREP_COPY, SPELLBOOK_COPY, raidTargetCopy, type MenuEntryCopy } from './content';
 import { MenuNavigator, type MenuRoute, type MenuScreenView } from './MenuFlow';
 import {
   OnlineCoordinator,
@@ -372,20 +374,43 @@ export class MenuExperience {
   private buildRaidTarget(returnToReview: boolean): MenuScreenView {
     const view = this.createScreen(
       'SELECT RAID TARGET',
-      'The party gets a preparation phase before this boss is summoned.'
+      'The party prepares before the boss is summoned. Bloodmoon bosses arrive with everything they bring.'
     );
-    const buttons = new Map<RaidBossKind, CabinetButton>();
+    const controls = new Map<RaidTarget, CabinetButton | CabinetChip>();
+    const pick = (target: RaidTarget): void => {
+      this.model.setRaidBoss(target);
+      refresh();
+      const copy = raidTargetCopy(target);
+      this.stage.setCaption(copy.title, copy.description);
+    };
     RAID_BOSS_KINDS.forEach((boss, index) => {
-      const copy = RAID_BOSS_COPY[boss];
-      const button = this.choice(view.root, 76, 238 + index * 82, copy, String(index + 1), () => {
-        this.model.setRaidBoss(boss);
-        refresh();
-        this.stage.setCaption(copy.title, copy.description);
-      }, 72, this.model.raidBoss === boss);
-      buttons.set(boss, button);
+      const button = this.choice(view.root, 76, 232 + index * 66, raidTargetCopy(boss), String(index + 1), () => pick(boss), 60, this.model.raidBoss === boss);
+      controls.set(boss, button);
       view.focus.add(button);
     });
-    const proceed = new CabinetButton(this.scene, 76, 500, {
+    view.root.add(this.scene.add.text(76, 432, 'BLOODMOON BOSSES', {
+      fontFamily: MENU_FONT.control,
+      fontSize: '12px',
+      fontStyle: 'bold',
+      color: MENU_HEX.brass,
+    }));
+    const columns = 5;
+    const chipWidth = Math.floor((714 - 8 * (columns - 1)) / columns);
+    BOSS_IDS.forEach((boss, index) => {
+      const copy = raidTargetCopy(boss);
+      const chip = new CabinetChip(this.scene, 76 + (index % columns) * (chipWidth + 8), 452 + Math.floor(index / columns) * 40, {
+        width: chipWidth,
+        height: 34,
+        label: copy.label,
+        selected: this.model.raidBoss === boss,
+        onActivate: () => pick(boss),
+        onFocus: () => this.stage.setCaption(copy.title, copy.description),
+      });
+      view.root.add(chip);
+      view.focus.add(chip);
+      controls.set(boss, chip);
+    });
+    const proceed = new CabinetButton(this.scene, 76, 540, {
       width: 714,
       height: 60,
       label: returnToReview ? 'Return to Review' : 'Choose Session',
@@ -393,15 +418,15 @@ export class MenuExperience {
       primary: true,
       onActivate: () => this.navigator.push(returnToReview ? { id: 'review' } : { id: 'session-role' }),
       onFocus: () => this.stage.setCaption(
-        RAID_BOSS_COPY[this.model.raidBoss].title,
-        RAID_BOSS_COPY[this.model.raidBoss].description
+        raidTargetCopy(this.model.raidBoss).title,
+        raidTargetCopy(this.model.raidBoss).description
       ),
     });
     view.root.add(proceed);
     view.focus.add(proceed);
-    this.addBack(view, 584);
+    this.addBack(view, 610);
     const refresh = (): void => {
-      for (const [boss, button] of buttons) button.setSelected(this.model.raidBoss === boss);
+      for (const [boss, control] of controls) control.setSelected(this.model.raidBoss === boss);
     };
     refresh();
     return view;
@@ -864,8 +889,8 @@ export class MenuExperience {
     }
     if (rulesOwner && this.model.mode === 'raid') {
       rows.push({
-        label: `Target: ${RAID_BOSS_COPY[this.model.raidBoss].label}`,
-        detail: RAID_BOSS_COPY[this.model.raidBoss].description,
+        label: `Target: ${raidTargetCopy(this.model.raidBoss).label}`,
+        detail: raidTargetCopy(this.model.raidBoss).description,
         edit: () => this.navigator.push({ id: 'raid-target', returnToReview: true }),
       });
     }
@@ -1617,7 +1642,7 @@ export class MenuExperience {
     if (this.model.role === 'host') return 'Create Co-op Room';
     if (this.model.role === 'guest') return 'Join Co-op Room';
     if (this.model.mode === 'minerun') return 'Enter the Mine';
-    if (this.model.mode === 'raid') return `Begin ${RAID_BOSS_COPY[this.model.raidBoss].label} Raid`;
+    if (this.model.mode === 'raid') return `Begin ${raidTargetCopy(this.model.raidBoss).label} Raid`;
     return 'Begin Swamprun';
   }
 

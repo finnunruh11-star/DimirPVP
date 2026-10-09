@@ -61,7 +61,7 @@ import {
   teleport,
   twistStrike,
 } from '../effects/effects';
-import { getSpell, registerSpell, spellById } from './registry';
+import { registerSpell, spellById } from './registry';
 import {
   applyMindLightningStack,
   closestMindLightningDirection,
@@ -211,8 +211,8 @@ function firstTrailCollision(from: Vec2, to: Vec2, trail: readonly TrailSegment[
   return null;
 }
 
-function segmentHitsMage(segment: TrailSegment, mage: Mage): boolean {
-  return pointSegmentDistance(mage.pos, segment) <= mage.bodyRadius();
+function segmentHitsMage(segment: TrailSegment, mage: Mage, padding = 0): boolean {
+  return pointSegmentDistance(mage.pos, segment) <= mage.bodyRadius() + padding;
 }
 
 /**
@@ -2014,24 +2014,6 @@ registerSpell({
 });
 
 registerSpell({
-  name: 'Storm',
-  words: ['storm'],
-  actionType: 'main',
-  range: 0,
-  targeting: 'self',
-  description: 'Release every Storm pair cast earlier today from your current position. Two releases per day; no charges or mana.',
-  visual: { preset: 'nova', color: 0x72d7ff, size: R(10), speed: 2 },
-  async cast(ctx) {
-    for (const word of ctx.caster.stormLoadedWords) {
-      const pair = getSpell(['storm', word], ctx.caster.spellClass);
-      if (!pair) continue;
-      ctx.log(`${ctx.caster.name}'s Storm releases ${pair.name}.`);
-      await pair.cast({ ...ctx, target: null, targetPoint: ctx.caster.pos });
-    }
-  },
-});
-
-registerSpell({
   name: 'Lightning Storm',
   words: ['lightning', 'storm'],
   actionType: 'main',
@@ -2099,14 +2081,25 @@ registerSpell({
   name: 'Mind Storm',
   words: ['mind', 'storm'],
   actionType: 'main',
-  range: 0,
-  targeting: 'self',
+  range: R(20),
+  targeting: 'point',
   dc: 18,
+  aoe: { kind: 'circle', radius: R(10) },
   description:
-    'The next creature to act takes 2 sanity damage and rolls only the upper half of every die for that action (d20 becomes d10+10; d3 becomes d2+1).',
-  visual: { preset: 'nova', color: 0xff8be0, size: R(10), speed: 1.5 },
+    'Every other living entity within 10cm of a target point within 20cm becomes Foreseen for 10 turns: it cannot react and takes +20 damage.',
+  visual: { preset: 'burst', color: 0xff8be0, size: R(10), speed: 1.5 },
   cast(ctx) {
-    ctx.game.queueMindStorm(ctx.caster);
+    if (!ctx.targetPoint) return;
+    for (const target of ctx.game.magesInRadius(ctx.targetPoint, R(10), ctx.caster)) {
+      if (target === ctx.caster) continue;
+      applyControl(ctx, target, { name: 'Foreseen', mode: 'expose', duration: 10 });
+      applyDebuff(ctx, target, {
+        name: 'Foreseen',
+        key: 'mind-storm-foreseen',
+        duration: 10,
+        mods: { damageTaken: 20 },
+      });
+    }
   },
 });
 
@@ -2126,6 +2119,44 @@ registerSpell({
     const stacks = rollDice(ctx, '1d8', 'Fire Storm');
     for (const target of ctx.game.magesInRadius(ctx.targetPoint, R(10), ctx.caster)) {
       if (target !== ctx.caster) applyFireStacks(ctx, target, stacks);
+    }
+  },
+});
+
+registerSpell({
+  name: 'Lightning Mind Storm',
+  words: ['lightning', 'mind', 'storm'],
+  actionType: 'main',
+  range: 0,
+  targeting: 'self',
+  dc: 20,
+  description:
+    'Twice for every living entity, apply 2 Mindconduct stacks to a random living enemy. Then roll 1d10 and resolve that many normal weighted Mindconduct bolts.',
+  visual: { preset: 'nova', color: 0x4ba8ff, size: R(12), speed: 2 },
+  async cast(ctx) {
+    const living = ctx.game.mages.filter((target) => target.alive);
+    const enemies = living.filter((target) => target.team !== ctx.caster.team);
+    for (let application = 0; application < living.length * 2 && enemies.length > 0; application += 1) {
+      const target = ctx.rng.pick(enemies);
+      applyMindLightningStack(target, 2);
+      ctx.log(`${target.name} gains 2 Mind Lightning stacks (${target.lightningMindStacks}).`);
+    }
+    const bolts = rollDice(ctx, '1d10', 'Lightning Mind Storm bolts', ctx.caster);
+    for (let bolt = 1; bolt <= bolts; bolt += 1) {
+      const marked = enemies.filter((target) => target.alive && target.lightningMindStacks > 0);
+      const sides = 1 + marked.reduce((total, target) => total + target.lightningMindStacks, 0);
+      const route = rollDice(ctx, `1d${sides}`, `Lightning Mind Storm bolt ${bolt}`, ctx.caster);
+      const target = mindLightningBoltTarget(ctx.caster, marked, route);
+      await (
+        ctx.vfx?.mindLightningBolt?.(ctx.caster.pos, target.pos) ??
+        ctx.vfx?.lightningBolt?.(ctx.caster.pos, target.pos)
+      );
+      const base = rollDice(ctx, '1d3', `Lightning Mind Storm damage ${bolt}`, target);
+      dealDamage(ctx, target, dmg(mindLightningDamage(base, target.lightningMindStacks), 'sanity'), {
+        canMiss: false,
+      });
+      await ctx.resolveImpacts?.();
+      if (bolt < bolts) await ctx.vfx?.pause?.(240);
     }
   },
 });
@@ -2584,7 +2615,7 @@ registerSpell({
         if (
           enemy.alive &&
           enemy.team !== ctx.caster.team &&
-          segmentHitsMage(segment, enemy)
+          segmentHitsMage(segment, enemy, ctx.caster.bodyRadius() + 0.3)
         ) {
           applyMindLightningStack(enemy);
           ctx.log(`${enemy.name} gains 1 Mind Lightning stack (${enemy.lightningMindStacks}).`);
@@ -2774,7 +2805,8 @@ registerSpell({
         ctx.vfx?.lightningTrail?.(trail);
         await ctx.vfx?.lightningDash?.(segment.from, segment.to, RED_TRAIL_COLOR);
         for (const entity of ctx.game.mages) {
-          if (entity === ctx.caster || !entity.alive || !segmentHitsMage(segment, entity)) continue;
+              if (entity === ctx.caster || !entity.alive ||
+                !segmentHitsMage(segment, entity, ctx.caster.bodyRadius() + 0.3)) continue;
           ctx.vfx?.lightningImpact?.(entity.pos, RED_TRAIL_COLOR);
           dealDamage(ctx, entity, dmg(rollDice(ctx, '4d6', 'Red lightning trail', entity) + Math.floor(power / 5), 'heat'), {
             canMiss: false,

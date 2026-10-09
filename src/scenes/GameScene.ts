@@ -216,11 +216,20 @@ import { CombatFeedbackLayer } from '../visuals/CombatFeedbackLayer';
 import { ImpactFxDirector } from '../visuals/ImpactFxDirector';
 import { preloadImpactSheets } from '../visuals/ImpactSheets';
 import { ParticleFx } from '../visuals/ParticleFx';
-import { bossAnimKey, bossSheet, bossSpriteKind, ensureBossSprites } from '../visuals/bosses';
+import { bossAnimKey, bossAttackKeys, bossCast, bossSheet, bossSpriteKind, ensureBossSprites, preloadBossSheets } from '../visuals/bosses';
 import { playBossIntro } from '../ui/combat/BossIntro';
 import { BOSSES, BOSS_STAND_IN, MOONSHARD, bossDamageScales, bossRoster, bossScaling, nextBloodmoonDay, type BossFight, type BossUnit } from '../pve/exploration/bloodmoon';
 import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_RANGE } from '../pve/goblins';
 import { BARAL_MARK, DRAKE_LIFESPAN, denialLabel, denialStartCharges, denialThreshold } from '../pve/baral';
+import {
+  LILLITH_CIRCLE_RADIUS,
+  LILLITH_ORB_HP,
+  lillithAfterSpawns,
+  lillithGraveHeld,
+  lillithTurnStart,
+  makeLillithCopy,
+  openLillith,
+} from '../pve/lillith';
 import {
   createCreatureAnims,
   CREATURE_FRAME_RATIO,
@@ -288,9 +297,9 @@ import {
   ENEMY_DEFS,
   rollLoot,
   type EnemyKind,
-  type RaidBossKind,
   type SwamprunCurse,
 } from '../pve/swamprun';
+import { isBloodmoonRaid, raidTargetName, raidTargetPower, type RaidTarget } from '../pve/raidTargets';
 import {
   applyMineEnemyTraits,
   isMineEnemyKind,
@@ -458,6 +467,7 @@ type HeldWeaponKind = 'sword' | 'dagger' | 'spear' | 'axe' | 'hammer' | 'club' |
 /** Per-mage sprite + animation-state machine. */
 interface MageAnim {
   sprite: Phaser.GameObjects.Sprite;
+  shoulderScale?: number;
   held?: Phaser.GameObjects.Image;
   heldVisualKey?: string;
   /** Binding roots held on the body while a physical root lasts. */
@@ -480,6 +490,8 @@ interface MageAnim {
   deathComplete: boolean;
   /** Last applied Mine tint/scale state; changes when a Golem wakes. */
   mineVisualKey?: string;
+  /** Strikes played so far, so a boss with several swings takes them in turn. */
+  swings?: number;
 }
 
 /** Per-scarab sprite plus its smoothed position and individual gait. */
@@ -634,6 +646,7 @@ type TurnCommand =
   | { t: 'focus' }
   | { t: 'cleave'; x: number; y: number }
   | { t: 'command'; summon: number }
+  | { t: 'summon-shoulder'; summon: number; carry: boolean }
   | { t: 'uncommand' }
   | { t: 'mantle-bind' }
   | { t: 'robe-cast' }
@@ -728,7 +741,7 @@ const bodyAnimationKey = (mage: Mage, state: BodyAnimState): string => {
 /** How the action palette is grouped, so it reads as short lists. */
 const ACTION_GROUPS: { title: string; ids: string[] }[] = [
   { title: 'CORE', ids: ['cast', 'move', 'attack', 'end'] },
-  { title: 'MANOEUVRE', ids: ['leap', 'cleave', 'focus', 'command', 'flee'] },
+  { title: 'MANOEUVRE', ids: ['leap', 'cleave', 'focus', 'command', 'summon-shoulder:*', 'flee'] },
   {
     title: 'POWERS',
     ids: [
@@ -914,7 +927,7 @@ export class GameScene extends Phaser.Scene {
   private swamprun = false;
   /** One prepared boss fight; defeating the selected target wins immediately. */
   private raid = false;
-  private raidBoss: RaidBossKind = 'deathknightSpear';
+  private raidBoss: RaidTarget = 'deathknightSpear';
   private raidTarget?: Mage;
   private raidVictory = false;
   /** Preparation round: harmless effigies, free restores, no boss yet. */
@@ -1221,6 +1234,7 @@ export class GameScene extends Phaser.Scene {
       set.frames.forEach((url, i) => this.load.image(`${set.key}-${i}`, url));
     }
     preloadCreatureSprites(this);
+    preloadBossSheets(this);
     // First frame of the scarab gif, used until the animated frames decode.
     this.load.image('scarab-static', scarabGifUrl);
     // Stack token icons (move / basic attack / spell cast).
@@ -2188,6 +2202,8 @@ export class GameScene extends Phaser.Scene {
         if (unit.leader) leader = m;
       }
     }
+    // Lillith begins her first phase before anyone moves.
+    if (leader?.enemyKind === 'lillith') openLillith(this.gs, leader, fighters);
     if (fighters > 1) {
       const damage = this.bossScale.damage;
       this.gs.log(`${def.name}: ${fighters} fighters, health x${scale.health}${damage !== 1 ? `, damage x${damage}` : ''}.`);
@@ -2352,6 +2368,56 @@ export class GameScene extends Phaser.Scene {
     if (plan.drakes > 0) await this.raiseDrakes(baral, plan.drakes);
     this.redraw();
     await this.delay(250);
+  }
+
+  /** Lillith's turn begins: her phase moves on, and whatever it brings takes the field. */
+  private async resolveLillithTurn(boss: Mage): Promise<void> {
+    const plan = lillithTurnStart(this.gs, boss);
+    void this.flushHits();
+    if (plan.banner) await this.playBossCast(boss);
+    const puffs: Promise<void>[] = [];
+    if (plan.blinkTo) {
+      puffs.push(this.spellVfx.summonPuff(boss.pos, MAGE_RADIUS * 2.4));
+      const from = boss.pos;
+      boss.x = plan.blinkTo.x;
+      boss.y = plan.blinkTo.y;
+      this.gs.notifyMageRelocation(boss, from, boss.pos, false);
+      puffs.push(this.spellVfx.summonPuff(boss.pos, MAGE_RADIUS * 2.4));
+    }
+    for (const at of plan.copies) {
+      makeLillithCopy(this.gs, boss, this.spawnBossUnit('lillithCopy', 'lillith', at));
+      puffs.push(this.spellVfx.summonPuff(at, MAGE_RADIUS * 2.4));
+    }
+    for (const rising of plan.risings) {
+      this.spawnEnemy(rising.kind, rising.at);
+      puffs.push(this.spellVfx.summonPuff(rising.at, MAGE_RADIUS * 2.4));
+    }
+    for (const at of plan.orbs) {
+      const orb = this.spawnBossUnit('lillithOrb', 'lillith-orb', at);
+      orb.maxHp = orb.hp = LILLITH_ORB_HP;
+      puffs.push(this.spellVfx.summonPuff(at, MAGE_RADIUS * 2));
+    }
+    lillithAfterSpawns(this.gs, boss);
+    void this.flushHits();
+    this.syncMageSprites();
+    this.redraw();
+    if (plan.banner) this.flashHint(plan.banner, false, 'info');
+    await Promise.all(puffs);
+    await this.delay(300);
+  }
+
+  /** A boss with a spell of its own chants it; resolves as the spell takes effect. */
+  private async playBossCast(m: Mage): Promise<void> {
+    const rec = this.mageAnims.get(m);
+    const cast = m.bossArt ? bossCast(m.bossArt) : null;
+    if (!rec || !cast || !m.alive || !this.anims.exists(cast.key)) return;
+    rec.charging = false;
+    rec.lock = 'attack';
+    rec.sprite.play(cast.key, true);
+    rec.sprite.once(`animationcomplete-${cast.key}`, () => {
+      if (rec.lock === 'attack') rec.lock = null;
+    });
+    await this.delay(cast.peakMs);
   }
 
   /** An armed artifact says no: a crackle from it to whoever acted. */
@@ -2602,7 +2668,7 @@ export class GameScene extends Phaser.Scene {
       this.mineRun
         ? 'Mine Run — stone shifts in the dark. Survive as long as you can.'
         : this.raid
-          ? `Raid — prepare against the effigies, then summon ${ENEMY_DEFS[this.raidBoss].name} when you are ready.`
+          ? `Raid — prepare against the effigies, then summon ${raidTargetName(this.raidBoss)} when you are ready.`
           : 'Swamprun — the swamp stirs. Survive as long as you can.'
     );
     this.spawnWave(1);
@@ -3462,17 +3528,16 @@ export class GameScene extends Phaser.Scene {
     this.beginWaveCombat(n);
     const partySize = this.swamprunPartySize();
     if (this.raid) {
-      const def = ENEMY_DEFS[this.raidBoss];
+      const name = raidTargetName(this.raidBoss);
+      this.swamprunEncounterPower = raidTargetPower(this.raidBoss);
       if (this.raidPrepActive) {
-        this.swamprunEncounterPower = def.power;
         this.gs.log(
-          `— RAID PREPARATION — equip your gear and build your stacks on the effigies. They cannot fight back and always return. Health, mana, and word charges refill for free from the action menu; summon ${def.name} there when you are ready. —`
+          `— RAID PREPARATION — equip your gear and build your stacks on the effigies. They cannot fight back and always return. Health, mana, and word charges refill for free from the action menu; summon ${name} there when you are ready. —`
         );
         for (let i = 0; i < RAID_PREP_EFFIGIES; i++) this.spawnRaidEffigy();
       } else {
-        this.swamprunEncounterPower = def.power;
-        this.gs.log(`— RAID: ${def.name} —`);
-        this.raidTarget = this.spawnEnemy(this.raidBoss);
+        this.gs.log(`— RAID: ${name} —`);
+        this.raidTarget = this.summonRaidBoss();
       }
     } else if (this.mineRun) {
       const spawns = mineWaveComposition(n, this.gs.rng, partySize);
@@ -3687,13 +3752,19 @@ export class GameScene extends Phaser.Scene {
       effigy.hp = 0;
       effigy.sanity = 0;
     }
-    const def = ENEMY_DEFS[this.raidBoss];
-    this.swamprunEncounterPower = def.power;
-    this.raidTarget = this.spawnEnemy(this.raidBoss);
-    this.gs.log(`— Effigies removed. ${def.name} enters combat. —`);
+    this.swamprunEncounterPower = raidTargetPower(this.raidBoss);
+    this.raidTarget = this.summonRaidBoss();
+    this.gs.log(`— Effigies removed. ${raidTargetName(this.raidBoss)} enters combat. —`);
     this.syncMageSprites();
     this.updateWaveHud();
     this.redraw();
+  }
+
+  /** The raid's boss takes the field: a swamp boss alone, a bloodmoon boss with all it brings, as its bloodmoon would. */
+  private summonRaidBoss(): Mage {
+    const target = this.raidBoss;
+    if (isBloodmoonRaid(target)) return this.spawnBloodmoonBoss({ id: target, cycle: BOSSES[target].tier });
+    return this.spawnEnemy(target);
   }
 
   /** Apply authored creature art or the generic tinted mage treatment. */
@@ -4219,8 +4290,8 @@ export class GameScene extends Phaser.Scene {
           : `Mine Run  Maze step ${this.mineMaze?.steps ?? 0}  Encounters: ${this.swamprunWave}  Gold: ${this.swamprunGold}g  Pickaxes: ${this.minePickaxes.join(', ') || 'none'}`
         : this.raid
           ? this.raidPrepActive
-            ? `RAID PREP  Effigies: ${alive}  Action menu → free restores  •  Summon ${ENEMY_DEFS[this.raidBoss].name} when ready`
-            : `RAID  ${ENEMY_DEFS[this.raidBoss].name}  ${this.raidTarget?.alive ? 'ACTIVE' : 'DEFEATED'}  Foes: ${alive}`
+            ? `RAID PREP  Effigies: ${alive}  Action menu → free restores  •  Summon ${raidTargetName(this.raidBoss)} when ready`
+            : `RAID  ${raidTargetName(this.raidBoss)}  ${this.raidTarget?.alive ? 'ACTIVE' : 'DEFEATED'}  Foes: ${alive}`
           : `${swamprunDepth(this.swamprunWave)}m  Power ${this.swamprunEncounterPower}  Foes: ${alive}  Gold: ${this.swamprunGold}g${this.swamprunCurse ? `  Curse: ${this.swamprunCurse}` : ''}`;
     if (!this.swamprunHudText) {
       this.swamprunHudText = this.add
@@ -5745,6 +5816,7 @@ export class GameScene extends Phaser.Scene {
       this.redraw();
       await this.delay(400);
     }
+    if (m.lillith) await this.resolveLillithTurn(m);
   }
 
   private async performAIDecision(d: AIDecision): Promise<void> {
@@ -6476,6 +6548,15 @@ export class GameScene extends Phaser.Scene {
         this.puppet = { summon, owner, savedIndex: this.gs.currentIndex };
         this.gs.currentIndex = this.gs.mages.indexOf(summon);
         this.gs.log(`${owner.name} commands ${summon.name}.`);
+        break;
+      }
+      case 'summon-shoulder': {
+        if (this.puppet || me.isSummon || (!freeBonus && me.actions.bonus <= 0 && !Dev.infiniteActions)) break;
+        const summon = this.mageBySeat(cmd.summon);
+        const changed = cmd.carry ? this.gs.carrySummon(me, summon) : this.gs.releaseSummon(me, summon);
+        if (!changed) break;
+        spend('bonus');
+        this.gs.log(cmd.carry ? `${me.name} carries ${summon.name} on their shoulder.` : `${me.name} sets ${summon.name} down.`);
         break;
       }
       case 'uncommand': {
@@ -8931,7 +9012,7 @@ export class GameScene extends Phaser.Scene {
       });
       entries.push({
         id: 'raid-begin',
-        label: `Summon ${ENEMY_DEFS[this.raidBoss].name}`,
+        label: `Summon ${raidTargetName(this.raidBoss)}`,
         hotkey: 'Menu',
         desc: 'End preparation and fight as you stand. Gear, stacks, and buffs all carry over.',
         enabled: true,
@@ -9082,6 +9163,21 @@ export class GameScene extends Phaser.Scene {
 
     // Command a summon (bonus action).
     if (!this.puppet) {
+      const owned = this.gs.summonsOf(me);
+      const carried = owned.filter((summon) => summon.summonShoulder != null).length;
+      for (const summon of owned) {
+        const riding = summon.summonShoulder != null;
+        const inReach = dist(me.pos, summon.pos) <= MELEE_RANGE + summon.bodyRadius();
+        entries.push({
+          id: `summon-shoulder:${this.seatOf(summon)}`,
+          label: riding ? `Set down ${summon.name}` : `Carry ${summon.name}`,
+          hotkey: 'Menu',
+          desc: riding ? 'Return to the field (bonus action).' : 'Ride on your shoulder, protected and unable to act (bonus action).',
+          enabled: (me.actions.bonus > 0 || inf) && (riding || this.gs.canCarrySummon(me, summon)),
+          reason: !riding && carried >= 2 ? 'Both shoulders are occupied.' : !riding && !inReach ? 'Get closer to pick up this summon.' : 'Needs a bonus action.',
+          run: () => this.submitTurn({ t: 'summon-shoulder', summon: this.seatOf(summon), carry: !riding }),
+        });
+      }
       const summons = this.gs.summonsOf(me).filter((s) => this.gs.canCommandSummon(me, s));
       if (summons.length > 0) {
         entries.push({
@@ -13372,6 +13468,9 @@ export class GameScene extends Phaser.Scene {
     // Black Dragonborn breath pools.
     this.drawCorrosionPools(g);
 
+    // Lillith's graves, acid circles and the one she holds.
+    this.drawLillith(g);
+
     // Corrosion totems.
     this.drawTotems(g);
 
@@ -13924,6 +14023,38 @@ export class GameScene extends Phaser.Scene {
       g.fillStyle(0x6644cc, 0.16).fillCircle(z.x, z.y, z.radius);
       g.lineStyle(2, tint, 0.6).strokeCircle(z.x, z.y, z.radius);
       g.lineStyle(1, 0x9988ff, 0.4).strokeCircle(z.x, z.y, z.radius * 0.6);
+    }
+  }
+
+  private drawLillith(g: Phaser.GameObjects.Graphics): void {
+    const r = LILLITH_CIRCLE_RADIUS;
+    for (const boss of this.gs.mages) {
+      const s = boss.lillith;
+      if (!s || !boss.alive) continue;
+      for (const grave of s.graves) {
+        const held = lillithGraveHeld(this.gs, boss, grave);
+        g.fillStyle(0x24102f, held ? 0.16 : 0.34).fillCircle(grave.x, grave.y, r);
+        g.lineStyle(2, held ? 0xd9b8ff : 0x8e4fc0, 0.85).strokeCircle(grave.x, grave.y, r);
+        g.lineStyle(1, 0x8e4fc0, 0.45).strokeCircle(grave.x, grave.y, r * 0.72);
+        g.lineStyle(3, held ? 0xd9b8ff : 0xb48cd8, 0.75);
+        g.lineBetween(grave.x, grave.y - 12, grave.x, grave.y + 12);
+        g.lineBetween(grave.x - 7, grave.y - 5, grave.x + 7, grave.y - 5);
+      }
+      for (const pool of s.pools) {
+        const last = pool.fires <= 1;
+        g.fillStyle(0x5f9a2e, last ? 0.12 : 0.22).fillCircle(pool.x, pool.y, r);
+        g.lineStyle(2, 0xa6e05a, last ? 0.5 : 0.9).strokeCircle(pool.x, pool.y, r);
+        g.lineStyle(1, 0x2f4d1c, 0.7).strokeCircle(pool.x, pool.y, r * 0.6);
+      }
+      const held = s.bound;
+      if (held?.alive) {
+        for (const orb of this.gs.mages) {
+          if (!orb.alive || orb.enemyKind !== 'lillithOrb' || orb.team !== boss.team) continue;
+          g.lineStyle(2, 0xb48cd8, 0.55).lineBetween(held.x, held.y, orb.x, orb.y);
+        }
+        g.lineStyle(3, 0x8e4fc0, 0.9).strokeCircle(held.x, held.y, MAGE_RADIUS + 12);
+        g.lineStyle(1, 0xd9b8ff, 0.6).strokeCircle(held.x, held.y, MAGE_RADIUS + 18);
+      }
     }
   }
 
@@ -14655,6 +14786,7 @@ export class GameScene extends Phaser.Scene {
   /** Create/position each mage's sprite and pick its resting animation. */
   private syncMageSprites(): void {
     if (!this.gs) return;
+    this.gs.syncCarriedSummons();
     const roster = new Set(this.gs.mages);
     for (const [mage, rec] of this.mageAnims) {
       if (roster.has(mage)) continue;
@@ -14698,6 +14830,16 @@ export class GameScene extends Phaser.Scene {
       }
       const s = rec.sprite;
       const customCreature = creatureSpriteKind(m) !== null;
+      const shoulderOwner = m.summonShoulder != null ? this.gs.mages[m.summonOwnerIndex ?? -1] : undefined;
+      const shoulderBody = shoulderOwner ? this.mageAnims.get(shoulderOwner)?.sprite : undefined;
+      if (shoulderOwner) {
+        rec.shoulderScale ??= s.scaleX;
+        s.setScale(MAGE_RADIUS * 0.95 / (s.height || 1));
+      } else if (rec.shoulderScale != null) {
+        s.setScale(rec.shoulderScale);
+        rec.shoulderScale = undefined;
+      }
+      s.setDepth(shoulderOwner ? 5.2 : 5);
       s.setOrigin(0.5, customCreature ? 0.9 : 1);
       if (m.alive && (rec.deathPending || rec.deathComplete || rec.lock === 'death')) {
         this.tweens.killTweensOf(s);
@@ -14710,7 +14852,10 @@ export class GameScene extends Phaser.Scene {
       // A position-locked animation owns where the body stands and which way
       // it faces, so a mid-swing redraw cannot spin it back to its team side.
       if (!rec.posLocked) {
-        s.setPosition(m.x, m.y + footY + this.mineSpriteBob(m));
+        s.setPosition(
+          shoulderOwner ? (shoulderBody?.x ?? m.x) + (m.summonShoulder === 0 ? -1 : 1) * MAGE_RADIUS * 0.78 : m.x,
+          shoulderOwner ? (shoulderBody?.y ?? m.y + footY) - MAGE_RADIUS * 1.6 : m.y + footY + this.mineSpriteBob(m)
+        );
         s.setFlipX(customCreature ? this.creatureShouldFlipX(m) : m.team !== 1);
       }
       if (!m.alive) {
@@ -14738,10 +14883,17 @@ export class GameScene extends Phaser.Scene {
       s.setVisible(true);
       const alpha = this.mageVisibilityAlpha(m);
       s.setAlpha(alpha);
-      this.syncHeldWeapon(m, rec, alpha);
-      this.syncRootOverlay(m, rec, footY, alpha);
-      this.syncStunOverlay(m, rec, alpha);
-      this.syncGuardOverlay(m, rec, alpha);
+      if (shoulderOwner) {
+        rec.held?.setVisible(false);
+        rec.root?.setVisible(false);
+        rec.stun?.setVisible(false);
+        rec.guard?.setVisible(false);
+      } else {
+        this.syncHeldWeapon(m, rec, alpha);
+        this.syncRootOverlay(m, rec, footY, alpha);
+        this.syncStunOverlay(m, rec, alpha);
+        this.syncGuardOverlay(m, rec, alpha);
+      }
       // Resting animation: charge while a spell is pending, otherwise idle.
       if (rec.lock === null) {
         const want = bodyAnimationKey(m, rec.charging ? 'charge' : 'idle');
@@ -15336,7 +15488,9 @@ export class GameScene extends Phaser.Scene {
     if (!rec || !m.alive) return;
     rec.charging = false;
     rec.lock = 'attack';
-    const key = bodyAnimationKey(m, 'attack');
+    const swings = m.bossArt ? bossAttackKeys(m.bossArt) : [];
+    const key = swings.length > 1 ? swings[(rec.swings ?? 0) % swings.length] : bodyAnimationKey(m, 'attack');
+    if (swings.length > 1) rec.swings = (rec.swings ?? 0) + 1;
     rec.sprite.play(key, true);
     rec.sprite.once(`animationcomplete-${key}`, () => {
       if (rec.lock === 'attack') rec.lock = null;
@@ -15365,6 +15519,8 @@ export class GameScene extends Phaser.Scene {
   private endWeaponAttack(rec: MageAnim): void {
     rec.posLocked = false;
     rec.heldLocked = false;
+    // A boss with swings of its own finishes the swing; its completion hands the body back.
+    if (rec.swings != null && rec.sprite.anims.isPlaying) return;
     if (rec.lock === 'attack') rec.lock = null;
   }
 
@@ -16014,6 +16170,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private drawMage(g: Phaser.GameObjects.Graphics, m: Mage): void {
+    if (m.summonShoulder != null) {
+      this.mageLabels.get(m)?.setVisible(false);
+      return;
+    }
     const alpha = this.mageVisibilityAlpha(m);
     const teamColor = m.team === 1
       ? COLORS.team1
@@ -16872,7 +17032,7 @@ export class GameScene extends Phaser.Scene {
     if (this.raid) {
       this.mode = 'over';
       this.busy = false;
-      const targetName = ENEMY_DEFS[this.raidBoss].name;
+      const targetName = raidTargetName(this.raidBoss);
       this.showEndCard({
         eyebrow: 'RAID COMPLETE',
         title: this.raidVictory ? 'VICTORY' : 'DEFEAT',

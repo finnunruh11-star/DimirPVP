@@ -27,7 +27,10 @@ export type EnemyKind =
   | 'goblinShaman'
   | 'baral'
   | 'denialArtifact'
-  | 'baralDrake';
+  | 'baralDrake'
+  | 'lillith'
+  | 'lillithCopy'
+  | 'lillithOrb';
 
 export type SwamprunCurse = 'madness' | 'decay' | 'sloth' | 'feeding';
 export const RAID_BOSS_KINDS = ['lich', 'reaper', 'deathknightSpear'] as const;
@@ -111,6 +114,25 @@ const MINDLESS_SANITY = 999;
 
 // Ethereal bodies: ordinary blows and shadow pass straight through them.
 const ETHEREAL: DamageType[] = ['pierce', 'shatter', 'slashing', 'generic', 'shadow'];
+
+// The third bloodmoon's black boss. Her stride is rolled anew each turn (see
+// pve/lillith); her blow is 1d3 corrosive and 1 Reap at 2cm.
+const LILLITH: EnemyDef = {
+  kind: 'lillith',
+  name: 'Lillith Belvus',
+  power: 30,
+  unlockDepth: 100_000,
+  hpSpec: '130',
+  sanity: 70,
+  moveUnits: 10,
+  meleeSpec: '1d3',
+  meleeType: 'corrosive',
+  meleeReach: MELEE_RANGE + 2 * RANGE_UNIT,
+  weakTypes: ['light'],
+  resistTypes: ['shadow'],
+  boss: true,
+  tint: 0x6a3f8f,
+};
 
 // Every swamp dweller resists heat and is weak to light, so a heat hit (half
 // heat, half light) settles at ×1.25 against the whole roster.
@@ -453,6 +475,25 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     resistTypes: ['pierce'],
     tint: 0xcf9738,
   },
+  lillith: LILLITH,
+  // Her phase-two copies: her very likeness, gone at the first blow that lands.
+  lillithCopy: { ...LILLITH, kind: 'lillithCopy', power: 1, boss: false },
+  // What holds her chosen one in the middle of the field until it is broken.
+  lillithOrb: {
+    kind: 'lillithOrb',
+    name: 'Binding Orb',
+    power: 2,
+    unlockDepth: 100_000,
+    hpSpec: '7',
+    sanity: MINDLESS_SANITY,
+    moveUnits: 0,
+    meleeSpec: '0',
+    meleeType: 'generic',
+    immuneTypes: ['sanity'],
+    pacifist: true,
+    inert: true,
+    tint: 0xb48cd8,
+  },
 };
 
 /** Configure an already-constructed team-2 Mage as the given creature kind. */
@@ -488,6 +529,16 @@ export function applyEnemyTraits(m: Mage, kind: EnemyKind, rng: Dice): void {
   if (def.bodyRadius != null) m.intrinsicBodyRadius = def.bodyRadius;
   if (def.pacifist) m.cannotAttack = true;
   m.inert = !!def.inert;
+  m.initiativeLast = kind === 'lillith';
+  if (kind === 'lillith' || kind === 'lillithCopy') {
+    m.intrinsicMelee = {
+      spec: def.meleeSpec,
+      type: def.meleeType,
+      onHit: (ctx, target) => {
+        if (ctx.game.lastIntrinsicDamage > 0) ctx.game.lillithReap(ctx.caster, target);
+      },
+    };
+  }
 }
 
 const STANDARD_KINDS: EnemyKind[] = [

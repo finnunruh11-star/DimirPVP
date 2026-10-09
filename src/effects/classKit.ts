@@ -1227,8 +1227,6 @@ export interface MinionDef {
   onHit?: HitEffect[];
   pulse?: PulseEffect[];
   death?: DeathEffect[];
-  /** Once a round, an enemy within `radius` of it declaring anything but a move is stopped; `then` lands on that enemy. */
-  stops?: { radius: number; then?: HitEffect[] };
 }
 
 const corrosive = (spec: string): Hit => ({ spec, type: 'corrosive' });
@@ -1861,10 +1859,6 @@ export interface ImbueDef {
   burst?: { min: number; radius: number; hits: Hit[]; veil: number };
   /** Every turn start of the bearer. */
   turnStart?: PulseEffect[];
-  /** Every turn end of the bearer (a use each, when it has uses). */
-  turnEnd?: PulseEffect[];
-  /** Once a round, the first enemy single-target spell or basic attack aimed at the bearer is stopped; `then` lands on its source. */
-  stops?: { then?: HitEffect[] };
   /** Armour: an enemy single-target spell aimed at the bearer is cast at its own caster instead (a use each). */
   reflect?: boolean;
   /** The bearer's hits of these types deal `dealt` more; such hits on the bearer deal `taken` more. */
@@ -2602,11 +2596,7 @@ export function executeBonus(source: Mage): number {
 //  HEXCRAFT — laws the whole field obeys
 // -----------------------------------------------------------------------------
 
-/** A law built from data (effects/ruleLaws.ts): its name and behaviour are registered with it. */
-export type RuleLawKind = `rule:${string}`;
-
 export type HexLawKind =
-  | RuleLawKind
   | 'chokingRust'
   | 'clingingRust'
   | 'acidFog'
@@ -2728,7 +2718,7 @@ export type HexLawKind =
   | 'fracturingCurse'
   | 'deathsHoliday'
   | 'greatMourning'
-  | 'mortalCoil';
+  | 'danseMacabre';
 
 export const HEX_LAW_NAMES: Record<HexLawKind, string> = {
   chokingRust: 'Choking Rust',
@@ -2852,7 +2842,7 @@ export const HEX_LAW_NAMES: Record<HexLawKind, string> = {
   fracturingCurse: 'Fracturing Curse',
   deathsHoliday: "Death's Holiday",
   greatMourning: 'The Great Mourning',
-  mortalCoil: 'Mortal Coil',
+  danseMacabre: 'Danse Macabre',
 };
 
 export function isHexLawKind(kind: string): kind is HexLawKind {
@@ -3043,14 +3033,14 @@ export function lawAfterHit(ctx: EffectContext, target: Mage, type: DamageType, 
   if (type === 'water') {
     if (law('scaldingWater') && target.alive) applyFireStacks(ctx, target, 1);
     if (law('boilingThoughts') && target.alive) applyBlueflareStacks(ctx, target, 1);
+    const sea = game.hexLaw('conductiveSea');
+    if (sea) conduct(game, attacker, target, sea.power ?? 0, false);
     const current = game.hexLaw('mindCurrent');
     if (current) {
       if (target.alive) applyMindLightningStack(target);
       conduct(game, attacker, target, current.power ?? 0, true);
     }
   }
-  const sea = game.hexLaw('conductiveSea');
-  if (sea && target.alive && target.team !== sea.owner) seaKnockback(game, attacker, target);
   if (attacker !== target && target.alive) {
     if (type === 'heat' && law('scaldingWater')) pushFrom(game, attacker, target, attacker.pos, 1);
     if (type === 'sanity' && law('flinching') && dealt >= 2) pushFrom(game, attacker, target, attacker.pos, Math.floor(dealt / 2));
@@ -3256,49 +3246,6 @@ function conduct(game: GameState, attacker: Mage, victim: Mage, power: number, m
 
 /** The middle of the field: the Maelstrom's eye. */
 const fieldCentre = (): Vec2 => ({ x: FIELD.x + FIELD.w / 2, y: FIELD.y + FIELD.h / 2 });
-
-/** A Conductive Sea lightning line from `a` to `b`, gone a full turn cycle later. */
-function lightningTrail(game: GameState, owner: Mage, a: Vec2, b: Vec2, groupId?: number): number | undefined {
-  if (dist(a, b) < 1) return groupId;
-  const living = game.initiativeOrder.filter((i) => game.mages[i]?.alive).length;
-  const zone = game.addHazardZone(a, owner, {
-    toX: b.x,
-    toY: b.y,
-    radius: R(0.25),
-    roundsLeft: 2,
-    untilTurn: game.turnSeq + Math.max(1, living),
-    name: 'Lightning Trail',
-    damageSpecs: ['1d10'],
-    damageType: 'heat',
-    color: 0x9fc8ff,
-    crossOnly: true,
-    foesOnly: true,
-  });
-  zone.groupId = groupId ?? zone.id;
-  void game.vfxSink?.lightningBolt?.(a, b);
-  return zone.groupId;
-}
-
-/** Conductive Sea: a hit throws its target back 1d4cm down a lightning line; a wall bounces it 1d4cm away again. */
-function seaKnockback(game: GameState, attacker: Mage, target: Mage): void {
-  const owner = lawOwner(game, 'conductiveSea') ?? attacker;
-  const away = attacker !== target && dist(attacker.pos, target.pos) > 0.5
-    ? Math.atan2(target.y - attacker.y, target.x - attacker.x)
-    : (game.rng.die(360) - 1) * (Math.PI / 180);
-  const throwTo = (angle: number): boolean => {
-    const reach = R(game.rng.roll('1d4').total);
-    return game.forceMove(owner, target, { x: target.x + Math.cos(angle) * reach, y: target.y + Math.sin(angle) * reach }, { noSlam: true });
-  };
-  const from = { ...target.pos };
-  const walled = throwTo(away);
-  const corner = { ...target.pos };
-  const group = lightningTrail(game, owner, from, corner);
-  if (!walled || !target.alive) return;
-  game.log(`${target.name} bounces off the wall.`);
-  // Anywhere in the half-circle facing back the way it came, so always off the wall.
-  throwTo(away + Math.PI + (game.rng.die(179) - 90) * (Math.PI / 180));
-  lightningTrail(game, owner, corner, target.pos, group);
-}
 
 /** Whether `m` stands within `reach` of a wall or the field edge. */
 function nearWallOrEdge(game: GameState, m: Mage, reach: number): boolean {

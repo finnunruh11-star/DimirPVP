@@ -1,5 +1,5 @@
 import { FIELD } from '../config/constants';
-import { applyInvisibility } from '../effects/effects';
+import { applyInvisibility, dash } from '../effects/effects';
 import '../spells/sampleSpells';
 import type { Spell } from '../spells/Spell';
 import { getSpell } from '../spells/registry';
@@ -45,6 +45,57 @@ async function cast(
 }
 
 const tests: [name: string, run: () => Promise<void>][] = [
+  ['scopes Mind Storm dice to a marked actor\'s action', async () => {
+    const caster = mage('Caster', 1, 300, 270);
+    const marked = mage('Marked', 2, 400, 270);
+    const distant = mage('Distant', 2, 1000, 270);
+    const game = new GameState([caster, marked, distant], 7);
+    await cast(game, requireSpell(['mind', 'storm']), caster, null, marked.pos);
+    assert(marked.statuses.some((status) => status.key === 'mind-storm-foreseen'), 'The target is marked');
+    game.beginMindStormAction(distant);
+    equal(game.rng.consistentSpec('1d20'), '1d20', 'Unmarked actions keep normal dice');
+    game.endMindStormAction();
+    game.beginMindStormAction(marked);
+    equal(game.rng.consistentSpec('1d20'), '1d10+10', 'The marked action uses upper-half dice');
+    game.endMindStormAction();
+    equal(game.rng.consistentSpec('1d20'), '1d20', 'The next action uses normal dice again');
+  }],
+
+  ['carries summons with their owner and releases them onto free ground', async () => {
+    const owner = mage('Owner', 1, 300, 270);
+    const game = new GameState([owner, mage('Foe', 2, 600, 270)], 3);
+    const first = game.spawnSummon(mage('First', 1, 330, 270), owner, 'ghost');
+    const second = game.spawnSummon(mage('Second', 1, 340, 270), owner, 'ghost');
+    const third = game.spawnSummon(mage('Third', 1, 350, 270), owner, 'ghost');
+    assert(game.carrySummon(owner, first) && game.carrySummon(owner, second), 'Both shoulders accept nearby summons');
+    equal([first.summonShoulder, second.summonShoulder], [0, 1], 'The summons use separate shoulders');
+    equal(game.carrySummon(owner, third), false, 'A third summon cannot be carried');
+    equal(game.canCommandSummon(owner, first), false, 'Carried summons cannot act');
+    equal(game.isUntargetable(first), true, 'A carried summon cannot be singled out');
+    owner.x = 450;
+    game.syncCarriedSummons();
+    equal(first.pos, owner.pos, 'A carried summon follows the owner');
+    assert(game.releaseSummon(owner, first), 'The owner can set a summon down');
+    assert(dist(first.pos, owner.pos) >= first.bodyRadius() + owner.bodyRadius(), 'The landing does not overlap its owner');
+    equal(first.summonShoulder, undefined, 'The summon is back on the field');
+  }],
+
+  ['stops short dashes at contact and lets long dashes clear an enemy', async () => {
+    const caster = mage('Caster', 1, 300, 270);
+    const foe = mage('Foe', 2, 400, 270);
+    const game = new GameState([caster, foe], 1);
+    const short = game.clampDashToMages(caster, caster.pos, { x: 420, y: 270 });
+    assert(Math.abs(short.x - (foe.x - caster.bodyRadius() - foe.bodyRadius())) < 0.2, 'A short dash stops at contact');
+    const long = game.clampDashToMages(caster, caster.pos, { x: 460, y: 270 });
+    equal(long, { x: 460, y: 270 }, 'A long dash passes through and clears the foe');
+    assert(dist(long, foe.pos) >= caster.bodyRadius() + foe.bodyRadius(), 'The long dash lands clear');
+    dash(game.effectContext(caster, caster, null), caster, { direction: { x: 1, y: 0 }, distance: 120 });
+    assert(Math.abs(caster.x - short.x) < 0.2, 'The short dash lands before the foe');
+    caster.x = 300;
+    dash(game.effectContext(caster, caster, null), caster, { direction: { x: 1, y: 0 }, distance: 160 });
+    equal(caster.x, 460, 'The long dash lands past the foe');
+  }],
+
   ['keeps walking and lantern landings free without blocking allied passage', async () => {
     const walker = mage('Walker', 2, 300, 270);
     const ally = mage('Ally', 2, 390, 270);

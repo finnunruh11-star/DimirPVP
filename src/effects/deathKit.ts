@@ -409,7 +409,7 @@ function fetchMovesOn(game: GameState, dead: Mage): void {
 let echoing = false;
 
 /** Every wound an original takes lands on its Fetch too; any other wound on a Fetch reaches its original as sanity. */
-function echoFetch(game: GameState, source: Mage, target: Mage, type: DamageType, amount: number): void {
+export function echoFetch(game: GameState, source: Mage, target: Mage, type: DamageType, amount: number): void {
   if (echoing || !game.mages.some((m) => m.alive && m.summonKind === 'fetch')) return;
   const original = originalOf(game, target);
   const fetches = original || type === 'sanity' ? [] : fetchesOf(game, target);

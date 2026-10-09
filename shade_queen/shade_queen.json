@@ -1,0 +1,196 @@
+{
+  "frame_size": [
+    128,
+    128
+  ],
+  "facing": "right",
+  "ground_y": 117,
+  "origin_hint": [
+    48,
+    117
+  ],
+  "view": "3/4 side view: body turned toward camera, camera slightly above",
+  "animations": {
+    "idle": {
+      "sheet": "sheets/idle.png",
+      "frames": 20,
+      "fps": 10,
+      "loop": true,
+      "combined_row": 0
+    },
+    "idle_inspect": {
+      "sheet": "sheets/idle_inspect.png",
+      "frames": 24,
+      "fps": 10,
+      "loop": false,
+      "combined_row": 1,
+      "play": "occasionally between idle loops; starts and ends on idle frame 0"
+    },
+    "run": {
+      "sheet": "sheets/run.png",
+      "frames": 14,
+      "fps": 16,
+      "loop": true,
+      "combined_row": 2
+    },
+    "attack1": {
+      "sheet": "sheets/attack1.png",
+      "frames": 22,
+      "fps": 24,
+      "loop": false,
+      "combined_row": 3,
+      "hit_frames": [
+        8,
+        9
+      ]
+    },
+    "attack2": {
+      "sheet": "sheets/attack2.png",
+      "frames": 22,
+      "fps": 24,
+      "loop": false,
+      "combined_row": 4,
+      "hit_frames": [
+        8,
+        9
+      ]
+    },
+    "attack3": {
+      "sheet": "sheets/attack3.png",
+      "frames": 30,
+      "fps": 24,
+      "loop": false,
+      "combined_row": 5,
+      "hit_frames": [
+        5,
+        8,
+        11
+      ],
+      "wave_release_frame": 11
+    },
+    "hurt": {
+      "sheet": "sheets/hurt.png",
+      "frames": 16,
+      "fps": 20,
+      "loop": false,
+      "combined_row": 6,
+      "flash": "frame 0 white, frame 1 red"
+    },
+    "taunt": {
+      "sheet": "sheets/taunt.png",
+      "frames": 56,
+      "fps": 16,
+      "loop": false,
+      "combined_row": 7,
+      "sword_planted_frames": [
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42
+      ],
+      "text": "COWARD. types in frames 16-22, fades 33-37",
+      "wink_frames": [
+        27,
+        28,
+        29
+      ]
+    },
+    "taunt_notext": {
+      "sheet": "sheets/taunt_notext.png",
+      "frames": 56,
+      "fps": 16,
+      "loop": false,
+      "combined_row": 8,
+      "same as taunt without the speech text (draw your own dialogue)": true,
+      "wink_frames": [
+        27,
+        28,
+        29
+      ]
+    },
+    "magic_snap": {
+      "sheet": "sheets/magic_snap.png",
+      "frames": 30,
+      "fps": 20,
+      "loop": false,
+      "combined_row": 9,
+      "snap_frame": 11,
+      "blast_frames": [
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+      ]
+    },
+    "magic_eclipse": {
+      "sheet": "sheets/magic_eclipse.png",
+      "frames": 40,
+      "fps": 20,
+      "loop": false,
+      "combined_row": 10,
+      "pop_frame": 22,
+      "shockwave_frames": [
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29
+      ]
+    },
+    "death": {
+      "sheet": "sheets/death.png",
+      "frames": 32,
+      "fps": 18,
+      "loop": false,
+      "combined_row": 11
+    },
+    "impact": {
+      "sheet": "sheets/impact.png",
+      "frames": 12,
+      "fps": 18,
+      "loop": false,
+      "combined_row": 12
+    }
+  }
+}

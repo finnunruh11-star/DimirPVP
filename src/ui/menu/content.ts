@@ -1,4 +1,6 @@
 import type { MenuCategory, MatchMode } from '../../config/MatchConfig';
+import { BOSS_STAND_IN, BOSSES, bossRoster, roman, type BossId } from '../../pve/exploration/bloodmoon';
+import { isBloodmoonRaid, type RaidTarget } from '../../pve/raidTargets';
 import type { RaidBossKind } from '../../pve/swamprun';
 
 export interface MenuEntryCopy {
@@ -147,3 +149,29 @@ export const RAID_BOSS_COPY: Record<RaidBossKind, MenuEntryCopy> = {
     description: 'A massive armoured spear fighter with 125 HP, long reach, and high movement. It resists ordinary steel, shadow, and heat; light, cleansing, and healing effects exploit its weaknesses.',
   },
 };
+
+/** Short names that fit a chip. */
+const BLOODMOON_LABELS: Record<BossId, string> = {
+  goblins: 'Snazzlegob',
+  minion: 'Evil Minion',
+  rock: 'Big Rock',
+  zargarg: 'Zargarg',
+  dragon: 'Dragon',
+  crusade: 'Crusade',
+  baral: 'Baral',
+  lillith: 'Lillith',
+  planetar: 'Planetar',
+  selga: 'Mini Selga',
+};
+
+export function raidTargetCopy(target: RaidTarget): MenuEntryCopy {
+  if (!isBloodmoonRaid(target)) return RAID_BOSS_COPY[target];
+  const boss = BOSSES[target];
+  const written = bossRoster(target, 1).some((unit) => unit.kind !== BOSS_STAND_IN);
+  return {
+    label: BLOODMOON_LABELS[target],
+    detail: `Bloodmoon ${roman(boss.tier)} / ${boss.color}`,
+    title: boss.name.toUpperCase(),
+    description: `Bloodmoon ${roman(boss.tier)}, ${boss.color}. Summoned with everything it brings and scaled to the party, just as when its bloodmoon rises.${written ? '' : ' Not written yet: a zombie wears its shape.'}`,
+  };
+}

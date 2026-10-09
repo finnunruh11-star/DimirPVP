@@ -64,6 +64,9 @@ export const KILL_XP: Record<EnemyKind | MineEnemyKind, number> = {
   baral: 0,
   baralDrake: 0,
   denialArtifact: 0,
+  lillith: 0,
+  lillithCopy: 0,
+  lillithOrb: 0,
 };
 
 export function killXp(kind: string | undefined): number {

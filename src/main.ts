@@ -25,6 +25,7 @@ const gameConfig: Phaser.Types.Core.GameConfig = {
   height: GAME_HEIGHT,
   backgroundColor: COLORS.bg,
   pixelArt: true,
+  audio: { noAudio: true },
   render: {
     antialias: false,
     antialiasGL: false,

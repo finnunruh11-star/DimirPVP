@@ -13,6 +13,7 @@ import {
   bloodmoonOmen, bossPool, bossRoster, bossScaling, cycleDay, cycleDayTitle, hoursToBloodmoon, nextBloodmoonDay, parseBossFight, roman,
 } from '../pve/exploration/bloodmoon';
 import { BOSS_ART } from '../visuals/bosses/art';
+import { AUTHORED_BOSSES } from '../visuals/bosses/authored';
 import { BOSS_ANIMS, GROUND, renderAnim } from '../visuals/bosses/rig';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -55,7 +56,7 @@ const tests: [name: string, run: () => void][] = [
   ['draws each bloodmoon from its own pool, the same boss for the same run', () => {
     equal(bossPool(1), ['goblins', 'minion', 'rock', 'zargarg'], 'first pool');
     equal(bossPool(2), ['dragon', 'crusade', 'baral'], 'second pool');
-    equal(bossPool(3), ['trickster', 'planetar', 'selga'], 'third pool');
+    equal(bossPool(3), ['lillith', 'planetar', 'selga'], 'third pool');
     equal(bossPool(7), bossPool(3), 'later bloodmoons keep to the third pool');
     for (let seed = 1; seed < 40; seed++) {
       for (let cycle = 1; cycle <= 4; cycle++) {
@@ -69,7 +70,7 @@ const tests: [name: string, run: () => void][] = [
     equal(Object.fromEntries(BOSS_IDS.map((id) => [id, BOSSES[id].color])), {
       goblins: 'red', minion: 'black', rock: 'green', zargarg: 'blue',
       dragon: 'red', crusade: 'white', baral: 'blue',
-      trickster: 'black', planetar: 'green', selga: 'white',
+      lillith: 'black', planetar: 'green', selga: 'white',
     }, 'colours as given');
   }],
 
@@ -124,6 +125,11 @@ const tests: [name: string, run: () => void][] = [
 
   ['paints every boss: all five animations, feet on the ground line, nothing empty but the end of death', () => {
     for (const id of BOSS_IDS) {
+      const authored = AUTHORED_BOSSES[id];
+      if (authored) {
+        for (const anim of BOSS_ANIMS) assert(authored.strips[anim]?.frames > 0, `${id} has a ${anim} strip`);
+        continue;
+      }
       const art = BOSS_ART[id];
       assert(art, `${id} has art`);
       for (const anim of BOSS_ANIMS) {

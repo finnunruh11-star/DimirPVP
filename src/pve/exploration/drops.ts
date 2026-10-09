@@ -39,6 +39,10 @@ export const DROP_TABLES: Readonly<Record<string, readonly DropRow[]>> = {
   baral: [{ item: 'manaStoneBig', chance: 1, extra: 1 }, { item: 'crudeTrinket', chance: 1, extra: 2 }],
   denialArtifact: [{ item: 'sentinelLens', chance: 0.5 }],
   baralDrake: [{ item: 'crudeTrinket', chance: 0.15 }],
+  // ---- Lillith Belvus and what she brings; her copies are nothing at all ----
+  lillith: [{ item: 'lostSoul', chance: 1, extra: 1 }, { item: 'manaStoneBig', chance: 1, extra: 1 }],
+  lillithCopy: [],
+  lillithOrb: [{ item: 'ectoplasm', chance: 0.5 }],
   // ---- Stone, scale and bandits ----
   rockling: [{ item: 'pebble', chance: 0.4 }],
   kobold: [{ item: 'koboldScale', chance: 0.35 }, { item: 'crudeTrinket', chance: 0.1 }],

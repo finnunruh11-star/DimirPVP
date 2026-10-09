@@ -63,7 +63,7 @@ export function cycleDayTitle(day: number): string {
 export type BossId =
   | 'goblins' | 'minion' | 'rock' | 'zargarg'
   | 'dragon' | 'crusade' | 'baral'
-  | 'trickster' | 'planetar' | 'selga';
+  | 'lillith' | 'planetar' | 'selga';
 
 export type BossColor = 'red' | 'black' | 'green' | 'blue' | 'white';
 
@@ -92,7 +92,7 @@ export const BOSSES: Record<BossId, BossDef> = {
   dragon: { id: 'dragon', name: 'Big Angy Dragon', color: 'red', tier: 2 },
   crusade: { id: 'crusade', name: 'Crusade', color: 'white', tier: 2 },
   baral: { id: 'baral', name: 'Baral, Artificer of Nope', color: 'blue', tier: 2 },
-  trickster: { id: 'trickster', name: 'Evil Fighter of Evil Tricks', color: 'black', tier: 3 },
+  lillith: { id: 'lillith', name: 'Lillith Belvus, the Nice and Friendly', color: 'black', tier: 3 },
   planetar: { id: 'planetar', name: 'Planetar', color: 'green', tier: 3 },
   selga: { id: 'selga', name: 'Mini Selga', color: 'white', tier: 3 },
 };
@@ -134,12 +134,13 @@ export function bossRoster(id: BossId, players: number): BossUnit[] {
       { kind: 'denialArtifact', art: 'denial-artifact', count: Math.max(1, Math.floor(players)) },
     ];
   }
+  if (id === 'lillith') return [{ kind: 'lillith', art: 'lillith', count: 1, leader: true }];
   return [{ kind: BOSS_STAND_IN, art: id, count: 1, leader: true }];
 }
 
-/** Whether a boss's damage grows with the party too; a band that grows in number does not, nor Baral, whose damage was not written to. */
+/** Whether a boss's damage grows with the party too; a band that grows in number does not, nor Baral or Lillith, whose damage was not written to. */
 export function bossDamageScales(id: BossId): boolean {
-  return id !== 'goblins' && id !== 'baral';
+  return id !== 'goblins' && id !== 'baral' && id !== 'lillith';
 }
 
 export function bossPool(cycle: number): BossId[] {

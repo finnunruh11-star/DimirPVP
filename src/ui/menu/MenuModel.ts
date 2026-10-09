@@ -26,11 +26,10 @@ import {
   type TeamFormat,
 } from '../../config/MatchConfig';
 import {
-  RAID_BOSS_KINDS,
   REAPER_MIN_PARTY_SIZE,
   canSpawnReaper,
-  type RaidBossKind,
 } from '../../pve/swamprun';
+import { isRaidTarget, type RaidTarget } from '../../pve/raidTargets';
 import { TUTORIAL_LOADOUT } from '../../pve/tutorial';
 
 export interface MageDraft {
@@ -71,7 +70,7 @@ export class MenuModel {
   teamFormat: TeamFormat = 'teams';
   seatTeams: number[] = [1, 2];
   prepMode: SwampPrepMode = 'custom';
-  raidBoss: RaidBossKind = 'deathknightSpear';
+  raidBoss: RaidTarget = 'deathknightSpear';
   itemSets: ItemSetSelection = { original: true, finns: false, dlc: false };
   /** Online Adventure host: continue the saved online run rather than start one. */
   resumeAdventure = false;
@@ -159,8 +158,8 @@ export class MenuModel {
     return true;
   }
 
-  setRaidBoss(kind: RaidBossKind): boolean {
-    if (!RAID_BOSS_KINDS.includes(kind)) return false;
+  setRaidBoss(kind: RaidTarget): boolean {
+    if (!isRaidTarget(kind)) return false;
     this.raidBoss = kind;
     if (kind === 'reaper' && !canSpawnReaper(this.seatCount)) {
       this.setSeatCount(REAPER_MIN_PARTY_SIZE);

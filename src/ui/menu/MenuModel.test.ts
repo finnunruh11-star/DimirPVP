@@ -287,6 +287,8 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(config.swampPrepMode, 'creative', 'Raid preparation');
     equal(config.seats?.map((seat) => seat.isAI), [false, true], 'Raid controllers');
     equal(config.seats?.every((seat) => seat.team === 1), true, 'Raid teams');
+    equal(model.setRaidBoss('lillith'), true, 'Select a bloodmoon boss');
+    equal(model.toLocalMatchConfig(() => 0.5).raidBoss, 'lillith', 'Bloodmoon raid target');
   }],
 
   ['keeps Reaper Raid parties at two or more members', () => {
@@ -381,6 +383,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       'Sanitized online packs'
     );
     equal(sanitizeOnlineRaidBoss('not-a-boss'), 'deathknightSpear', 'Sanitized raid target');
+    equal(sanitizeOnlineRaidBoss('baral'), 'baral', 'A bloodmoon boss survives sanitising');
     const seats = sanitizeOnlineSeats([
       { name: 'A', team: 1.9, isAI: false, loadout: ['mind'], mageClass: 'life' },
       { name: 7, team: Number.NaN, isAI: true, loadout: [], mageClass: 'invalid' },

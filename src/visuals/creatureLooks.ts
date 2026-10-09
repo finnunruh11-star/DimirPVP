@@ -58,6 +58,9 @@ export const ENEMY_LOOKS: Partial<Record<EnemyKind, CreatureLook>> = {
   baral: { body: 'humanoid', color: 0x779ab2, detail: 'staff' },
   denialArtifact: { body: 'relic', color: 0x88a8b7, accent: 0xe1d299 },
   baralDrake: { body: 'bat', color: 0x79a2b4 },
+  lillith: { body: 'humanoid', color: 0x7a4aa6, accent: 0xd2a8ff },
+  lillithCopy: { body: 'humanoid', color: 0x7a4aa6, accent: 0xd2a8ff },
+  lillithOrb: { body: 'relic', color: 0x55307a, accent: 0xff86e0 },
 };
 
 export const SUMMON_LOOKS: Record<string, CreatureLook> = {};

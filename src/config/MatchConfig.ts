@@ -2,7 +2,7 @@ import type { MageClass } from '../core/Classes';
 import type { Scenario } from '../core/Scenario';
 import type { WordId } from '../core/Words';
 import type { Net } from '../net/Net';
-import type { RaidBossKind } from '../pve/swamprun';
+import type { RaidTarget } from '../pve/raidTargets';
 import type { ExplorationRun, LocaleState } from '../pve/exploration/run';
 import type { EncounterKind, EncounterSpawn, EncounterZone } from '../pve/exploration/encounters';
 import type { DungeonId } from '../pve/exploration/world';
@@ -177,7 +177,7 @@ export interface MatchConfig {
   /** Swamprun pre-combat character preparation. */
   swampPrepMode?: SwampPrepMode;
   /** Single boss selected for a one-fight Raid. */
-  raidBoss?: RaidBossKind;
+  raidBoss?: RaidTarget;
   /** Classes for the classic two-mage layout (parallel to `loadouts`). */
   classes?: [MageClass, MageClass];
   /** Optional explicit seat list for N-player matches (up to four). */

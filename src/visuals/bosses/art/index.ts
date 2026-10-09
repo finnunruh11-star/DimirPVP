@@ -1,15 +1,16 @@
-// Every boss's art by boss id, and the art of the units some bosses bring (by unit art id).
+// Every painted boss's art by boss id, and the art of the units some bosses bring
+// (by unit art id). Bosses drawn from authored sheets are in ../authored instead.
 
 import type { BossId } from '../../../pve/exploration/bloodmoon';
 import type { BossArt } from '../rig';
 import { TIER1, UNITS1 } from './tier1';
 import { TIER2, UNITS2 } from './tier2';
-import { TIER3 } from './tier3';
+import { TIER3, UNITS3 } from './tier3';
 import { WILD } from './wild';
 import { creatureArt } from '../../creatures';
 import { ENEMY_LOOKS } from '../../creatureLooks';
 
-export const BOSS_ART: Record<BossId, BossArt> & Record<string, BossArt> = { ...TIER1, ...TIER2, ...TIER3, ...UNITS1, ...UNITS2, ...WILD } as Record<BossId, BossArt>;
+export const BOSS_ART: Record<BossId, BossArt> & Record<string, BossArt> = { ...TIER1, ...TIER2, ...TIER3, ...UNITS1, ...UNITS2, ...UNITS3, ...WILD } as Record<BossId, BossArt>;
 
 for (const [artId, kind] of Object.entries({
 	goblins: 'goblinChief',
@@ -21,4 +22,4 @@ for (const [artId, kind] of Object.entries({
 }
 
 /** The art ids of units that fight under a boss, or turn up in a roadside scene. */
-export const UNIT_ART_IDS: readonly string[] = [...Object.keys(UNITS1), ...Object.keys(UNITS2), ...Object.keys(WILD)];
+export const UNIT_ART_IDS: readonly string[] = [...Object.keys(UNITS1), ...Object.keys(UNITS2), ...Object.keys(UNITS3), ...Object.keys(WILD)];

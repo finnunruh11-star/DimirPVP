@@ -178,6 +178,7 @@ export interface ScenarioEntity {
   summon?: {
     kind?: string;
     ownerIndex?: number;
+    shoulder?: 0 | 1;
     attachedToIndex?: number;
     moveUnits?: number;
     order?: { kind: 'move' | 'attack' | 'follow' | 'sentinel' | 'flee'; x?: number; y?: number; targetIndex?: number; persistent?: boolean };
@@ -345,6 +346,7 @@ function captureEntity(m: Mage, index: Map<Mage, number>): ScenarioEntity {
       ? {
         kind: m.summonKind,
         ownerIndex: m.summonOwnerIndex,
+        shoulder: m.summonShoulder,
         attachedToIndex: m.attachedToIndex,
         moveUnits: m.summonMoveUnits,
         order: m.summonOrder
@@ -649,6 +651,7 @@ function parseEntity(raw: unknown): ScenarioEntity {
         kind: typeof summon.kind === 'string' ? summon.kind : undefined,
         ownerIndex:
           typeof summon.ownerIndex === 'number' ? int(summon.ownerIndex, 0, 0, MAX_ENTITIES) : undefined,
+        shoulder: summon.shoulder === 0 || summon.shoulder === 1 ? summon.shoulder : undefined,
         moveUnits: typeof summon.moveUnits === 'number' ? num(summon.moveUnits, 0, 0, 999) : undefined,
         order: order ? parseSummonOrder(order) : undefined,
       }
@@ -841,6 +844,7 @@ function buildMage(e: ScenarioEntity, rng: Dice): Mage {
     m.isSummon = true;
     m.summonKind = e.summon.kind;
     m.summonOwnerIndex = e.summon.ownerIndex;
+    m.summonShoulder = e.summon.shoulder;
     m.attachedToIndex = e.summon.attachedToIndex;
     m.summonMoveUnits = e.summon.moveUnits;
     m.summonOrder = e.summon.order

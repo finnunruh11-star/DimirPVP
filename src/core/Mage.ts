@@ -38,6 +38,7 @@ import type {
 } from './Status';
 import type { PendingCast, StackItem } from './Stack';
 import type { Vec2 } from './utils';
+import type { LillithCopy, LillithState } from '../pve/lillith';
 
 /**
  * A build carries at most ONE modifier word, chosen on the menu screen. It sits
@@ -356,6 +357,14 @@ export class Mage {
   denial?: { charges: number; threshold: number };
   /** A drake's own turns left before it falls apart. */
   drakeTurns?: number;
+  /** Takes the last turn of every round, whoever joins the fight later (Lillith Belvus). */
+  initiativeLast = false;
+  /** Lillith Belvus's own state: her phase, graves, pools and whom she has held. */
+  lillith?: LillithState;
+  /** One of Lillith's copies: whose likeness it wears and what its blows only seemed to do. */
+  lillithCopy?: LillithCopy;
+  /** Held by Lillith in the middle of the field until her orbs break: the spot. */
+  lillithBound?: Vec2;
   /** Death's rites: a Requiem's verse, the souls it took, a Fetch's original (mage index). */
   deathRite?: { level: number; souls?: number; originalIndex?: number };
   /** The Shikigami on this mage's shoulder: its points, the day it came, and what was given for it. */
@@ -371,6 +380,7 @@ export class Mage {
   summonOwnerIndex?: number;
   /** Which kind of summon this is (e.g. 'ghost', 'archer', 'binder'). */
   summonKind?: string;
+  summonShoulder?: 0 | 1;
   /** Summon's standing order, set by Command; drives its autonomous behaviour. */
   summonOrder?: { kind: 'move' | 'attack' | 'follow' | 'sentinel' | 'flee'; point?: Vec2; targetIndex?: number; persistent?: boolean };
   /** `GameState.turnSeq` of the last turn this summon carried out its order. */
@@ -2008,6 +2018,11 @@ export class Mage {
     // Sworn to stillness: the first action taken on a turn is the only one.
     if (this.statuses.some((s) => s.kind === 'stillOath')) {
       this.actions = { move: 0, main: 0, bonus: 0 };
+    }
+    // Held by Lillith: one main or bonus action a turn, not both.
+    if (this.lillithBound && kind !== 'move') {
+      this.actions.main = 0;
+      this.actions.bonus = 0;
     }
   }
 
