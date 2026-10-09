@@ -4,7 +4,7 @@
 
 import type { MageClass } from '../../core/Classes';
 import { Dice } from '../../core/Dice';
-import { getItem, type ItemDef, type ItemId, type Rarity } from '../../core/Items';
+import { getItem, isWornSlot, type ItemDef, type ItemId, type Rarity } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
 import { packCanStow, packFits } from '../../core/Pack';
 import { WORDS, type WordId } from '../../core/Words';
@@ -40,26 +40,46 @@ const RARITY_GOLD: Record<Rarity, number> = {
   lareneg: 24,
 };
 
-/** A sum of money kept to the silver (a tenth of a gold). */
-export const money = (value: number): number => Math.round(value * 10) / 10;
+/** A sum of money kept to the copper (a hundredth of a gold). */
+export const money = (value: number): number => Math.round(value * 100) / 100;
 /** A computed price, rounded down to the silver. */
 const silverDown = (value: number): number => Math.floor(value * 10 + 1e-6) / 10;
 
-/** A purse as it reads: "8g", "3g 5s", "5s". Ten silver to the gold. */
+/** A purse as it reads: "8g", "3g 5s", "5c". Ten copper to silver, ten silver to gold. */
 export function moneyLabel(gold: number): string {
-  const silver = Math.max(0, Math.round(gold * 10));
-  const g = Math.floor(silver / 10);
-  const s = silver % 10;
-  if (g && s) return `${g}g ${s}s`;
-  return s ? `${s}s` : `${g}g`;
+  const copper = Math.max(0, Math.round(gold * 100));
+  const goldCoins = Math.floor(copper / 100);
+  const silverCoins = Math.floor(copper / 10) % 10;
+  const copperCoins = copper % 10;
+  return [goldCoins ? `${goldCoins}g` : '', silverCoins ? `${silverCoins}s` : '', copperCoins ? `${copperCoins}c` : ''].filter(Boolean).join(' ') || '0g';
+}
+
+const SUPPLY_PRICES: Partial<Record<ItemId, number>> = {
+  torch: 0.2,
+  arrow: 0.05,
+  throwingDagger: 0.05,
+  oreCopper: 0.1,
+  oreIron: 0.3,
+  wood: 0.05,
+};
+
+function supplyPrice(def: ItemDef): number | undefined {
+  return SUPPLY_PRICES[def.id] ?? (def.material || def.ammo || def.potion || def.throwable || def.rarity === 'consumeable'
+    ? Math.min(0.9, Math.max(0.05, money(def.cost / 100))) : undefined);
 }
 
 /** What an item is worth, in gold, before any shop's cut. */
 export function itemWorth(def: ItemDef): number {
+  const supply = supplyPrice(def);
+  if (supply != null) return money(supply / 1.25);
   return def.cost > 0 ? def.cost / 10 : RARITY_GOLD[def.rarity] * 2.5;
 }
 
 export function buyPrice(def: ItemDef, mult = 1, qty = 1): number {
+  const fixed = SUPPLY_PRICES[def.id];
+  if (fixed != null) return money(fixed * qty);
+  const supply = supplyPrice(def);
+  if (supply != null) return money(Math.min(0.99, supply * mult) * qty);
   return Math.max(1, Math.ceil(itemWorth(def) * qty * 1.25 * mult));
 }
 
@@ -217,7 +237,7 @@ export function grantToMage(mage: Mage, id: ItemId): void {
     mage.bag.push(id);
     const handsEmpty = def.slot === 'hand' && mage.hands.length === 0;
     if ((def.slot !== 'hand' || handsEmpty) && mage.canEquipFromBag(id)) {
-      const worn = def.slot === 'head' ? mage.head : def.slot === 'torso' ? mage.torso : def.slot === 'boots' ? mage.boots : null;
+      const worn = isWornSlot(def.slot) ? mage.worn(def.slot) : null;
       if (!worn) mage.equipFromBag(id);
     }
   }
@@ -262,6 +282,48 @@ function carries(mage: Mage, id: ItemId): boolean {
   return mage.bag.includes(id) || mage.equippedItems().includes(id);
 }
 
+/** How many of `id` a mage carries unworn: packed, belted, pouched or quivered. */
+export function carriedCount(mage: Mage, id: ItemId): number {
+  if (getItem(id).ammo) return mage.arrows;
+  let count = 0;
+  for (const list of [mage.bag, mage.utility, mage.pouch]) for (const entry of list) if (entry === id) count += 1;
+  return count;
+}
+
+/** Items that change their bearer's body, or bind to them, never change hands. */
+export function changesHands(def: ItemDef): boolean {
+  return !def.permanentlyBinding && def.hpMult == null && def.hpFlat == null && def.sanityMult == null;
+}
+
+const copies = (id: ItemId, count: number): ItemId[] => Array.from({ length: count }, () => id);
+
+const countedName = (count: number, def: ItemDef): string => `${count > 1 ? `${count}x ` : ''}${def.name}`;
+
+/** A requested amount, clamped to 1..`owned`. */
+const amount = (requested: number, owned: number): number =>
+  Math.max(1, Math.min(owned, Number.isFinite(requested) ? Math.floor(requested) : 1));
+
+/** Take `count` of `id` out of the pack, loose ones before the pouch's. Returns how many came out. */
+function takeFromPack(mage: Mage, id: ItemId, count: number): number {
+  const def = getItem(id);
+  if (def.ammo) {
+    const taken = Math.min(count, mage.arrows);
+    mage.arrows -= taken;
+    return taken;
+  }
+  let taken = 0;
+  for (const list of [mage.bag, mage.utility, mage.pouch]) {
+    for (let i = list.length - 1; i >= 0 && taken < count; i--) {
+      if (list[i] !== id) continue;
+      list.splice(i, 1);
+      releaseFromMage(mage, def);
+      taken += 1;
+    }
+  }
+  if (mage.readyConsumable === id && !mage.utility.includes(id)) mage.readyConsumable = null;
+  return taken;
+}
+
 // -----------------------------------------------------------------------------
 //  SELLING
 // -----------------------------------------------------------------------------
@@ -278,15 +340,17 @@ function buyRate(shop: ShopDef, def: ItemDef): number {
 }
 
 export function sellPrice(shop: ShopDef, def: ItemDef): number {
-  return silverDown(itemWorth(def) * buyRate(shop, def));
+  const value = itemWorth(def) * buyRate(shop, def);
+  return supplyPrice(def) != null ? Math.floor(value * 100 + 1e-6) / 100 : silverDown(value);
 }
 
-/** Unequipped goods the shop will take, one row per item id. */
+/** Unequipped goods the shop will take, one row per item id: packed, belted, pouched and quivered alike. */
 export function sellOffers(run: ExplorationRun, shop: ShopDef, member?: MageClass | null): SellOffer[] {
   const seller = memberIn(run, member);
   if (!seller) return [];
   const counts = new Map<ItemId, number>();
-  for (const id of [...seller.bag, ...seller.utility]) counts.set(id, (counts.get(id) ?? 0) + 1);
+  for (const id of [...seller.bag, ...seller.utility, ...seller.pouch]) counts.set(id, (counts.get(id) ?? 0) + 1);
+  if (seller.arrows > 0) counts.set('arrow', seller.arrows);
   const offers: SellOffer[] = [];
   for (const [id, count] of counts) {
     const def = getItem(id);
@@ -297,30 +361,25 @@ export function sellOffers(run: ExplorationRun, shop: ShopDef, member?: MageClas
   return offers.sort((a, b) => b.unit * b.count - a.unit * a.count);
 }
 
-export function sellItem(run: ExplorationRun, shopId: string, id: ItemId, all: boolean, member?: MageClass | null): ShopResult {
+/** Sell carried `id`: `true` sells every one, `false` one, a number that many. */
+export function sellItem(run: ExplorationRun, shopId: string, id: ItemId, quantity: boolean | number, member?: MageClass | null): ShopResult {
   const shop = shopById(shopId);
   if (!shop) return { ok: false, message: 'No such shop.' };
   const def = getItem(id);
   if (def.keyItem) return { ok: false, message: 'A key item. It stays with the party.' };
+  if (def.permanentlyBinding) return { ok: false, message: `${def.name} is bound to you.` };
   const unit = sellPrice(shop, def);
   if (unit <= 0) return { ok: false, message: 'Not bought here.' };
   return withMember(run, member, (seller) => {
-    const owned = [...seller.bag, ...seller.utility].filter((entry) => entry === id).length;
+    const owned = carriedCount(seller, id);
     if (owned === 0) return { ok: false, message: 'You have none.' };
-    if (!packFits(seller, [], Array.from({ length: all ? owned : 1 }, () => id))) return { ok: false, message: PACK_OVERFLOW };
-    let sold = 0;
-    for (const list of [seller.bag, seller.utility]) {
-      for (let i = list.length - 1; i >= 0 && (all || sold === 0); i--) {
-        if (list[i] !== id) continue;
-        list.splice(i, 1);
-        releaseFromMage(seller, def);
-        sold += 1;
-      }
-    }
+    const count = quantity === true ? owned : quantity === false ? 1 : amount(quantity, owned);
+    if (!packFits(seller, [], copies(id, count))) return { ok: false, message: PACK_OVERFLOW };
+    const sold = takeFromPack(seller, id, count);
     if (sold === 0) return { ok: false, message: 'You have none.' };
     const gold = money(unit * sold);
     run.gold = money(run.gold + gold);
-    return { ok: true, message: `Sold ${sold > 1 ? `${sold}x ` : ''}${def.name} for ${moneyLabel(gold)}.` };
+    return { ok: true, message: `Sold ${countedName(sold, def)} for ${moneyLabel(gold)}.` };
   });
 }
 
@@ -408,17 +467,26 @@ export function craftItem(run: ExplorationRun, shopId: string, design: CraftDesi
     if (smith.spellClass !== 'objects') return { ok: false, message: 'Only an Objects mage can craft.' };
     if (!smith.alive) return { ok: false, message: `${smith.name} has fallen.` };
     const used = [...design.parts, ...design.sockets];
+    const stores = [smith, ...party.filter((mage) => mage !== smith)].flatMap((mage) =>
+      [mage.bag, mage.utility, mage.pouch].map((items) => ({ mage, items, remaining: [...items] })));
     for (const id of new Set(used)) {
       const need = used.filter((entry) => entry === id).length;
-      if (smith.bag.filter((entry) => entry === id).length < need) return { ok: false, message: `Needs ${need}x ${getItem(id).name}.` };
+      if (stores.reduce((count, store) => count + store.items.filter((entry) => entry === id).length, 0) < need)
+        return { ok: false, message: `Needs ${need}x ${getItem(id).name}.` };
     }
     if (smith.mana < design.mana) return { ok: false, message: `Needs ${design.mana} mana.` };
+    const sources = used.map((part) => {
+      const store = stores.find((entry) => entry.remaining.includes(part))!;
+      store.remaining.splice(store.remaining.indexOf(part), 1);
+      return { store, part };
+    });
+    const smithUsed = sources.filter(({ store }) => store.mage === smith).map(({ part }) => part);
     const id = craftItemId(rollCraft(design, runDice(run, `craft:${run.crafts}`)));
     const made = getItem(id);
-    const freed = used.reduce((sum, part) => sum + getItem(part).weight, 0);
+    const freed = smithUsed.reduce((sum, part) => sum + getItem(part).weight, 0);
     if (!smith.canCarry(made.weight - freed)) return { ok: false, message: 'Too heavy to carry.' };
-    if (!packFits(smith, [id], used)) return { ok: false, message: 'No room in the pack.' };
-    for (const part of used) smith.bag.splice(smith.bag.indexOf(part), 1);
+    if (!packFits(smith, [id], smithUsed)) return { ok: false, message: 'No room in the pack.' };
+    for (const { store, part } of sources) store.items.splice(store.items.indexOf(part), 1);
     smith.spendMana(design.mana);
     run.crafts += 1;
     grantToMage(smith, id);
@@ -544,63 +612,52 @@ export function unequipItem(run: ExplorationRun, id: ItemId, member?: MageClass 
   return withMember(run, member, (leader) => {
     const def = getItem(id);
     if (def.permanentlyBinding) return { ok: false, message: `${def.name} is bound to you.` };
-    const worn = leader.hands.includes(id) || leader.accessories.includes(id) || leader.head === id || leader.torso === id || leader.boots === id;
-    if (worn && def.torchCombats == null && !packCanStow(leader, id)) return { ok: false, message: 'No room in the pack.' };
-    let removed = false;
-    if (leader.hands.includes(id)) removed = leader.unequipHand(id);
-    else if (leader.accessories.includes(id)) {
-      leader.accessories.splice(leader.accessories.indexOf(id), 1);
-      leader.bag.push(id);
-      removed = true;
-    } else if (leader.head === id || leader.torso === id || leader.boots === id) {
-      if (leader.head === id) leader.head = null;
-      if (leader.torso === id) leader.torso = null;
-      if (leader.boots === id) leader.boots = null;
-      leader.bag.push(id);
-      removed = true;
+    const worn = leader.hands.includes(id) || leader.accessories.includes(id) || !!leader.wornSlotOf(id);
+    const snuffed = leader.hands.includes(id) && leader.torchSpentOnStow(id);
+    if (worn && !snuffed && !packCanStow(leader, id)) return { ok: false, message: 'No room in the pack.' };
+    if (snuffed) {
+      if (!leader.unequipHand(id)) return { ok: false, message: 'Cannot put that out now.' };
+      return { ok: true, message: `Put out the ${def.name}. It is spent.` };
     }
-    return removed
+    return worn && leader.stow(id)
       ? { ok: true, message: `Stowed ${def.name}.` }
       : { ok: false, message: 'Cannot stow that now.' };
   });
 }
 
-/** Leave an item behind for good. Key items stay; a bag stays while its room is in use. */
-export function dropItem(run: ExplorationRun, id: ItemId, member?: MageClass | null): ShopResult {
-  if (getItem(id).keyItem) return { ok: false, message: 'A key item. It stays with the party.' };
+/** Leave `count` of a carried item behind for good. Key items stay; a bag stays while its room is in use. */
+export function dropItem(run: ExplorationRun, id: ItemId, member?: MageClass | null, count = 1): ShopResult {
+  const def = getItem(id);
+  if (def.keyItem) return { ok: false, message: 'A key item. It stays with the party.' };
   return withMember(run, member, (leader) => {
-    if (!packFits(leader, [], [id])) return { ok: false, message: PACK_OVERFLOW };
-    for (const list of [leader.bag, leader.utility]) {
-      const index = list.indexOf(id);
-      if (index >= 0) {
-        list.splice(index, 1);
-        releaseFromMage(leader, getItem(id));
-        return { ok: true, message: `Dropped ${getItem(id).name}.` };
-      }
-    }
-    return { ok: false, message: 'Not in your pack.' };
+    const owned = carriedCount(leader, id);
+    if (owned === 0) return { ok: false, message: 'Not in your pack.' };
+    const n = amount(count, owned);
+    if (!packFits(leader, [], copies(id, n))) return { ok: false, message: PACK_OVERFLOW };
+    const dropped = takeFromPack(leader, id, n);
+    return { ok: true, message: `Dropped ${countedName(dropped, def)}.` };
   });
 }
 
-/** Pass a carried item to another member. Items that change their bearer's body stay put. */
-export function giveItem(run: ExplorationRun, id: ItemId, from: MageClass, to: MageClass): ShopResult {
+/** Pass `count` of a carried item to another member. Items that change their bearer's body stay put. */
+export function giveItem(run: ExplorationRun, id: ItemId, from: MageClass, to: MageClass, count = 1): ShopResult {
   const def = getItem(id);
   if (from === to) return { ok: false, message: 'Already yours.' };
-  if (def.permanentlyBinding || def.hpMult != null || def.hpFlat != null || def.sanityMult != null) {
-    return { ok: false, message: `${def.name} cannot change hands.` };
-  }
+  if (!changesHands(def)) return { ok: false, message: `${def.name} cannot change hands.` };
   return withParty(run, (_leader, party) => {
     const giver = memberOf(party, from);
     const taker = memberOf(party, to);
     if (!giver || !taker) return { ok: false, message: 'No such party member.' };
-    if (!taker.canCarry(def.weight)) return { ok: false, message: `${taker.name} cannot carry it.` };
-    if (!packFits(taker, [id])) return { ok: false, message: `${taker.name} has no room in the pack.` };
-    if (!packFits(giver, [], [id])) return { ok: false, message: PACK_OVERFLOW };
-    const list = giver.bag.includes(id) ? giver.bag : giver.utility.includes(id) ? giver.utility : null;
-    if (!list) return { ok: false, message: 'Not in your pack.' };
-    list.splice(list.indexOf(id), 1);
-    grantToMage(taker, id);
-    return { ok: true, message: `Gave ${def.name} to ${taker.name}.` };
+    const owned = carriedCount(giver, id);
+    if (owned === 0) return { ok: false, message: 'Not in your pack.' };
+    const n = amount(count, owned);
+    const moved = copies(id, n);
+    if (!taker.canCarry(def.weight * n)) return { ok: false, message: `${taker.name} cannot carry ${n > 1 ? 'that many' : 'it'}.` };
+    if (!packFits(taker, moved)) return { ok: false, message: `${taker.name} has no room in the pack.` };
+    if (!packFits(giver, [], moved)) return { ok: false, message: PACK_OVERFLOW };
+    const given = takeFromPack(giver, id, n);
+    for (let i = 0; i < given; i++) grantToMage(taker, id);
+    return { ok: true, message: `Gave ${countedName(given, def)} to ${taker.name}.` };
   });
 }
 
@@ -612,14 +669,10 @@ export function exchangeItems(run: ExplorationRun, first: MageClass, second: Mag
     const right = memberOf(party, second);
     if (!left || !right) return { ok: false, message: 'No such party member.' };
     const transferable = (items: readonly ItemId[], owner: Mage): boolean => {
-      const bag = [...owner.bag];
-      const utility = [...owner.utility];
-      for (const id of items) {
-        const def = getItem(id);
-        if (def.permanentlyBinding || def.hpMult != null || def.hpFlat != null || def.sanityMult != null) return false;
-        const list = bag.includes(id) ? bag : utility.includes(id) ? utility : null;
-        if (!list) return false;
-        list.splice(list.indexOf(id), 1);
+      const wanted = new Map<ItemId, number>();
+      for (const id of items) wanted.set(id, (wanted.get(id) ?? 0) + 1);
+      for (const [id, count] of wanted) {
+        if (!changesHands(getItem(id)) || getItem(id).keyItem || carriedCount(owner, id) < count) return false;
       }
       return true;
     };
@@ -629,11 +682,7 @@ export function exchangeItems(run: ExplorationRun, first: MageClass, second: Mag
     const weightRight = secondItems.reduce((total, id) => total + getItem(id).weight, 0);
     if (!left.canCarry(weightRight - weightLeft) || !right.canCarry(weightLeft - weightRight)) return { ok: false, message: 'Too heavy to carry.' };
     for (const [giver, items, taker] of [[left, firstItems, right], [right, secondItems, left]] as const) {
-      for (const id of items) {
-        const list = giver.bag.includes(id) ? giver.bag : giver.utility;
-        list.splice(list.indexOf(id), 1);
-        grantToMage(taker, id);
-      }
+      for (const id of items) if (takeFromPack(giver, id, 1) === 1) grantToMage(taker, id);
     }
     return { ok: true, message: `${left.name} and ${right.name} exchanged items.` };
   });

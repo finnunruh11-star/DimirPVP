@@ -266,19 +266,19 @@ registerClassSpellVariants({
     objects: {
       name: 'Black Bell',
       actionType: 'main',
-      range: 0,
-      targeting: 'self',
+      range: R(8),
+      targeting: 'any',
       dc: 14,
       noCastSprite: true,
       description:
-        'Conjure Black Bell into both hands. Toll strikes deal only 1 direct damage, ' +
+        'Conjure Black Bell into the target\'s hands (range 8). Toll strikes deal only 1 direct damage, ' +
         'then inflict 1d3 shadow damage for 6 turns (9 when the victim stands in shadow). ' +
         'Weapon Action toggles Condense: strikes clear every harmful status, roll all ' +
         'remaining DoT damage immediately as half shatter / half shadow, and create a ' +
         'normal shadow enlarged by 1 for each non-damaging debuff consumed.',
       visual: { preset: 'conjure', color: 0x7658b8, size: 34, speed: 0.8 },
       cast(ctx) {
-        const caster = ctx.caster;
+        const caster = ctx.target ?? ctx.caster;
         for (const held of [...caster.hands]) {
           caster.hands = caster.hands.filter((item) => item !== held);
           caster.bag.push(held);
@@ -303,19 +303,20 @@ registerClassSpell({
     objects: {
       name: 'Corrode Curse',
       actionType: 'main',
-      range: 0,
-      targeting: 'self',
+      range: R(8),
+      targeting: 'any',
       dc: 11,
       noCrit: true,
       noCastSprite: true,
       description:
-        'Curse your held weapon with living acid: while you wield it you rot for 1d3 ' +
+        'Curse the target\'s held weapon (range 8) with living acid: its wielder rots for 1d3 ' +
         'corrosive at the start of each turn, but every enemy it strikes begins ' +
         'corroding too (1d3 corrosive for 3 turns).',
       visual: { preset: 'conjure', color: 0x9be870, size: 22, speed: 1 },
       cast(ctx) {
-        ctx.caster.weaponEnchant = 'curseCorrode';
-        ctx.log(`${ctx.caster.name}'s weapon weeps corrosive acid \u2014 at a price.`);
+        const target = ctx.target ?? ctx.caster;
+        target.weaponEnchant = 'curseCorrode';
+        ctx.log(`${target.name}'s weapon weeps corrosive acid \u2014 at a price.`);
       },
     },
     life: {
@@ -542,19 +543,19 @@ registerClassSpell({
     objects: {
       name: 'Veil Corrode Pierce',
       actionType: 'main',
-      range: 0,
-      targeting: 'self',
+      range: R(8),
+      targeting: 'any',
       dc: 13,
       noCrit: true,
       noCastSprite: true,
       description:
-        'Conjure a two-handed Veil Bow into your hands (replacing what you held) and slip ' +
-        'into a half veil. While held it re-cloaks you each turn; firing costs 2 mana, ' +
+        'Conjure a two-handed Veil Bow into the target\'s hands (range 8), replacing held gear, and grant ' +
+        'a half veil. While held it re-cloaks its bearer each turn; firing costs 2 mana, ' +
         'reveals you for that turn, deals Dex-scaled corrosive damage and mires the mark ' +
         '(2 turns). It lasts until unsummoned or 3 combats; unequipping it erases it.',
       visual: { preset: 'conjure', color: 0x9be870, size: 26, speed: 1 },
       cast(ctx) {
-        const c = ctx.caster;
+        const c = ctx.target ?? ctx.caster;
         // Free the hands into the bag, then conjure the bow.
         for (const held of [...c.hands]) {
           c.hands = c.hands.filter((h) => h !== held);

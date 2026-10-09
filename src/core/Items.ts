@@ -20,7 +20,15 @@ import {
   SILVER_PER_GOLD,
 } from '../config/constants';
 
-export type ItemSlot = 'hand' | 'head' | 'torso' | 'boots' | 'accessory' | 'utility';
+export type ItemSlot = 'hand' | 'head' | 'torso' | 'cape' | 'gloves' | 'boots' | 'accessory' | 'utility';
+
+/** The slots that hold a single worn piece each. */
+export const WORN_SLOTS = ['head', 'torso', 'cape', 'gloves', 'boots'] as const;
+export type WornSlot = (typeof WORN_SLOTS)[number];
+
+export function isWornSlot(slot: ItemSlot): slot is WornSlot {
+  return (WORN_SLOTS as readonly ItemSlot[]).includes(slot);
+}
 
 /**
  * Which toggleable catalogue an item belongs to. The start screen lets players
@@ -37,6 +45,8 @@ export const SLOT_CAPS: Record<ItemSlot, number> = {
   hand: 2,
   head: 1,
   torso: 1,
+  cape: 1,
+  gloves: 1,
   boots: 1,
   accessory: 2,
   utility: Infinity,
@@ -1353,7 +1363,7 @@ export const ITEM_DEFS: ItemDef[] = [
   {
     id: 'eldritchMantle',
     name: 'Mantle of Eldritch Truth',
-    slot: 'torso',
+    slot: 'cape',
     rarity: 'legendary',
     cost: g(0),
     weight: 0,
@@ -1364,7 +1374,7 @@ export const ITEM_DEFS: ItemDef[] = [
   {
     id: 'deathsAngelWings',
     name: 'Wings of Deaths Angel',
-    slot: 'torso',
+    slot: 'cape',
     set: 'original',
     rarity: 'legendary',
     cost: g(0),
@@ -1538,7 +1548,7 @@ export const ITEM_DEFS: ItemDef[] = [
   {
     id: 'fightersGloves',
     name: "Fighter's Gloves",
-    slot: 'accessory',
+    slot: 'gloves',
     rarity: 'unreal',
     cost: g(20),
     weight: 2,
@@ -1780,7 +1790,7 @@ export const ITEM_DEFS: ItemDef[] = [
   {
     id: 'darkMagesCape',
     name: "Dark Mage's Cape",
-    slot: 'torso',
+    slot: 'cape',
     rarity: 'rare',
     cost: g(0),
     weight: 1,
@@ -1990,7 +2000,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(2),
     weight: 1,
     blurb:
-      'Light 3cm, 3 combats. Light-weak enemies in the aura: 2 typeless per turn. Unarmed strike, +5 true vs light-weak. 10% to break per swing. Stowing destroys it.',
+      'Light 3cm, 3 combats. Light-weak enemies in the aura: 2 typeless per turn. Unarmed strike, +5 true vs light-weak. 10% to break per swing. Once it has burned through a fight, stowing destroys it.',
     lightSource: true,
     lightRadiusPx: 3 * U,
     torchCombats: 3,
@@ -2170,7 +2180,7 @@ export const ITEM_DEFS: ItemDef[] = [
   {
     id: 'tantrumGloves',
     name: 'Tantrum Gloves',
-    slot: 'accessory',
+    slot: 'gloves',
     set: 'finns',
     rarity: 'epic',
     cost: g(0),
@@ -2204,7 +2214,7 @@ export const ITEM_DEFS: ItemDef[] = [
   {
     id: 'assassinsCloak',
     name: "Assassin's Cloak",
-    slot: 'torso',
+    slot: 'cape',
     set: 'finns',
     rarity: 'unreal',
     cost: g(0),
@@ -2890,7 +2900,7 @@ export function carryCapacity(strength: number): number {
 
 /** Empty per-slot tally. */
 function emptySlotCounts(): Record<ItemSlot, number> {
-  return { hand: 0, head: 0, torso: 0, boots: 0, accessory: 0, utility: 0 };
+  return { hand: 0, head: 0, torso: 0, cape: 0, gloves: 0, boots: 0, accessory: 0, utility: 0 };
 }
 
 /**

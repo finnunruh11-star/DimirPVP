@@ -13,6 +13,7 @@ import { WORD_COLOR } from './Colors';
 import { dist } from './utils';
 import { getItem } from './Items';
 import { getSpell, rackCoverage, setActiveSpellSets, spellForSelection } from '../spells/registry';
+import { COLOR_ABILITIES } from '../spells/colorAbilities';
 import {
   addImbue,
   applyStifle,
@@ -178,10 +179,12 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     });
     const game = new GameState([caster, foe], 5);
     const mainSpell = getSpell(['pierce']);
-    const bonusSpell = getSpell(['veil']);
-    assert(mainSpell && bonusSpell, 'Expected Pierce and Veil to be registered.');
+    const veil = getSpell(['veil']);
+    const bonusSpell = COLOR_ABILITIES.find((ability) => ability.actionType === 'bonus');
+    assert(mainSpell && veil && bonusSpell, 'Expected Pierce, Veil and a bonus colour ability to be registered.');
     equal(mainSpell.actionType, 'main', 'Pierce is a main action');
-    equal(bonusSpell.actionType, 'bonus', 'Veil is a bonus action');
+    equal(veil.actionType, 'main', 'Every word spell is a main action');
+    equal(bonusSpell.actionType, 'bonus', 'Colour abilities are bonus actions');
     const move = game.makeMoveItem(caster, { x: 400, y: 270 });
     const swing = game.makeMeleeItem(caster, foe);
     const cast = game.makeSpellItem(caster, mainSpell, foe, null);
@@ -1310,9 +1313,9 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const full = rackCoverage(rack, 'objects');
     equal(full.combos, 25, 'five words make 25 combinations; the method is not one of them');
     equal(full.spells + full.blanks.length, full.combos, 'every combination is either a spell or a blank');
-    const odd = rackCoverage(['desecrate', 'shadow', 'shatter'], null);
+    const odd = rackCoverage(['desecrate', 'mind', 'shatter'], null);
     for (const blank of odd.blanks) equal(getSpell(blank, null), undefined, `${blank.join('+')} really casts nothing`);
-    assert(odd.spells < odd.combos, 'god words leave some pairs blank');
+    assert(odd.spells < odd.combos, 'a god word never shares a spell with the other colour');
   }],
 
   ['mirrors Desecrate Corrode Death and Desecrate Drain Death but for the lifesteal', () => {
@@ -5008,6 +5011,34 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(bones.alive, false, 'and collapse when the music stops');
   }],
 ];
+
+tests.push(['Objects gear spells equip any chosen recipient rather than their caster', async () => {
+  await import('../spells/classSpells');
+  for (const team of [1, 2]) {
+    for (const [words, item] of [
+      [['pierce', 'twist'], 'conjuredTwinblades'],
+      [['pierce', 'shatter'], 'conjuredSplinterJavelin'],
+      [['shadow', 'shatter', 'curse'], 'conjuredBlackBell'],
+      [['veil', 'corrode', 'pierce'], 'conjuredVeilBow'],
+    ] as const) {
+      const caster = godUnit('Smith', 1, 300);
+      const recipient = godUnit('Recipient', team, 330);
+      const game = new GameState([caster, recipient], 7);
+      const spell = getSpell([...words], 'objects')!;
+      equal(spell.targeting, 'any', `${item} accepts any unit`);
+      assert(game.isValidSpellTarget(spell, caster, recipient), `${item} can target this recipient`);
+      await spell.cast(game.effectContext(caster, recipient, null));
+      assert([...recipient.hands, ...recipient.utility].includes(item), `${item} goes to the recipient`);
+      assert(![...caster.hands, ...caster.utility].includes(item), `${item} does not go to the caster`);
+    }
+    const caster = godUnit('Smith', 1, 300);
+    const recipient = godUnit('Recipient', team, 330);
+    const game = new GameState([caster, recipient], 7);
+    await getSpell(['corrode', 'curse'], 'objects')!.cast(game.effectContext(caster, recipient, null));
+    equal(recipient.weaponEnchant, 'curseCorrode', 'enchantment goes to the recipient');
+    equal(caster.weaponEnchant, undefined, 'caster stays unchanged');
+  }
+}]);
 
 for (const [name, run] of tests) {
   await run();

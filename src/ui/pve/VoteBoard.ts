@@ -26,6 +26,7 @@ export interface VoteRow {
 
 export interface VoteBoardModel {
   title: string;
+  titleColor?: string;
   text: string;
   rows: VoteRow[];
   /** Who has chosen each row. */
@@ -73,6 +74,8 @@ export class VoteBoard extends Phaser.GameObjects.Container {
   private hover: string | null = null;
   private focus = -1;
   private left = 0;
+  /** The board's upper edge on screen. */
+  frameTop = 0;
   private readonly title: Phaser.GameObjects.Text;
   private readonly bodyText: Phaser.GameObjects.Text;
   private readonly status: Phaser.GameObjects.Text;
@@ -95,7 +98,7 @@ export class VoteBoard extends Phaser.GameObjects.Container {
     this.frame = scene.add.graphics();
     this.title = scene.add.text(0, 0, '', {
       fontFamily: MENU_FONT.display,
-      fontSize: modal ? '22px' : '17px',
+      fontSize: modal ? '22px' : '20px',
       fontStyle: 'bold',
       color: MENU_HEX.brassLight,
     });
@@ -145,7 +148,12 @@ export class VoteBoard extends Phaser.GameObjects.Container {
     const bodyH = model.text ? Math.ceil(this.bodyText.height) : 0;
     const shape = [...model.rows.map((row) => `r:${row.id}`), ...model.buttons.map((row) => `b:${row.id}`), `t${bodyH}`].join('|');
     if (shape !== this.shape) this.build(model, shape, bodyH);
-    if (this.title.text !== model.title) this.title.setText(model.title);
+    if (this.modal) {
+      if (this.title.text !== model.title) this.title.setText(model.title);
+    } else {
+      this.fit(this.title, model.title, this.boardW - PAD * 2);
+    }
+    this.title.setColor(model.titleColor ?? MENU_HEX.brassLight);
     if (!this.revealKey && this.status.text !== model.status) this.status.setText(model.status);
     for (const view of this.rows) {
       const row = (view.vote ? model.rows : model.buttons).find((entry) => entry.id === view.row.id) ?? view.row;
@@ -223,6 +231,7 @@ export class VoteBoard extends Phaser.GameObjects.Container {
     const left = this.modal ? (GAME_WIDTH - this.boardW) / 2 : GAME_WIDTH - this.boardW - 16;
     const top = this.modal ? Math.max(20, (GAME_HEIGHT - height) / 2) : GAME_HEIGHT - 44 - height;
     this.left = left;
+    this.frameTop = top;
     this.drawFrame(left, top, height);
     // Clicks on the board stay on the board instead of reaching the map below.
     this.blocker = scene.add.zone(left, top, this.boardW, height).setOrigin(0).setInteractive();

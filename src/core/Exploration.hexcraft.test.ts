@@ -210,15 +210,15 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(asItemIds([id, 'hex:p:0.0.0']), [id], 'only the sound id passes');
   }],
 
-  ['the scriptorium sells paper for a silver and fine paper for a gold; the guild no longer does', () => {
+  ['the scriptorium sells paper for a silver and fine paper for three silver; the guild no longer does', () => {
     const run = scribeRun();
     const guild = shopById('capitol-scriptorium')!;
     const stock = shopStock(run, guild);
     const price = (id: ItemId): number | undefined => stock.find((slot) => slot.id === id)?.price;
-    equal([price('paper'), price('finePaper')], [0.1, 1], 'guild prices');
+    equal([price('paper'), price('finePaper')], [0.1, 0.3], 'scriptorium prices');
     const fine = stock.find((slot) => slot.id === 'finePaper')!;
     assert(buyItem(run, guild.id, fine.key).ok, 'fine paper bought');
-    equal(run.gold, 9, 'for a gold');
+    equal(run.gold, 9.7, 'for three silver');
     assert(partyOf(run)[0].utility.includes('finePaper'), 'it goes on the belt');
   }],
 

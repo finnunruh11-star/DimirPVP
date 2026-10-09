@@ -156,7 +156,8 @@ export function itemIconKind(def: ItemDef): ItemIconKind {
   if (def.slot === 'head') return has(label, /circlet|crown/) ? 'circlet' : has(label, /hat|headpiece/) ? 'hat' : 'helm';
   if (def.slot === 'torso') return has(label, /robe|stillsuit/) ? 'robe' : 'armor';
   if (def.slot === 'boots') return 'boots';
-  if (has(label, /glove/)) return 'gloves';
+  if (def.slot === 'cape') return 'cloak';
+  if (def.slot === 'gloves' || has(label, /glove/)) return 'gloves';
   if (has(label, /ring\b|band\b|ring of/)) return 'ring';
   if (has(label, /bracelet|anklet/)) return 'bracelet';
   if (has(label, /needle/)) return 'dagger';

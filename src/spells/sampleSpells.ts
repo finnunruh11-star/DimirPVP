@@ -100,6 +100,9 @@ import './waves/pierceOrdinary';
 import './waves/drainOrdinary';
 import './waves/bindOrdinary';
 import './waves/curseOrdinary';
+import './waves/fireOrdinary';
+import './waves/godOrdinary';
+import './waves/cornerOrdinary';
 import { aimSpell } from './aimSpell';
 
 /** Convert an abstract range number (5 / 10 / 15) to pixels. */
@@ -6912,7 +6915,7 @@ registerSpell({
   targeting: 'self',
   dc: 15,
   description:
-    'Bonus action. Until the end of your next turn, your targeted spells reach any distance and ignore concealment. You slip into a half veil.',
+    'Until the end of your next turn, your targeted spells reach any distance and ignore concealment. You slip into a half veil.',
   visual: { preset: 'heal', color: 0xff77bb, size: 44, speed: 1.2 },
   cast(ctx) {
     addOrExtendStatus(

@@ -49,10 +49,10 @@ export interface MineOreDef {
 }
 
 export const MINE_ORE_DEFS: Record<MineOreKind, MineOreDef> = {
-  coal: { kind: 'coal', name: 'Coal', miningValue: 12, failCount: 6, item: 'oreCoal' },
-  copper: { kind: 'copper', name: 'Copper', miningValue: 18, failCount: 5, item: 'oreCopper' },
-  iron: { kind: 'iron', name: 'Iron', miningValue: 24, failCount: 5, item: 'oreIron' },
-  gold: { kind: 'gold', name: 'Gold', miningValue: 30, failCount: 4, item: 'oreGold' },
+  coal: { kind: 'coal', name: 'Coal', miningValue: 30, failCount: 3, item: 'oreCoal' },
+  copper: { kind: 'copper', name: 'Copper', miningValue: 40, failCount: 3, item: 'oreCopper' },
+  iron: { kind: 'iron', name: 'Iron', miningValue: 54, failCount: 4, item: 'oreIron' },
+  gold: { kind: 'gold', name: 'Gold', miningValue: 66, failCount: 4, item: 'oreGold' },
 };
 
 export const MINE_TRAP_DAMAGE = ['1d3', '2d4', '3d3', '2d6', '1d20'] as const;
@@ -513,6 +513,8 @@ export interface MineVein {
 
 export interface MineStrike {
   roll: number;
+  /** The miner's Strength, added to the roll. */
+  bonus: number;
   progress: number;
   strike: number;
   /** A natural 1 or 2 chipped the pickaxe in use. */
@@ -523,16 +525,18 @@ export interface MineStrike {
 }
 
 /**
- * One d20 strike at `vein`: the roll adds to its progress, a natural 1 or 2 costs
- * the first pickaxe a point, reaching the ore's value extracts it and running out
- * of strikes first brings it down. Changes the vein and the pickaxes; null when
- * the vein is done or there is no pickaxe to strike with.
+ * One d20 strike at `vein`: the roll plus the miner's Strength (`bonus`) adds to
+ * its progress, a natural 1 or 2 costs the first pickaxe a point, reaching the
+ * ore's value extracts it and running out of strikes first brings it down.
+ * Changes the vein and the pickaxes; null when the vein is done or there is no
+ * pickaxe to strike with.
  */
-export function strikeMineVein(ore: MineOreDef, vein: MineVein, pickaxes: number[], rng: Dice): MineStrike | null {
+export function strikeMineVein(ore: MineOreDef, vein: MineVein, pickaxes: number[], rng: Dice, bonus = 0): MineStrike | null {
   if (vein.outcome || pickaxes.length === 0) return null;
   const roll = rng.die(20);
+  const strength = Math.max(0, Math.floor(bonus));
   vein.strikes += 1;
-  vein.progress += roll;
+  vein.progress += roll + strength;
   const durabilityLost = roll <= 2;
   let broke = false;
   if (durabilityLost) {
@@ -544,7 +548,7 @@ export function strikeMineVein(ore: MineOreDef, vein: MineVein, pickaxes: number
   }
   if (vein.progress >= ore.miningValue) vein.outcome = 'extracted';
   else if (vein.strikes >= ore.failCount) vein.outcome = 'collapsed';
-  return { roll, progress: vein.progress, strike: vein.strikes, durabilityLost, broke, outcome: vein.outcome };
+  return { roll, bonus: strength, progress: vein.progress, strike: vein.strikes, durabilityLost, broke, outcome: vein.outcome };
 }
 
 /**

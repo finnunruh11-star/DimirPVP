@@ -17,11 +17,12 @@ import type { Spell } from '../../spells/Spell';
 import type { Scenario } from '../../core/Scenario';
 import { MODIFIER_WORDS, WORDS, type WordId } from '../../core/Words';
 import { SceneInput } from '../../engine/SceneInput';
-import { loadRun } from '../../pve/exploration/save';
+import { loadRun, storeRun } from '../../pve/exploration/save';
 import { BOSS_IDS } from '../../pve/exploration/bloodmoon';
 import { RAID_BOSS_KINDS } from '../../pve/swamprun';
 import type { RaidTarget } from '../../pve/raidTargets';
 import { pickScenarioFile } from '../scenarioFile';
+import { pickRunFile, type RunFile } from '../runFile';
 import { MenuModel } from './MenuModel';
 import { addMenuMageStage, type MenuMageStage } from './art';
 import { CabinetButton, CabinetChip, MenuFocusGroup, WordPlate } from '../cabinet/controls';
@@ -337,8 +338,15 @@ export class MenuExperience {
           },
         };
     });
+    // A host with an online Adventure saved can pick it back up with the same travellers.
+    const adventure = this.model.mode === 'exploration';
+    const saved = adventure && this.model.capability.roles.includes('host') ? loadRun('online') : null;
+    // More than three entries share the space above the back button.
+    const entries = roles.length + (saved ? 1 : 0) + (adventure ? 1 : 0);
+    const step = entries > 3 ? Math.floor(320 / entries) : 88;
+    const height = entries > 3 ? step - 6 : 76;
     roles.forEach(({ role, copy: roleCopy }, index) => {
-      view.focus.add(this.choice(view.root, 76, 246 + index * 88, roleCopy, String(index + 1), () => {
+      view.focus.add(this.choice(view.root, 76, 246 + index * step, roleCopy, String(index + 1), () => {
         this.model.setRole(role);
         this.model.resumeAdventure = false;
         this.lobbyRoom = '';
@@ -347,28 +355,65 @@ export class MenuExperience {
         if (role === 'host' && this.model.seatCount < 2) this.model.setSeatCount(2);
         if (role === 'guest') this.navigator.push(this.model.capability.usesBuild ? { id: 'mage-build', seat: 0 } : { id: 'review' });
         else this.navigator.push({ id: 'roster' });
-      }));
+      }, height));
     });
-    // A host with an online Adventure saved can pick it back up with the same travellers.
-    const saved = this.model.mode === 'exploration' && this.model.capability.roles.includes('host') ? loadRun('online') : null;
     if (saved) {
       const travellers = saved.party.entities.length;
-      view.focus.add(this.choice(view.root, 76, 246 + roles.length * 88, {
+      view.focus.add(this.choice(view.root, 76, 246 + roles.length * step, {
         label: 'Continue Co-op',
         detail: `Day ${saved.day}, level ${saved.level}, ${travellers} travellers`,
         title: 'CONTINUE ONLINE RUN',
         description: `Host the saved online run again. ${travellers} players must join; each claims a traveller.`,
-      }, String(roles.length + 1), () => {
-        this.model.setRole('host');
-        this.model.resumeAdventure = true;
-        this.model.setSeatCount(travellers);
-        this.lobbyRoom = '';
-        this.lobbyStatus = null;
-        this.navigator.push({ id: 'review' });
-      }));
+      }, String(roles.length + 1), () => this.resumeCoop(travellers), height));
+    }
+    if (adventure) {
+      const index = roles.length + (saved ? 1 : 0);
+      view.focus.add(this.choice(view.root, 76, 246 + index * step, {
+        label: 'Load Save File',
+        detail: 'Open a run saved with "Save to File"',
+        title: 'LOAD SAVE FILE',
+        description: 'A solo run opens at once. A co-op run is hosted again and replaces the co-op save on this computer.',
+      }, String(index + 1), () => void this.loadRunFile(), height));
     }
     this.addBack(view, 574);
     return view;
+  }
+
+  private resumeCoop(travellers: number): void {
+    this.model.setRole('host');
+    this.model.resumeAdventure = true;
+    this.model.setSeatCount(travellers);
+    this.lobbyRoom = '';
+    this.lobbyStatus = null;
+    this.navigator.push({ id: 'review' });
+  }
+
+  /** Read a run file into this computer's save: a solo run starts, a co-op run is hosted again. */
+  private async loadRunFile(): Promise<void> {
+    let file: RunFile | null;
+    try {
+      file = await pickRunFile();
+    } catch (error) {
+      if (!this.destroyed) this.stage.setCaption('LOAD FAILED', error instanceof Error ? error.message : 'That file could not be loaded.');
+      return;
+    }
+    if (this.destroyed) return;
+    if (!file) {
+      this.stage.setCaption('LOAD SAVE FILE', 'No file selected.');
+      return;
+    }
+    if (!storeRun(file.run, file.slot)) {
+      this.stage.setCaption('LOAD FAILED', 'This browser would not keep the run. Check that site storage is allowed.');
+      return;
+    }
+    if (file.slot === 'online') {
+      this.resumeCoop(file.run.party.entities.length);
+      return;
+    }
+    this.model.setRole('local');
+    this.model.resumeAdventure = false;
+    this.model.setSeatCount(1);
+    this.launchConfigured();
   }
 
   private buildRaidTarget(returnToReview: boolean): MenuScreenView {

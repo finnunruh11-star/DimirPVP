@@ -48,6 +48,8 @@ const PUBLISH_MS = 250;
 /** Intents that spend or earn from the shared purse. */
 const PURSE_INTENTS: ReadonlySet<ExplorationIntent['op']> = new Set<ExplorationIntent['op']>(['buy', 'sell', 'sell-all', 'craft']);
 const ARRIVAL_TIMEOUT_MS = 12_000;
+/** Longest a guest's cinematic may hold back the host's next scene. */
+const SHOW_WAIT_MS = 15_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 
 export interface AdventureSessionOptions {
@@ -103,6 +105,10 @@ export class AdventureSession {
   private sceneId = 0;
   private arrived = new Map<number, Set<number>>();
   private arrivalWaiters: { id: number; resolve: () => void }[] = [];
+  /** Guest: cinematics on screen that the host's next scene waits for. */
+  private shows = new Set<Promise<unknown>>();
+  /** Guest: the scene being left while its cinematics finish. */
+  private leaving: Phaser.Scene | null = null;
 
   private constructor(options: AdventureSessionOptions) {
     this.net = options.net;
@@ -461,10 +467,39 @@ export class AdventureSession {
   startFight(fight: FightWire, seed: number): void {
     this.resetCouncil();
     this.publishNow();
-    // Nothing from an earlier fight may be read as part of this one.
-    this.net.clearQueue();
     this.send({ k: 'x-fight', fight, seed });
     this.hold();
+  }
+
+  /** Guest: `show` is playing on screen; the host's next scene waits for it to end (a while at most). */
+  showing(show: Promise<unknown>): void {
+    if (this.isHost || this.ended) return;
+    this.shows.add(show);
+    const done = (): void => {
+      this.shows.delete(show);
+    };
+    show.then(done, done);
+    // One whose scene went away without it finishing must not hold later scenes back.
+    setTimeout(done, SHOW_WAIT_MS);
+  }
+
+  /** Guest: leave `from` once what it is showing has played out, unless the session ends first. */
+  private leaveAfterShows(from: Phaser.Scene, go: () => void): void {
+    this.leaving = from;
+    const deadline = Date.now() + SHOW_WAIT_MS;
+    void (async () => {
+      while (this.shows.size && !this.ended && Date.now() < deadline) {
+        await Promise.race([
+          Promise.allSettled([...this.shows]),
+          new Promise((resolve) => setTimeout(resolve, Math.max(0, deadline - Date.now()))),
+        ]);
+      }
+      if (this.leaving === from) this.leaving = null;
+      if (this.ended) return;
+      // Whatever still plays belongs to the scene being left, and stops with it.
+      this.shows.clear();
+      go();
+    })();
   }
 
   private followFight(message: NetMessage): void {
@@ -473,7 +508,6 @@ export class AdventureSession {
     if (!fight || !this.run || !host) return;
     this.hold();
     this.paused = false;
-    this.net.clearQueue();
     const config: MatchConfig = {
       mode: 'exploration',
       loadouts: [[], []],
@@ -482,8 +516,10 @@ export class AdventureSession {
       localSeat: this.localSeat,
       seed: Number(message.seed) | 0,
     };
-    host.scene.stop('LocaleHud');
-    host.scene.start('Game', config);
+    this.leaveAfterShows(host, () => {
+      host.scene.stop('LocaleHud');
+      host.scene.start('Game', config);
+    });
   }
 
   private followScene(message: NetMessage): void {
@@ -496,8 +532,10 @@ export class AdventureSession {
     // Later messages wait for the new scene rather than reaching the one going away.
     this.hold();
     this.paused = false;
-    host.scene.stop('LocaleHud');
-    host.scene.start(scene, sceneEntry(scene, data, this.run));
+    this.leaveAfterShows(host, () => {
+      host.scene.stop('LocaleHud');
+      host.scene.start(scene, sceneEntry(scene, data, this.run!));
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -521,8 +559,10 @@ export class AdventureSession {
     if (this.run) retireRun(this.run);
     setSaveSlot('solo');
     setSaveListener(null);
-    const scene = this.scene;
+    const scene = this.scene ?? this.leaving;
     this.scene = null;
+    this.leaving = null;
+    this.shows.clear();
     this.emit({ k: 'x-ended', reason });
     if (scene) {
       scene.scene.stop('LocaleHud');

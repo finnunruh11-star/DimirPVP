@@ -11,8 +11,8 @@ import { bountyProgress } from '../pve/exploration/bounties';
 import { dayNews } from '../pve/exploration/calendar';
 import { levelsOwed } from '../pve/exploration/coop';
 import { memberIn, money, partyOf } from '../pve/exploration/economy';
-import { getItem, type ItemId } from '../core/Items';
-import type { AdventureSession } from '../net/AdventureSession';
+import { type ItemId } from '../core/Items';
+import { AdventureSession } from '../net/AdventureSession';
 import type { ExplorationActions } from '../pve/exploration/intents';
 import { armsLines } from '../pve/exploration/arms';
 import type { ExplorationRun } from '../pve/exploration/run';
@@ -34,6 +34,7 @@ import { playRestCinematic } from '../ui/pve/RestCinematic';
 import type { RestNap } from '../pve/exploration/nap';
 import { SearchView, type SearchViewHooks, type SearchViewModel, type SearchViewResult } from '../ui/pve/SearchView';
 import { ShopView, type InnHooks } from '../ui/pve/ShopView';
+import { TradeView } from '../ui/pve/TradeView';
 import { SightingCard, type SightingCardModel } from '../ui/pve/SightingCard';
 import { TimeWheel } from '../ui/pve/TimeWheel';
 import { TextEntry } from '../ui/cabinet/TextEntry';
@@ -60,6 +61,7 @@ export interface WorldPanelAction {
 /** The overworld's standing panel: where you are, where you are headed, what you can do. */
 export interface WorldPanel {
   title: string;
+  titleColor?: string;
   lines: string[];
   actions: WorldPanelAction[];
   onAction: (id: string) => void;
@@ -76,6 +78,10 @@ const CLOCK_MS = 4500;
 const MINOR_MS = 4000;
 /** The full key legend shows by itself once a session; after that it waits for H. */
 let legendSeen = false;
+/** The last day a HUD showed, so a day that turned during a fight or between scenes still gets its card. */
+let lastDay: { seed: number; day: number } | null = null;
+/** The travel menu folded away so the map shows; kept between scenes. */
+let worldHidden = false;
 
 export class LocaleHudScene extends Phaser.Scene {
   private frame?: Phaser.GameObjects.Graphics;
@@ -123,6 +129,10 @@ export class LocaleHudScene extends Phaser.Scene {
   /** Online: the travel plans beside the map, in place of the world panel. */
   private worldBoard: VoteBoard | null = null;
   private boardHooks: VoteBoardHooks | null = null;
+  private boardModel: VoteBoardModel | null = null;
+  /** Folds the travel menu away or brings it back. */
+  private worldToggle?: CabinetChip;
+  private worldToggleKey = '';
   /** Online: something the whole party is voting on, over everything. */
   private pollBoard: VoteBoard | null = null;
   private pollHooks: VoteBoardHooks | null = null;
@@ -159,6 +169,9 @@ export class LocaleHudScene extends Phaser.Scene {
     this.windowClose = null;
     this.worldBoard = null;
     this.boardHooks = null;
+    this.boardModel = null;
+    this.worldToggle = undefined;
+    this.worldToggleKey = '';
     this.pollBoard = null;
     this.pollHooks = null;
     this.armory = null;
@@ -178,6 +191,13 @@ export class LocaleHudScene extends Phaser.Scene {
       { key: 'ENTER', capture: true, run: panelKey(() => this.worldFocus.activate()) },
       { key: 'SPACE', capture: true, run: panelKey(() => this.worldFocus.activate()) },
       ...DIGITS.map((key, index) => ({ key, run: panelKey(() => this.worldAction(index)) })),
+      {
+        key: 'TAB',
+        capture: true,
+        run: () => {
+          if ((this.worldModel || this.boardModel) && !this.modalOpen) this.toggleWorldMenu();
+        },
+      },
       { key: 'F2', run: () => this.toggleCheatConsole() },
       { key: 'H', run: () => this.toggleLegend() },
     ]);
@@ -387,11 +407,13 @@ export class LocaleHudScene extends Phaser.Scene {
     this.clockKey = clock;
     // The bloodmoon's own arrival replaces its day's card.
     const due = bloodmoonDue(run);
-    if (this.shownDay && run.day > this.shownDay && !due) {
+    const shown = this.shownDay || (lastDay?.seed === run.seed ? lastDay.day : 0);
+    if (shown && run.day > shown && !due) {
       this.announceDay({ day: run.day, hour: run.hour, news: dayNews(run) });
     }
     this.warnBloodmoon(run, due);
     this.shownDay = run.day;
+    lastDay = { seed: run.seed, day: run.day };
     const g = this.bars;
     if (g && leader) {
       this.vitals[0]?.set(leader.hp, leader.maxHp);
@@ -518,6 +540,7 @@ export class LocaleHudScene extends Phaser.Scene {
         if (field === 'day') {
           run.day = parsed;
           this.shownDay = parsed;
+          lastDay = { seed: run.seed, day: parsed };
         } else {
           run.gold = money(Math.max(0, parsed));
         }
@@ -576,7 +599,9 @@ export class LocaleHudScene extends Phaser.Scene {
   /** The bloodmoon rises over whatever is on screen; resolves on black. */
   bloodmoonRise(): Promise<void> {
     this.prompt?.set(null, false);
-    return playBloodmoonRise(this, isReducedMotion());
+    const rise = playBloodmoonRise(this, isReducedMotion());
+    AdventureSession.current?.showing(rise);
+    return rise;
   }
 
   /** The words the leader can speak here, with their charges; null hides the bar. */
@@ -596,13 +621,29 @@ export class LocaleHudScene extends Phaser.Scene {
     this.worldPanel = undefined;
     this.worldModel = model;
     this.worldFocus = new MenuFocusGroup();
-    if (!model) return;
+    if (!model) {
+      this.placeWorldToggle(null);
+      return;
+    }
     this.setWorldBoard(null);
+    if (worldHidden) {
+      this.placeWorldToggle(null);
+      return;
+    }
     const width = 400;
     const chipH = 32;
     const gap = 6;
     const lineH = 17;
-    const height = 44 + model.lines.length * lineH + model.actions.length * (chipH + gap) + 8;
+    const title = this.add.text(0, 0, model.title, {
+      fontFamily: MENU_FONT.display,
+      fontSize: '20px',
+      fontStyle: 'bold',
+      color: model.titleColor ?? MENU_HEX.brassLight,
+      wordWrap: { width: width - 28 },
+    });
+    const titleH = Math.max(24, Math.ceil(title.height));
+    const head = 12 + titleH + 6;
+    const height = head + model.lines.length * lineH + 6 + model.actions.length * (chipH + gap) + 8;
     const left = GAME_WIDTH - width - 16;
     const top = GAME_HEIGHT - 44 - height;
     const root = this.add.container(0, 0).setDepth(10);
@@ -611,22 +652,16 @@ export class LocaleHudScene extends Phaser.Scene {
     root.add(back);
     // Clicks on the panel stay on the panel instead of planning a trip underneath.
     root.add(this.add.zone(left, top, width, height).setOrigin(0).setInteractive());
-    root.add(this.add.text(left + 14, top + 12, model.title, {
-      fontFamily: MENU_FONT.display,
-      fontSize: '17px',
-      fontStyle: 'bold',
-      color: MENU_HEX.brassLight,
-      fixedWidth: width - 28,
-    }));
+    root.add(title.setPosition(left + 14, top + 12));
     model.lines.forEach((line, index) => {
-      root.add(this.add.text(left + 14, top + 38 + index * lineH, line, {
+      root.add(this.add.text(left + 14, top + head + index * lineH, line, {
         fontFamily: MENU_FONT.control,
         fontSize: '12px',
         color: MENU_HEX.bone,
         fixedWidth: width - 28,
       }));
     });
-    const chipsTop = top + 44 + model.lines.length * lineH;
+    const chipsTop = top + head + model.lines.length * lineH + 6;
     // The first chip takes focus as it is built: that is not the player looking at it.
     let building = true;
     model.actions.forEach((action, index) => {
@@ -648,6 +683,39 @@ export class LocaleHudScene extends Phaser.Scene {
     });
     building = false;
     this.worldPanel = root;
+    this.placeWorldToggle(top);
+  }
+
+  /** The chip that folds the travel menu away or brings it back; `top` is the open menu's upper edge. */
+  private placeWorldToggle(top: number | null): void {
+    const shown = !!(this.worldModel || this.boardModel);
+    const width = 150;
+    const height = 26;
+    const y = worldHidden || top === null ? GAME_HEIGHT - 44 - height : top - height - 4;
+    const label = worldHidden ? 'Show menu   [Tab]' : 'Hide menu   [Tab]';
+    const key = shown ? `${label}@${y}` : '';
+    // Rebuilt only when it moves, so a press is not lost to a refresh.
+    if (key === this.worldToggleKey && (!!this.worldToggle === shown)) return;
+    this.worldToggleKey = key;
+    this.worldToggle?.destroy();
+    this.worldToggle = undefined;
+    if (!shown) return;
+    this.worldToggle = new CabinetChip(this, GAME_WIDTH - width - 16, y, {
+      width,
+      height,
+      label,
+      tone: worldHidden ? 'primary' : 'normal',
+      onActivate: () => {
+        if (!this.modalOpen) this.toggleWorldMenu();
+      },
+    }).setDepth(10);
+  }
+
+  private toggleWorldMenu(): void {
+    worldHidden = !worldHidden;
+    playSound(worldHidden ? 'ui.close' : 'ui.open');
+    if (this.boardModel) this.setWorldBoard(this.boardModel, this.boardHooks ?? undefined);
+    else if (this.worldModel) this.setWorldPanel(this.worldModel);
   }
 
   private worldAction(index: number): void {
@@ -677,17 +745,21 @@ export class LocaleHudScene extends Phaser.Scene {
   private hold<T>(open: (done: (value: T) => void) => void, animate = true): Promise<T> {
     this.modal += 1;
     this.prompt?.setVisible(false);
-    playSound('ui.open');
+    // A day's card on screen plays out before a window (a level-up, a shop) covers it.
+    const card = this.cardPlaying ?? Promise.resolve();
     return new Promise<T>((resolve) => {
-      // Built next tick, so the key press that opened a window cannot also act inside it.
-      this.time.delayedCall(0, () => {
-        const before = new Set(this.children.list);
-        open((value) => {
-          this.release();
-          playSound('ui.close');
-          resolve(value);
+      void card.then(() => {
+        playSound('ui.open');
+        // Built next tick, so the key press that opened a window cannot also act inside it.
+        this.time.delayedCall(0, () => {
+          const before = new Set(this.children.list);
+          open((value) => {
+            this.release();
+            playSound('ui.close');
+            resolve(value);
+          });
+          if (animate && !isReducedMotion()) this.enter(this.children.list.filter((child) => !before.has(child)));
         });
-        if (animate && !isReducedMotion()) this.enter(this.children.list.filter((child) => !before.has(child)));
       });
     });
   }
@@ -711,6 +783,7 @@ export class LocaleHudScene extends Phaser.Scene {
     this.modal += 1;
     this.prompt?.set(null, false);
     const film = playRestCinematic(this, nap, isReducedMotion());
+    AdventureSession.current?.showing(film.done);
     await film.black;
     at.black?.();
     await film.dark;
@@ -745,6 +818,7 @@ export class LocaleHudScene extends Phaser.Scene {
       if (this.cardPlaying === playing) this.cardPlaying = null;
     });
     this.cardPlaying = playing;
+    AdventureSession.current?.showing(playing);
   }
 
   /** Resolves once no day card is on screen. */
@@ -839,10 +913,19 @@ export class LocaleHudScene extends Phaser.Scene {
       this.worldBoard?.destroy();
       this.worldBoard = null;
       this.boardHooks = null;
+      this.boardModel = null;
+      if (!this.worldModel) this.placeWorldToggle(null);
       return;
     }
-    if (this.worldPanel) this.setWorldPanel(null);
+    if (this.worldModel) this.setWorldPanel(null);
     this.boardHooks = hooks ?? null;
+    this.boardModel = model;
+    if (worldHidden) {
+      this.worldBoard?.destroy();
+      this.worldBoard = null;
+      this.placeWorldToggle(null);
+      return;
+    }
     this.worldBoard ??= new VoteBoard(this, false, {
       pick: (id) => {
         if (!this.modalOpen) this.boardHooks?.pick(id);
@@ -850,6 +933,7 @@ export class LocaleHudScene extends Phaser.Scene {
       look: (id) => this.boardHooks?.look?.(id),
     });
     this.worldBoard.show(model);
+    this.placeWorldToggle(this.worldBoard.frameTop);
   }
 
   /** Online: a choice the whole party votes on, over everything, kept up to date; null takes it away. */
@@ -931,76 +1015,10 @@ export class LocaleHudScene extends Phaser.Scene {
 
   openTrade(session: AdventureSession, run: ExplorationRun, place: string): Promise<void> {
     return this.hold<void>((done) => {
-      let view: ChoiceMenuView<string> | null = null;
-      let closed = false;
-      let joined = false;
-      let page = 0;
-      const finish = (): void => {
-        if (closed) return;
-        closed = true;
-        offCouncil();
-        offRun();
-        view?.destroy();
+      const view: TradeView = new TradeView(this, session, run, place, () => {
+        view.destroy();
         done();
-      };
-      const render = (): void => {
-        if (closed) return;
-        const trade = session.council.trade;
-        const me = session.localSeat;
-        if (!trade || trade.place !== place || (trade.by !== me && trade.with !== me)) {
-          if (joined || (trade && (trade.place !== place || trade.with != null))) return finish();
-          view?.destroy();
-          const cancel = (): void => { session.say({ op: 'trade-cancel' }); finish(); };
-          view = new ChoiceMenuView<string>(this, 'PLAYER TRADE', 'Waiting for the host...', [{ id: 'close', label: 'Back', detail: '' }], cancel, cancel);
-          return;
-        }
-        joined = true;
-        const other = trade.by === me ? trade.with : trade.by;
-        const mine = trade.offers[me];
-        const theirs = other == null ? [] : trade.offers[other];
-        const owner = session.member ? memberIn(run, session.member) : undefined;
-        const carried = [...(owner?.bag ?? []), ...(owner?.utility ?? [])];
-        const items: { id: string; label: string; detail: string; enabled?: boolean }[] = [];
-        const seen = new Set<ItemId>();
-        for (const id of carried) {
-          if (seen.has(id)) continue;
-          seen.add(id);
-          const def = getItem(id);
-          if (def.permanentlyBinding || def.hpMult != null || def.hpFlat != null || def.sanityMult != null) continue;
-          const quantity = carried.filter((entry) => entry === id).length;
-          const offered = mine.filter((entry) => entry === id).length;
-          if (offered < quantity && mine.length < 8) items.push({ id: `add:${id}`, label: `+ ${def.name}  ${offered}/${quantity}`, detail: 'Add one to offer' });
-          if (offered) items.push({ id: `remove:${id}`, label: `- ${def.name}  ${offered}/${quantity}`, detail: 'Remove one from offer' });
-        }
-        page = Math.min(page, Math.max(0, Math.ceil(items.length / 4) - 1));
-        const options = items.slice(page * 4, page * 4 + 4);
-        if (page > 0) options.push({ id: 'previous', label: 'Previous items', detail: '' });
-        if ((page + 1) * 4 < items.length) options.push({ id: 'next', label: 'More items', detail: '' });
-        if (other != null) options.push({ id: 'ready', label: trade.ready[me] ? 'Confirmed' : 'Confirm exchange', detail: 'Both players must confirm the displayed offers.', enabled: !trade.ready[me] });
-        options.push({ id: 'close', label: 'Close stall', detail: 'Cancel without moving items.' });
-        const label = (items: readonly ItemId[]): string => items.length ? items.map((id) => getItem(id).name).join(', ') : 'Nothing (gift)';
-        const subtitle = other == null ? 'Waiting for another player to join.'
-          : `Your offer: ${label(mine)}\n${session.nameOf(other)}: ${label(theirs)}\n${trade.ready[me] ? 'You confirmed. ' : ''}${trade.ready[other] ? 'They confirmed.' : 'Waiting for their confirmation.'}`;
-        view?.destroy();
-        view = new ChoiceMenuView<string>(this, 'PLAYER TRADE', subtitle, options, (id) => {
-          if (id === 'close') session.say({ op: 'trade-cancel' });
-          else if (id === 'ready') session.say({ op: 'trade-ready' });
-          else if (id === 'previous') page -= 1;
-          else if (id === 'next') page += 1;
-          else if (id.startsWith('add:') || id.startsWith('remove:')) {
-            const item = id.slice(id.indexOf(':') + 1) as ItemId;
-            const next = [...mine];
-            const index = next.indexOf(item);
-            if (id.startsWith('remove:') && index >= 0) next.splice(index, 1);
-            else if (id.startsWith('add:') && next.length < 8 && next.filter((entry) => entry === item).length < carried.filter((entry) => entry === item).length) next.push(item);
-            session.say({ op: 'trade-offer', items: next });
-          }
-          if (id === 'previous' || id === 'next') render();
-        }, () => session.say({ op: 'trade-cancel' }));
-      };
-      const offCouncil = session.on('x-council', render);
-      const offRun = session.on('x-run', render);
-      render();
+      });
     });
   }
 }

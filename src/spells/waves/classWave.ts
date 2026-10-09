@@ -17,7 +17,7 @@ import { RANGE_UNIT } from '../../config/constants';
 import { getItem, type ItemId } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
 import type { WordId } from '../../core/Words';
-import { addImbue, HEX_LAW_NAMES, IMBUES, makeMinion, minionDrinks, MINIONS, type HexLawKind, type ImbueDef, type MinionDef, type RuleLawKind } from '../../effects/classKit';
+import { addImbue, HEX_LAW_NAMES, HEX_LAW_TEXT, IMBUES, makeMinion, minionDrinks, MINIONS, type HexLawKind, type ImbueDef, type MinionDef, type RuleLawKind } from '../../effects/classKit';
 import { RULE_LAWS, type RuleLaw } from '../../effects/ruleLaws';
 import { rollDice, type EffectContext } from '../../effects/effects';
 import { registerClassSpellVariants, type ClassSpellVariant } from '../registry';
@@ -109,15 +109,15 @@ export function imbue(
   return {
     name: def.name,
     actionType: o.bonus ? 'bonus' : 'main',
-    range: o.ally ? R(8) : o.foe ? R(10) : 0,
-    targeting: o.ally ? 'any' : o.foe ? 'enemy' : 'self',
+    range: o.foe ? R(10) : R(8),
+    targeting: 'any',
     dc: o.dc,
     noCastSprite: true,
     description: o.ally
       ? `Enchant the ${gear} of yourself or a unit within 8cm. ${o.text}`
       : o.foe
         ? `Bind the ${gear} of one enemy within 10cm. ${o.text}`
-        : `Enchant your ${gear}. ${o.text}`,
+        : `Enchant the ${gear} of yourself or a unit within 8cm. ${o.text}`,
     visual: { preset: 'conjure', color: o.color, size: 24, speed: 1 },
     cast(ctx) {
       const bearer = ctx.target ?? ctx.caster;
@@ -134,14 +134,14 @@ export function conjure(id: ItemId, o: Priced & { count?: number }): ClassSpellV
   return {
     name: item.name,
     actionType: o.bonus ? 'bonus' : 'main',
-    range: 0,
-    targeting: 'self',
+    range: R(8),
+    targeting: 'any',
     dc: o.dc,
     noCastSprite: true,
     description: o.text,
     visual: { preset: 'conjure', color: o.color, size: 28, speed: 1 },
     cast(ctx) {
-      const caster = ctx.caster;
+      const caster = ctx.target ?? ctx.caster;
       if (item.slot === 'utility') {
         const count = (o.count ?? 1) * (ctx.crit ? 2 : 1);
         for (let i = 0; i < count; i++) caster.utility.push(id);
@@ -167,6 +167,7 @@ export function law(
   kind: HexLawKind,
   o: Priced & { lightning?: boolean; after?: (ctx: EffectContext) => void }
 ): ClassSpellVariant {
+  HEX_LAW_TEXT[kind] = o.text;
   return {
     name: HEX_LAW_NAMES[kind],
     actionType: o.bonus ? 'bonus' : 'main',

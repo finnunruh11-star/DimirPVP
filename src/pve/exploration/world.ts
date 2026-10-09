@@ -375,6 +375,21 @@ export function placeAt(x: number, y: number): Place | undefined {
   return PLACES.find((place) => place.x === x && place.y === y);
 }
 
+/** The place within `reach` tiles of (x, y), the closest when several are. */
+export function placeNear(x: number, y: number, reach: number): Place | undefined {
+  let best: Place | undefined;
+  let bestDist = Infinity;
+  for (const place of PLACES) {
+    if (Math.max(Math.abs(place.x - x), Math.abs(place.y - y)) > reach) continue;
+    const dist = Math.hypot(place.x - x, place.y - y);
+    if (dist < bestDist) {
+      best = place;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
 /** Tiles to the nearest town, as the crow flies. */
 export function townDistance(x: number, y: number): number {
   let best = Infinity;

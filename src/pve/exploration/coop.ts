@@ -4,7 +4,7 @@
 
 import type { MageClass } from '../../core/Classes';
 import type { Mage } from '../../core/Mage';
-import type { Scenario } from '../../core/Scenario';
+import type { Scenario, ScenarioEntity } from '../../core/Scenario';
 import { addXp } from '../progression';
 import { swamprunPartyScale } from '../swamprun';
 import { capturePartySnapshot, restoreParty } from './party';
@@ -98,4 +98,67 @@ export function mergeFightParty(before: Scenario, fighters: readonly Mage[]): Sc
 export function classesUnique(snapshot: Scenario): boolean {
   const classes = snapshot.entities.map((entity) => entity.mageClass);
   return new Set(classes).size === classes.length;
+}
+
+/**
+ * The summons still standing by a living party member when a fight ends, stored
+ * after their owners so the next fight can bring them back. Null when there are none.
+ */
+export function captureSummons(mages: readonly Mage[]): Scenario | null {
+  const owners: Mage[] = [];
+  const summons: Mage[] = [];
+  for (const summon of mages) {
+    if (!summon.isSummon || !summon.alive) continue;
+    const owner = mages[summon.summonOwnerIndex ?? -1];
+    if (!owner?.alive || owner.isSummon || owner.team !== 1 || owner.sceneSide) continue;
+    if (!owners.includes(owner)) owners.push(owner);
+    summons.push(summon);
+  }
+  if (summons.length === 0) return null;
+  const snapshot = capturePartySnapshot([...owners, ...summons]);
+  summons.forEach((summon, i) => {
+    const entity = snapshot.entities[owners.length + i];
+    const ownerIndex = owners.indexOf(mages[summon.summonOwnerIndex!]);
+    entity.links = {};
+    entity.summon = {
+      ...entity.summon,
+      ownerIndex,
+      attachedToIndex: summon.attachedToIndex === summon.summonOwnerIndex ? ownerIndex : undefined,
+      order: undefined,
+    };
+  });
+  return snapshot;
+}
+
+/** The fighting party with each stored summon back beside its owner; summons of an owner not fighting stay behind. */
+export function withSummons(party: Scenario, summons: Scenario | null): Scenario {
+  if (!summons) return party;
+  const extra: ScenarioEntity[] = [];
+  for (const entity of summons.entities) {
+    const ownerIndex = entity.summon?.ownerIndex;
+    const owner = ownerIndex == null ? undefined : summons.entities[ownerIndex];
+    if (!entity.summon || !owner || owner.summon) continue;
+    const at = party.entities.findIndex((member) => !member.summon && member.mageClass === owner.mageClass);
+    if (at < 0) continue;
+    const home = party.entities[at];
+    extra.push({
+      ...entity,
+      team: home.team,
+      x: home.x,
+      y: home.y,
+      links: {},
+      summon: {
+        ...entity.summon,
+        ownerIndex: at,
+        attachedToIndex: entity.summon.attachedToIndex === ownerIndex ? at : undefined,
+        order: undefined,
+      },
+    });
+  }
+  if (extra.length === 0) return party;
+  return {
+    ...party,
+    entities: [...party.entities, ...extra],
+    turn: { ...party.turn, rolls: [...party.turn.rolls, ...extra.map(() => 0)] },
+  };
 }

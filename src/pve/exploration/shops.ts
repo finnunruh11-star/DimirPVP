@@ -77,7 +77,7 @@ const SHOPPABLE = (def: ItemDef): boolean =>
 const isWeapon = (def: ItemDef): boolean =>
   SHOPPABLE(def) && def.slot === 'hand' && !def.lightSource && (!!def.weapon || !!def.isWand || !!def.shield);
 const isArmour = (def: ItemDef): boolean =>
-  SHOPPABLE(def) && (def.slot === 'head' || def.slot === 'torso' || def.slot === 'boots');
+  SHOPPABLE(def) && (def.slot === 'head' || def.slot === 'torso' || def.slot === 'cape' || def.slot === 'gloves' || def.slot === 'boots');
 const isAccessory = (def: ItemDef): boolean => SHOPPABLE(def) && def.slot === 'accessory';
 const isGem = (def: ItemDef): boolean => def.materialKind === 'gem';
 const isHerb = (def: ItemDef): boolean => def.materialKind === 'herb';
@@ -85,14 +85,14 @@ const isMaterial = (def: ItemDef): boolean => !!def.material;
 const isOre = (def: ItemDef): boolean => !!def.material && !def.materialKind;
 const isBow = (def: ItemDef): boolean => isWeapon(def) && !!def.weapon?.usesArrows;
 const isGear = SHOPPABLE;
-const isSupply = (def: ItemDef): boolean => !!def.potion || !!def.throwable;
+const isSupply = (def: ItemDef): boolean => !!def.potion || !!def.throwable || !!def.ammo;
 
 const GEM_JEWELLERY: ItemId[] = ['rubyPendant', 'sapphireRing', 'emeraldCharm', 'onyxAmulet', 'amethystCirclet'];
 
 const SUPPLIES: StockRule['fixed'] = [
   { id: 'healthPotion' },
   { id: 'manaPotion' },
-  { id: 'arrow', qty: 10 },
+  { id: 'arrow' },
   { id: 'torch' },
   { id: 'throwingDagger' },
 ];
@@ -130,7 +130,7 @@ const scriptorium = (town: string, name: string): ShopDef => ({
   stock: {
     fixed: [
       { id: 'paper', price: 0.1 },
-      { id: 'finePaper', price: 1 },
+      { id: 'finePaper', price: 0.3 },
       { id: 'hexCodex', price: HEX_CODEX_PRICE },
     ],
     hexSheet: HEX_SHEET_PRICE,
@@ -194,7 +194,7 @@ const outfitter = (town: string, name: string): ShopDef => ({
   name,
   sign: 'OUTFITTER',
   keeper: 'nomad',
-  stock: { fixed: [{ id: 'stillsuit' }, { id: 'healthPotion' }, { id: 'torch' }, { id: 'arrow', qty: 10 }, { id: 'throwingDagger' }] },
+  stock: { fixed: [{ id: 'stillsuit' }, { id: 'healthPotion' }, { id: 'torch' }, { id: 'arrow' }, { id: 'throwingDagger' }] },
   buys: [
     { accepts: isGem, rate: 1.1 },
     { accepts: isSupply, rate: 0.5 },
@@ -349,13 +349,14 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       sign: 'BOWS',
       keeper: 'hunter',
       stock: {
-        fixed: [{ id: 'huntingBow' }, { id: 'arrow', qty: 10 }, { id: 'leatherCap' }, { id: 'paddedJerkin' }, { id: 'leatherBoots' }],
+        fixed: [{ id: 'huntingBow' }, { id: 'arrow' }, { id: 'leatherCap' }, { id: 'paddedJerkin' }, { id: 'leatherBoots' }],
         pool: isBow,
         rarities: ['rare', 'epic', 'unreal'],
         size: 2,
       },
       buys: [
         { accepts: isBow, rate: 0.45 },
+        { accepts: (def) => !!def.ammo, rate: 0.5 },
         { accepts: isArmour, rate: 0.25 },
       ],
       services: [],

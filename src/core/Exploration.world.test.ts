@@ -7,6 +7,7 @@ import {
   MIN_TERRAIN_TIME,
   nearTown,
   placeById,
+  placeNear,
   PLACES,
   REGIONS,
   regionAt,
@@ -41,6 +42,16 @@ function around(x: number, y: number, radius: number, terrain: Terrain): number 
 }
 
 const tests: [name: string, run: () => void][] = [
+  ['finds a place from a tile beside it, the nearest when two are close', () => {
+    for (const place of PLACES) {
+      equal(placeNear(place.x, place.y, 1)?.id, place.id, `${place.name} from its own tile`);
+      for (const [dx, dy] of [[1, 0], [-1, 1], [0, -1]]) {
+        const near = placeNear(place.x + dx, place.y + dy, 1);
+        assert(near && Math.max(Math.abs(near.x - place.x - dx), Math.abs(near.y - place.y - dy)) <= 1, `a place next to ${place.name}`);
+      }
+    }
+  }],
+
   ['lays out one fixed world, starting in Kerusai', () => {
     equal([world.w, world.h], [WORLD_W, WORLD_H], 'map size');
     equal(world.terrain.length, WORLD_W * WORLD_H, 'a terrain entry per tile');

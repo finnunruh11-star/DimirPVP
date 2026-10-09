@@ -32,7 +32,7 @@ import type { ExplorationRun } from './run';
 
 export type ExplorationIntent =
   | { op: 'buy'; shop: string; key: string }
-  | { op: 'sell'; shop: string; item: ItemId }
+  | { op: 'sell'; shop: string; item: ItemId; count?: number }
   | { op: 'sell-all'; shop: string; items: ItemId[] }
   | { op: 'craft'; shop: string; design: CraftDesign; crafter?: MageClass }
   | { op: 'hex'; paper: ItemId; grids: number[] }
@@ -41,8 +41,8 @@ export type ExplorationIntent =
   | { op: 'rest'; shop: string }
   | { op: 'equip'; item: ItemId }
   | { op: 'unequip'; item: ItemId }
-  | { op: 'drop'; item: ItemId }
-  | { op: 'give'; item: ItemId; to: MageClass }
+  | { op: 'drop'; item: ItemId; count?: number }
+  | { op: 'give'; item: ItemId; to: MageClass; count?: number }
   | { op: 'bounty-accept'; town: string; id: string }
   | { op: 'bounty-abandon'; id: string }
   | { op: 'bounty-claim'; town: string; id: string }
@@ -68,7 +68,7 @@ export function applyIntent(run: ExplorationRun, member: MageClass | null, inten
   try {
     switch (intent.op) {
       case 'buy': return buyItem(run, intent.shop, intent.key, member);
-      case 'sell': return sellItem(run, intent.shop, intent.item, false, member);
+      case 'sell': return sellItem(run, intent.shop, intent.item, intent.count ?? false, member);
       case 'sell-all': return sellAll(run, intent.shop, intent.items, member);
       case 'craft': return craftItem(run, intent.shop, intent.design, member, intent.crafter);
       case 'hex': return drawHex(run, intent.paper, intent.grids, member);
@@ -77,8 +77,8 @@ export function applyIntent(run: ExplorationRun, member: MageClass | null, inten
       case 'rest': return rest(run, intent.shop);
       case 'equip': return equipItem(run, intent.item, member);
       case 'unequip': return unequipItem(run, intent.item, member);
-      case 'drop': return dropItem(run, intent.item, member);
-      case 'give': return member ? giveItem(run, intent.item, member, intent.to) : { ok: false, message: 'Nobody to give it to.' };
+      case 'drop': return dropItem(run, intent.item, member, intent.count ?? 1);
+      case 'give': return member ? giveItem(run, intent.item, member, intent.to, intent.count ?? 1) : { ok: false, message: 'Nobody to give it to.' };
       case 'bounty-accept': return acceptBounty(run, intent.town, intent.id);
       case 'bounty-abandon': return abandonBounty(run, intent.id);
       case 'bounty-claim': return claimBounty(run, intent.town, intent.id);
@@ -108,6 +108,10 @@ const text = (value: unknown, max = 64): string | null =>
   typeof value === 'string' && value.length > 0 && value.length <= max ? value : null;
 
 const itemId = (value: unknown): ItemId | null => asItemIds([value])[0] ?? null;
+
+/** An optional amount off the wire: absent, or a whole number 1..999. False when malformed. */
+const countOf = (value: unknown): { count?: number } | false =>
+  value == null ? {} : Number.isInteger(value) && (value as number) >= 1 && (value as number) <= 999 ? { count: value as number } : false;
 
 const mageClass = (value: unknown): MageClass | null =>
   MAGE_CLASSES.includes(value as MageClass) ? value as MageClass : null;
@@ -150,7 +154,8 @@ export function parseIntent(value: unknown): ExplorationIntent | null {
     case 'sell': {
       const shop = text(raw.shop);
       const item = itemId(raw.item);
-      return shop && item ? { op: 'sell', shop, item } : null;
+      const count = countOf(raw.count);
+      return shop && item && count ? { op: 'sell', shop, item, ...count } : null;
     }
     case 'sell-all': {
       const shop = text(raw.shop);
@@ -184,15 +189,20 @@ export function parseIntent(value: unknown): ExplorationIntent | null {
       return shop ? { op: 'rest', shop } : null;
     }
     case 'equip':
-    case 'unequip':
-    case 'drop': {
+    case 'unequip': {
       const item = itemId(raw.item);
       return item ? { op: raw.op, item } : null;
+    }
+    case 'drop': {
+      const item = itemId(raw.item);
+      const count = countOf(raw.count);
+      return item && count ? { op: 'drop', item, ...count } : null;
     }
     case 'give': {
       const item = itemId(raw.item);
       const to = mageClass(raw.to);
-      return item && to ? { op: 'give', item, to } : null;
+      const count = countOf(raw.count);
+      return item && to && count ? { op: 'give', item, to, ...count } : null;
     }
     case 'bounty-accept':
     case 'bounty-claim': {

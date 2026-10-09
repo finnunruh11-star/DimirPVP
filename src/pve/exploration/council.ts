@@ -317,6 +317,8 @@ const MAX_BODY = 480;
 const MAX_LABEL = 80;
 const MAX_DETAIL = 200;
 const MAX_OPTIONS = 8;
+/** Items one side of a trade may put up, counting every arrow and every ore. */
+export const MAX_TRADE_ITEMS = 240;
 const text = (value: unknown, max = MAX_TEXT): string | null =>
   typeof value === 'string' && value.length > 0 && value.length <= max ? value : null;
 
@@ -369,7 +371,7 @@ export function parseCouncilOp(value: unknown): CouncilOp | null {
       return place && at ? { op: 'trade', place, at } : null;
     }
     case 'trade-offer': {
-      if (!Array.isArray(raw.items) || raw.items.length > 8) return null;
+      if (!Array.isArray(raw.items) || raw.items.length > MAX_TRADE_ITEMS) return null;
       const items = asItemIds(raw.items);
       return items.length === raw.items.length ? { op: 'trade-offer', items } : null;
     }
@@ -469,7 +471,7 @@ export function parseCouncil(value: unknown, size: number): Council | null {
     const at = spot(trade.at);
     const partner = trade.with == null ? null : seat(trade.with, size);
     const offers = Array.isArray(trade.offers) && trade.offers.length === size ? trade.offers.map((list) => {
-      if (!Array.isArray(list) || list.length > 8) return null;
+      if (!Array.isArray(list) || list.length > MAX_TRADE_ITEMS) return null;
       const items = asItemIds(list);
       return items.length === list.length ? items : null;
     }) : null;

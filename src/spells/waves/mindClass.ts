@@ -48,12 +48,12 @@ const FIRE_MIND_EDGE: ClassSpellVariant = {
 const LIGHTNING_MIND_EDGE: ClassSpellVariant = {
   name: 'Lightning Mind',
   actionType: 'main',
-  range: 0,
-  targeting: 'self',
+  range: R(8),
+  targeting: 'any',
   dc: 11,
   noCastSprite: true,
   description:
-    'Enchant your active weapon for 1 hit per 6 Lightning power (at least 1). Each hit gives its enemy 1 Mindconduct ' +
+    'Enchant the target\'s active weapon (range 8) for 1 hit per 6 Lightning power (at least 1). Each hit gives its enemy 1 Mindconduct ' +
     'stack, then a bolt within a third of the Lightning power in cm strikes you or a marked enemy, likelier the more ' +
     'stacks it carries, for 1d3 sanity, 50% more for every stack after the first.',
   visual: { preset: 'conjure', color: 0x79bfff, size: 46, speed: 1.7 },

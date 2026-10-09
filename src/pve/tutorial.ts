@@ -216,7 +216,7 @@ export const TUTORIAL_STEPS: readonly TutorialStep[] = [
     id: 'inv-open',
     chapter: 'IV · Inventory',
     title: 'Something is wrong with you',
-    body: 'That exchange left an affliction on you, and a Health Potion has been slipped into your bag. Both live in the inventory, and opening it costs nothing. EQUIPMENT is what you wear and hold; BAG & SUPPLIES is where potions offer Consume and throwables offer Throw; STATUS EFFECTS is the full list of what is riding on you.',
+    body: 'That exchange left an affliction on you, and a Health Potion has been slipped into your bag. Both live in the inventory, and opening it costs nothing. The figure on the left is what you wear and hold; the grid is your bag, where selecting a potion offers Consume and a throwable offers Throw; the STATUS EFFECTS tab is the full list of what is riding on you.',
     task: 'Press I, then open the STATUS EFFECTS tab.',
     stages: ['calm-enemy', 'afflict-player'],
     focus: 'vitals',

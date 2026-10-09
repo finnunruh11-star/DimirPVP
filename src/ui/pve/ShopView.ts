@@ -1,12 +1,14 @@
 // The counter of a town shop, opened by talking to its keeper. One window for
 // every trade: tabs appear for whatever the shop does (buy, sell, rest,
-// bounties, forge), and every action goes straight through the economy.
+// bounties, forge, runes). Buying and selling lay the wares and your goods out
+// as tiles with their prices, explain the one selected, and ask how many before
+// anything is sold.
 
 import Phaser from 'phaser';
 import { playSound } from '../../audio';
-import { GAME_WIDTH } from '../../config/constants';
-import { getItem, type ItemDef, type Rarity } from '../../core/Items';
-import { packLabel } from '../../core/Pack';
+import { getItem, type ItemId } from '../../core/Items';
+import type { Mage } from '../../core/Mage';
+import { packCapacity, packFits, packSlotsUsed } from '../../core/Pack';
 import { SceneInput } from '../../engine/SceneInput';
 import {
   bountyBoard,
@@ -15,15 +17,18 @@ import {
   MAX_ACTIVE_BOUNTIES,
 } from '../../pve/exploration/bounties';
 import {
+  carriedCount,
   craftersIn,
+  itemWorth,
   memberIn,
   moneyLabel,
   partyHasCodex,
   partyOf,
   roomPrice,
   runeOffers,
-  sellOffers,
+  sellPrice,
   shopStock,
+  type StockSlot,
 } from '../../pve/exploration/economy';
 import { bloodmoonDue } from '../../pve/exploration/bloodmoon';
 import type { RestNap } from '../../pve/exploration/nap';
@@ -31,8 +36,28 @@ import type { ExplorationActions, ExplorationIntent } from '../../pve/exploratio
 import { partyXpScale } from '../../pve/exploration/coop';
 import type { ExplorationRun } from '../../pve/exploration/run';
 import type { ShopDef } from '../../pve/exploration/shops';
-import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
+import { CabinetButton, CabinetChip } from '../cabinet/controls';
 import { addCabinetBackdrop, addRecess, addSectionRule, MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
+import {
+  addEmptyCard,
+  addItemCard,
+  addKeyHints,
+  addMeter,
+  addPanel,
+  addPursePlate,
+  ConfirmDialog,
+  drawSocket,
+  gridSpot,
+  ItemTile,
+  SpatialFocus,
+  TILE,
+  TILE_PITCH,
+  type CardLine,
+  type DialogKey,
+  type DialogOptions,
+  type Direction,
+} from '../inventory/kit';
+import { carriedStacks, FILTERS, kg, matchesFilter, type ItemFilter } from '../inventory/itemInfo';
 import { CraftingView } from './CraftingView';
 
 type Tab = 'buy' | 'sell' | 'rest' | 'bounties' | 'forge' | 'runes';
@@ -46,27 +71,13 @@ const TAB_LABEL: Record<Tab, string> = {
   runes: 'Runes',
 };
 
-const RARITY_NAME: Record<Rarity, string> = {
-  common: 'Common',
-  consumeable: 'Consumable',
-  rare: 'Rare',
-  epic: 'Epic',
-  unreal: 'Unreal',
-  mythical: 'Mythical',
-  legendary: 'Legendary',
-  lareneg: 'Lareneg',
-};
-
-const SLOT_NAME: Record<ItemDef['slot'], string> = {
-  hand: 'Hand',
-  head: 'Head',
-  torso: 'Torso',
-  boots: 'Boots',
-  accessory: 'Accessory',
-  utility: 'Utility',
-};
-
 const PER_PAGE = 8;
+const LIST = { x: 58, y: 186, w: 790, h: 382 };
+const CARD = { x: 866, y: 186, w: 356, h: 382 };
+const COLUMNS = 11;
+const ROW_PITCH = 84;
+const WARE_ROWS = 3;
+const GRID_X = LIST.x + Math.floor((LIST.w - (COLUMNS * TILE_PITCH - 6)) / 2);
 
 export interface ShopViewHooks {
   /** The run changed: save it and refresh the HUD. */
@@ -103,24 +114,33 @@ export interface InnHooks {
   answer(join: boolean): void;
 }
 
-export function itemDetail(def: ItemDef): string {
-  const kind = def.material ? 'Material' : SLOT_NAME[def.slot];
-  return `${RARITY_NAME[def.rarity]} ${kind}  /  ${def.weight}kg\n${def.blurb}`;
+interface RowEntry {
+  label: string;
+  detail: string;
+  enabled: boolean;
+  run: () => void;
+  inspect?: string;
 }
 
 export class ShopView extends Phaser.GameObjects.Container {
   private readonly sceneInput: SceneInput;
-  private focus = new MenuFocusGroup();
+  private focus = new SpatialFocus();
   private tabs: Tab[];
   private tab: Tab;
   private page = 0;
+  private filter: ItemFilter = 'all';
   private message = '';
+  private messageOk = true;
   private armedAbandon: string | null = null;
   private disposed = false;
   private working = false;
+  private renderQueued = false;
+  /** The ware (by stock key) or carried item selected on the Buy and Sell tabs. */
+  private picked: string | null = null;
+  private dialog: ConfirmDialog | null = null;
   private inspectorTitle!: Phaser.GameObjects.Text;
   private inspectorBody!: Phaser.GameObjects.Text;
-  private header!: Phaser.GameObjects.Text;
+  private primary: (() => void) | null = null;
   /** The crafting bench, open over the counter. */
   private bench: CraftingView | null = null;
 
@@ -136,20 +156,28 @@ export class ShopView extends Phaser.GameObjects.Container {
     this.tabs = this.openTabs();
     this.tab = hooks.inn?.call()?.here && this.tabs.includes('rest') ? 'rest' : this.tabs[0] ?? 'sell';
     this.sceneInput = new SceneInput(scene);
-    const counter = (run: (event: KeyboardEvent) => void) => (event: KeyboardEvent): void => {
-      if (!this.bench) run(event);
+    const free = (): boolean => !this.bench && !this.disposed;
+    const routed = (key: DialogKey, fallback: (event: KeyboardEvent) => void) => (event: KeyboardEvent): void => {
+      if (!free()) return;
+      if (this.dialog) this.dialog.key(key, event.shiftKey);
+      else fallback(event);
     };
+    const plain = (run: () => void) => (): void => {
+      if (free() && !this.dialog) run();
+    };
+    const arrow = (direction: Direction) => (): void => this.focus.move(direction);
     this.sceneInput.bindKeys([
-      { key: 'LEFT', capture: true, run: counter(() => this.focus.move(-1)) },
-      { key: 'UP', capture: true, run: counter(() => this.focus.move(-1)) },
-      { key: 'RIGHT', capture: true, run: counter(() => this.focus.move(1)) },
-      { key: 'DOWN', capture: true, run: counter(() => this.focus.move(1)) },
-      { key: 'TAB', capture: true, run: counter((event) => this.focus.move(event.shiftKey ? -1 : 1)) },
-      { key: 'SPACE', capture: true, run: counter(() => this.focus.activate()) },
-      { key: 'ENTER', capture: true, run: counter(() => this.focus.activate()) },
-      { key: 'ESC', capture: true, run: counter(() => { if (!this.working) this.hooks.close(); }) },
-      { key: 'Q', run: counter(() => this.cycleTab(-1)) },
-      { key: 'E', run: counter(() => this.cycleTab(1)) },
+      { key: 'LEFT', capture: true, run: routed('LEFT', arrow('left')) },
+      { key: 'RIGHT', capture: true, run: routed('RIGHT', arrow('right')) },
+      { key: 'UP', capture: true, run: routed('UP', arrow('up')) },
+      { key: 'DOWN', capture: true, run: routed('DOWN', arrow('down')) },
+      { key: 'TAB', capture: true, run: routed('TAB', (event) => this.focus.cycle(event.shiftKey ? -1 : 1)) },
+      { key: 'SPACE', capture: true, run: routed('SPACE', () => this.focus.activate()) },
+      { key: 'ENTER', capture: true, run: routed('ENTER', () => this.focus.activate()) },
+      { key: 'ESC', capture: true, run: routed('ESC', () => { if (!this.working) this.hooks.close(); }) },
+      { key: 'Q', run: plain(() => this.cycleTab(-1)) },
+      { key: 'E', run: plain(() => this.cycleTab(1)) },
+      { key: 'F', run: plain(() => this.primary?.()) },
     ]);
     this.render();
   }
@@ -157,6 +185,8 @@ export class ShopView extends Phaser.GameObjects.Container {
   override destroy(fromScene?: boolean): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.dialog?.destroy();
+    this.dialog = null;
     this.bench?.destroy();
     this.bench = null;
     this.sceneInput.destroy();
@@ -184,6 +214,7 @@ export class ShopView extends Phaser.GameObjects.Container {
   private setTab(tab: Tab): void {
     this.tab = tab;
     this.page = 0;
+    this.picked = null;
     this.armedAbandon = null;
     playSound('ui.click');
     this.render();
@@ -196,6 +227,7 @@ export class ShopView extends Phaser.GameObjects.Container {
     this.working = false;
     if (this.disposed) return;
     this.message = result.message;
+    this.messageOk = result.ok;
     playSound(result.ok ? 'ui.confirm' : 'ui.deny');
     if (result.ok) this.hooks.changed();
     this.render();
@@ -205,7 +237,7 @@ export class ShopView extends Phaser.GameObjects.Container {
   refresh(): void {
     if (this.disposed) return;
     if (this.bench) this.bench.refresh();
-    else if (!this.working) this.render();
+    else if (!this.working && !this.dialog) this.render();
   }
 
   /** Take the rooms. The night plays out and the window goes with it, so it stays busy from here on. */
@@ -221,6 +253,7 @@ export class ShopView extends Phaser.GameObjects.Container {
     }
     this.working = false;
     this.message = result.message;
+    this.messageOk = result.ok;
     playSound(result.ok ? 'ui.confirm' : 'ui.deny');
     if (result.ok) this.hooks.changed();
     this.render();
@@ -235,9 +268,28 @@ export class ShopView extends Phaser.GameObjects.Container {
     return Math.round(base * partyXpScale(this.run));
   }
 
+  private renderSoon(): void {
+    if (this.renderQueued) return;
+    this.renderQueued = true;
+    this.scene.time.delayedCall(0, () => {
+      this.renderQueued = false;
+      if (!this.disposed && !this.dialog) this.render();
+    });
+  }
+
+  private pick(key: string, soon = false): void {
+    if (this.picked === key) return;
+    this.picked = key;
+    if (soon) this.renderSoon();
+    else this.render();
+  }
+
   private render(): void {
+    if (this.disposed) return;
+    const keep = this.focus.currentKey;
     this.removeAll(true);
-    this.focus = new MenuFocusGroup();
+    this.focus = new SpatialFocus();
+    this.primary = null;
     const { scene, run, shop } = this;
     this.tabs = this.openTabs();
     if (!this.tabs.includes(this.tab)) this.tab = this.tabs[0] ?? 'sell';
@@ -247,33 +299,33 @@ export class ShopView extends Phaser.GameObjects.Container {
       const face = scene.add.image(96, 88, this.hooks.portrait, 0).setScale(5).setOrigin(0.5, 0.75);
       this.add(face);
     }
-    const title = scene.add.text(150, 42, shop.name.toUpperCase(), {
-      fontFamily: MENU_FONT.display,
-      fontSize: '29px',
-      fontStyle: 'bold',
-      color: MENU_HEX.bone,
-    });
     const leader = memberIn(run, this.member);
-    const carried = leader ? `${leader.carriedWeight().toFixed(1)}/${leader.carryCap()}kg  /  ${packLabel(leader)}` : '';
-    const who = leader && partyOf(run).length > 1 ? `${leader.name}  /  ` : '';
-    this.header = scene.add.text(152, 82, `${shop.sign}  /  Day ${run.day}  /  ${who}Carrying ${carried}`, {
-      fontFamily: MENU_FONT.body,
-      fontSize: '14px',
-      color: MENU_HEX.boneDim,
-    });
-    const gold = scene.add.text(1202, 50, moneyLabel(run.gold), {
-      fontFamily: MENU_FONT.display,
-      fontSize: '25px',
-      fontStyle: 'bold',
-      color: MENU_HEX.ink,
-      backgroundColor: '#d8cbae',
-      padding: { x: 16, y: 7 },
-    }).setOrigin(1, 0);
-    this.add([title, this.header, gold]);
+    const who = leader && partyOf(run).length > 1 ? `  /  ${leader.name} at the counter` : '';
+    this.add([
+      scene.add.text(150, 36, shop.name.toUpperCase(), {
+        fontFamily: MENU_FONT.display, fontSize: '29px', fontStyle: 'bold', color: MENU_HEX.bone,
+      }).setLetterSpacing(1),
+      scene.add.text(152, 78, `${shop.sign}  /  Day ${run.day}${who}`, {
+        fontFamily: MENU_FONT.body, fontSize: '14px', color: MENU_HEX.boneDim,
+      }),
+    ]);
+    if (leader) {
+      const cap = leader.carryCap();
+      const weight = leader.carriedWeight();
+      const finite = Number.isFinite(cap);
+      const used = packSlotsUsed(leader);
+      const room = packCapacity(leader);
+      addMeter(scene, this, 660, 40, 170, 'LOAD', `${kg(weight)} / ${finite ? kg(cap) : '\u221E'} kg`,
+        finite ? weight / Math.max(1, cap) : 0, 0xb08d4a, { warn: leader.overloaded() });
+      addMeter(scene, this, 660, 74, 170, 'SLOTS', `${used} / ${Number.isFinite(room) ? room : '\u221E'}`,
+        Number.isFinite(room) ? used / Math.max(1, room) : 0.1, 0x4d7c70, { warn: used > room });
+    }
+    addPursePlate(scene, this, 856, 52, moneyLabel(run.gold));
     addSectionRule(scene, this, 58, 116, 1164);
 
     this.tabs.forEach((tab, index) => {
-      const chip = new CabinetChip(scene, 58 + index * 190, 132, {
+      const x = 58 + index * 190;
+      const chip = new CabinetChip(scene, x, 132, {
         width: 176,
         height: 38,
         label: TAB_LABEL[tab],
@@ -281,28 +333,26 @@ export class ShopView extends Phaser.GameObjects.Container {
         onActivate: () => this.setTab(tab),
       });
       this.add(chip);
-      this.focus.add(chip);
+      this.focus.add(chip, `tab:${tab}`, x, 132, 176, 38);
     });
 
-    addRecess(scene, this, 58, 186, 1164, 382);
-    addRecess(scene, this, 58, 586, 1164, 82, MENU_COLOR.woodDeep);
-    this.inspectorTitle = scene.add.text(76, 596, this.message ? 'LATEST' : shop.name.toUpperCase(), {
-      fontFamily: MENU_FONT.control,
-      fontSize: '11px',
-      fontStyle: 'bold',
-      color: MENU_HEX.brassLight,
+    const g = scene.add.graphics();
+    g.fillStyle(MENU_COLOR.pitch, 1).fillRect(53, 581, 1174, 92);
+    g.fillStyle(MENU_COLOR.woodDeep, 1).fillRect(58, 586, 1164, 82);
+    g.lineStyle(1, MENU_COLOR.brassDark, 0.72).strokeRect(58.5, 586.5, 1163, 81);
+    this.add(g);
+    this.inspectorTitle = scene.add.text(76, 596, this.message ? (this.messageOk ? 'DONE' : 'NOTE') : shop.name.toUpperCase(), {
+      fontFamily: MENU_FONT.control, fontSize: '11px', fontStyle: 'bold',
+      color: this.message ? (this.messageOk ? MENU_HEX.verdigris : '#e6b55a') : MENU_HEX.brassLight,
+    }).setLetterSpacing(2);
+    this.inspectorBody = scene.add.text(76, 613, this.message || 'Select a ware or one of your goods to see it. Selling always asks how many first.', {
+      fontFamily: MENU_FONT.body, fontSize: '13px', color: this.message ? MENU_HEX.bone : MENU_HEX.boneDim,
+      fixedWidth: 860, wordWrap: { width: 860 }, maxLines: 2,
     });
-    this.inspectorBody = scene.add.text(76, 614, this.message || 'Q / E switch tabs. Esc leaves the counter.', {
-      fontFamily: MENU_FONT.body,
-      fontSize: '12px',
-      color: MENU_HEX.boneDim,
-      fixedWidth: 860,
-      wordWrap: { width: 860 },
-      maxLines: 3,
-    });
+    addKeyHints(scene, this, 76, 648, [['Arrows', 'Move'], ['F', this.tab === 'sell' ? 'Sell' : this.tab === 'buy' ? 'Buy' : 'Act'], ['Q / E', 'Tabs'], ['Esc', 'Leave']]);
     const close = new CabinetChip(scene, 990, 606, {
       width: 212,
-      height: 42,
+      height: 44,
       label: 'Leave Counter',
       tone: 'primary',
       onActivate: () => this.hooks.close(),
@@ -310,29 +360,316 @@ export class ShopView extends Phaser.GameObjects.Container {
     this.add([this.inspectorTitle, this.inspectorBody, close]);
 
     switch (this.tab) {
-      case 'buy': this.renderBuy(); break;
-      case 'sell': this.renderSell(); break;
+      case 'buy': this.renderBuy(leader); break;
+      case 'sell': this.renderSell(leader); break;
       case 'rest': this.renderRest(); break;
       case 'bounties': this.renderBounties(); break;
       case 'forge': this.renderForge(); break;
       case 'runes': this.renderRunes(); break;
     }
-    this.focus.add(close);
+    this.focus.add(close, 'close', 990, 606, 212, 44);
+    this.focus.restore(keep);
   }
 
   private inspect(title: string, body: string): void {
-    this.inspectorTitle.setText(title.toUpperCase());
-    this.inspectorBody.setText(body);
+    this.inspectorTitle.setText(title.toUpperCase()).setColor(MENU_HEX.brassLight);
+    this.inspectorBody.setText(body).setColor(MENU_HEX.boneDim);
   }
 
-  private rows(entries: { label: string; detail: string; enabled: boolean; accent?: string; run: () => void; inspect?: string }[]): void {
+  // ---------------------------------------------------------------------------
+  //  BUY
+  // ---------------------------------------------------------------------------
+
+  /** Why `leader` cannot take `slot` home, if they cannot. */
+  private buyProblem(leader: Mage | undefined, slot: StockSlot): string | null {
+    const def = getItem(slot.id);
+    if (slot.sold) return 'Sold out until tomorrow.';
+    if (!leader) return 'Nobody at the counter.';
+    if (this.run.gold < slot.price) return `Not enough money: ${moneyLabel(slot.price - this.run.gold)} short.`;
+    if (def.keyItem && partyOf(this.run).some((mage) => mage.bag.includes(slot.id) || mage.utility.includes(slot.id))) return 'The party already has one.';
+    if (!leader.canCarry(def.weight * slot.qty)) return 'Too heavy to carry on top of your load.';
+    if (!packFits(leader, Array.from({ length: slot.qty }, () => slot.id))) return 'No room in the pack.';
+    return null;
+  }
+
+  private renderBuy(leader: Mage | undefined): void {
+    const { scene } = this;
+    const stock = shopStock(this.run, this.shop);
+    addPanel(scene, this, LIST.x, LIST.y, LIST.w, LIST.h, 'Wares', { caption: `${stock.filter((slot) => !slot.sold).length} on the shelf today` });
+    const perPage = COLUMNS * WARE_ROWS;
+    const pages = Math.max(1, Math.ceil(stock.length / perPage));
+    this.page = Math.min(this.page, pages - 1);
+    const shown = stock.slice(this.page * perPage, (this.page + 1) * perPage);
+    const top = LIST.y + 48;
+    const shelf = scene.add.graphics();
+    this.add(shelf);
+    for (let index = 0; index < perPage; index++) {
+      const at = gridSpot(GRID_X, top, COLUMNS, index, ROW_PITCH);
+      drawSocket(shelf, at.x, at.y);
+    }
+    shown.forEach((slot, index) => {
+      const at = gridSpot(GRID_X, top, COLUMNS, index, ROW_PITCH);
+      const affordable = this.run.gold >= slot.price;
+      const tile = new ItemTile(scene, at.x, at.y, {
+        id: slot.id,
+        count: slot.qty,
+        locked: slot.sold,
+        tag: slot.sold ? 'SOLD' : undefined,
+        tagColor: 0x8a8070,
+        price: slot.sold ? '-' : moneyLabel(slot.price),
+        priceColor: slot.sold ? MENU_HEX.disabled : affordable ? '#f0d27a' : '#d07a68',
+        selected: this.picked === `ware:${slot.key}`,
+        onActivate: () => this.pick(`ware:${slot.key}`),
+        onFocus: () => {
+          if (this.focus.viaKeys) this.pick(`ware:${slot.key}`, true);
+        },
+      });
+      this.add(tile);
+      this.focus.add(tile, `ware:${index}`, at.x, at.y, TILE, TILE);
+    });
+    if (stock.length === 0) this.emptyNote('The shelves are bare today.');
+    this.pager(pages);
+
+    addPanel(scene, this, CARD.x, CARD.y, CARD.w, CARD.h, 'Details', { fill: MENU_COLOR.woodDeep });
+    const slot = stock.find((entry) => this.picked === `ware:${entry.key}`);
+    if (!slot) {
+      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'Browse the shelf', 'Select a ware to see what it does and what it costs.');
+      return;
+    }
+    const def = getItem(slot.id);
+    const problem = this.buyProblem(leader, slot);
+    const lines: CardLine[] = [
+      { label: 'Price', value: `${moneyLabel(slot.price)}${slot.qty > 1 ? ` for ${slot.qty}` : ''}`, color: this.run.gold >= slot.price ? '#f0d27a' : '#d07a68' },
+      { label: 'Weight', value: `${kg(def.weight * slot.qty)} kg` },
+      { label: 'You carry', value: leader ? `${carriedCount(leader, slot.id) + (leader.equippedItems().filter((id) => id === slot.id).length)}` : '-' },
+    ];
+    const x = CARD.x + 16;
+    const w = CARD.w - 32;
+    addItemCard(scene, this, x, CARD.y + 42, w, CARD.y + CARD.h - 62, {
+      id: slot.id,
+      eyebrow: slot.sold ? 'Sold out' : 'For sale',
+      lines,
+      note: problem ?? undefined,
+      noteColor: '#e6866f',
+    });
+    const buy = (): void => {
+      if (problem || this.working) {
+        playSound('ui.deny');
+        return;
+      }
+      void this.apply({ op: 'buy', shop: this.shop.id, key: slot.key });
+    };
+    const button = new CabinetChip(scene, x, CARD.y + CARD.h - 52, {
+      width: w,
+      height: 40,
+      label: slot.sold ? 'Sold Out' : `Buy for ${moneyLabel(slot.price)}   [F]`,
+      tone: problem ? 'normal' : 'primary',
+      enabled: !problem,
+      onActivate: buy,
+    });
+    this.primary = buy;
+    this.add(button);
+    this.focus.add(button, 'act:buy', x, CARD.y + CARD.h - 52, w, 40);
+  }
+
+  // ---------------------------------------------------------------------------
+  //  SELL
+  // ---------------------------------------------------------------------------
+
+  private renderSell(leader: Mage | undefined): void {
+    const { scene, shop } = this;
+    const stacks = leader ? carriedStacks(leader) : [];
+    const priced = stacks.map((stack) => {
+      const def = getItem(stack.id);
+      const unit = def.keyItem || def.permanentlyBinding ? 0 : sellPrice(shop, def);
+      return { ...stack, unit };
+    });
+    const shown = priced.filter((entry) => matchesFilter(entry.id, this.filter));
+    const sellable = shown.filter((entry) => entry.unit > 0);
+    addPanel(scene, this, LIST.x, LIST.y, LIST.w, LIST.h, 'Your goods', {
+      caption: `${priced.filter((entry) => entry.unit > 0).length} kinds this counter will buy  /  worn gear must be stowed first`,
+    });
+
+    const chipW = 96;
+    FILTERS.forEach((entry, index) => {
+      const x = LIST.x + 14 + index * (chipW + 6);
+      const chip = new CabinetChip(scene, x, LIST.y + 38, {
+        width: chipW,
+        height: 28,
+        label: entry.label,
+        selected: this.filter === entry.id,
+        tone: this.filter === entry.id ? 'positive' : 'normal',
+        onActivate: () => {
+          if (this.filter === entry.id) return;
+          this.filter = entry.id;
+          this.page = 0;
+          this.render();
+        },
+      });
+      this.add(chip);
+      this.focus.add(chip, `filter:${entry.id}`, x, LIST.y + 38, chipW, 28);
+    });
+    const total = sellable.reduce((sum, entry) => sum + entry.unit * entry.count, 0);
+    const bulkX = LIST.x + LIST.w - 14 - 210;
+    const bulk = new CabinetChip(scene, bulkX, LIST.y + 38, {
+      width: 210,
+      height: 28,
+      label: `Sell All Shown...  ${total > 0 ? moneyLabel(total) : ''}`,
+      tone: 'danger',
+      enabled: sellable.length > 0,
+      onActivate: () => this.askSellAll(sellable.map((entry) => ({ id: entry.id, count: entry.count, unit: entry.unit }))),
+    });
+    this.add(bulk);
+    this.focus.add(bulk, 'sell-all', bulkX, LIST.y + 38, 210, 28);
+
+    const perPage = COLUMNS * 3;
+    const pages = Math.max(1, Math.ceil(shown.length / perPage));
+    this.page = Math.min(this.page, pages - 1);
+    const top = LIST.y + 80;
+    const shelf = scene.add.graphics();
+    this.add(shelf);
+    for (let index = 0; index < perPage; index++) {
+      const at = gridSpot(GRID_X, top, COLUMNS, index, ROW_PITCH - 6);
+      drawSocket(shelf, at.x, at.y);
+    }
+    shown.slice(this.page * perPage, (this.page + 1) * perPage).forEach((entry, index) => {
+      const at = gridSpot(GRID_X, top, COLUMNS, index, ROW_PITCH - 6);
+      const tile = new ItemTile(scene, at.x, at.y, {
+        id: entry.id,
+        count: entry.count,
+        locked: entry.unit <= 0,
+        price: entry.unit > 0 ? moneyLabel(entry.unit) : 'no',
+        priceColor: entry.unit > 0 ? '#f0d27a' : MENU_HEX.disabled,
+        selected: this.picked === `own:${entry.id}`,
+        onActivate: () => this.pick(`own:${entry.id}`),
+        onFocus: () => {
+          if (this.focus.viaKeys) this.pick(`own:${entry.id}`, true);
+        },
+      });
+      this.add(tile);
+      this.focus.add(tile, `own:${index}`, at.x, at.y, TILE, TILE);
+    });
+    if (shown.length === 0) this.emptyNote(stacks.length ? 'Nothing of this kind in your pack.' : 'Your pack is empty.');
+    this.pager(pages);
+
+    addPanel(scene, this, CARD.x, CARD.y, CARD.w, CARD.h, 'Details', { fill: MENU_COLOR.woodDeep });
+    const entry = priced.find((stack) => this.picked === `own:${stack.id}`);
+    if (!entry) {
+      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'What will you part with?', 'Select one of your goods to see what the keeper offers for it.');
+      return;
+    }
+    const def = getItem(entry.id);
+    const worth = itemWorth(def);
+    const lines: CardLine[] = [
+      { label: 'Offer', value: entry.unit > 0 ? `${moneyLabel(entry.unit)}${entry.count > 1 ? ' each' : ''}` : 'Not bought here', color: entry.unit > 0 ? '#f0d27a' : '#d07a68' },
+      { label: 'Carried', value: `${entry.count}` },
+      { label: 'Worth', value: `${moneyLabel(worth)}${entry.count > 1 ? ' each' : ''}` },
+    ];
+    if (entry.count > 1 && entry.unit > 0) lines.push({ label: 'For all', value: moneyLabel(entry.unit * entry.count), color: '#f0d27a' });
+    const reason = def.keyItem ? 'A key item. It stays with the party.'
+      : def.permanentlyBinding ? 'Bound to you. It cannot be sold.'
+      : entry.unit <= 0 ? 'This counter does not buy it. Another trade might.' : undefined;
+    const x = CARD.x + 16;
+    const w = CARD.w - 32;
+    addItemCard(scene, this, x, CARD.y + 42, w, CARD.y + CARD.h - 62, {
+      id: entry.id, eyebrow: 'In your pack', lines, note: reason, noteColor: '#e6866f',
+    });
+    const sell = (): void => {
+      if (entry.unit <= 0 || this.working) {
+        playSound('ui.deny');
+        return;
+      }
+      this.askSell(entry.id, entry.count, entry.unit);
+    };
+    const button = new CabinetChip(scene, x, CARD.y + CARD.h - 52, {
+      width: w,
+      height: 40,
+      label: entry.unit > 0 ? 'Sell...   [F]' : 'Not Bought Here',
+      tone: entry.unit > 0 ? 'danger' : 'normal',
+      enabled: entry.unit > 0,
+      onActivate: sell,
+    });
+    this.primary = sell;
+    this.add(button);
+    this.focus.add(button, 'act:sell', x, CARD.y + CARD.h - 52, w, 40);
+  }
+
+  private openDialog(options: DialogOptions): void {
+    if (this.dialog) return;
+    this.dialog = new ConfirmDialog(this.scene, this.depth + 5, {
+      ...options,
+      onClose: () => {
+        this.dialog = null;
+        options.onClose();
+      },
+    });
+  }
+
+  private askSell(id: ItemId, count: number, unit: number): void {
+    const def = getItem(id);
+    const total = (n: number): string => moneyLabel(unit * n);
+    this.openDialog({
+      title: `Sell ${def.name}?`,
+      body: `${this.shop.name} pays ${moneyLabel(unit)}${count > 1 ? ' each' : ''}. A sale is final.`,
+      icon: id,
+      quantity: count > 1 ? { max: count, start: 1, describe: (n) => `Sell ${n} for ${total(n)}` } : undefined,
+      choices: [{ label: count > 1 ? 'Sell' : `Sell for ${total(1)}`, tone: 'danger', run: (n) => void this.apply({ op: 'sell', shop: this.shop.id, item: id, count: n }) }],
+      onClose: () => this.render(),
+    });
+  }
+
+  private askSellAll(entries: { id: ItemId; count: number; unit: number }[]): void {
+    const total = entries.reduce((sum, entry) => sum + entry.unit * entry.count, 0);
+    const items = entries.reduce((sum, entry) => sum + entry.count, 0);
+    const names = entries.slice(0, 5).map((entry) => `${entry.count > 1 ? `${entry.count}x ` : ''}${getItem(entry.id).name}`).join(', ');
+    this.openDialog({
+      title: 'Sell everything shown?',
+      body: `${items} item${items === 1 ? '' : 's'} for ${moneyLabel(total)}: ${names}${entries.length > 5 ? `, and ${entries.length - 5} more kinds` : ''}. Worn gear is never included. A sale is final.`,
+      choices: [{ label: `Sell All for ${moneyLabel(total)}`, tone: 'danger', run: () => void this.apply({ op: 'sell-all', shop: this.shop.id, items: entries.map((entry) => entry.id) }) }],
+      onClose: () => this.render(),
+    });
+  }
+
+  private emptyNote(text: string): void {
+    this.add(this.scene.add.text(LIST.x + LIST.w / 2, LIST.y + LIST.h / 2, text, {
+      fontFamily: MENU_FONT.body, fontSize: '16px', color: MENU_HEX.boneDim,
+    }).setOrigin(0.5));
+  }
+
+  private pager(pages: number): void {
+    if (pages <= 1) return;
+    const y = LIST.y + LIST.h - 38;
+    for (const [label, step, x] of [['<  Prev', -1, LIST.x + 14], ['Next  >', 1, LIST.x + LIST.w - 104]] as const) {
+      const chip = new CabinetChip(this.scene, x, y, {
+        width: 90,
+        height: 28,
+        label,
+        enabled: step < 0 ? this.page > 0 : this.page < pages - 1,
+        onActivate: () => { this.page += step; this.render(); },
+      });
+      this.add(chip);
+      this.focus.add(chip, `page:${step}`, x, y, 90, 28);
+    }
+    this.add(this.scene.add.text(LIST.x + LIST.w / 2, y + 7, `PAGE ${this.page + 1} / ${pages}`, {
+      fontFamily: MENU_FONT.control, fontSize: '10px', fontStyle: 'bold', color: MENU_HEX.brass,
+    }).setOrigin(0.5, 0).setLetterSpacing(2));
+  }
+
+  // ---------------------------------------------------------------------------
+  //  SERVICES
+  // ---------------------------------------------------------------------------
+
+  private rows(entries: RowEntry[]): void {
+    addRecess(this.scene, this, 58, 186, 1164, 382);
     const pages = Math.max(1, Math.ceil(entries.length / PER_PAGE));
     this.page = Math.min(this.page, pages - 1);
     const visible = entries.slice(this.page * PER_PAGE, (this.page + 1) * PER_PAGE);
     visible.forEach((entry, index) => {
       const column = index % 2;
       const row = Math.floor(index / 2);
-      const button = new CabinetButton(this.scene, 76 + column * 572, 200 + row * 84, {
+      const x = 76 + column * 572;
+      const y = 200 + row * 84;
+      const button = new CabinetButton(this.scene, x, y, {
         width: 556,
         height: 76,
         label: entry.label,
@@ -343,10 +680,10 @@ export class ShopView extends Phaser.GameObjects.Container {
         onFocus: () => this.inspect(entry.label, entry.inspect ?? entry.detail),
       });
       this.add(button);
-      this.focus.add(button);
+      this.focus.add(button, `row:${index}`, x, y, 556, 76);
     });
     if (entries.length === 0) {
-      this.add(this.scene.add.text(GAME_WIDTH / 2, 360, 'Nothing here right now.', {
+      this.add(this.scene.add.text(640, 360, 'Nothing here right now.', {
         fontFamily: MENU_FONT.body,
         fontSize: '16px',
         color: MENU_HEX.boneDim,
@@ -373,49 +710,20 @@ export class ShopView extends Phaser.GameObjects.Container {
         color: MENU_HEX.boneDim,
       }).setOrigin(0.5, 0);
       this.add([previous, next, label]);
-      this.focus.add(previous);
-      this.focus.add(next);
+      this.focus.add(previous, 'page:-1', 450, 540, 120, 30);
+      this.focus.add(next, 'page:1', 710, 540, 120, 30);
     }
   }
 
-  private renderBuy(): void {
-    const stock = shopStock(this.run, this.shop);
-    this.rows(stock.map((slot) => {
-      const def = getItem(slot.id);
-      const name = `${def.name}${slot.qty > 1 ? ` x${slot.qty}` : ''}`;
-      return {
-        label: slot.sold ? `${name}  /  sold out` : `${name}  /  ${moneyLabel(slot.price)}`,
-        detail: itemDetail(def),
-        enabled: !slot.sold && this.run.gold >= slot.price,
-        run: () => void this.apply({ op: 'buy', shop: this.shop.id, key: slot.key }),
-      };
-    }));
-  }
-
-  private renderSell(): void {
-    const offers = sellOffers(this.run, this.shop, this.member);
-    const entries = offers.map((offer) => {
-      const def = getItem(offer.id);
-      return {
-        label: `${offer.name} x${offer.count}  /  ${moneyLabel(offer.unit)} each`,
-        detail: itemDetail(def),
-        enabled: true,
-        run: () => void this.apply({ op: 'sell', shop: this.shop.id, item: offer.id }),
-      };
-    });
-    if (offers.length > 1) {
-      const total = offers.reduce((sum, offer) => sum + offer.unit * offer.count, 0);
-      entries.unshift({
-        label: `Sell everything listed  /  ${moneyLabel(Math.round(total * 10) / 10)}`,
-        detail: `${offers.reduce((sum, offer) => sum + offer.count, 0)} items this shop will take.`,
-        enabled: true,
-        run: () => void this.apply({ op: 'sell-all', shop: this.shop.id, items: offers.map((offer) => offer.id) }),
-      });
-    }
-    this.rows(entries);
+  /** A wide service button in the middle of the counter. */
+  private service(key: string, y: number, height: number, options: Omit<ConstructorParameters<typeof CabinetButton>[3], 'width' | 'height'>): void {
+    const button = new CabinetButton(this.scene, 290, y, { width: 700, height, ...options });
+    this.add(button);
+    this.focus.add(button, key, 290, y, 700, height);
   }
 
   private renderRest(): void {
+    addRecess(this.scene, this, 58, 186, 1164, 382);
     if (this.hooks.inn) {
       this.renderInnCall(this.hooks.inn);
       return;
@@ -431,22 +739,18 @@ export class ShopView extends Phaser.GameObjects.Container {
     const leads = this.hooks.actions.leads;
     const rooms = party.length > 1 ? `Rooms for the party (${party.length})` : 'A room for the night';
     const due = bloodmoonDue(this.run);
-    const button = new CabinetButton(this.scene, 290, 204, {
-      width: 700,
-      height: 104,
+    this.service('rest', 204, 104, {
       label: `${rooms}  /  ${moneyLabel(price)}`,
       detail: due ? 'The bloodmoon is up. Nobody sleeps through it.' : leads ? '' : 'The host books the rooms for the party.',
       index: '1',
       enabled: leads && !due && this.run.gold >= price,
       onActivate: () => void this.sleep(),
     });
-    const now = this.scene.add.text(640, 420, vitals, {
+    this.add(this.scene.add.text(640, 420, vitals, {
       fontFamily: MENU_FONT.control,
       fontSize: '15px',
       color: MENU_HEX.bone,
-    }).setOrigin(0.5, 0);
-    this.add([button, now]);
-    this.focus.add(button);
+    }).setOrigin(0.5, 0));
     this.addShortRest(322, '2', leads ? null : 'The host decides when the party rests.');
   }
 
@@ -455,9 +759,7 @@ export class ShopView extends Phaser.GameObjects.Container {
     const rest = this.hooks.shortRest;
     if (!rest) return;
     const online = !!this.hooks.inn;
-    const button = new CabinetButton(this.scene, 290, y, {
-      width: 700,
-      height: 76,
+    this.service('short-rest', y, 76, {
       label: 'Short rest at a table  /  free',
       detail: blocked ?? (online ? 'The others are asked to join.' : ''),
       index,
@@ -466,12 +768,13 @@ export class ShopView extends Phaser.GameObjects.Container {
         if (this.working) return;
         const said = rest();
         if (this.disposed) return;
-        if (said) this.message = said;
+        if (said) {
+          this.message = said;
+          this.messageOk = true;
+        }
         this.render();
       },
     });
-    this.add(button);
-    this.focus.add(button);
   }
 
   /** Online: call the party in for the night, or answer a call that is out. */
@@ -481,13 +784,11 @@ export class ShopView extends Phaser.GameObjects.Container {
     const due = bloodmoonDue(this.run);
     const call = inn.call();
     const rooms = `Rooms for the party (${party.length})  /  ${moneyLabel(price)}`;
-    const buttons: CabinetButton[] = [];
+    let buttons = 0;
     let note: string;
     if (!call) {
       note = 'A night needs everyone. Whoever calls for it pays from the purse; the rest join for free.';
-      buttons.push(new CabinetButton(this.scene, 290, 230, {
-        width: 700,
-        height: 96,
+      this.service('inn:1', 230, 96, {
         label: `Call the party in: ${rooms}`,
         detail: due ? 'The bloodmoon is up. Nobody sleeps through it.' : 'Everyone is told. The night starts once all of you have joined here.',
         index: '1',
@@ -497,50 +798,43 @@ export class ShopView extends Phaser.GameObjects.Container {
           inn.propose();
           this.render();
         },
-      }));
+      });
+      buttons = 1;
     } else if (!call.here) {
       note = `${call.by} has asked for rooms at another inn. Go there to join, or turn it down.`;
-      buttons.push(new CabinetButton(this.scene, 290, 230, {
-        width: 700, height: 72, label: 'Not tonight', detail: 'Turn the night down: nobody rests.', index: '1',
-        onActivate: () => inn.answer(false),
-      }));
+      this.service('inn:1', 230, 72, { label: 'Not tonight', detail: 'Turn the night down: nobody rests.', index: '1', onActivate: () => inn.answer(false) });
+      buttons = 1;
     } else if (call.joined) {
       note = call.waitingFor.length
         ? `You're in. Waiting for ${call.waitingFor.join(' and ')} to come to the keeper.`
         : 'Everyone is in. Lights out.';
-      buttons.push(new CabinetButton(this.scene, 290, 230, {
-        width: 700, height: 72, label: 'Changed my mind', detail: 'Call the night off for everyone.', index: '1',
-        onActivate: () => inn.answer(false),
-      }));
+      this.service('inn:1', 230, 72, { label: 'Changed my mind', detail: 'Call the night off for everyone.', index: '1', onActivate: () => inn.answer(false) });
+      buttons = 1;
     } else {
       note = `${call.by} wants to stay the night. ${call.waitingFor.length ? `Still to join: ${call.waitingFor.join(', ')}.` : ''}`;
-      buttons.push(new CabinetButton(this.scene, 290, 210, {
-        width: 700, height: 72, label: 'Join the night (free)', detail: rooms, index: '1',
+      this.service('inn:1', 210, 72, {
+        label: 'Join the night (free)', detail: rooms, index: '1',
         onActivate: () => {
           playSound('ui.confirm');
           inn.answer(true);
         },
-      }));
-      buttons.push(new CabinetButton(this.scene, 290, 294, {
-        width: 700, height: 72, label: 'Not tonight', detail: 'Nobody rests unless everyone does.', index: '2',
-        onActivate: () => inn.answer(false),
-      }));
+      });
+      this.service('inn:2', 294, 72, { label: 'Not tonight', detail: 'Nobody rests unless everyone does.', index: '2', onActivate: () => inn.answer(false) });
+      buttons = 2;
     }
-    const text = this.scene.add.text(640, 470, note, {
+    this.add(this.scene.add.text(640, 470, note, {
       fontFamily: MENU_FONT.control,
       fontSize: '15px',
       color: MENU_HEX.bone,
       align: 'center',
       wordWrap: { width: 700 },
-    }).setOrigin(0.5, 0);
-    this.add([...buttons, text]);
-    for (const button of buttons) this.focus.add(button);
-    this.addShortRest(378, String(buttons.length + 1), null);
+    }).setOrigin(0.5, 0));
+    this.addShortRest(378, String(buttons + 1), null);
   }
 
   private renderBounties(): void {
     const town = this.hooks.townId;
-    const entries: Parameters<ShopView['rows']>[0] = [];
+    const entries: RowEntry[] = [];
     for (const bounty of this.run.bounties) {
       const progress = bountyProgress(this.run, bounty);
       const claimable = canClaim(this.run, town, bounty);
@@ -559,6 +853,7 @@ export class ShopView extends Phaser.GameObjects.Container {
           } else {
             this.armedAbandon = bounty.id;
             this.message = 'Choose it again to abandon this bounty.';
+            this.messageOk = false;
             this.render();
           }
         },
@@ -596,11 +891,10 @@ export class ShopView extends Phaser.GameObjects.Container {
   }
 
   private renderForge(): void {
+    addRecess(this.scene, this, 58, 186, 1164, 382);
     const crafters = craftersIn(this.run, this.member);
     const objects = partyOf(this.run).some((mage) => mage.spellClass === 'objects');
-    const button = new CabinetButton(this.scene, 290, 214, {
-      width: 700,
-      height: 104,
+    this.service('forge', 214, 104, {
       label: 'Crafting bench',
       detail: crafters.length
         ? 'Design a sword, staff, bow or armour from your materials, pour in mana and roll for it.'
@@ -609,7 +903,7 @@ export class ShopView extends Phaser.GameObjects.Container {
       enabled: crafters.length > 0,
       onActivate: () => this.openBench(),
     });
-    const note = this.scene.add.text(640, 350, [
+    this.add(this.scene.add.text(640, 350, [
       'Parts take materials (ores, hides, scales); sockets take focus pieces (gems, cores, fangs).',
       'Score = materials + mana (up to 10) + two d20, keep the higher. A 20 counts 22, a pair 26.',
       'The higher the score, the more effects the item draws from what its materials can lend.',
@@ -619,9 +913,7 @@ export class ShopView extends Phaser.GameObjects.Container {
       color: MENU_HEX.boneDim,
       align: 'center',
       lineSpacing: 6,
-    }).setOrigin(0.5, 0);
-    this.add([button, note]);
-    this.focus.add(button);
+    }).setOrigin(0.5, 0));
   }
 
   private openBench(): void {

@@ -91,6 +91,18 @@ export function clearRun(which: SaveSlot = slot): void {
   if (key) storage()?.removeItem(key);
 }
 
+/** Put a run loaded from a file into `which` save, replacing what was there. */
+export function storeRun(run: ExplorationRun, which: Exclude<SaveSlot, 'none'>): boolean {
+  const store = storage();
+  if (!store) return false;
+  try {
+    store.setItem(SLOT_KEYS[which], JSON.stringify(run));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function hasSavedRun(which: SaveSlot = slot): boolean {
   const key = slotKey(which);
   return !!key && !!storage()?.getItem(key);
@@ -186,9 +198,10 @@ export function parseRun(raw: string): ExplorationRun | null {
       explored,
       searched: version >= 4 ? strings(parsed.searched, 64) : [],
       gold: typeof parsed.gold === 'number' && Number.isFinite(parsed.gold)
-        ? Math.min(1_000_000, Math.max(0, Math.round(parsed.gold * 10) / 10))
+        ? Math.min(1_000_000, Math.max(0, Math.round(parsed.gold * 100) / 100))
         : 0,
       party,
+      summons: parseSummons(parsed.summons),
       creating: parsed.creating === true,
       flags: strings(parsed.flags, MAX_FLAGS),
       visited,
@@ -211,6 +224,17 @@ export function parseRun(raw: string): ExplorationRun | null {
       crafts: clamp(parsed.crafts, 0, 1_000_000, 0),
       hexLore: parseHexLore(parsed.hexLore),
     };
+  } catch {
+    return null;
+  }
+}
+
+/** The summons following the party; anything broken simply leaves them behind. */
+function parseSummons(value: unknown): Scenario | null {
+  if (!value || typeof value !== 'object') return null;
+  try {
+    const summons = parseScenario(JSON.stringify(value));
+    return summons.entities.some((entity) => entity.summon) ? summons : null;
   } catch {
     return null;
   }

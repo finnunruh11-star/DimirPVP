@@ -8,7 +8,7 @@ import { Mage } from './Mage';
 import { packCapacity, packFits, packSlotsUsed, slotsFor, slotsForCount, stackSize } from './Pack';
 import type { Spell } from '../spells/Spell';
 import { BOSSES, MOONSHARD } from '../pve/exploration/bloodmoon';
-import { buyItem, dropItem, grantToParty, partyOf, sellItem, sellOffers, shopStock, withParty } from '../pve/exploration/economy';
+import { buyItem, dropItem, grantToParty, partyOf, sellItem, sellOffers, sellPrice, shopStock, withParty } from '../pve/exploration/economy';
 import { rollExploreFindLoot } from '../pve/exploration/finds';
 import { applyIntent, parseIntent } from '../pve/exploration/intents';
 import { levelWordPool } from '../pve/exploration/levels';
@@ -224,6 +224,65 @@ const tests: [name: string, run: () => void][] = [
     game.throwItem(caster, foe, 'throwingDagger');
     equal(caster.pouch.length, 0, 'dagger spent from pouch');
     assert(foe.hp < foe.maxHp, 'throw dealt damage');
+  }],
+
+  ['drops, sells and hands over arrows and pouched supplies by the count', () => {
+    const run = freshRun(4, 0);
+    withParty(run, (leader) => {
+      leader.arrows = 30;
+      leader.utility.push('consumablePouch', 'manaPotion', 'manaPotion');
+      leader.stowInPouch('manaPotion');
+    });
+    assert(dropItem(run, 'arrow', null, 12).ok, 'arrows drop');
+    equal(partyOf(run)[0].arrows, 18, 'twelve left behind');
+    assert(applyIntent(run, null, { op: 'drop', item: 'manaPotion', count: 2 }).ok, 'the loose potion goes first, then the pouched one');
+    equal([partyOf(run)[0].utility.includes('manaPotion'), partyOf(run)[0].pouch.length], [false, 0], 'both potions gone');
+    const shop = Object.values(SHOPS).find((entry) => sellPrice(entry, getItem('arrow')) > 0);
+    if (shop) {
+      assert(sellItem(run, shop.id, 'arrow', 8).ok, 'arrows sell by the count');
+      equal(partyOf(run)[0].arrows, 10, 'eight sold');
+    }
+    equal(parseIntent({ op: 'drop', item: 'arrow', count: 5 }), { op: 'drop', item: 'arrow', count: 5 }, 'a count parses');
+    equal(parseIntent({ op: 'drop', item: 'arrow', count: 0 }), null, 'a zero count is refused');
+    equal(parseIntent({ op: 'sell', shop: 'x', item: 'arrow', count: 1.5 }), null, 'a fractional count is refused');
+  }],
+
+  ['wears capes and gloves in their own slots, and moves them there from older saves', () => {
+    const mage = traveller();
+    mage.bag.push('assassinsCloak', 'fightersGloves', 'tantrumGloves');
+    assert(mage.equipFromBag('assassinsCloak') && mage.cape === 'assassinsCloak', 'a cloak goes on the back');
+    assert(mage.equipFromBag('fightersGloves') && mage.gloves === 'fightersGloves', 'gloves go on the hands');
+    assert(mage.equipFromBag('tantrumGloves') && mage.bag.includes('fightersGloves'), 'new gloves swap the old ones into the bag');
+    assert(mage.stow('assassinsCloak') && !mage.cape && mage.bag.includes('assassinsCloak'), 'a cape comes off into the bag');
+    const old = traveller();
+    old.torso = 'darkMagesCape';
+    old.accessories = ['fightersGloves', 'tantrumGloves'];
+    const [loaded] = restoreParty(capturePartySnapshot([old]));
+    equal([loaded.torso, loaded.cape, loaded.gloves, loaded.accessories, loaded.bag], [null, 'darkMagesCape', 'fightersGloves', [], ['tantrumGloves']], 'old gear finds its new slot');
+  }],
+
+  ['equips over a heavy load and swaps a full pair of hands in one go', () => {
+    const mage = traveller();
+    mage.statStrength = 0;
+    mage.bag.push('oreIron', 'oreIron', 'oreIron', 'oreIron', 'oreIron', 'oreIron', 'oreIron', 'leatherCap', 'travellersDagger');
+    assert(mage.overloaded(), 'the load is over capacity');
+    assert(mage.equipFromBag('leatherCap'), 'gear still goes on when wearing it adds no weight');
+    mage.hands = ['torch', 'buckler'];
+    equal(mage.displacedBy('travellersDagger'), ['buckler'], 'the off hand gives way by default');
+    equal(mage.displacedBy('travellersDagger', 'torch'), ['torch'], 'or the hand chosen');
+    assert(mage.swapIn('travellersDagger', 'buckler') && mage.hands.includes('travellersDagger') && mage.bag.includes('buckler'), 'swapped');
+  }],
+
+  ['puts a fresh torch back whole, but spends one that has burned', () => {
+    const mage = traveller();
+    mage.bag.push('torch');
+    assert(mage.equipFromBag('torch'), 'lit');
+    assert(!mage.torchSpentOnStow('torch'), 'a fresh torch is not spent');
+    assert(mage.unequipHand('torch') && mage.bag.includes('torch'), 'back in the pack, whole');
+    assert(mage.equipFromBag('torch'), 'lit again');
+    mage.torchCombatsLeft -= 1;
+    assert(mage.torchSpentOnStow('torch'), 'a burned torch is spent');
+    assert(mage.unequipHand('torch') && !mage.bag.includes('torch'), 'put out and gone');
   }],
 
   ['sells pickaxes for 3 gold wherever they are sold', () => {

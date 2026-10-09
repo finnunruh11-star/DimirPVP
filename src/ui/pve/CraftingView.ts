@@ -25,7 +25,7 @@ import { craftMaterial, craftWord, type CraftDesign } from '../../core/crafting/
 import { getItem, RARITY_COLOR, type ItemId } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
 import { SceneInput } from '../../engine/SceneInput';
-import { craftersIn, memberIn } from '../../pve/exploration/economy';
+import { craftersIn, memberIn, partyOf } from '../../pve/exploration/economy';
 import type { ExplorationActions } from '../../pve/exploration/intents';
 import type { ExplorationRun } from '../../pve/exploration/run';
 import type { ShopDef } from '../../pve/exploration/shops';
@@ -156,12 +156,14 @@ export class CraftingView extends Phaser.GameObjects.Container {
     return sizes.find((size) => size.form === this.form) ?? sizes[0];
   }
 
-  /** Every workable material of `slot` the crafter carries, the most valuable first. */
+  /** Every workable material of `slot` the party carries, the most valuable first. */
   private stock(slot: CraftSlot): StockEntry[] {
     const mage = this.crafterMage();
     if (!mage) return [];
     const counts = new Map<ItemId, number>();
-    for (const id of mage.bag) counts.set(id, (counts.get(id) ?? 0) + 1);
+    for (const member of partyOf(this.run)) {
+      for (const id of [...member.bag, ...member.utility, ...member.pouch]) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
     const entries: StockEntry[] = [];
     for (const [id, count] of counts) {
       const material = craftMaterial(id);

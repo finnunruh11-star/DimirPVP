@@ -4,6 +4,11 @@ import type { Scenario } from '../../core/Scenario';
 import type { WordId } from '../../core/Words';
 import { Net } from '../../net/Net';
 import { ADVENTURE_PROTOCOL } from '../../net/AdventureSession';
+import { MAGE_CLASSES } from '../../core/Classes';
+import { Mage } from '../../core/Mage';
+import { capturePartySnapshot } from '../../pve/exploration/party';
+import { createRun } from '../../pve/exploration/run';
+import { readRunFile } from '../runFile';
 import { rollSwamprunEncounter } from '../../pve/swamprun';
 import { isBloodmoonRaid, RAID_TARGETS, type RaidTarget } from '../../pve/raidTargets';
 import { raidTargetCopy } from './content';
@@ -502,6 +507,51 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     deliver({ k: 'turn', cmd: 1 });
     equal((await net.recv()).k, 'turn', 'a late vote stays out of the next fight');
     net.close();
+  }],
+
+  ['keeps each fight to its own lockstep messages', async () => {
+    const socket = new FakeSocket();
+    const sent: Record<string, unknown>[] = [];
+    socket.send = (raw: string) => {
+      sent.push(JSON.parse(raw) as Record<string, unknown>);
+    };
+    const net = new (Net as unknown as new (ws: WebSocket) => Net)(socket as unknown as WebSocket);
+    const deliver = (message: object): void => socket.onmessage?.({ data: JSON.stringify(message) } as MessageEvent);
+    net.setLockstep(11);
+    net.send({ k: 'turn', cmd: 1 });
+    net.send({ k: 'x-run' });
+    equal([sent[0].ls, sent[1].ls], [11, undefined], 'lockstep messages carry their fight; session messages do not');
+    // A receive left over in fight 11, and a peer already acting in fight 22.
+    let stolen = false;
+    void net.recv().then(() => {
+      stolen = true;
+    });
+    deliver({ k: 'turn', cmd: 'early', ls: 22 });
+    deliver({ k: 'turn', cmd: 'stale', ls: 11 });
+    await Promise.resolve();
+    equal(stolen, true, 'a fight still reads its own messages');
+    stolen = false;
+    void net.recv().then(() => {
+      stolen = true;
+    });
+    net.setLockstep(22);
+    equal((await net.recv()).cmd, 'early', 'the next fight keeps what arrived before it began');
+    deliver({ k: 'bye', seat: 1 });
+    equal((await net.recv()).k, 'bye', 'a departure reaches the running fight');
+    equal(stolen, false, 'a receive left over from the old fight takes nothing');
+    net.close();
+  }],
+
+  ['reads run files back, wrapped or bare', () => {
+    const run = createRun(7, capturePartySnapshot([
+      new Mage({ name: 'A', isAI: false, team: 1, position: { x: 0, y: 0 }, loadout: [], mageClass: MAGE_CLASSES[0] }),
+    ]));
+    run.day = 6;
+    const wrapped = readRunFile(JSON.stringify({ format: 'dimir-adventure', slot: 'online', run }));
+    equal([wrapped?.slot, wrapped?.run.day], ['online', 6], 'a saved file keeps its slot and day');
+    equal(readRunFile(JSON.stringify(run))?.slot, 'solo', 'a bare one-traveller run is a solo run');
+    equal(readRunFile('{"format":"dimir-adventure","run":{"version":999}}'), null, 'a run from a newer game is refused');
+    equal(readRunFile('not json'), null, 'garbage is refused');
   }],
 ];
 

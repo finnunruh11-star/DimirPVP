@@ -11,7 +11,7 @@ import { dealDamage, drainDamage, heal, applyDot, applyStackingDot, applyDebuff,
 import { dmg } from './Damage';
 import type { DamageType, DamageInstance } from './Damage';
 import type { ItemId, ItemDef, StaffBolt } from './Items';
-import { getItem, isRangedWeapon, SLOT_CAPS, staffDice } from './Items';
+import { getItem, isRangedWeapon, SLOT_CAPS, staffDice, WORN_SLOTS } from './Items';
 import { dist, segmentCircleFirstIntersection, stepTowards, type Vec2 } from './utils';
 import { findPath } from '../world/pathfind';
 import {
@@ -7349,7 +7349,7 @@ export class GameState {
       break;
     }
     if (!removed) {
-      for (const slot of ['head', 'torso', 'boots'] as const) {
+      for (const slot of WORN_SLOTS) {
         if (preview[slot] !== itemId) continue;
         preview[slot] = null;
         removed = true;
@@ -7385,9 +7385,7 @@ export class GameState {
     source.bag = preview.bag;
     source.utility = preview.utility;
     if (source.readyConsumable === itemId && !source.utility.includes(itemId)) source.readyConsumable = null;
-    source.head = preview.head;
-    source.torso = preview.torso;
-    source.boots = preview.boots;
+    for (const slot of WORN_SLOTS) source[slot] = preview[slot];
     this.reverseGrantedVitals(source, getItem(itemId));
     // Snuffing a torch by dropping it uses it up (the burn timer clears).
     if (getItem(itemId).torchCombats != null && !source.hands.some((h) => getItem(h).torchCombats != null))
@@ -7856,15 +7854,11 @@ export class GameState {
         mage.bag.push(id);
         break;
       case 'head':
-        if (!mage.head) mage.head = id;
-        else mage.bag.push(id);
-        break;
       case 'torso':
-        if (!mage.torso) mage.torso = id;
-        else mage.bag.push(id);
-        break;
+      case 'cape':
+      case 'gloves':
       case 'boots':
-        if (!mage.boots) mage.boots = id;
+        if (!mage[def.slot]) mage[def.slot] = id;
         else mage.bag.push(id);
         break;
       case 'accessory':
@@ -7912,14 +7906,8 @@ export class GameState {
       }
     } else if (pull(mage.hands) || pull(mage.bag) || pull(mage.accessories) || pull(mage.utility) || pull(mage.pouch)) {
       removed = true;
-    } else if (mage.head === id) {
-      mage.head = null;
-      removed = true;
-    } else if (mage.torso === id) {
-      mage.torso = null;
-      removed = true;
-    } else if (mage.boots === id) {
-      mage.boots = null;
+    } else if (mage.wornSlotOf(id)) {
+      mage.setWorn(mage.wornSlotOf(id)!, null);
       removed = true;
     }
     if (removed) this.reverseGrantedVitals(mage, def);

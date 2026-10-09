@@ -14,9 +14,14 @@
 //  Online Adventure adds a second lane: kinds starting with `x-` are the host's
 //  state and the guests' requests between fights. They never enter the FIFO;
 //  they go to the adventure handler, and wait in a backlog while none is set
-//  (a fight is running, or a scene is starting). Party votes in the Mines ride a
-//  third lane of their own (SIDE_LANE): they can come at any time, so the FIFO
-//  never sees them.
+//  (a fight is running, or a scene is starting). Party votes in the Mines, and
+//  guests' picks at an ore face, ride a third lane of their own (SIDE_LANE):
+//  they can come at any time, so the FIFO never sees them.
+//
+//  Every lockstep message is stamped with the fight it belongs to (the fight's
+//  seed, see setLockstep). A receive only takes messages of its own fight, so a
+//  peer already in the next fight can never feed a receive left over from the
+//  last one, and nothing of the next fight is thrown away early.
 // =============================================================================
 
 export type NetRole = 'host' | 'guest';
@@ -33,17 +38,31 @@ const MAX_BACKLOG = 512;
  * Party votes: any player may send one (or change it) at any moment, so they
  * never enter the lockstep FIFO, where a late one would be read as something else.
  */
-const SIDE_LANE = new Set(['mine-vote']);
+const SIDE_LANE = new Set(['mine-vote', 'mine-pick']);
 const MAX_SIDE_BACKLOG = 64;
+/** The field naming the fight a lockstep message belongs to. */
+const LOCKSTEP_TAG = 'ls';
 
 export function isAdventureMessage(message: NetMessage): boolean {
   return typeof message.k === 'string' && message.k.startsWith('x-');
 }
 
+/** Unstamped messages (a departure, the lobby handshake) fit any receive. */
+function fits(message: NetMessage, tag: number | null): boolean {
+  const stamp = message[LOCKSTEP_TAG];
+  return stamp === undefined || stamp === tag;
+}
+
+interface Waiter {
+  tag: number | null;
+  resolve: (m: NetMessage) => void;
+}
+
 export class Net {
   private ws: WebSocket;
   private queue: NetMessage[] = [];
-  private waiters: ((m: NetMessage) => void)[] = [];
+  private waiters: Waiter[] = [];
+  private tag: number | null = null;
   private closed = false;
   private adventure: ((m: NetMessage) => void) | null = null;
   private backlog: NetMessage[] = [];
@@ -120,8 +139,8 @@ export class Net {
   }
 
   private toQueue(data: NetMessage): void {
-    const waiter = this.waiters.shift();
-    if (waiter) waiter(data);
+    const index = this.waiters.findIndex((waiter) => fits(data, waiter.tag));
+    if (index >= 0) this.waiters.splice(index, 1)[0].resolve(data);
     else this.queue.push(data);
   }
 
@@ -149,9 +168,18 @@ export class Net {
     }
   }
 
-  /** Drop lockstep messages nobody will read (a fight that is over). */
-  clearQueue(): void {
-    this.queue = [];
+  /**
+   * Lockstep messages now belong to fight `tag` (null: none). What the previous
+   * fight left behind goes: its unread messages, and receives still waiting in
+   * it, which are dropped unanswered so they cannot take the new fight's messages.
+   * Messages of a fight not yet started stay queued for it.
+   */
+  setLockstep(tag: number | null): void {
+    const old = this.tag;
+    if (old === tag) return;
+    this.tag = tag;
+    if (old !== null) this.queue = this.queue.filter((message) => message[LOCKSTEP_TAG] !== old);
+    this.waiters = this.waiters.filter((waiter) => waiter.tag === tag);
   }
 
   private handleClose(): void {
@@ -159,7 +187,7 @@ export class Net {
     this.closed = true;
     // Unblock anyone awaiting a message so loops can bail out cleanly.
     const pending = this.waiters.splice(0);
-    for (const w of pending) w({ k: 'bye' });
+    for (const w of pending) w.resolve({ k: 'bye' });
     this.toAdventure({ k: 'bye', lost: true });
     this.onClose?.();
   }
@@ -167,18 +195,20 @@ export class Net {
   /** Send a JSON message to the peer (no-op once closed). */
   send(msg: NetMessage): void {
     if (this.closed) return;
+    const lockstep = this.tag !== null && !isAdventureMessage(msg) && !SIDE_LANE.has(msg.k);
     try {
-      this.ws.send(JSON.stringify(msg));
+      this.ws.send(JSON.stringify(lockstep ? { ...msg, [LOCKSTEP_TAG]: this.tag } : msg));
     } catch {
       this.handleClose();
     }
   }
 
-  /** Await the next message from the peer (FIFO). */
+  /** Await the next message of the current fight from the peers (FIFO). */
   recv(): Promise<NetMessage> {
-    const next = this.queue.shift();
-    if (next !== undefined) return Promise.resolve(next);
-    return new Promise((resolve) => this.waiters.push(resolve));
+    const tag = this.tag;
+    const index = this.queue.findIndex((message) => fits(message, tag));
+    if (index >= 0) return Promise.resolve(this.queue.splice(index, 1)[0]);
+    return new Promise((resolve) => this.waiters.push({ tag, resolve }));
   }
 
   /**
@@ -209,7 +239,7 @@ export class Net {
     if (this.closed) return;
     this.closed = true;
     const pending = this.waiters.splice(0);
-    for (const waiter of pending) waiter({ k: 'bye' });
+    for (const waiter of pending) waiter.resolve({ k: 'bye' });
     try {
       this.ws.close();
     } catch {

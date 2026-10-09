@@ -11,6 +11,9 @@ import {
 } from '../pve/exploration/bounties';
 import {
   buyItem,
+  buyPrice,
+  money,
+  moneyLabel,
   partyOf,
   rest,
   sellItem,
@@ -56,6 +59,27 @@ function freshRun(seed = 11, gold = 0): ExplorationRun {
 const ZONES: EncounterZone[] = ['capitol', 'black', 'red', 'forest', 'wilds'];
 
 const tests: [name: string, run: () => void][] = [
+  ['supplies cost copper or silver, and single arrows retain copper change', () => {
+    equal(['torch', 'arrow', 'throwingDagger', 'oreCopper', 'oreIron', 'wood'].map((id) => buyPrice(getItem(id as Parameters<typeof getItem>[0]))),
+      [0.2, 0.05, 0.05, 0.1, 0.3, 0.05], 'supply prices');
+    equal([money(0.95), moneyLabel(0.05), moneyLabel(1.25)], [0.95, '5c', '1g 2s 5c'], 'copper precision');
+    const run = freshRun(7, 1);
+    const shop = shopById('capitol-apothecary')!;
+    const slot = shopStock(run, shop).find((entry) => entry.id === 'arrow')!;
+    equal([slot.qty, slot.price], [1, 0.05], 'one arrow');
+    assert(buyItem(run, shop.id, slot.key).ok, 'buys an arrow');
+    equal(run.gold, 0.95, 'five copper paid');
+    equal(parseRun(JSON.stringify(run))?.gold, 0.95, 'copper survives save loading');
+    for (const seller of Object.values(SHOPS)) {
+      for (const arrow of shopStock(run, seller).filter((entry) => entry.id === 'arrow')) {
+        equal([arrow.qty, arrow.price], [1, 0.05], `${seller.id} sells single arrows`);
+      }
+    }
+    for (const id of ['healthPotion', 'manaPotion', 'oreCoal', 'gemRuby'] as const) {
+      assert(buyPrice(getItem(id)) < 1, `${id} costs less than gold`);
+    }
+  }],
+
   ['levels follow the level curve', () => {
     equal(xpToNext(1), 10, 'level 1 needs 10 XP');
     equal(xpToNext(2), 17, 'level 2 needs 17 XP');
@@ -165,7 +189,7 @@ const tests: [name: string, run: () => void][] = [
     equal(offers.map((offer) => offer.id), ['oreIron'], 'only the ore is wanted');
     const result = sellItem(run, guild.id, 'oreIron', true);
     assert(result.ok, 'the ore sold');
-    equal(run.gold, (getItem('oreIron').cost / 10) * 2, 'two ores at full worth');
+    equal(run.gold, 0.48, 'two ores at their new full worth');
     equal(partyOf(run)[0].bag.filter((id) => id === 'oreIron').length, 0, 'the ore is gone');
   }],
 

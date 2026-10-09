@@ -37,7 +37,8 @@ import { localActions, type ExplorationActions } from '../pve/exploration/intent
 import { resolveLocale, type ResolvedLocale, type Secret, type WildPack } from '../pve/exploration/locales';
 import { cellWorldTile, OPEN_WORLD_ID, openWorldCell, openWorldMainland, openWorldPace, WORLD_SCALE } from '../pve/exploration/openWorld';
 import { stepDice, type ExplorationRun } from '../pve/exploration/run';
-import { saveRun } from '../pve/exploration/save';
+import { saveRun, saveSlot } from '../pve/exploration/save';
+import { downloadRun } from '../ui/runFile';
 import { sceneSalt, stageScene } from '../pve/exploration/scenes';
 import {
   findSearchTarget,
@@ -430,7 +431,11 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.view.stream(new Phaser.Geom.Rectangle(this.walker.x - GAME_WIDTH / 2, this.walker.y - GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT));
 
     this.run.locale = { id: place.def.id, x: start.x, y: start.y };
-    if (place.kind === 'town') this.run.lastTown = place.def.id;
+    if (place.kind === 'town') {
+      this.run.lastTown = place.def.id;
+      // Summons follow the party from fight to fight, but not through the town gates.
+      this.run.summons = null;
+    }
     if (place.world) this.syncWorldTile();
     place.onEnter?.(this.run);
     saveRun(this.run);
@@ -531,6 +536,11 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
             if (typeof message.text === 'string') this.hud?.toast(message.text.slice(0, 240), 3200);
           }),
           session.on('x-pause', (message) => this.hud?.setPrompt(message.on === true ? 'The host paused the game.' : null)),
+          session.on('x-bloodmoon', () => {
+            this.walker?.stop();
+            this.hud?.setPrompt(null);
+            void this.hud?.bloodmoonRise();
+          }),
           session.on('x-sleep', (message) => {
             const nap = parseRestNap(message.nap);
             if (!nap) return;
@@ -986,6 +996,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
         label: 'Back to the Travel Map',
         detail: spent > 0 ? `The party has spent ${spanLabel(spent)} on foot. It stands where it set out.` : 'No time spent. The party stands where it set out.',
       }] : []),
+      { id: 'save', label: 'Save Now', detail: 'Keep the run in this browser right away.' },
+      { id: 'file', label: 'Save to File', detail: 'Download the run. Load it from the Adventure menu.' },
       session
         ? { id: 'quit', label: 'Save and Quit', detail: 'Everyone returns to the main menu. Continue Co-op from the lobby later.' }
         : { id: 'quit', label: 'Save and Quit', detail: 'Return to the main menu. The run waits here.' },
@@ -996,6 +1008,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     if (choice === 'rest') void this.shortRest();
     if (choice === 'trade' && session) void this.openTrade();
     if (choice === 'map') this.leaveOnFoot();
+    if (choice === 'save') this.hud.toast(saveRun(this.run) ? `Run saved. Day ${this.run.day}.` : 'This browser would not keep the save. Use Save to File.', 3200);
+    if (choice === 'file') this.saveToFile();
     if (choice === 'quit') {
       this.leaving = true;
       saveRun(this.run);
@@ -1018,15 +1032,23 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       { id: 'pack', label: 'Pack', detail: 'Gear, words and stats.' },
       ...(this.place.world ? [{ id: 'rest', label: 'Short Rest', detail: this.restDetail() }] : []),
       { id: 'trade', label: session.council.trade?.place === this.place.def.id ? 'Player Stall' : 'Set Up Shop', detail: 'Exchange items or give a gift.' },
+      { id: 'file', label: 'Save to File', detail: 'Download your copy of the run, in case the host loses theirs.' },
       { id: 'leave', label: 'Leave the session', detail: 'Everyone returns to the main menu. The host keeps the run.' },
     ], 'resume');
     if (choice === 'pack') void this.openPack();
     if (choice === 'rest') void this.shortRest();
     if (choice === 'trade') void this.openTrade();
+    if (choice === 'file') this.saveToFile();
     if (choice === 'leave') {
       this.leaving = true;
       session.end('You left the session.');
     }
+  }
+
+  /** Download the run as it stands here; a guest's copy is the host's run. */
+  private saveToFile(): void {
+    downloadRun(this.run, saveSlot() === 'solo' ? 'solo' : 'online');
+    this.hud?.toast(`Run saved to a file. Day ${this.run.day}.`, 3200);
   }
 
   private async openTrade(): Promise<void> {
@@ -2982,6 +3004,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.run.locale = back;
     if (this.place.world) this.syncWorldTile();
     saveRun(this.run);
+    this.session?.send({ k: 'x-bloodmoon' });
     void (async () => {
       await this.hud?.bloodmoonRise();
       startAdventureFight(this, {

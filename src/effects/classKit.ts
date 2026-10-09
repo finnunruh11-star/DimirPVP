@@ -2857,6 +2857,9 @@ export function isHexLawKind(kind: string): kind is HexLawKind {
   return Object.prototype.hasOwnProperty.call(HEX_LAW_NAMES, kind);
 }
 
+/** What each law does to the field, filled in as its spell is registered. */
+export const HEX_LAW_TEXT: Partial<Record<HexLawKind, string>> = {};
+
 const BRITTLE_KEY = 'debuff:law-brittle';
 const BRITTLE_THIRST_KEY = 'debuff:law-brittle-thirst';
 const AFTERSHOCK_KEY = 'dot:law-aftershock';

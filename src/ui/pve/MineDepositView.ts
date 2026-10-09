@@ -1,7 +1,7 @@
 // The rock face of an ore room, worked a swing at a time. Pick a vein on the
-// wall, then every strike throws a d20 into the dig: reach the ore's value and
-// the ore comes free, run out of strikes first and the seam comes down. A
-// natural 1 or 2 chips the pickaxe.
+// wall, then every strike throws a d20 plus the miner's Strength into the dig:
+// reach the ore's value and the ore comes free, run out of strikes first and the
+// seam comes down. A natural 1 or 2 chips the pickaxe.
 
 import Phaser from 'phaser';
 import { playSound } from '../../audio';
@@ -54,6 +54,8 @@ export interface MineDepositModel {
 /** One strike, already made, for the window to play out. */
 export interface MineStrikeShown extends MineStrike {
   vein: number;
+  /** Who swung the pick. */
+  miner?: string;
   /** Where the ore went once it came free: "+1 Iron Ore", or that nobody could carry it. */
   haul?: string;
 }
@@ -148,7 +150,7 @@ export class MineDepositView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.brassLight,
     });
-    const rules = scene.add.text(BAR.x + BAR.w, 581, `NEEDS ${model.ore.miningValue}  ·  ${model.ore.failCount} STRIKES  ·  1-2 CHIPS THE PICK`, {
+    const rules = scene.add.text(BAR.x + BAR.w, 581, `NEEDS ${model.ore.miningValue}  ·  ${model.ore.failCount} STRIKES  ·  D20 + STR  ·  1-2 CHIPS THE PICK`, {
       fontFamily: MENU_FONT.control,
       fontSize: '11px',
       fontStyle: 'bold',
@@ -237,8 +239,8 @@ export class MineDepositView extends Phaser.GameObjects.Container {
     this.say(model.pickaxes.length === 0
       ? 'No pickaxe: the ore stays in the rock until the party has one. Supply rooms sell them.'
       : model.interactive
-        ? 'Pick a vein on the rock face, then strike it: every swing throws a d20 into the dig.'
-        : 'The party leader picks a vein and swings: every strike throws a d20 into the dig.');
+        ? 'Pick a vein on the rock face, then strike it: every swing throws a d20 plus the miner\'s Strength into the dig.'
+        : 'The party leader picks a vein and swings: every strike throws a d20 plus the miner\'s Strength into the dig.');
     this.refresh();
     if (!this.reduced) {
       scene.tweens.add({ targets: this.marks, alpha: { from: 1, to: 0.5 }, duration: 620, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
@@ -266,7 +268,8 @@ export class MineDepositView extends Phaser.GameObjects.Container {
     const quick = this.reduced;
     const rect = this.picture.veinRect(strike.vein);
     this.lock();
-    this.drawProgress(strike.progress - strike.roll, strike.strike - 1);
+    const gained = strike.roll + strike.bonus;
+    this.drawProgress(strike.progress - gained, strike.strike - 1);
 
     // The swing: the pick comes down on the vein from the right.
     if (!quick) {
@@ -325,7 +328,7 @@ export class MineDepositView extends Phaser.GameObjects.Container {
     drawD20(body, crit ? 0xf3dc8a : chipped ? 0xc27a70 : mixColor(MENU_COLOR.bone, this.color, 0.3), 32);
     if (crit) playSound('dice.crit');
     else if (chipped) playSound('dice.fumble');
-    const gain = scene.add.text(dieX + 44, dieY - 6, `+${strike.roll}`, {
+    const gain = scene.add.text(dieX + 44, dieY - 6, strike.bonus > 0 ? `+${strike.roll}+${strike.bonus}` : `+${strike.roll}`, {
       fontFamily: MENU_FONT.display,
       fontSize: '24px',
       fontStyle: 'bold',
@@ -335,7 +338,7 @@ export class MineDepositView extends Phaser.GameObjects.Container {
     }).setOrigin(0, 0.5);
     this.fx.add(gain);
     scene.tweens.add({ targets: gain, y: dieY - 30, alpha: { from: 1, to: 0 }, duration: quick ? 400 : 900, delay: 200, ease: 'Sine.In', onComplete: () => gain.destroy() });
-    const before = strike.progress - strike.roll;
+    const before = strike.progress - gained;
     this.drawProgress(quick ? strike.progress : before, strike.strike);
     if (!quick) {
       scene.tweens.addCounter({
@@ -372,6 +375,7 @@ export class MineDepositView extends Phaser.GameObjects.Container {
       const left = ore.failCount - strike.strike;
       text = `${crit ? 'A clean strike! ' : chipped ? 'A glancing blow. ' : ''}${short} more frees the ore; ${left} strike${left === 1 ? '' : 's'} before the seam gives way.`;
     }
+    if (strike.miner) text = `${strike.miner}: ${strike.roll} + ${strike.bonus} STR. ${text}`;
     if (strike.broke) text += ' The pickaxe breaks.';
     else if (strike.durabilityLost) text += ' The pick chips.';
     if (!strike.outcome && this.model.pickaxes.length === 0) text += ' No pickaxe left to finish it.';

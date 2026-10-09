@@ -3,15 +3,18 @@ import { MAGE_CLASSES, type MageClass } from '../core/Classes';
 import { WORD_COLOR } from './Colors';
 import { getItem } from '../core/Items';
 import { Mage } from '../core/Mage';
+import { scenarioToMages } from '../core/Scenario';
 import { WORD_ORDER, type WordId } from '../core/Words';
 import {
   addRunXp,
+  captureSummons,
   classesUnique,
   fightingParty,
   levelsOwed,
   mergeFightParty,
   partyScale,
   respawnFallen,
+  withSummons,
 } from '../pve/exploration/coop';
 import {
   applyCreation,
@@ -226,6 +229,30 @@ const tests: [name: string, run: () => void][] = [
     fighters[1].hp = 0;
     const after = restoreParty(mergeFightParty(run.party, fighters));
     equal(after.map((mage) => [mage.mageClass, mage.hp]), [['objects', 2], ['life', 0], ['hexcraft', 0]], 'order and state kept');
+  }],
+
+  ['keeps a living owner\'s summons, on their shoulder, for the next fight and through a save', () => {
+    const run = partyRun(3);
+    const fighters = restoreParty(fightingParty(run.party));
+    const foe = new Mage({ name: 'Foe', isAI: true, team: 2, position: { x: 600, y: 200 }, loadout: [] });
+    const pet = (name: string, owner: number, shoulder?: 0 | 1): Mage => {
+      const summon = new Mage({ name, isAI: false, team: 1, position: { x: 300, y: 200 }, loadout: [] });
+      summon.isSummon = true;
+      summon.summonKind = 'remnant';
+      summon.summonOwnerIndex = owner;
+      summon.summonShoulder = shoulder;
+      return summon;
+    };
+    fighters[0].hp = 0;
+    const field = [foe, ...fighters, pet('Orphan', 1), pet('Rider', 3, 1)];
+    run.summons = captureSummons(field);
+    const loaded = parseRun(JSON.stringify(run));
+    assert(loaded?.summons, 'the summons survive a save');
+    const next = scenarioToMages(withSummons(fightingParty(loaded.party), loaded.summons));
+    equal(next.map((mage) => mage.name), ['Player 1', 'Player 2', 'Player 3', 'Rider'], 'only the living owner\'s summon follows');
+    const rider = next[3];
+    equal([rider.isSummon, rider.summonOwnerIndex, rider.summonShoulder], [true, 2, 1], 'back on its owner\'s shoulder');
+    equal(withSummons(fightingParty(run.party), null).entities.length, 3, 'no summons, just the party');
   }],
 
   ['hands finds to whoever can carry them, and lets members pass items on', () => {

@@ -48,6 +48,7 @@ import type { DiceRollView } from '../ui/combat/diceFace';
 import {
   InventoryView,
   type InventoryActionKind,
+  type InventoryActionView,
   type InventoryItemView,
 } from '../ui/combat/InventoryView';
 import { SwampShopView, type SwampOfferView } from '../ui/pve/SwampShopView';
@@ -96,7 +97,7 @@ import {
   TEXT,
 } from '../config/constants';
 import { GameState, hazardDistance } from '../core/GameState';
-import { Mage } from '../core/Mage';
+import { Mage, type SummonOrderKind } from '../core/Mage';
 import { packCanStow, packFits, packLabel } from '../core/Pack';
 import { Dice } from '../core/Dice';
 import { analyzeDodge, dodgeGrantsBonusAction, type DodgeTier } from '../core/Dodge';
@@ -162,6 +163,7 @@ import { getColorAbilitiesFor, COLOR_ABILITIES, type ColorAbility } from '../spe
 import {
   getItem,
   sanitizeCart,
+  WORN_SLOTS,
   aiDraft,
   asItemIds,
   carryCapacity,
@@ -181,7 +183,7 @@ import type { PendingCast, StackItem } from '../core/Stack';
 import type { DamageType } from '../core/Damage';
 import { barrierContains } from '../core/Barrier';
 import { FLEE_EDGE_LABEL, fleeEdgeAt, type FleeEdge } from '../core/Flee';
-import { fightingParty, memberOf, mergeFightParty, partyScale, partyXpScale, syncPendingLevels } from '../pve/exploration/coop';
+import { captureSummons, fightingParty, memberOf, mergeFightParty, partyScale, partyXpScale, syncPendingLevels, withSummons } from '../pve/exploration/coop';
 import { AdventureSession } from '../net/AdventureSession';
 import { addXp, killXp, levelCoreStatGain, levelReward, rackIsFull, xpToNext } from '../pve/progression';
 import type { ExplorationEntry } from './ExplorationScene';
@@ -200,7 +202,7 @@ import type {
   OfferingChoice,
   OfferingOpts,
 } from '../effects/effects';
-import { HEX_LAW_NAMES, IMBUES, MINIONS, robeOf } from '../effects/classKit';
+import { HEX_LAW_NAMES, HEX_LAW_TEXT, IMBUES, MINIONS, robeOf } from '../effects/classKit';
 import { activateHexzettel, hexAimProblem, hexColor, hexOf } from '../effects/hexzettel';
 import { hexAction, hexAim, hexHarmful, hexManaCost, hexRadius, hexRange, type HexAim as HexAimKind, type HexRecipe } from '../core/hexcraft/runes';
 import { SHIKIGAMI_TIERS, shikigamiTier } from '../effects/deathKit';
@@ -258,6 +260,7 @@ import {
   SwampArenaView,
 } from '../visuals/SwampArenaView';
 import { SimpleAI, type AIDecision } from '../ai/SimpleAI';
+import { summonOrderDecision, summonOrderTarget } from '../ai/summonOrders';
 
 /** Damage types with their own authored voice; anything else lands as a hit. */
 const DAMAGE_SOUND: Record<string, SoundName> = {
@@ -531,6 +534,7 @@ export type InputMode =
   | 'aiming-move'
   | 'aiming-leap'
   | 'aiming-cleave'
+  | 'aiming-shout'
   | 'aiming-edgelord-throw'
   | 'aiming-shadow-dagger'
   | 'aiming-wall'
@@ -637,7 +641,7 @@ type TurnCommand =
   | { t: 'item-use'; itemId: string }
   | { t: 'item-ready'; itemId: string }
   | { t: 'pouch-store' | 'pouch-remove'; itemId: string }
-  | { t: 'item-equip'; itemId: string }
+  | { t: 'item-equip'; itemId: string; replace?: string }
   | { t: 'item-unequip'; itemId: string }
   | { t: 'item-throw'; itemId: string; target: number }
   | { t: 'hex'; itemId: string; target: number | null; x?: number; y?: number }
@@ -654,6 +658,7 @@ type TurnCommand =
   | { t: 'focus' }
   | { t: 'cleave'; x: number; y: number }
   | { t: 'command'; summon: number }
+  | { t: 'shout'; order: SummonOrderKind; target?: number }
   | { t: 'summon-shoulder'; summon: number; carry: boolean }
   | { t: 'uncommand' }
   | { t: 'mantle-bind' }
@@ -746,10 +751,25 @@ const bodyAnimationKey = (mage: Mage, state: BodyAnimState): string => {
   return `enemy-${kind}-${creatureState}`;
 };
 
+/** What the owner shouts for each standing order. */
+const SHOUT_LABEL: Record<SummonOrderKind, string> = {
+  return: 'RETURN',
+  flee: 'FLEE',
+  attack: 'ATTACK',
+  anyone: 'ATTACK ANYONE',
+};
+
+const SHOUT_DESC: Record<SummonOrderKind, string> = {
+  return: 'All summons run back to you, every turn, until given another command (bonus action).',
+  flee: 'All summons run as far from enemies as they can for 2 turns, or until given another command (bonus action).',
+  attack: 'Pick an enemy: all summons run at it and attack it until given another command (bonus action).',
+  anyone: 'All summons attack the enemy closest to them until given another command (bonus action).',
+};
+
 /** How the action palette is grouped, so it reads as short lists. */
 const ACTION_GROUPS: { title: string; ids: string[] }[] = [
   { title: 'CORE', ids: ['cast', 'move', 'attack', 'end'] },
-  { title: 'MANOEUVRE', ids: ['leap', 'cleave', 'focus', 'command', 'summon-shoulder:*', 'flee'] },
+  { title: 'MANOEUVRE', ids: ['leap', 'cleave', 'focus', 'command', 'shout:*', 'summon-shoulder:*', 'flee'] },
   {
     title: 'POWERS',
     ids: [
@@ -894,6 +914,12 @@ export class GameScene extends Phaser.Scene {
   /** Online play: the seat index this client controls (0-based). */
   private localSeat = 0;
   private opponentLeft = false;
+  /**
+   * Turn-start effects are still resolving. An action they run must not hand
+   * the turn out early: online, a command sent then would be applied before the
+   * rest of the turn start here, but after it on every other peer.
+   */
+  private turnStarting = false;
 
   private mode: InputMode = 'idle';
   private busy = false;
@@ -959,6 +985,8 @@ export class GameScene extends Phaser.Scene {
   private mineActiveRoomId: number | null = null;
   private minePanel?: Phaser.GameObjects.Container;
   private mineMapVisible = false;
+  /** The read-only inventory opened over the mine map; the party may move on while it is open. */
+  private mineInventoryOpen = false;
   private mineChoiceResolve: ((choice: string) => void) | null = null;
   private mineCombatResolve: (() => void) | null = null;
   /** Shared tools; each entry is one pickaxe's remaining durability out of 10. */
@@ -1392,6 +1420,7 @@ export class GameScene extends Phaser.Scene {
     this.dungeonPickaxes = 0;
     this.mineCrushed = false;
     this.mineVoteRound = 0;
+    this.mineInventoryOpen = false;
     this.mineRevealNext = null;
     this.mode = 'idle';
     this.busy = false;
@@ -1499,9 +1528,12 @@ export class GameScene extends Phaser.Scene {
     // the game mode so co-op modes (swamprun) can also be networked.
     this.online = !!config.net;
     this.net = config.net ?? null;
+    // Every peer of this fight shares its seed: it names the fight's messages.
+    this.net?.setLockstep(config.seed ?? null);
     this.localTeam = config.localTeam ?? 1;
     this.localSeat = config.localSeat ?? this.localTeam - 1;
     this.opponentLeft = false;
+    this.turnStarting = false;
     this.training = config.mode === 'training';
     this.tutorial = config.mode === 'tutorial';
     this.scenarioLab = config.mode === 'scenario';
@@ -1563,8 +1595,9 @@ export class GameScene extends Phaser.Scene {
 
     // A loaded memory fully describes its roster, so it replaces the drafted
     // seats: every combatant keeps the kit and the spot it was saved on.
-    // An exploration party arrives the same way, carried in by the run; the fallen stay behind.
-    const scenario = config.scenario ?? (this.explorationCombat ? fightingParty(this.explorationCombat.run.party) : null);
+    // An exploration party arrives the same way, carried in by the run with its summons; the fallen stay behind.
+    const run = this.explorationCombat?.run;
+    const scenario = config.scenario ?? (run ? withSummons(fightingParty(run.party), run.summons ?? null) : null);
     if (scenario) this.spawns = scenario.entities.map((e) => ({ x: e.x, y: e.y }));
 
     const mages = scenario
@@ -1795,6 +1828,8 @@ export class GameScene extends Phaser.Scene {
           if (!this.net) return;
           this.net.onPeerBye = undefined;
           this.net.onClose = undefined;
+          // Receives this fight left waiting must not take the next fight's messages.
+          this.net.setLockstep(null);
         });
       } else {
         // Tear the socket down if the player navigates away from the duel.
@@ -2318,7 +2353,7 @@ export class GameScene extends Phaser.Scene {
       m.maxHp += 4;
       m.hands = ['warHammer'];
       m.head = 'ironCap';
-      m.accessories = ['fightersGloves'];
+      m.gloves = 'fightersGloves';
     } else {
       m.assignFlatStats(2);
       m.maxHp = 12;
@@ -3060,8 +3095,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * An ore room: the party picks a vein on the rock face and strikes it a d20 at a
-   * time, while the leader chooses and every peer rolls the same dice.
+   * An ore room: the party picks a vein on the rock face and strikes it a d20 plus
+   * the miner's Strength at a time. Any player may swing; every peer rolls the same dice.
    */
   private async resolveMineOreRoom(node: MineMazeNode, room: MineRoomState): Promise<void> {
     const ore = MINE_ORE_DEFS[room.oreKind ?? 'coal'];
@@ -3080,7 +3115,7 @@ export class GameScene extends Phaser.Scene {
       ore,
       veins,
       pickaxes,
-      interactive: !this.online || this.localSeat === 0,
+      interactive: true,
       light: this.mineWalkers()[0]?.light ?? null,
     }, (choice) => this.mineChoiceResolve?.(choice));
     this.minePanel = view;
@@ -3089,7 +3124,7 @@ export class GameScene extends Phaser.Scene {
     let collapsed = 0;
     let struck = false;
     for (;;) {
-      const choice = await this.nextMineChoice((id) => mineDepositAllows(id, veins, active, pickaxes.length));
+      const { choice, seat } = await this.nextMineChoice((id) => mineDepositAllows(id, veins, active, pickaxes.length));
       if (!choice || this.mineRunEnded || this.opponentLeft) return;
       if (choice === 'leave') break;
       if (choice !== 'strike') {
@@ -3097,7 +3132,8 @@ export class GameScene extends Phaser.Scene {
         view.select(active);
         continue;
       }
-      const strike = strikeMineVein(ore, veins[active], pickaxes, this.gs.rng);
+      const miner = this.mineStriker(seat);
+      const strike = strikeMineVein(ore, veins[active], pickaxes, this.gs.rng, miner?.effectiveStr() ?? 0);
       if (!strike) continue;
       struck = true;
       let haul: string | undefined;
@@ -3112,7 +3148,7 @@ export class GameScene extends Phaser.Scene {
         collapsed += 1;
       }
       this.updateWaveHud();
-      await view.playStrike({ ...strike, vein: active, haul });
+      await view.playStrike({ ...strike, vein: active, haul, miner: miner?.name });
       if (this.mineRunEnded || this.opponentLeft) return;
     }
     const remaining = veins.filter((vein) => !vein.outcome).length;
@@ -3128,29 +3164,63 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * The party leader's next pick in a mine window that stays open between picks:
-   * from this screen, or off the wire for everyone else. Picks `allowed` refuses
-   * are ignored; '' when the run ends.
+   * The next pick in a mine window that stays open between picks. Any player may
+   * make it: guests hand theirs to the leader, who takes the first that is still
+   * allowed and announces it with who made it, so every peer does the same seeded
+   * work. Picks `allowed` refuses are ignored; '' when the run ends.
    */
-  private nextMineChoice(allowed: (choice: string) => boolean): Promise<string> {
-    if (this.online && this.localSeat !== 0) {
+  private nextMineChoice(allowed: (choice: string) => boolean): Promise<{ choice: string; seat: number }> {
+    if (!this.online) {
+      return new Promise((resolve) => {
+        this.mineChoiceResolve = (choice) => {
+          if (choice && !allowed(choice)) return;
+          this.mineChoiceResolve = null;
+          resolve({ choice, seat: this.localSeat });
+        };
+      });
+    }
+    const net = this.net!;
+    const round = `${this.mineVoteSalt}:${++this.mineVoteRound}`;
+    if (this.localSeat !== 0) {
+      this.mineChoiceResolve = (choice) => {
+        if (choice && allowed(choice)) net.send({ k: 'mine-pick', round, choice });
+      };
       return (async () => {
         for (;;) {
-          const message = await this.net!.recv();
-          if (message.k === 'bye') return '';
-          if (message.k !== 'mine-choice' || typeof message.choice !== 'string') continue;
-          if (allowed(message.choice)) return message.choice;
+          const message = await net.recv();
+          if (message.k === 'bye') {
+            this.mineChoiceResolve = null;
+            return { choice: '', seat: 0 };
+          }
+          if (message.k !== 'mine-choice' || typeof message.choice !== 'string' || !allowed(message.choice)) continue;
+          this.mineChoiceResolve = null;
+          return { choice: message.choice, seat: typeof message.seat === 'number' ? message.seat : 0 };
         }
       })();
     }
-    return new Promise<string>((resolve) => {
-      this.mineChoiceResolve = (choice) => {
+    return new Promise((resolve) => {
+      const settle = (choice: string, seat: number): void => {
         if (choice && !allowed(choice)) return;
+        net.setSideHandler(null);
         this.mineChoiceResolve = null;
-        if (this.online && choice) this.net?.send({ k: 'mine-choice', choice });
-        resolve(choice);
+        if (choice) net.send({ k: 'mine-choice', choice, seat });
+        resolve({ choice, seat });
       };
+      net.setSideHandler((message) => {
+        if (message.k !== 'mine-pick' || message.round !== round) return;
+        if (typeof message.from === 'number' && typeof message.choice === 'string') settle(message.choice, message.from);
+      });
+      this.mineChoiceResolve = (choice) => settle(choice, this.localSeat);
     });
+  }
+
+  /** Who swings the pick: the strongest standing member `seat` plays, else the strongest standing. */
+  private mineStriker(seat: number): Mage | undefined {
+    const party = this.mineParty();
+    const strongest = (list: readonly Mage[]): Mage | undefined =>
+      list.reduce<Mage | undefined>((best, mage) => !best || mage.effectiveStr() > best.effectiveStr() ? mage : best, undefined);
+    const own = this.online ? party.filter((mage) => this.controllerSeatOf(mage) === seat) : party;
+    return strongest(own) ?? strongest(party);
   }
 
   /** The small line at the top right of a mine window: steps, the clock (or the purse), pickaxes. */
@@ -3251,7 +3321,7 @@ export class GameScene extends Phaser.Scene {
     );
     const canLeave = !!this.dungeon && (node.id === 0 || node.escape === true);
     if (available.length === 0 && !canLeave) return null;
-    this.mode = 'shop';
+    if (!this.mineInventoryOpen) this.mode = 'shop';
     const valid = (choice: string): boolean =>
       (canLeave && choice === 'leave') || available.includes(choice as MineDirection);
     const settle = (choice: string): MineDirection | 'leave' =>
@@ -3557,7 +3627,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private hideMinePanel(): void {
-    const inventoryWasOpen = this.mineMapVisible && this.mode === 'inventory';
+    const inventoryWasOpen = this.mineInventoryOpen;
     this.minePanel?.destroy();
     this.minePanel = undefined;
     this.mineMapView = undefined;
@@ -3566,6 +3636,7 @@ export class GameScene extends Phaser.Scene {
     if (inventoryWasOpen) {
       this.invPanel?.destroy();
       this.invPanel = undefined;
+      this.mineInventoryOpen = false;
       this.mode = 'shop';
     }
   }
@@ -4538,9 +4609,7 @@ export class GameScene extends Phaser.Scene {
     mage.applyStatAllocation(dice, defaultAssignment());
     mage.hands = [];
     mage.bag = [];
-    mage.head = null;
-    mage.torso = null;
-    mage.boots = null;
+    for (const slot of WORN_SLOTS) mage.setWorn(slot, null);
     mage.accessories = [];
     mage.utility = [];
     mage.arrows = 0;
@@ -4765,9 +4834,7 @@ export class GameScene extends Phaser.Scene {
       ...mage.hands.map((id) => ({ id, where: 'held' })),
       ...mage.bag.map((id) => ({ id, where: 'bag' })),
       ...mage.accessories.map((id) => ({ id, where: 'worn' })),
-      ...(mage.head ? [{ id: mage.head, where: 'head' }] : []),
-      ...(mage.torso ? [{ id: mage.torso, where: 'torso' }] : []),
-      ...(mage.boots ? [{ id: mage.boots, where: 'boots' }] : []),
+      ...WORN_SLOTS.flatMap((slot) => mage.worn(slot) ? [{ id: mage.worn(slot)!, where: slot }] : []),
       ...mage.utility.map((id) => ({ id, where: 'utility' })),
     ];
     this.swampShopPanel = new SwampShopView(this, {
@@ -5216,9 +5283,7 @@ export class GameScene extends Phaser.Scene {
     const valid = sanitizeCart(items, mage.statStrength);
     mage.hands = [];
     mage.bag = [];
-    mage.head = null;
-    mage.torso = null;
-    mage.boots = null;
+    for (const slot of WORN_SLOTS) mage.setWorn(slot, null);
     mage.accessories = [];
     mage.utility = [];
     mage.arrows = 0;
@@ -5230,13 +5295,11 @@ export class GameScene extends Phaser.Scene {
           mage.bag.push(id);
           break;
         case 'head':
-          mage.head = id;
-          break;
         case 'torso':
-          mage.torso = id;
-          break;
+        case 'cape':
+        case 'gloves':
         case 'boots':
-          mage.boots = id;
+          mage.setWorn(def.slot, id);
           break;
         case 'accessory':
           mage.accessories.push(id);
@@ -5264,9 +5327,7 @@ export class GameScene extends Phaser.Scene {
     for (const m of this.gs.mages) {
       const worn: string[] = [
         ...m.hands,
-        ...(m.head ? [m.head] : []),
-        ...(m.torso ? [m.torso] : []),
-        ...(m.boots ? [m.boots] : []),
+        ...WORN_SLOTS.flatMap((slot) => m.worn(slot) ? [m.worn(slot)!] : []),
         ...m.accessories,
         ...m.utility,
       ].map((id) => getItem(id).name);
@@ -5462,6 +5523,7 @@ export class GameScene extends Phaser.Scene {
     return this.mode === 'aiming-melee'
       || this.mode === 'aiming-throw'
       || this.mode === 'aiming-eldritch'
+      || this.mode === 'aiming-shout'
       || this.mode === 'aiming-staff'
       || this.mode === 'aiming-discharge'
       || this.mode === 'subtarget-enemy'
@@ -5490,6 +5552,7 @@ export class GameScene extends Phaser.Scene {
     const turnOwner = this.gs.current;
     // Locked until the turn start settles; the end of this method hands control out.
     this.mode = 'busy';
+    this.turnStarting = true;
     this.gs.beginTurn();
     if (!turnOwner.isAI) playSound('turn.start');
     this.showTurnBanner(turnOwner);
@@ -5551,10 +5614,12 @@ export class GameScene extends Phaser.Scene {
     // any choice this turn.
     const control = this.gs.controlOf(this.gs.current);
     if (control?.mode === 'repeat') {
+      this.turnStarting = false;
       await this.runCompelledTurn();
       return;
     }
 
+    this.turnStarting = false;
     if (this.controllerIsAI(this.gs.current)) {
       this.mode = 'busy';
       const wave = this.swamprunWave;
@@ -5676,12 +5741,53 @@ export class GameScene extends Phaser.Scene {
   }
 
 
+  /** Each commandable summon of `owner` not yet controlled this turn carries out its standing order. */
+  private async runSummonOrders(owner: Mage): Promise<void> {
+    for (const summon of this.gs.summonsOf(owner)) {
+      if (this.gs.isOver) return;
+      const order = summon.summonOrder;
+      if (!order || summon.summonActedSeq === this.gs.turnSeq || !this.gs.canCommandSummon(owner, summon)) continue;
+      if (order.kind === 'attack' && !summonOrderTarget(this.gs, summon)) {
+        summon.summonOrder = undefined;
+        continue;
+      }
+      summon.summonActedSeq = this.gs.turnSeq;
+      summon.actions = { move: 1, main: 1, bonus: 1 };
+      summon.hasCastThisTurn = false;
+      const savedIndex = this.gs.currentIndex;
+      this.puppet = { summon, owner, savedIndex };
+      this.gs.currentIndex = this.gs.mages.indexOf(summon);
+      try {
+        for (let step = 0; step < 4 && summon.alive && !this.gs.isOver; step++) {
+          const decision = summonOrderDecision(this.gs, summon, owner);
+          if (decision.type === 'end') break;
+          const target = this.aiDecisionTarget(decision);
+          this.announceAIDecision(summon, decision, target);
+          await this.delay(target ? 420 : 200);
+          await this.performAIDecision(decision);
+          this.redraw();
+        }
+      } finally {
+        this.clearAITelegraph();
+        this.gs.currentIndex = savedIndex;
+        this.puppet = null;
+      }
+      if (order.turnsLeft != null && --order.turnsLeft <= 0 && summon.summonOrder === order) summon.summonOrder = undefined;
+    }
+    this.redraw();
+  }
+
   private async nextTurn(skipReactionWindow = false): Promise<void> {
     if (this.mineRun && this.mineExploring) return;
     // Swamprun: refill the board the instant a wave is cleared so the run never
     // stalls out on an empty arena.
     if (this.swamprunWaveCleared() && (await this.runWaveInterlude())) return this.startTurn();
     if (this.gameEnded) return;
+    // Summons with a standing order that were not controlled this turn act on it now.
+    if (!this.puppet) {
+      await this.runSummonOrders(this.gs.current);
+      if (this.gs.isOver) return this.endGame();
+    }
     // As the acting mage moves to end their turn, opponents get one last chance
     // to spend their reaction (counter-magic only) before the turn passes.
     if (!skipReactionWindow) {
@@ -6137,6 +6243,9 @@ export class GameScene extends Phaser.Scene {
    * (online) and apply it locally. Offline this is just "apply it".
    */
   private submitTurn(cmd: TurnCommand): void {
+    // Online a command from anyone but the turn's pilot, or from inside a reaction
+    // prompt, would be read by the other peers as something else entirely.
+    if (this.online && (!this.isLocalTurn() || this.mode === 'reaction' || this.reactionAiming)) return;
     if (this.online) this.net?.send({ k: 'turn', cmd });
     this.tutorialNotify({ k: 'command', cmd: cmd.t });
     void this.applyTurnCommand(cmd);
@@ -6346,6 +6455,8 @@ export class GameScene extends Phaser.Scene {
       }
       case 'item-equip': {
         const itemId = cmd.itemId as ItemId;
+        const replace = cmd.replace ? cmd.replace as ItemId : null;
+        if (!me.displacedBy(itemId, replace)) break;
         spend('bonus');
         await runAction(
           this.gs.makeActionItem({
@@ -6353,9 +6464,11 @@ export class GameScene extends Phaser.Scene {
             label: 'Equip',
             description: `${me.name} equips ${getItem(itemId).name}.`,
             resolve: () => {
-              if (me.equipFromBag(itemId)) {
+              const off = me.displacedBy(itemId, replace) ?? [];
+              if (me.swapIn(itemId, replace)) {
                 this.gs.notifyLightActivation(me);
-                this.gs.log(`${me.name} equips ${getItem(itemId).name}.`);
+                const swapped = off.length ? `, stowing ${off.map((other) => getItem(other).name).join(' and ')}` : '';
+                this.gs.log(`${me.name} equips ${getItem(itemId).name}${swapped}.`);
               }
             },
           })
@@ -6375,7 +6488,7 @@ export class GameScene extends Phaser.Scene {
             label: 'Unequip',
             description: `${me.name} stows ${getItem(itemId).name}.`,
             resolve: () => {
-              if (me.unequipHand(itemId))
+              if (me.stow(itemId))
                 this.gs.log(`${me.name} stows ${getItem(itemId).name} in the bag.`);
             },
           })
@@ -6697,13 +6810,32 @@ export class GameScene extends Phaser.Scene {
         const owner = me;
         const summon = this.mageBySeat(cmd.summon);
         if (!summon.isSummon || !summon.alive || summon.summonOwnerIndex !== this.seatOf(owner)) break;
-        if (!this.gs.canCommandSummon(owner, summon)) break;
+        if (!this.gs.canCommandSummon(owner, summon) || summon.summonActedSeq === this.gs.turnSeq) break;
         if (!owner.freeSummonOrders) spend('bonus');
+        summon.summonActedSeq = this.gs.turnSeq;
+        summon.summonOrder = undefined;
         summon.actions = { move: 1, main: 1, bonus: 1 };
         summon.hasCastThisTurn = false;
         this.puppet = { summon, owner, savedIndex: this.gs.currentIndex };
         this.gs.currentIndex = this.gs.mages.indexOf(summon);
         this.gs.log(`${owner.name} commands ${summon.name}.`);
+        break;
+      }
+      case 'shout': {
+        if (this.puppet || me.isSummon) break;
+        const summons = this.gs.summonsOf(me).filter((s) => this.gs.canCommandSummon(me, s));
+        const target = cmd.order === 'attack' && cmd.target != null ? this.gs.mages[cmd.target] : undefined;
+        if (summons.length === 0 || (cmd.order === 'attack' && (!target?.alive || target.team === me.team))) break;
+        if (!me.freeSummonOrders) spend('bonus');
+        for (const summon of summons) {
+          summon.summonOrder = {
+            kind: cmd.order,
+            targetIndex: target ? this.seatOf(target) : undefined,
+            turnsLeft: cmd.order === 'flee' ? 2 : undefined,
+          };
+        }
+        this.gs.log(`${me.name} shouts: "${SHOUT_LABEL[cmd.order]}${target ? ` ${target.name}` : ''}!"`);
+        if (!opts.queueOnly) await this.runSummonOrders(me);
         break;
       }
       case 'summon-shoulder': {
@@ -7124,6 +7256,9 @@ export class GameScene extends Phaser.Scene {
       this.mode = 'shop';
     } else if (this.online && !this.isLocalTurn()) {
       // Mid-way through the opponent's relayed turn: stay locked.
+      this.mode = 'busy';
+    } else if (this.turnStarting) {
+      // startTurn hands the turn out once the rest of the turn start is done.
       this.mode = 'busy';
     } else if (this.controllerIsAI(this.gs.current)) {
       this.mode = prevMode === 'busy' ? 'busy' : 'idle';
@@ -7808,8 +7943,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   /**
-   * Every living enemy of `top.source`, ordered by initiative — the sequence in
-   * which they are offered a reaction window against the action.
+   * Every living enemy of `top.source`, plus its player-controlled teammates,
+   * ordered by initiative — the sequence in which they are offered a reaction
+   * window against the action.
    */
   private reactorsFor(top: StackItem): Mage[] {
     // A silent cast draws no answer of any kind.
@@ -7828,7 +7964,8 @@ export class GameScene extends Phaser.Scene {
           m !== top.source &&
           m !== this.gs.current &&
           m !== turnOwner &&
-          (m.team !== top.source.team || (!!top.openToAllies && !m.isSummon))
+          (m.team !== top.source.team ||
+            (!m.isSummon && (!!top.openToAllies || !this.controllerIsAI(m))))
       );
   }
 
@@ -8195,6 +8332,7 @@ export class GameScene extends Phaser.Scene {
             return;
           }
           if (this.mode === 'inventory') {
+            if (this.invPanel instanceof InventoryView && this.invPanel.consumeEscape()) return;
             this.closeInventory();
             return;
           }
@@ -8325,7 +8463,10 @@ export class GameScene extends Phaser.Scene {
    * shared screen always shows the player who is about to act.
    */
   private get viewMage(): Mage {
-    return this.online ? this.localMage() : this.actor;
+    if (!this.online) return this.actor;
+    // Steering a summon: its actions are the ones being spent, so show them, not the owner's.
+    const puppet = this.puppet?.summon;
+    return puppet && !this.reactor && this.isLocalDecider(puppet) ? puppet : this.localMage();
   }
 
   /**
@@ -8661,19 +8802,41 @@ export class GameScene extends Phaser.Scene {
     if (this.puppet) return;
     if (this.online && !this.isLocalTurn()) return;
     const me = this.gs.current;
-    const summons = this.gs.summonsOf(me).filter((s) => this.gs.canCommandSummon(me, s));
-    if (summons.length === 0) return this.flashHint('You have no summons to command.');
+    const commandable = this.gs.summonsOf(me).filter((s) => this.gs.canCommandSummon(me, s));
+    if (commandable.length === 0) return this.flashHint('You have no summons to command.');
+    const summons = commandable.filter((s) => s.summonActedSeq !== this.gs.turnSeq);
+    if (summons.length === 0) return this.flashHint('Each summon can be controlled only once per turn.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions && !me.freeSummonOrders)
       return this.flashHint('Command needs a bonus action.');
     const summon = this.pickCommandSummon(summons);
     this.submitTurn({ t: 'command', summon: this.seatOf(summon) });
-    const extra =
-      summons.length > 1 ? ' (nearest your cursor — hover another and re-Command to switch)' : '';
+    const extra = summons.length > 1 ? ' (the one nearest your cursor)' : '';
     this.flashHint(
       `Commanding ${summon.name}${extra}: move (M) and attack (A/I), then it returns control. Press E to release early.`,
       true
     );
     this.redraw();
+  }
+
+  /** Shout one standing order to every summon you can command (bonus action). */
+  private beginShout(order: SummonOrderKind): void {
+    if (this.mode === 'reaction') return;
+    if (!this.humanActive || this.mode !== 'idle' || this.puppet) return;
+    if (this.online && !this.isLocalTurn()) return;
+    const me = this.gs.current;
+    if (!this.gs.summonsOf(me).some((s) => this.gs.canCommandSummon(me, s)))
+      return this.flashHint('You have no summons to command.');
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions && !me.freeSummonOrders)
+      return this.flashHint('Shouting a command needs a bonus action.');
+    if (order === 'attack') {
+      this.pendingSpell = null;
+      this.mode = 'aiming-shout';
+      this.flashHint('Click the enemy your summons should attack. Esc cancels.', false, 'info');
+      this.redraw();
+      return;
+    }
+    this.mode = 'busy';
+    this.submitTurn({ t: 'shout', order });
   }
 
   /** Choose which summon to command: the one nearest the cursor. */
@@ -9432,15 +9595,28 @@ export class GameScene extends Phaser.Scene {
       }
       const summons = this.gs.summonsOf(me).filter((s) => this.gs.canCommandSummon(me, s));
       if (summons.length > 0) {
+        const ready = summons.filter((s) => s.summonActedSeq !== this.gs.turnSeq);
+        const canPay = me.actions.bonus > 0 || inf || me.freeSummonOrders;
         entries.push({
           id: 'command',
           label: summons.length === 1 ? `Command ${summons[0].name}` : 'Command summon',
           hotkey: 'U',
-          desc: 'Take one action as one of your summons (bonus action).',
-          enabled: me.actions.bonus > 0 || inf || me.freeSummonOrders,
-          reason: 'Needs a bonus action.',
+          desc: 'Take control of one of your summons for its move and attack, once per turn (bonus action).',
+          enabled: canPay && ready.length > 0,
+          reason: ready.length === 0 ? 'Each summon can be controlled only once per turn.' : 'Needs a bonus action.',
           run: () => this.beginCommand(),
         });
+        for (const order of ['return', 'flee', 'attack', 'anyone'] as const) {
+          entries.push({
+            id: `shout:${order}`,
+            label: `Shout: ${SHOUT_LABEL[order]}${order === 'attack' ? ' TARGET' : ''}`,
+            hotkey: 'Menu',
+            desc: SHOUT_DESC[order],
+            enabled: canPay,
+            reason: 'Needs a bonus action.',
+            run: () => this.beginShout(order),
+          });
+        }
       }
     }
 
@@ -9828,6 +10004,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (!this.humanActive || this.busy) return;
+    if (this.online && (!this.isLocalTurn() || this.reactionAiming)) return;
     // While commanding a summon, "End turn" instead releases the puppet and
     // returns control to the owner (whose own turn is still in progress).
     if (this.puppet) {
@@ -9959,18 +10136,20 @@ export class GameScene extends Phaser.Scene {
     this.submitTurn({ t: 'item-drop', itemId });
   }
 
-  /** Equip a bag item into its own slot (bonus action), chosen from the inventory. */
-  private equipItem(itemId: ItemId): void {
+  /** Equip a bag item into its own slot (bonus action), swapping out what is in the way. */
+  private equipItem(itemId: ItemId, replace?: ItemId): void {
     if (!this.humanActiveOrInventory) return;
     const me = this.gs.current;
     if (me.swordFormLocked())
       return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
     if (!me.bag.includes(itemId)) return;
-    if (!me.canEquipFromBag(itemId)) {
+    const off = me.displacedBy(itemId, replace);
+    if (!off) {
       const slot = getItem(itemId).slot;
       return this.flashHint(
-        slot === 'hand'
-          ? 'Both hands are full — unequip something first.'
+        me.tooHeavyToWear(itemId) ? 'Wearing that would put you over your carry limit. Drop something first.'
+          : slot === 'hand' ? 'Your hands hold something bound that cannot be put away.'
+          : slot === 'accessory' ? 'Your accessories are bound and cannot come off.'
           : `Your ${slot} slot is taken by something you cannot remove.`
       );
     }
@@ -9978,19 +10157,19 @@ export class GameScene extends Phaser.Scene {
       return this.flashHint('Equipping an item needs a bonus action.');
     this.closeInventory();
     this.resetSelection();
-    this.submitTurn({ t: 'item-equip', itemId });
+    this.submitTurn(replace && off.includes(replace) ? { t: 'item-equip', itemId, replace } : { t: 'item-equip', itemId });
   }
 
-  /** Stow a held item back into the bag (bonus action), chosen from the inventory. */
+  /** Stow a held or worn item back into the bag (bonus action), chosen from the inventory. */
   private unequipItem(itemId: ItemId): void {
     if (!this.humanActiveOrInventory) return;
     const me = this.gs.current;
     if (me.swordFormLocked())
       return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
-    if (!me.hands.includes(itemId)) return;
     if (getItem(itemId).permanentlyBinding)
       return this.flashHint(`${getItem(itemId).name} is permanently bound.`);
-    if (!this.packRoomFor(me, itemId)) return this.flashHint('No room in the pack.');
+    if (!me.canStow(itemId)) return;
+    if (!me.torchSpentOnStow(itemId) && this.explorationCombat && !packCanStow(me, itemId)) return this.flashHint('No room in the pack.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Unequipping an item needs a bonus action.');
     this.closeInventory();
@@ -10002,7 +10181,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Toggle the inventory overlay open/closed. Opening it is free. */
   private toggleInventory(): void {
-    if (this.mode === 'inventory') {
+    if (this.mode === 'inventory' || this.mineInventoryOpen) {
       this.closeInventory();
       return;
     }
@@ -10013,6 +10192,7 @@ export class GameScene extends Phaser.Scene {
     }
     if (fromMineMap) this.minePanel?.setVisible(false);
     this.buildInventoryCabinet(fromMineMap);
+    this.mineInventoryOpen = fromMineMap;
     this.mode = 'inventory';
     this.tutorialNotify({ k: 'panel', panel: 'inventory' });
     this.redraw();
@@ -10021,9 +10201,13 @@ export class GameScene extends Phaser.Scene {
   private closeInventory(): void {
     this.invPanel?.destroy();
     this.invPanel = undefined;
-    if (this.mode === 'inventory') {
-      this.mode = this.mineMapVisible ? 'shop' : 'idle';
-      if (this.mineMapVisible) this.minePanel?.setVisible(true);
+    if (this.mineInventoryOpen) {
+      // Online the party may have walked on meanwhile: back to whatever mine window is up now.
+      this.mineInventoryOpen = false;
+      this.mode = 'shop';
+      this.minePanel?.setVisible(true);
+    } else if (this.mode === 'inventory') {
+      this.mode = 'idle';
     }
     this.tutorialNotify({ k: 'panel', panel: 'inventory-closed' });
     this.redraw();
@@ -10199,60 +10383,94 @@ export class GameScene extends Phaser.Scene {
     const item = (
       id: ItemId,
       location: string,
-      actions: InventoryItemView['actions'] = []
+      actions: InventoryItemView['actions'] = [],
+      count = 1,
     ): InventoryItemView => ({
       id,
       name: getItem(id).name,
       location,
       detail: getItem(id).blurb,
       actions: readOnly ? [] : actions,
+      count,
     });
+    const dropping = (id: ItemId): InventoryActionView['confirm'] => ({
+      title: `Drop ${getItem(id).name}?`,
+      body: `It falls at your feet${getItem(id).torchCombats != null ? ' and goes out' : ''}. You can pick it up again while you stand beside it. Costs a bonus action.`,
+      label: 'Drop It',
+    });
+    const handActions = (id: ItemId): InventoryItemView['actions'] => {
+      if (getItem(id).permanentlyBinding) return [];
+      const total = getItem(id).torchCombats ?? 0;
+      const unequip: InventoryActionView = mage.torchSpentOnStow(id)
+        ? {
+          kind: 'unequip', label: 'Put Out', tone: 'danger',
+          confirm: {
+            title: 'Put out the torch?',
+            body: `It has burned through a fight: once put out it is spent and gone, with ${mage.torchCombatsLeft} of its ${total} fights of light unused.`,
+            label: 'Put It Out',
+          },
+        }
+        : { kind: 'unequip', label: 'Unequip' };
+      return [unequip, { kind: 'drop-hand', label: 'Drop', tone: 'danger', confirm: dropping(id) }];
+    };
+    /** One row per kind, in the order first met. */
+    const grouped = (ids: readonly ItemId[]): [ItemId, number][] => {
+      const counts = new Map<ItemId, number>();
+      for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
+      return [...counts];
+    };
+    const wornLabel: Record<(typeof WORN_SLOTS)[number], string> = { head: 'Head', torso: 'Torso', cape: 'Cape', gloves: 'Gloves', boots: 'Boots' };
+    const stowable = (id: ItemId): InventoryItemView['actions'] =>
+      getItem(id).permanentlyBinding ? [] : [{ kind: 'unequip', label: 'Unequip' }];
     const equipment: InventoryItemView[] = [
-      ...mage.hands.map((id) => item(id, getItem(id).permanentlyBinding ? 'Held / bound' : 'Held',
-        getItem(id).permanentlyBinding
-          ? []
-          : [
-            { kind: 'unequip' as const, label: 'Unequip' },
-            { kind: 'drop-hand' as const, label: 'Drop', tone: 'danger' as const },
-          ])),
-      ...(mage.head ? [item(mage.head, 'Head')] : []),
-      ...(mage.torso ? [item(mage.torso, 'Torso')] : []),
-      ...(mage.boots ? [item(mage.boots, 'Boots')] : []),
+      ...mage.hands.map((id) => item(id, getItem(id).permanentlyBinding ? 'Held / bound' : 'Held', handActions(id))),
+      ...WORN_SLOTS.flatMap((slot) => {
+        const id = mage.worn(slot);
+        return id ? [item(id, getItem(id).permanentlyBinding ? `${wornLabel[slot]} / bound` : wornLabel[slot], stowable(id))] : [];
+      }),
       ...mage.accessories.map((id) => item(id, 'Accessory', [
-        { kind: 'drop-accessory', label: 'Drop', tone: 'danger' },
+        ...stowable(id),
+        { kind: 'drop-accessory', label: 'Take Off & Drop', tone: 'danger', confirm: dropping(id) },
       ])),
     ];
     const supplies: InventoryItemView[] = [
-      ...mage.bag.map((id) => item(id, 'In bag', [
-        { kind: 'equip', label: 'Equip', tone: 'positive' },
-      ])),
-      ...mage.utility.map((id) => {
+      ...grouped(mage.bag).map(([id, count]) => {
+        if (getItem(id).slot === 'utility') return item(id, 'In bag', [], count);
+        const off = mage.displacedBy(id) ?? [];
+        if (!off.length) return item(id, 'In bag', [{ kind: 'equip', label: 'Equip', tone: 'positive' }], count);
+        const names = off.map((other) => getItem(other).name).join(' and ');
+        const torch = off.some((other) => mage.torchSpentOnStow(other));
+        return item(id, 'In bag', [{
+          kind: 'equip', label: 'Swap In', tone: 'positive',
+          confirm: {
+            title: `Swap in ${getItem(id).name}?`,
+            body: `${names} ${off.length > 1 ? 'go' : 'goes'} ${torch ? 'out and is spent' : 'into your bag'}. One bonus action for the whole swap.`,
+            label: 'Swap (Bonus Action)',
+          },
+        }], count);
+      }),
+      ...grouped(mage.utility).map(([id, count]) => {
         const definition = getItem(id);
         const actions: InventoryItemView['actions'] = [];
         if (definition.potion) actions.push({ kind: 'consume', label: mage.readyConsumable === id ? 'Consume' : 'Ready', tone: 'positive' });
         if (definition.throwable) actions.push({ kind: 'throw', label: mage.readyConsumable === id ? 'Throw' : 'Ready' });
         if (mage.hasConsumablePouch() && mage.pouch.length < 3 && (definition.potion || definition.throwable))
-          actions.push({ kind: 'pouch-store', label: 'Store' });
+          actions.push({ kind: 'pouch-store', label: 'Into Pouch' });
         if (definition.hexzettel) actions.push({ kind: 'hex', label: `Loose (${hexManaCost(definition.hexzettel)} mana)`, tone: 'positive' });
-        return item(id, 'Supply', actions);
+        return { ...item(id, 'Supply', actions, count), tag: mage.readyConsumable === id ? 'READY' : undefined };
       }),
-      ...mage.pouch.map((id) => {
+      ...grouped(mage.pouch).map(([id, count]) => {
         const definition = getItem(id);
-        return item(id, `Pouch ${mage.pouch.length}/3`, [
-          ...(definition.potion ? [{ kind: 'consume' as const, label: 'Consume', tone: 'positive' as const }] : []),
-          ...(definition.throwable ? [{ kind: 'throw' as const, label: 'Throw' }] : []),
-          { kind: 'pouch-remove', label: 'Remove' },
-        ]);
+        return {
+          ...item(id, `Pouch ${mage.pouch.length}/3`, [
+            ...(definition.potion ? [{ kind: 'consume' as const, label: 'Consume', tone: 'positive' as const }] : []),
+            ...(definition.throwable ? [{ kind: 'throw' as const, label: 'Throw' }] : []),
+            { kind: 'pouch-remove', label: 'Out of Pouch' },
+          ], count),
+          tag: 'POUCH',
+        };
       }),
-      ...(mage.arrows > 0
-        ? [{
-          id: 'arrow' as ItemId,
-          name: `Arrows x${mage.arrows}`,
-          location: 'Ammunition',
-          detail: getItem('arrow' as ItemId).blurb,
-          actions: [],
-        }]
-        : []),
+      ...(mage.arrows > 0 ? [item('arrow' as ItemId, 'Ammunition', [], mage.arrows)] : []),
     ];
     const capacity = mage.carryCap();
     const load = !Number.isFinite(capacity) ? ''
@@ -10279,18 +10497,18 @@ export class GameScene extends Phaser.Scene {
         detail: this.statusBlurb(status),
       })),
     }, {
-      perform: (kind, id) => this.performInventoryAction(kind, id),
+      perform: (kind, id, replace) => this.performInventoryAction(kind, id, replace),
       close: () => this.closeInventory(),
       tabChanged: (tab) => this.tutorialNotify({ k: 'inventory-tab', tab }),
     });
   }
 
-  private performInventoryAction(kind: InventoryActionKind, id: ItemId): void {
+  private performInventoryAction(kind: InventoryActionKind, id: ItemId, replace?: ItemId): void {
     switch (kind) {
       case 'consume': this.consumeItem(id); break;
       case 'throw': this.beginThrow(id); break;
       case 'hex': this.beginHex(id); break;
-      case 'equip': this.equipItem(id); break;
+      case 'equip': this.equipItem(id, replace); break;
       case 'pouch-store': this.movePouchItem(id, true); break;
       case 'pouch-remove': this.movePouchItem(id, false); break;
       case 'unequip': this.unequipItem(id); break;
@@ -10406,6 +10624,12 @@ export class GameScene extends Phaser.Scene {
     if (this.mode === 'aiming-cleave') {
       this.mode = 'busy';
       this.submitTurn({ t: 'cleave', x: pt.x, y: pt.y });
+      return;
+    }
+    if (this.mode === 'aiming-shout') {
+      const target = this.clickedMage(pt, null);
+      if (target) this.selectEnemyTarget(target);
+      else this.flashHint('Choose an enemy for your summons to attack.');
       return;
     }
     if (this.mode === 'aiming-edgelord-throw') {
@@ -11105,6 +11329,8 @@ export class GameScene extends Phaser.Scene {
       }
       case 'aiming-eldritch':
         return m.team !== me.team;
+      case 'aiming-shout':
+        return m.team !== me.team && !this.gs.isUntargetable(m, me);
       case 'aiming-staff':
         return !!this.staffPending && this.canStaffBoltAt(me, this.staffPending.item, this.staffPending.bolt, m);
       case 'aiming-discharge':
@@ -11149,6 +11375,12 @@ export class GameScene extends Phaser.Scene {
           this.mode = 'busy';
           this.submitTurn({ t: 'eldritch', choice: 'attack', target: this.seatOf(foe) });
         } else this.flashHint('Choose an enemy to strike.');
+        return;
+      case 'aiming-shout':
+        if (this.canTargetEnemyNow(foe)) {
+          this.mode = 'busy';
+          this.submitTurn({ t: 'shout', order: 'attack', target: this.seatOf(foe) });
+        } else this.flashHint('Choose an enemy for your summons to attack.');
         return;
       case 'aiming-staff': {
         const pending = this.staffPending;
@@ -13881,6 +14113,7 @@ export class GameScene extends Phaser.Scene {
 
     // HUD text.
     this.drawHud();
+    this.drawHexEmblems();
 
     // Docked enemy target list (kept in sync with who is alive / targetable).
     this.refreshTargetList();
@@ -16848,6 +17081,88 @@ export class GameScene extends Phaser.Scene {
 
   private turnBanner?: Phaser.GameObjects.Container;
 
+  private emblemLayer?: Phaser.GameObjects.Container;
+  private emblemKey = '';
+  private emblemHits: { x: number; y: number; size: number; text: string }[] = [];
+
+  /** Hexcraft laws holding the field, as emblems under the turn order; hover one for its rules. */
+  private drawHexEmblems(): void {
+    const viewer = this.viewMage;
+    const laws = this.gs.isOver ? [] : this.gs.hexcraftGlobals.filter((effect) => effect.roundsLeft > 0);
+    const key = laws.map((effect) => `${effect.kind}:${effect.roundsLeft}:${effect.owner === viewer.team}`).join('|');
+    if (this.emblemLayer?.active && key === this.emblemKey) return;
+    this.emblemKey = key;
+    this.emblemLayer?.destroy();
+    this.emblemLayer = this.add.container(0, 0).setDepth(47);
+    this.emblemHits = [];
+    const size = 38;
+    const gap = 6;
+    const perRow = 8;
+    const x0 = FIELD.x + 6;
+    const y0 = FIELD.y + 40;
+    laws.slice(0, perRow * 2).forEach((effect, index) => {
+      const x = x0 + (index % perRow) * (size + gap);
+      const y = y0 + Math.floor(index / perRow) * (size + gap);
+      const ours = effect.owner === viewer.team;
+      const tone = ours ? COLORS.team1 : COLORS.team2;
+      const name = effect.kind === 'mindShadow'
+        ? 'Mind Shadow'
+        : effect.kind === 'curseCorrode'
+          ? 'Curse Corrode'
+          : HEX_LAW_NAMES[effect.kind];
+      const rules = effect.kind === 'mindShadow'
+        ? 'Shadow and sanity damage deal 2 more.'
+        : effect.kind === 'curseCorrode'
+          ? 'Any unit carrying a DoT is slowed by 75% for as long as it lasts, and each DoT tick also deals 1d3 corrosive damage.'
+          : HEX_LAW_TEXT[effect.kind] ?? '';
+      const caster = effect.ownerIndex != null ? this.gs.mages[effect.ownerIndex] : undefined;
+      const g = this.add.graphics();
+      g.fillStyle(MENU_COLOR.pitch, 0.85).fillRect(x + 2, y + 3, size, size);
+      g.fillStyle(MENU_COLOR.woodDeep, 0.95).fillRect(x, y, size, size);
+      g.lineStyle(2, tone, 1).strokeRect(x + 1, y + 1, size - 2, size - 2);
+      g.lineStyle(1, MENU_COLOR.brassLight, 0.5).strokeRect(x + 4.5, y + 4.5, size - 9, size - 9);
+      g.fillStyle(tone, 1).fillCircle(x + size - 4, y + size - 4, 8);
+      const initials = name
+        .replace(/^The /, '')
+        .split(/\s+/)
+        .map((word) => word[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase();
+      const glyph = this.add.text(x + size / 2 - 2, y + size / 2 - 2, initials, {
+        fontFamily: MENU_FONT.display,
+        fontSize: '15px',
+        fontStyle: 'bold',
+        color: MENU_HEX.brassLight,
+      }).setOrigin(0.5);
+      const rounds = this.add.text(x + size - 4, y + size - 4, String(effect.roundsLeft), {
+        fontFamily: MENU_FONT.control,
+        fontSize: '10px',
+        fontStyle: 'bold',
+        color: MENU_HEX.ink,
+      }).setOrigin(0.5);
+      this.emblemLayer?.add([g, glyph, rounds]);
+      this.emblemHits.push({
+        x,
+        y,
+        size,
+        text: [
+          `${name}  ·  ${effect.roundsLeft} round${effect.roundsLeft === 1 ? '' : 's'} left`,
+          `${ours ? 'Your side' : 'Foes'}${caster ? ` · laid by ${caster.name}` : ''}`,
+          rules,
+        ].filter(Boolean).join('\n'),
+      });
+    });
+    const hidden = laws.length - perRow * 2;
+    if (hidden > 0) {
+      this.emblemLayer.add(this.add.text(x0, y0 + 2 * (size + gap), `+${hidden} more`, {
+        fontFamily: MENU_FONT.control,
+        fontSize: '11px',
+        color: MENU_HEX.boneDim,
+      }));
+    }
+  }
+
   /** A sweep of the acting unit's name, so a turn change is felt, not read. */
   private showTurnBanner(owner: Mage): void {
     this.turnBanner?.destroy();
@@ -17116,17 +17431,8 @@ export class GameScene extends Phaser.Scene {
       const needlepoint = this.gs.needlepointDomains.length
         ? `   ◈ NEEDLEPOINT ${Math.max(...this.gs.needlepointDomains.map((domain) => domain.roundsLeft))}`
         : '';
-      const hexcraft = this.gs.hexcraftGlobals
-        .map((effect) =>
-          effect.kind === 'mindShadow'
-            ? `MIND SHADOW ${effect.roundsLeft}`
-            : effect.kind === 'curseCorrode'
-              ? `CURSE CORRODE ${effect.roundsLeft}`
-              : `${HEX_LAW_NAMES[effect.kind].toUpperCase()} ${effect.roundsLeft}`
-        )
-        .map((label) => `   ◈ ${label}`)
-        .join('');
-      const state = `${swap}${needlepoint}${hexcraft}${this.desecrationHud()}`.trim();
+      const steering = this.puppet ? `◈ E: BACK TO ${this.puppet.owner.name.toUpperCase()}   ` : '';
+      const state = `${steering}${swap}${needlepoint}${this.desecrationHud()}`.trim();
       this.turnText
         .setFontSize(state ? '13px' : '17px')
         .setText(this.gs.isOver
@@ -17321,6 +17627,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   private updateHover(): void {
+    const emblem = this.emblemHits.find((hit) =>
+      this.pointer.x >= hit.x && this.pointer.x <= hit.x + hit.size && this.pointer.y >= hit.y && this.pointer.y <= hit.y + hit.size);
+    if (emblem) {
+      this.tooltip.setText(emblem.text).setPosition(emblem.x, emblem.y + emblem.size + 6).setVisible(true);
+      return;
+    }
     this.hoverGfx.clear();
     for (const tok of this.stackTokens) {
       if (dist(this.pointer, tok) <= tok.r + 2) {
@@ -17525,6 +17837,8 @@ export class GameScene extends Phaser.Scene {
    * too far from where the player is looking to be noticed.
    */
   private flashHint(msg: string, sticky = false, tone: 'deny' | 'info' = 'deny'): void {
+    // The hint line sits under the inventory, so the inventory says it too.
+    if (this.invPanel instanceof InventoryView) this.invPanel.notice(msg);
     this.hintText.setText(msg).setColor(TEXT.warn);
     this.hintDim?.remove();
     this.hintDim = undefined;
@@ -17692,11 +18006,11 @@ export class GameScene extends Phaser.Scene {
     this.hideMinePanel();
   }
 
-  /** Pickaxes the party carries as items. */
+  /** Pickaxes the party carries as items, held, packed or among the supplies. */
   private carriedPickaxes(): number {
     return this.gs.mages
       .filter((mage) => mage.team === 1 && !mage.isSummon)
-      .reduce((sum, mage) => sum + mage.bag.filter((id) => id === 'pickaxe').length, 0);
+      .reduce((sum, mage) => sum + [...mage.hands, ...mage.bag, ...mage.utility].filter((id) => id === 'pickaxe').length, 0);
   }
 
   /** Carried pickaxes that broke in the Mines are gone; the worn one always breaks first. */
@@ -17725,7 +18039,8 @@ export class GameScene extends Phaser.Scene {
       const survivors = fighters.filter((m) => m.alive);
       if (this.dungeon === 'mines') this.dropBrokenPickaxes(survivors);
       combat.run.party = mergeFightParty(combat.run.party, fighters);
-      combat.run.gold = Math.round((combat.run.gold + this.swamprunGold) * 10) / 10;
+      combat.run.summons = captureSummons(this.gs.mages);
+      combat.run.gold = Math.round((combat.run.gold + this.swamprunGold) * 100) / 100;
       combat.run.level = this.runLevel;
       combat.run.xp = this.runXp;
       syncPendingLevels(combat.run);

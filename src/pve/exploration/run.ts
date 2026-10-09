@@ -83,6 +83,8 @@ export interface ExplorationRun {
   gold: number;
   /** The party, stored as a one-scene Scenario so it round-trips through JSON. */
   party: Scenario;
+  /** Summons following the party from fight to fight until it enters a town (see coop.ts). */
+  summons: Scenario | null;
   /** The party is still choosing classes, words and weapons in Kerusai. */
   creating: boolean;
   /** Secrets uncovered, wilds mapped, bosses felled. */
@@ -136,6 +138,7 @@ export function createRun(seed: number, party: Scenario, options: { creating?: b
     searched: [],
     gold: Math.round(START_PURSE * Math.max(1, party.entities.length) * 10) / 10,
     party,
+    summons: null,
     creating: options.creating ?? false,
     flags: [],
     visited: [START_PLACE],

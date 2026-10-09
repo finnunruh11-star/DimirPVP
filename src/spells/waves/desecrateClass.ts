@@ -54,14 +54,14 @@ function wornGround(
   return {
     name,
     actionType: 'main',
-    range: 0,
-    targeting: 'self',
+    range: R(8),
+    targeting: 'any',
     dc: o.dc,
     noCastSprite: true,
     description: o.text,
     visual: { preset: 'conjure', color: o.color, size: 30, speed: 1 },
     cast(ctx) {
-      const wearer = ctx.caster;
+      const wearer = ctx.target ?? ctx.caster;
       const index = ctx.game.mages.indexOf(wearer);
       const turns = o.turns(ctx) * (ctx.crit ? 2 : 1);
       ctx.game.desecrationFields = ctx.game.desecrationFields.filter((f) => !(f.name === name && f.carrierIndex === index));

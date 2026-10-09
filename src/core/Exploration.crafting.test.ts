@@ -83,6 +83,27 @@ const FORGE = Object.values(SHOPS).find((shop) => shop.services.includes('forge'
 const NOT_A_FORGE = Object.values(SHOPS).find((shop) => !shop.services.includes('forge'))!;
 
 const tests: [name: string, run: () => void | Promise<void>][] = [
+  ['crafting draws materials from every party member and storage compartment', () => {
+    const run = workshopRun();
+    withParty(run, (_leader, [smith, healer]) => {
+      smith.bag = [];
+      smith.utility = ['oreIron'];
+      healer.bag = ['oreIron'];
+      healer.utility = ['gemRuby'];
+    });
+    const result = craftItem(run, FORGE.id, SWORD, 'objects');
+    assert(result.ok, result.message);
+    const [smith, healer] = partyOf(run);
+    equal([smith.utility, healer.bag, healer.utility], [[], [], []], 'materials consumed from their owners');
+    equal(smith.mana, 6, 'only the smith pays mana');
+    assert([...smith.bag, ...smith.hands].includes(result.item!), 'smith receives the item');
+    const failed = workshopRun();
+    withParty(failed, (_leader, [smith, healer]) => { smith.mana = 0; healer.utility.push('gemRuby'); });
+    const before = JSON.stringify(failed.party.entities);
+    assert(!craftItem(failed, FORGE.id, SWORD, 'objects').ok, 'not enough mana');
+    equal(JSON.stringify(failed.party.entities), before, 'a rejected craft consumes nothing');
+  }],
+
   ['two d20, the higher counts; a pair counts 26 and a 20 counts 22', () => {
     equal([craftRoll(3, 17), craftRoll(17, 3), craftRoll(20, 5), craftRoll(1, 1), craftRoll(20, 20)], [17, 17, 22, 26, 26], 'rolls');
     equal(rollChance(1), 1, 'every roll counts at least 1');
@@ -538,12 +559,13 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     withParty(run, (_leader, party) => {
       party[0].calling = 'life';
       party[1].calling = 'objects';
+      party[1].mana = 10;
     });
     equal(craftersIn(run).map((mage) => mage.name), ['Healer'], 'only the Objects calling can use the bench');
     equal(craftersIn(run, 'objects'), [], 'the former Objects mage cannot use the bench');
     equal(craftItem(run, FORGE.id, SWORD, null, 'objects').message, 'Only an Objects mage can craft.', 'the former Objects mage cannot craft');
     equal(applyIntent(run, 'objects', { op: 'craft', shop: FORGE.id, design: SWORD }).message, 'Only an Objects mage can craft.', 'the former Objects mage cannot craft over the wire');
-    equal(craftItem(run, FORGE.id, SWORD, 'life').message.startsWith('Needs 1x'), true, 'the Objects caller reaches material checks');
+    equal(craftItem(run, FORGE.id, SWORD, 'life').ok, true, 'the Objects caller uses shared materials');
   }],
 
   ['a craft travels the wire as an intent', () => {

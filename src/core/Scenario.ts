@@ -23,7 +23,7 @@ import { stormWordsCompatible, type ColorName } from './Colors';
 import type { MageClass } from './Classes';
 import { MAGE_CLASSES, toMageClass } from './Classes';
 import { asItemIds, getItem, type ItemId } from './Items';
-import { Mage } from './Mage';
+import { Mage, type SummonOrder } from './Mage';
 import type { Scarab, ScarabState } from './Scarab';
 import type { Status } from './Status';
 import { WORDS, type WordId } from './Words';
@@ -155,6 +155,8 @@ export interface ScenarioEntity {
     bag: ItemId[];
     head: ItemId | null;
     torso: ItemId | null;
+    cape?: ItemId | null;
+    gloves?: ItemId | null;
     boots: ItemId | null;
     accessories: ItemId[];
     utility: ItemId[];
@@ -183,7 +185,7 @@ export interface ScenarioEntity {
     shoulder?: 0 | 1;
     attachedToIndex?: number;
     moveUnits?: number;
-    order?: { kind: 'move' | 'attack' | 'follow' | 'sentinel' | 'flee'; x?: number; y?: number; targetIndex?: number; persistent?: boolean };
+    order?: SummonOrder;
   };
   /** Index-based links to other entities in this same scenario. */
   links: {
@@ -312,6 +314,8 @@ function captureEntity(m: Mage, index: Map<Mage, number>): ScenarioEntity {
       bag: [...m.bag],
       head: m.head,
       torso: m.torso,
+      cape: m.cape,
+      gloves: m.gloves,
       boots: m.boots,
       accessories: [...m.accessories],
       utility: [...m.utility],
@@ -353,15 +357,7 @@ function captureEntity(m: Mage, index: Map<Mage, number>): ScenarioEntity {
         shoulder: m.summonShoulder,
         attachedToIndex: m.attachedToIndex,
         moveUnits: m.summonMoveUnits,
-        order: m.summonOrder
-          ? {
-            kind: m.summonOrder.kind,
-            x: m.summonOrder.point?.x,
-            y: m.summonOrder.point?.y,
-            targetIndex: m.summonOrder.targetIndex,
-            persistent: m.summonOrder.persistent,
-          }
-          : undefined,
+        order: m.summonOrder ? { ...m.summonOrder } : undefined,
       }
       : undefined,
     links: {
@@ -479,15 +475,13 @@ function entityIndex(value: unknown, count: number): number | undefined {
   return value >= 0 && value < count ? value : undefined;
 }
 
-function parseSummonOrder(raw: Record<string, unknown>): NonNullable<NonNullable<ScenarioEntity['summon']>['order']> {
-  const kind = raw.kind === 'attack' || raw.kind === 'follow' || raw.kind === 'sentinel' || raw.kind === 'flee' ? raw.kind : 'move';
-  const hasPoint = typeof raw.x === 'number' && typeof raw.y === 'number';
+function parseSummonOrder(raw: Record<string, unknown>): SummonOrder | undefined {
+  const kind = raw.kind === 'return' || raw.kind === 'flee' || raw.kind === 'attack' || raw.kind === 'anyone' ? raw.kind : undefined;
+  if (!kind) return undefined;
   return {
     kind,
-    x: hasPoint ? num(raw.x, 0, FIELD.x, FIELD.x + FIELD.w) : undefined,
-    y: hasPoint ? num(raw.y, 0, FIELD.y, FIELD.y + FIELD.h) : undefined,
     targetIndex: entityIndex(raw.targetIndex, MAX_ENTITIES),
-    persistent: raw.persistent === true,
+    turnsLeft: typeof raw.turnsLeft === 'number' ? int(raw.turnsLeft, 1, 1, 9) : undefined,
   };
 }
 
@@ -606,6 +600,8 @@ function parseEntity(raw: unknown): ScenarioEntity {
       bag: items(gear.bag),
       head: item(gear.head),
       torso: item(gear.torso),
+      cape: item(gear.cape),
+      gloves: item(gear.gloves),
       boots: item(gear.boots),
       accessories: items(gear.accessories).slice(0, 2),
       utility: items(gear.utility),
@@ -811,8 +807,11 @@ function buildMage(e: ScenarioEntity, rng: Dice): Mage {
   m.bag = [...e.gear.bag];
   m.head = e.gear.head;
   m.torso = e.gear.torso;
+  m.cape = e.gear.cape ?? null;
+  m.gloves = e.gear.gloves ?? null;
   m.boots = e.gear.boots;
   m.accessories = [...e.gear.accessories];
+  m.normalizeWorn();
   m.utility = [...e.gear.utility];
   m.pouch = m.hasConsumablePouch() ? [...(e.gear.pouch ?? [])] : [];
   m.readyConsumable = e.gear.readyConsumable && m.utility.includes(e.gear.readyConsumable) &&
@@ -857,16 +856,7 @@ function buildMage(e: ScenarioEntity, rng: Dice): Mage {
     m.summonShoulder = e.summon.shoulder;
     m.attachedToIndex = e.summon.attachedToIndex;
     m.summonMoveUnits = e.summon.moveUnits;
-    m.summonOrder = e.summon.order
-      ? {
-        kind: e.summon.order.kind,
-        point:
-          e.summon.order.x !== undefined && e.summon.order.y !== undefined
-            ? { x: e.summon.order.x, y: e.summon.order.y }
-            : undefined,
-        targetIndex: e.summon.order.targetIndex,
-      }
-      : undefined;
+    m.summonOrder = e.summon.order ? { ...e.summon.order } : undefined;
     // A strike rider is a function, so it is rebuilt from the summon's kind.
     if (e.summon.kind) attachSummonRider(m, e.summon.kind);
   }

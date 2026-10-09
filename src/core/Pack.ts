@@ -3,7 +3,7 @@
 // Materials and everyday items stack 20 to a slot, gear and tools one. Worn gear,
 // bags and key items take no slot. Pure: used by shops, loot and the UI alike.
 
-import { getItem, SLOT_CAPS, type ItemDef, type ItemId } from './Items';
+import { getItem, isWornSlot, SLOT_CAPS, WORN_SLOTS, type ItemDef, type ItemId, type WornSlot } from './Items';
 import type { Mage } from './Mage';
 
 export const BASE_PACK_SLOTS = 10;
@@ -77,7 +77,7 @@ export function packFits(mage: Mage, adds: readonly ItemId[] = [], removes: read
   }
   let hands = mage.hands.length;
   let accessories = mage.accessories.length;
-  const worn: Record<'head' | 'torso' | 'boots', boolean> = { head: !!mage.head, torso: !!mage.torso, boots: !!mage.boots };
+  const worn = new Set<WornSlot>(WORN_SLOTS.filter((slot) => !!mage.worn(slot)));
   for (const id of adds) {
     const def = getItem(id);
     if (def.ammo) {
@@ -92,8 +92,8 @@ export function packFits(mage: Mage, adds: readonly ItemId[] = [], removes: read
       accessories += 1;
       continue;
     }
-    if ((def.slot === 'head' || def.slot === 'torso' || def.slot === 'boots') && !worn[def.slot]) {
-      worn[def.slot] = true;
+    if (isWornSlot(def.slot) && !worn.has(def.slot)) {
+      worn.add(def.slot);
       continue;
     }
     items.push(id);

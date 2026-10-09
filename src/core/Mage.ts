@@ -28,7 +28,7 @@ import type { DieResult, StatKey } from './Stats';
 import { STAT_ORDER } from './Stats';
 import type { DamageType } from './Damage';
 import type { ItemId, WeaponMod, ShieldMod, CastThrough } from './Items';
-import { getItem, carryCapacity, SLOT_CAPS } from './Items';
+import { getItem, carryCapacity, isWornSlot, SLOT_CAPS, WORN_SLOTS, type WornSlot } from './Items';
 import type {
   ForgetStatus,
   InvisibilityStatus,
@@ -56,6 +56,17 @@ export interface ActionPool {
   move: number;
   main: number;
   bonus: number;
+}
+
+/** A command shouted to every summon at once; it stands until another replaces it. */
+export type SummonOrderKind = 'return' | 'flee' | 'attack' | 'anyone';
+
+export interface SummonOrder {
+  kind: SummonOrderKind;
+  /** ATTACK TARGET: the chosen foe's index in game.mages. */
+  targetIndex?: number;
+  /** FLEE: owner turns the order still runs for. */
+  turnsLeft?: number;
 }
 
 /** Weights are summed in floating point (0.2 kg herbs): a load this close to the limit is at it, not over. */
@@ -154,6 +165,10 @@ export class Mage {
   head: ItemId | null = null;
   /** Worn torso armour / robe, if any. */
   torso: ItemId | null = null;
+  /** Worn cape, mantle or wings, if any. */
+  cape: ItemId | null = null;
+  /** Worn gloves, if any. */
+  gloves: ItemId | null = null;
   /** Worn boots, if any. */
   boots: ItemId | null = null;
   /** Equipped accessories / rings (max 2). */
@@ -409,9 +424,9 @@ export class Mage {
   /** Which kind of summon this is (e.g. 'ghost', 'archer', 'binder'). */
   summonKind?: string;
   summonShoulder?: 0 | 1;
-  /** Summon's standing order, set by Command; drives its autonomous behaviour. */
-  summonOrder?: { kind: 'move' | 'attack' | 'follow' | 'sentinel' | 'flee'; point?: Vec2; targetIndex?: number; persistent?: boolean };
-  /** `GameState.turnSeq` of the last turn this summon carried out its order. */
+  /** Summon's standing order, set by a shouted command; it acts on it at the end of its owner's turn. */
+  summonOrder?: SummonOrder;
+  /** `GameState.turnSeq` of the last turn this summon was controlled (once per turn). */
   summonActedSeq?: number;
   /** A summon's own move budget (range-units per command step). */
   summonMoveUnits?: number;
@@ -1255,10 +1270,51 @@ export class Mage {
   /** Every worn / carried item (for stat sums; arrow ammo is tracked separately). */
   equippedItems(): ItemId[] {
     const out: ItemId[] = [...this.hands, ...this.accessories, ...this.utility];
-    if (this.head) out.push(this.head);
-    if (this.torso) out.push(this.torso);
-    if (this.boots) out.push(this.boots);
+    for (const slot of WORN_SLOTS) {
+      const id = this[slot];
+      if (id) out.push(id);
+    }
     return out;
+  }
+
+  /** What is worn in a single-piece slot. */
+  worn(slot: WornSlot): ItemId | null {
+    return this[slot];
+  }
+
+  setWorn(slot: WornSlot, id: ItemId | null): void {
+    this[slot] = id;
+  }
+
+  /** The single-piece slot holding `id`, if it is worn in one. */
+  wornSlotOf(id: ItemId): WornSlot | null {
+    return WORN_SLOTS.find((slot) => this[slot] === id) ?? null;
+  }
+
+  /**
+   * Put worn gear where its item now belongs: older saves kept capes on the
+   * torso and gloves among the accessories. Anything displaced goes to the bag.
+   */
+  normalizeWorn(): void {
+    const misplaced: ItemId[] = [];
+    for (const slot of WORN_SLOTS) {
+      const id = this[slot];
+      if (id && getItem(id).slot !== slot) {
+        this[slot] = null;
+        misplaced.push(id);
+      }
+    }
+    this.accessories = this.accessories.filter((id) => {
+      if (getItem(id).slot === 'accessory') return true;
+      misplaced.push(id);
+      return false;
+    });
+    for (const id of misplaced) {
+      const slot = getItem(id).slot;
+      if (isWornSlot(slot) && !this[slot]) this[slot] = id;
+      else if (slot === 'accessory' && this.accessories.length < SLOT_CAPS.accessory) this.accessories.push(id);
+      else this.bag.push(id);
+    }
   }
 
   /** Sum a numeric property across all equipped items. */
@@ -1480,7 +1536,7 @@ export class Mage {
 
   /** Does this mage wear Wings of Deaths Angel? */
   hasDeathsAngelWings(): boolean {
-    return !!this.torso && !!getItem(this.torso).deathsAngelWings;
+    return !!this.cape && !!getItem(this.cape).deathsAngelWings;
   }
 
   /** Dagger of Shadow traits while the weapon is held. */
@@ -1669,9 +1725,10 @@ export class Mage {
   carriedWeight(): number {
     const weigh = (ids: readonly ItemId[]): number => ids.reduce((acc, id) => acc + getItem(id).weight, 0);
     const worn = [...this.hands, ...this.accessories];
-    if (this.head) worn.push(this.head);
-    if (this.torso) worn.push(this.torso);
-    if (this.boots) worn.push(this.boots);
+    for (const slot of WORN_SLOTS) {
+      const id = this[slot];
+      if (id) worn.push(id);
+    }
     const stowed = [...this.utility, ...this.bag, ...this.pouch];
     const bags = stowed.filter((id) => !!getItem(id).pack);
     const inside = stowed.filter((id) => !getItem(id).pack);
@@ -1758,7 +1815,7 @@ export class Mage {
       this.hands.some((held) => !!getItem(held).twoHanded) ||
       (!!getItem(id).twoHanded && this.hands.length > 0)
     ) return false;
-    if (this.carriedWeight() > this.carryCap()) return false;
+    if (this.tooHeavyToWear(id)) return false;
     this.bag.splice(i, 1);
     this.hands.push(id);
     // Lighting a torch starts its burn timer (measured in combats).
@@ -1773,47 +1830,87 @@ export class Mage {
     if (def.slot === 'hand') return this.equipHand(id);
     const i = this.bag.indexOf(id);
     if (i < 0) return false;
-    if (this.carriedWeight() > this.carryCap()) return false;
+    if (this.tooHeavyToWear(id)) return false;
     if (def.slot === 'accessory') {
       if (this.accessories.length >= SLOT_CAPS.accessory) return false;
       this.bag.splice(i, 1);
       this.accessories.push(id);
       return true;
     }
-    const worn = def.slot === 'head' ? this.head : def.slot === 'torso' ? this.torso : def.slot === 'boots' ? this.boots : null;
-    if (def.slot !== 'head' && def.slot !== 'torso' && def.slot !== 'boots') return false;
+    if (!isWornSlot(def.slot)) return false;
+    const slot = def.slot;
+    const worn = this[slot];
     if (worn === id) return false;
     if (worn && getItem(worn).permanentlyBinding) return false;
     this.bag.splice(i, 1);
     if (worn) this.bag.push(worn);
-    if (def.slot === 'head') this.head = id;
-    else if (def.slot === 'torso') this.torso = id;
-    else this.boots = id;
+    this[slot] = id;
     return true;
+  }
+
+  /**
+   * Taking `id` out of the bag to wear it would tip the load over capacity.
+   * Worn gear weighs in full, packed gear can weigh less (a Bag of Holding).
+   */
+  tooHeavyToWear(id: ItemId): boolean {
+    const gain = getItem(id).weight * (1 - this.packWeightMult());
+    return gain > 0 && this.carriedWeight() + gain > this.carryCap() + CARRY_EPSILON;
   }
 
   /** Whether this mage could equip `id` from the bag right now. */
   canEquipFromBag(id: ItemId): boolean {
     const def = getItem(id);
     if (!this.bag.includes(id)) return false;
-    if (this.carriedWeight() > this.carryCap()) return false;
+    if (this.tooHeavyToWear(id)) return false;
     if (def.slot === 'hand') return this.hasFreeHand() && !(def.twoHanded && this.hands.length > 0);
     if (def.slot === 'accessory') return this.accessories.length < SLOT_CAPS.accessory;
-    if (def.slot === 'utility') return false;
-    const worn = def.slot === 'head' ? this.head : def.slot === 'torso' ? this.torso : this.boots;
+    if (!isWornSlot(def.slot)) return false;
+    const worn = this[def.slot];
     return !(worn && getItem(worn).permanentlyBinding);
   }
 
   /**
-   * Stow a held hand item back into the bag. Returns success. A lit torch is
-   * used up when stowed (it is snuffed and discarded, not returned to the bag).
+   * What has to come off for bag item `id` to go on: [] when there is room,
+   * null when nothing can make room. `replace` picks which hand or accessory gives way.
+   */
+  displacedBy(id: ItemId, replace?: ItemId | null): ItemId[] | null {
+    const def = getItem(id);
+    if (!this.bag.includes(id) || this.tooHeavyToWear(id)) return null;
+    if (this.canEquipFromBag(id)) return [];
+    const movable = (other: ItemId): boolean => !this.sabotagedItems.has(other) && !getItem(other).permanentlyBinding;
+    const pick = (list: readonly ItemId[]): ItemId[] | null => {
+      if (replace && list.includes(replace)) return movable(replace) ? [replace] : null;
+      const other = [...list].reverse().find(movable);
+      return other ? [other] : null;
+    };
+    if (def.slot === 'hand') {
+      if (def.twoHanded) return this.hands.every(movable) ? [...this.hands] : null;
+      const twoHanded = this.hands.find((held) => !!getItem(held).twoHanded);
+      if (twoHanded) return movable(twoHanded) ? [twoHanded] : null;
+      return pick(this.hands);
+    }
+    if (def.slot === 'accessory') return pick(this.accessories);
+    return null;
+  }
+
+  /** Put on bag item `id`, first stowing whatever is in its way. Returns success. */
+  swapIn(id: ItemId, replace?: ItemId | null): boolean {
+    const out = this.displacedBy(id, replace);
+    if (!out) return false;
+    for (const other of out) if (!this.stow(other)) return false;
+    return this.equipFromBag(id);
+  }
+
+  /**
+   * Stow a held hand item back into the bag. Returns success. A lit torch that
+   * has burned through a fight is used up when stowed; a fresh one goes back.
    */
   unequipHand(id: ItemId): boolean {
     const i = this.hands.indexOf(id);
     if (i < 0) return false;
     // Cursed or sabotaged items are bound in place and cannot be removed.
     if (this.sabotagedItems.has(id) || getItem(id).permanentlyBinding) return false;
-    if (this.carriedWeight() > this.carryCap()) return false;
+    const spent = this.torchSpentOnStow(id);
     this.hands.splice(i, 1);
     // A conjured bow (Veil Corrode Pierce, Objects) dissipates when unequipped.
     if (getItem(id).conjuredVeilBow) {
@@ -1825,10 +1922,32 @@ export class Mage {
       return true;
     }
     if (getItem(id).torchCombats != null) {
-      // Snuffing a torch consumes it — it does not go back into the bag.
       if (!this.hands.some((h) => getItem(h).torchCombats != null)) this.torchCombatsLeft = 0;
-      return true;
+      if (spent) return true;
     }
+    this.bag.push(id);
+    return true;
+  }
+
+  /** Would stowing held `id` snuff it for good? Only a torch that has already burned through a fight. */
+  torchSpentOnStow(id: ItemId): boolean {
+    const combats = getItem(id).torchCombats;
+    return combats != null && this.hands.includes(id) && this.torchCombatsLeft < combats;
+  }
+
+  /** Can worn or held `id` come off right now? */
+  canStow(id: ItemId): boolean {
+    if (this.sabotagedItems.has(id) || getItem(id).permanentlyBinding) return false;
+    return this.hands.includes(id) || this.accessories.includes(id) || !!this.wornSlotOf(id);
+  }
+
+  /** Take off anything worn or held and put it in the bag (a spent torch is gone). Returns success. */
+  stow(id: ItemId): boolean {
+    if (this.hands.includes(id)) return this.unequipHand(id);
+    if (!this.canStow(id)) return false;
+    const ring = this.accessories.indexOf(id);
+    if (ring >= 0) this.accessories.splice(ring, 1);
+    else this.setWorn(this.wornSlotOf(id)!, null);
     this.bag.push(id);
     return true;
   }

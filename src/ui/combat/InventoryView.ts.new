@@ -5,7 +5,7 @@
 
 import Phaser from 'phaser';
 import { playSound } from '../../audio';
-import { getItem, WORN_SLOTS, type ItemId } from '../../core/Items';
+import { getItem, type ItemId } from '../../core/Items';
 import { SceneInput } from '../../engine/SceneInput';
 import { CabinetButton, CabinetChip } from '../cabinet/controls';
 import { MENU_COLOR, MENU_FONT, MENU_HEX, addCabinetBackdrop, addSectionRule } from '../cabinet/theme';
@@ -16,10 +16,8 @@ import {
   addPanel,
   addPaperDoll,
   ConfirmDialog,
-  dollAccepts,
   dollEntries,
   DOLL_LABEL,
-  DragController,
   drawSocket,
   gridSpot,
   ItemTile,
@@ -28,10 +26,7 @@ import {
   TILE_PITCH,
   type DialogKey,
   type Direction,
-  type DollEntry,
   type DollSlot,
-  type DragPayload,
-  type DropTarget,
 } from '../inventory/kit';
 import { compareItems } from '../inventory/itemInfo';
 import { addJourneyStrip, type JourneyView } from '../pve/JourneyStrip';
@@ -76,7 +71,7 @@ export interface InventorySnapshot {
 }
 
 export interface InventoryActions {
-  perform(kind: InventoryActionKind, id: ItemId, replace?: ItemId): void;
+  perform(kind: InventoryActionKind, id: ItemId): void;
   close(): void;
   tabChanged?(tab: string): void;
 }
@@ -108,11 +103,7 @@ export class InventoryView extends Phaser.GameObjects.Container {
   private renderQueued = false;
   private footerTitle?: Phaser.GameObjects.Text;
   private footerBody?: Phaser.GameObjects.Text;
-  private primary: (() => void) | null = null;
   private readonly supplies: InventoryItemView[];
-  private readonly drag: DragController;
-  /** The doll as last drawn, to tell what a drop would displace. */
-  private doll: DollEntry[] = [];
 
   constructor(
     scene: Phaser.Scene,
@@ -122,7 +113,6 @@ export class InventoryView extends Phaser.GameObjects.Container {
     super(scene, 0, 0);
     scene.add.existing(this);
     this.setDepth(snapshot.readOnly ? 100 : 96);
-    this.drag = new DragController(scene, this.depth + 5, (payload, target) => this.dropped(payload, target));
     this.supplies = snapshot.supplies
       .map((item, index) => ({ item, index }))
       .sort((a, b) => compareItems(a.item.id, b.item.id) || a.index - b.index)
@@ -151,55 +141,8 @@ export class InventoryView extends Phaser.GameObjects.Container {
     this.disposed = true;
     this.dialog?.destroy();
     this.dialog = null;
-    this.drag.destroy();
     this.sceneInput.destroy();
     super.destroy(fromScene);
-  }
-
-  /** Gear let go over a doll slot (put it on) or over the bag (take it off): ask first, it costs a bonus action. */
-  private dropped(payload: DragPayload, target: DropTarget): void {
-    if (this.dialog || this.disposed || this.snapshot.readOnly) return;
-    const index = Number(payload.from.slice(payload.from.indexOf(':') + 1));
-    if (target.key === 'bag') {
-      const item = this.snapshot.equipment[index];
-      const action = item?.actions.find((entry) => entry.kind === 'unequip');
-      if (!item || !action) return;
-      const confirm = action.confirm ?? { title: `Unequip ${item.name}?`, body: 'It goes back into your bag.', label: 'Unequip' };
-      this.askBonus(item, action, confirm.title, confirm.body, confirm.label);
-      return;
-    }
-    const item = this.supplies[index];
-    const action = item?.actions.find((entry) => entry.kind === 'equip');
-    if (!item || !action) return;
-    const slot = target.key.slice('doll:'.length) as DollSlot;
-    const occupant = this.doll.find((entry) => entry.slot === slot)?.id ?? null;
-    const kind = getItem(item.id).slot;
-    const pair: DollSlot[] = kind === 'hand' ? ['main', 'off'] : kind === 'accessory' ? ['ring1', 'ring2'] : [slot];
-    const roomy = pair.length > 1 && !getItem(item.id).twoHanded && pair.some((other) => !this.doll.find((entry) => entry.slot === other)?.id);
-    const replace = occupant && !roomy ? occupant : undefined;
-    const swap = replace ? ` ${getItem(replace).name} comes off and goes into your bag.` : '';
-    this.askBonus(item, action, `Equip ${item.name}?`, `It goes on in your ${DOLL_LABEL[slot].toLowerCase()} slot.${swap}`, 'Equip', replace);
-  }
-
-  private askBonus(item: InventoryItemView, action: InventoryActionView, title: string, body: string, label: string, replace?: ItemId): void {
-    this.dialog = new ConfirmDialog(this.scene, this.depth + 5, {
-      title,
-      body: `${body}\n\nThis costs a bonus action.`,
-      icon: item.id,
-      choices: [{ label: `${label} (Bonus Action)`, tone: action.tone === 'danger' ? 'danger' : 'primary', run: () => this.actions.perform(action.kind, item.id, replace) }],
-      onClose: () => {
-        this.dialog = null;
-        if (!this.disposed) this.render();
-      },
-    });
-  }
-
-  /** Something the game refused: said in the footer until the next redraw. */
-  notice(message: string): void {
-    if (this.disposed) return;
-    playSound('ui.deny');
-    this.footerTitle?.setText('CANNOT DO THAT').setColor('#e6b55a');
-    this.footerBody?.setText(message).setColor(MENU_HEX.bone);
   }
 
   /** Esc while a question is open answers it with "no"; true when it did. */
@@ -239,8 +182,6 @@ export class InventoryView extends Phaser.GameObjects.Container {
     const keep = this.focus.currentKey;
     this.removeAll(true);
     this.focus = new SpatialFocus();
-    this.drag.clearTargets();
-    this.primary = null;
     const { scene, snapshot } = this;
     addCabinetBackdrop(scene, this);
     this.add([
@@ -301,58 +242,48 @@ export class InventoryView extends Phaser.GameObjects.Container {
       const at = rows.findIndex((row) => row.slot === slot);
       return at >= 0 ? rows.splice(at, 1)[0] : undefined;
     };
-    const bySlot = new Map<DollSlot, { item: InventoryItemView; index: number }>();
-    for (const slot of WORN_SLOTS) {
-      const row = take(slot);
-      if (row) bySlot.set(slot, row);
-    }
+    const head = take('head');
+    const torso = take('torso');
+    const boots = take('boots');
     const hands = [take('hand'), take('hand')].filter((row): row is NonNullable<typeof row> => !!row);
     const rings = [take('accessory'), take('accessory')].filter((row): row is NonNullable<typeof row> => !!row);
+    const bySlot = new Map<DollSlot, { item: InventoryItemView; index: number }>();
+    if (head) bySlot.set('head', head);
+    if (torso) bySlot.set('torso', torso);
+    if (boots) bySlot.set('boots', boots);
     if (hands[0]) bySlot.set('main', hands[0]);
     if (hands[1]) bySlot.set('off', hands[1]);
     if (rings[0]) bySlot.set('ring1', rings[0]);
     if (rings[1]) bySlot.set('ring2', rings[1]);
-    const wornId = (slot: DollSlot): ItemId | null => bySlot.get(slot)?.item.id ?? null;
     const entries = dollEntries({
-      head: wornId('head'),
-      torso: wornId('torso'),
-      cape: wornId('cape'),
-      gloves: wornId('gloves'),
-      boots: wornId('boots'),
+      head: head?.item.id ?? null,
+      torso: torso?.item.id ?? null,
+      boots: boots?.item.id ?? null,
       hands: hands.map((row) => row.item.id),
       accessories: rings.map((row) => row.item.id),
     });
-    this.doll = entries;
-    const live = !snapshot.readOnly;
     addPaperDoll(scene, this, DOLL.x + DOLL.w / 2, DOLL.y + 40, entries, (entry, x, y) => {
       const row = entry.ghost ? undefined : bySlot.get(entry.slot);
       const selection: Selection | null = row ? { from: 'equipment', index: row.index } : null;
-      const stowable = !!row && row.item.actions.some((action) => action.kind === 'unequip');
       const tile = new ItemTile(scene, x, y, {
         id: entry.id,
         ghost: entry.ghost,
+        placeholder: DOLL_LABEL[entry.slot].split(' ')[0],
         tag: row && /bound/i.test(row.item.location) ? 'BOUND' : entry.id && getItem(entry.id).twoHanded ? '2H' : undefined,
         tagColor: row && /bound/i.test(row.item.location) ? 0xc9503f : undefined,
         selected: !!row && this.selection?.from === 'equipment' && this.selection.index === row.index,
-        drag: live && stowable && row ? { controller: this.drag, payload: { id: row.item.id, from: `equipment:${row.index}` } } : undefined,
         onActivate: () => this.select(selection),
         onFocus: () => {
           if (this.focus.viaKeys && this.tab === 'items') this.select(selection, true);
         },
       });
       this.focus.add(tile, `doll:${entry.slot}`, x, y, TILE, TILE);
-      if (live) {
-        this.drag.addTarget({
-          key: `doll:${entry.slot}`, x, y, w: TILE, h: TILE,
-          accepts: (payload) => payload.from.startsWith('supplies:') && dollAccepts(entry.slot, payload.id),
-        });
-      }
       return tile;
     });
     const extra = rows.length ? `Also worn: ${rows.map((row) => row.item.name).join(', ')}` : '';
     this.add(scene.add.text(DOLL.x + 16, DOLL.y + DOLL.h - 104, [
       extra,
-      snapshot.readOnly ? 'Looking only: nothing can be changed from the map.' : 'Drag gear onto a slot to put it on, or into the bag to take it off.',
+      snapshot.readOnly ? 'Looking only: nothing can be changed from the map.' : 'Select a slot to see the item and what can be done with it.',
     ].filter(Boolean).join('\n\n'), {
       fontFamily: MENU_FONT.body, fontSize: '12px', color: MENU_HEX.boneDim, wordWrap: { width: DOLL.w - 32 }, lineSpacing: 2,
     }));
@@ -381,9 +312,6 @@ export class InventoryView extends Phaser.GameObjects.Container {
         tag: item.tag,
         tagColor: item.tag === 'READY' ? 0x8fdfa0 : 0xa98b50,
         selected: this.selection?.from === 'supplies' && this.selection.index === index,
-        drag: !this.snapshot.readOnly && item.actions.some((action) => action.kind === 'equip')
-          ? { controller: this.drag, payload: { id: item.id, from: `supplies:${index}` } }
-          : undefined,
         onActivate: () => this.select(selection),
         onFocus: () => {
           if (this.focus.viaKeys) this.select(selection, true);
@@ -392,12 +320,6 @@ export class InventoryView extends Phaser.GameObjects.Container {
       this.add(tile);
       this.focus.add(tile, `cell:${offset}`, at.x, at.y, TILE, TILE);
     });
-    if (!this.snapshot.readOnly) {
-      this.drag.addTarget({
-        key: 'bag', x: BAG.x, y: BAG.y, w: BAG.w, h: BAG.h,
-        accepts: (payload) => payload.from.startsWith('equipment:'),
-      });
-    }
     if (!items.length) {
       this.add(scene.add.text(BAG.x + BAG.w / 2, GRID.y + 150, 'The bag is empty.', {
         fontFamily: MENU_FONT.body, fontSize: '15px', color: MENU_HEX.boneDim, backgroundColor: '#0c0e0b', padding: { x: 8, y: 4 },
@@ -448,15 +370,13 @@ export class InventoryView extends Phaser.GameObjects.Container {
       const bx = x + col * (half + 10);
       const by = actionsTop + row * 46;
       const bw = wide ? w : half;
-      const run = (): void => this.act(item, action);
       const chip = new CabinetChip(scene, bx, by, {
         width: bw,
         height: 38,
         label: action.confirm ? `${action.label}...` : action.label,
         tone: action.tone === 'danger' ? 'danger' : action.tone === 'positive' ? 'positive' : 'normal',
-        onActivate: run,
+        onActivate: () => this.act(item, action),
       });
-      if (index === 0) this.primary = run;
       this.add(chip);
       this.focus.add(chip, `act:${index}`, bx, by, bw, 38);
     });

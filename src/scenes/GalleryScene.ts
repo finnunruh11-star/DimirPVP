@@ -27,7 +27,14 @@ import { CreativePrepView } from '../ui/prep/CreativePrepView';
 import { ItemDraftView } from '../ui/prep/ItemDraftView';
 import { StatAssignmentView } from '../ui/prep/StatAssignmentView';
 import { MinePromptView } from '../ui/pve/MinePromptView';
+import { PackView } from '../ui/pve/PackView';
+import { ShopView } from '../ui/pve/ShopView';
 import { SwampShopView } from '../ui/pve/SwampShopView';
+import { Mage } from '../core/Mage';
+import { localActions } from '../pve/exploration/intents';
+import { capturePartySnapshot } from '../pve/exploration/party';
+import { createRun, type ExplorationRun } from '../pve/exploration/run';
+import { SHOPS, shopById } from '../pve/exploration/shops';
 
 interface GalleryEntry {
   label: string;
@@ -201,10 +208,10 @@ export class GalleryScene extends Phaser.Scene {
           carry: 'Carry 8/16 kg',
           readOnly: false,
           equipment: [
-            { id: firstItem, name: 'Cabinet Blade', location: 'Held', detail: 'Representative equipped item.', actions: [{ kind: 'unequip', label: 'Unequip' }, { kind: 'drop-hand', label: 'Drop', tone: 'danger' }] },
+            { id: firstItem, name: 'Cabinet Blade', location: 'Held', detail: 'Representative equipped item.', actions: [{ kind: 'unequip', label: 'Unequip' }, { kind: 'drop-hand', label: 'Drop', tone: 'danger', confirm: { title: 'Drop it?', body: 'It falls at your feet. Costs a bonus action.', label: 'Drop It' } }] },
           ],
           supplies: [
-            { id: secondItem, name: 'Restorative Flask', location: 'Utility', detail: 'Representative carried supply.', actions: [{ kind: 'consume', label: 'Use', tone: 'positive' }] },
+            { id: secondItem, name: 'Restorative Flask', location: 'Utility', detail: 'Representative carried supply.', actions: [{ kind: 'consume', label: 'Use', tone: 'positive' }], count: 3 },
           ],
           statuses: [{ name: 'Veiled', duration: '2 turns', detail: 'Representative timed status effect.' }],
         }, { perform: () => undefined, close }),
@@ -341,7 +348,46 @@ export class GalleryScene extends Phaser.Scene {
           ],
         }, close),
       },
+      {
+        label: 'PACK',
+        detail: 'Paper doll, sorted pack grid, item card, and guarded drops.',
+        open: () => {
+          const run = this.sampleRun();
+          return new PackView(this, run, { changed: () => undefined, close, actions: localActions(run) });
+        },
+      },
+      {
+        label: 'SHOP COUNTER',
+        detail: 'Wares with prices, your goods, and counted sales.',
+        open: () => {
+          const run = this.sampleRun();
+          return new ShopView(this, run, shopById('capitol-apothecary') ?? Object.values(SHOPS)[0], {
+            townId: 'capitol', changed: () => undefined, close, actions: localActions(run),
+          });
+        },
+      },
     ];
+  }
+
+  /** A traveller mid-journey: dressed, armed, a torch lit, and a pack of supplies and ore. */
+  private sampleRun(): ExplorationRun {
+    const mage = new Mage({ name: 'Vale', isAI: false, team: 1, position: { x: 0, y: 0 }, loadout: ['shadow', 'mind', 'pierce', 'subtle'] });
+    mage.assignFlatStats(3);
+    mage.statStrength = 40;
+    const carried: ItemId[] = ['huntingBow', 'leatherCap', 'paddedJerkin', 'smallBag', 'consumablePouch', 'healthPotion', 'healthPotion', 'manaPotion',
+      'throwingDagger', 'oreIron', 'oreIron', 'oreIron', 'oreCopper', 'gemRuby', 'pickaxe', 'mineMap'];
+    for (const id of carried) if (ITEM_DEFS.some((def) => def.id === id)) mage.bag.push(id);
+    mage.equipFromBag('leatherCap');
+    mage.equipFromBag('paddedJerkin');
+    mage.bag.push('assassinsCloak', 'fightersGloves', 'tantrumGloves');
+    mage.equipFromBag('assassinsCloak');
+    mage.equipFromBag('fightersGloves');
+    mage.bag.push('torch');
+    mage.equipFromBag('torch');
+    mage.arrows = 34;
+    const run = createRun(7, capturePartySnapshot([mage]));
+    run.gold = 12.5;
+    return run;
   }
 
   private coreKit(): Phaser.GameObjects.Container {

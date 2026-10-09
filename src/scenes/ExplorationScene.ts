@@ -34,7 +34,8 @@ import { resolveLocale } from '../pve/exploration/locales';
 import { OPEN_WORLD_ID, openWorldCell, siteArrival } from '../pve/exploration/openWorld';
 import { capturePartySnapshot } from '../pve/exploration/party';
 import { createRun, stepDice, type ExplorationRun, type LocaleState } from '../pve/exploration/run';
-import { clearRun, loadRun, saveRun } from '../pve/exploration/save';
+import { clearRun, loadRun, saveRun, saveSlot } from '../pve/exploration/save';
+import { downloadRun } from '../ui/runFile';
 import type { SceneFight } from '../pve/exploration/sceneFight';
 import { SCENE_SALT, stageScene } from '../pve/exploration/scenes';
 import {
@@ -69,11 +70,13 @@ import {
   isPassable,
   placeAt,
   placeById,
+  placeNear,
   REGIONS,
   regionAt,
   START_PLACE,
   terrainAt,
   type DungeonId,
+  type Place,
   type RegionId,
   type WorldMap,
 } from '../pve/exploration/world';
@@ -136,6 +139,12 @@ export interface ExplorationCombatResult {
 
 const ROBBERY_TOLL = 0.25;
 const DRAG_SLOP = 8;
+/** Room the camera may scroll past the map's edges, so a corner can be pulled out from under the HUD. */
+const MAP_MARGIN = { x: 440, y: 380 };
+/** Clicking this many tiles from a town, mine or swamp aims at it. */
+const PLACE_REACH = 1;
+/** Where the party is headed stands out in the travel menu. */
+const DEST_HEX = '#ffd070';
 /** Real milliseconds a tile takes per hour it costs, and the bounds either side. */
 const STEP_MS_PER_HOUR = 1250;
 const STEP_MS = { min: 270, max: 700 };
@@ -421,7 +430,11 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       session.on('x-ahead', (message) => this.followAhead(message)),
       session.on('x-fx', (message) => {
         const call = this.readFx(message);
-        if (call) void this.playFx(call);
+        if (call) session.showing(this.playFx(call));
+      }),
+      session.on('x-bloodmoon', () => {
+        this.walking(false);
+        void this.hud?.bloodmoonRise();
       }),
       session.on('x-news', (message) => {
         if (typeof message.text === 'string') this.hud?.toast(message.text, 3600);
@@ -807,6 +820,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.trip = null;
     this.clearTripLine();
     saveRun(this.run);
+    AdventureSession.current?.send({ k: 'x-bloodmoon' });
     await this.hud?.bloodmoonRise();
     const zone: EncounterZone = regionAt(this.world, this.run.pos.x, this.run.pos.y);
     startAdventureFight(this, { mode: 'exploration', loadouts: [[], []], exploration: bloodmoonCombat(this.run, fight, zone) } satisfies MatchConfig);
@@ -857,6 +871,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       return;
     }
     if (!this.run.visited.includes(place.id)) this.run.visited.push(place.id);
+    this.run.pos = { x: place.x, y: place.y };
     saveRun(this.run);
     playSound('ui.confirm');
     this.cameras.main.fadeOut(240, 0, 0, 0);
@@ -884,7 +899,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.fx = new TravelFx(this, this.token);
     this.lightHour = -1;
     const cam = this.cameras.main;
-    cam.setBounds(0, 0, view.width, view.height);
+    cam.setBounds(-MAP_MARGIN.x, -MAP_MARGIN.y, view.width + MAP_MARGIN.x * 2, view.height + MAP_MARGIN.y * 2);
     cam.setZoom(1);
     cam.setRoundPixels(true);
     cam.startFollow(this.token, true, 0.15, 0.15);
@@ -999,7 +1014,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       cam.centerOn(view.width / 2, view.height / 2);
     } else {
       cam.setZoom(1);
-      cam.setBounds(0, 0, view.width, view.height);
+      cam.setBounds(-MAP_MARGIN.x, -MAP_MARGIN.y, view.width + MAP_MARGIN.x * 2, view.height + MAP_MARGIN.y * 2);
       cam.startFollow(this.token, true, 0.15, 0.15);
     }
   }
@@ -1009,9 +1024,12 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.cameras.main.startFollow(this.token, true, 0.15, 0.15);
   }
 
-  private pickTile(cell: Cell): void {
-    if (cell.x < 0 || cell.y < 0 || cell.x >= this.world.w || cell.y >= this.world.h) return;
+  private pickTile(clicked: Cell): void {
+    if (clicked.x < 0 || clicked.y < 0 || clicked.x >= this.world.w || clicked.y >= this.world.h) return;
     const session = AdventureSession.current;
+    const near = placeNear(clicked.x, clicked.y, PLACE_REACH);
+    const snap = near && !(near.x === this.run.pos.x && near.y === this.run.pos.y) && isPassable(this.world, near.x, near.y);
+    const cell = snap ? { x: near.x, y: near.y } : clicked;
     if (cell.x === this.run.pos.x && cell.y === this.run.pos.y) {
       this.clearRoute();
       return;
@@ -1114,6 +1132,12 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
 
   private hereTitle(): string {
     return describeTile(this.world, this.run.pos.x, this.run.pos.y);
+  }
+
+  /** The town, mine or swamp the party stands on or right beside. */
+  private placeHere(): Place | undefined {
+    const { x, y } = this.run.pos;
+    return placeAt(x, y) ?? placeNear(x, y, PLACE_REACH);
   }
 
   private refresh(): void {
@@ -1410,16 +1434,18 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     }
     const vote = council.travel[me];
     const route = vote?.dest ? this.route : null;
-    const place = placeAt(run.pos.x, run.pos.y);
+    const place = this.placeHere();
     const buttons: VoteRow[] = [];
     let rows: VoteRow[] = [];
     let text = 'Click the map to plan a trip, or click a route someone else planned to go their way.';
+    let title = this.hereTitle();
     const picks: Record<string, VoteSeat[]> = {};
     const looks: Record<string, VoteSeat[]> = {};
     if (vote?.dest && route?.length) {
       const plans = TRAVEL_ORDER.map((mode) => planTrip(world, run, route, mode));
       const stops = stopsAlong(run, route.length).length;
-      text = `To ${describeTile(world, vote.dest.x, vote.dest.y)}: ${route.length} tiles, ${stops} stop${stops === 1 ? '' : 's'} on the way, ${Math.round(plans[0].known * 100)}% explored.`;
+      title = `To ${describeTile(world, vote.dest.x, vote.dest.y)}`;
+      text = `${route.length} tiles, ${stops} stop${stops === 1 ? '' : 's'} on the way, ${Math.round(plans[0].known * 100)}% explored.`;
       rows = plans.map((plan) => ({
         id: `mode:${plan.mode}`,
         label: TRAVEL_MODES[plan.mode].label,
@@ -1453,7 +1479,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     buttons.push(pack);
     if (!council.trade && !council.camp && !this.route) buttons.push({ id: 'trade', label: 'Set Up Shop', enabled: free });
     return {
-      title: this.hereTitle(),
+      title,
+      titleColor: vote?.dest && route?.length ? DEST_HEX : undefined,
       text,
       rows,
       picks,
@@ -1528,7 +1555,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         onAction: (id) => this.onPanelAction(id),
       };
     }
-    const place = placeAt(run.pos.x, run.pos.y);
+    const place = this.placeHere();
     const lines: string[] = [];
     const actions: WorldPanel['actions'] = [];
     if (place) {
@@ -1540,11 +1567,13 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       });
     }
     const route = this.route;
+    let title = this.hereTitle();
     if (route) {
       const end = route[route.length - 1];
       const plans = TRAVEL_ORDER.map((mode) => planTrip(world, run, route, mode));
       const stops = stopsAlong(run, route.length).length;
-      lines.push(`To ${describeTile(world, end.x, end.y)}`);
+      title = `To ${describeTile(world, end.x, end.y)}`;
+      lines.push(`From ${this.hereTitle()}`);
       lines.push(`${route.length} tiles, ${stops} stop${stops === 1 ? '' : 's'} on the way, ${Math.round(plans[0].known * 100)}% explored`);
       if (plans[0].storm) lines.push('A sandstorm hides the desert: the way counts as unknown.');
       plans.forEach((plan) => actions.push({ id: `mode:${plan.mode}`, label: this.modeLabel(plan), enabled: !this.busy && plan.allowed }));
@@ -1564,7 +1593,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     }
     actions.push({ id: 'pack', label: 'Pack', enabled: !this.busy });
     return {
-      title: this.hereTitle(),
+      title,
+      titleColor: route ? DEST_HEX : undefined,
       lines,
       actions,
       onAction: (id) => this.onPanelAction(id),
@@ -1580,7 +1610,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   /** The panel on the road: where to, when the next stop falls and when the party gets in. */
   private tripPanel(trip: Trip): WorldPanel {
     const { run, world } = this;
-    const lines = [`To ${describeTile(world, trip.dest.x, trip.dest.y)}  ·  ${TRAVEL_MODES[trip.mode].label}`];
+    const lines = [`${TRAVEL_MODES[trip.mode].label}`];
     if (trip.mode === 'fast') {
       lines.push('A road you know: no stops on the way.');
     } else {
@@ -1590,7 +1620,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         : `Next stop in ${next} tile${next === 1 ? '' : 's'}, then one every ${LEG_TILES}.`);
     }
     lines.push(`About ${spanLabel(trip.left)} to go, in by ${this.arrivalLabel(trip.left)}.`);
-    return { title: 'ON THE ROAD', lines, actions: [], onAction: () => undefined };
+    return { title: `To ${describeTile(world, trip.dest.x, trip.dest.y)}`, titleColor: DEST_HEX, lines, actions: [], onAction: () => undefined };
   }
 
   /** "18:45", or "day 4, 02:15" when the trip runs past midnight. */
@@ -2066,7 +2096,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
 
   private enterHere(): void {
     if (this.busy || this.hud?.modalOpen) return;
-    const place = placeAt(this.run.pos.x, this.run.pos.y);
+    const place = this.placeHere();
     if (!place) return;
     if (place.dungeon) {
       void this.enterDungeon(place.id);
@@ -2082,6 +2112,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     }
     this.busy = true;
     if (!this.run.visited.includes(place.id)) this.run.visited.push(place.id);
+    this.run.pos = { x: place.x, y: place.y };
     playSound('ui.confirm');
     this.cameras.main.fadeOut(240, 0, 0, 0);
     this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
@@ -2107,18 +2138,24 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       const choice = await this.hud.choose('MENU', 'The host leads the way and keeps the save.', [
         { id: 'resume', label: 'Resume', detail: 'Back to the map.' },
         { id: 'pack', label: 'Pack', detail: 'Gear, words and stats.' },
+        { id: 'file', label: 'Save to File', detail: 'Download your copy of the run, in case the host loses theirs.' },
         { id: 'leave', label: 'Leave the Session', detail: 'Everyone returns to the menu. The host keeps the run.' },
       ], 'resume');
       if (choice === 'pack') void this.openPack();
+      if (choice === 'file') this.saveToFile();
       if (choice === 'leave') session.end('You left the session.');
       return;
     }
     const choice = await this.hud.choose('PAUSED', 'The run is saved after every step.', [
       { id: 'resume', label: 'Resume', detail: 'Back to the map.' },
       { id: 'pack', label: 'Pack', detail: 'Gear, words and stats.' },
+      { id: 'save', label: 'Save Now', detail: 'Keep the run in this browser right away.' },
+      { id: 'file', label: 'Save to File', detail: 'Download the run. Load it from the Adventure menu.' },
       { id: 'quit', label: 'Save and Quit', detail: session ? 'Everyone returns to the menu; the run waits in your save.' : 'Return to the main menu.' },
     ], 'resume');
     if (choice === 'pack') void this.openPack();
+    if (choice === 'save') this.hud?.toast(saveRun(this.run) ? `Run saved. Day ${this.run.day}.` : 'This browser would not keep the save. Use Save to File.', 3200);
+    if (choice === 'file') this.saveToFile();
     if (choice === 'quit') {
       saveRun(this.run);
       playSound('ui.back');
@@ -2129,5 +2166,11 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       this.scene.stop('LocaleHud');
       this.scene.start('Menu');
     }
+  }
+
+  /** Download the run as it stands here; a guest's copy is the host's run. */
+  private saveToFile(): void {
+    downloadRun(this.run, saveSlot() === 'solo' ? 'solo' : 'online');
+    this.hud?.toast(`Run saved to a file. Day ${this.run.day}.`, 3200);
   }
 }
