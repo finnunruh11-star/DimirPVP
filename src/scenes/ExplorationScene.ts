@@ -8,7 +8,7 @@ import { getItem, type ItemId } from '../core/Items';
 import { Mage } from '../core/Mage';
 import { recordKills } from '../pve/exploration/bounties';
 import { AREA_HOURS, enterArea, leaveArea, spendAreaTime } from '../pve/exploration/area';
-import { advanceHours, clockTime, durationLabel, isNight, spanLabel } from '../pve/exploration/clock';
+import { advanceHours, clockTime, isNight, spanLabel } from '../pve/exploration/clock';
 import { MAX_PARTY, livingMembers } from '../pve/exploration/coop';
 import { campOutcome, clearTravel, openPoll, pollOutcome, travelOutcome, type Spot, type TravelVote } from '../pve/exploration/council';
 import { absoluteHour, inDesert, isSandstorm, stormHoursLeft } from '../pve/exploration/desert';
@@ -46,7 +46,7 @@ import {
   searchSite,
   type SearchResolution,
 } from '../pve/exploration/search';
-import { shortRestRisk, SHORT_REST_HOURS, takeShortRest } from '../pve/exploration/shortRest';
+import { takeShortRest } from '../pve/exploration/shortRest';
 import { WAYSIDE_KINDS, waysideShopId, type WaysideKind } from '../pve/exploration/shops';
 import { createSite, SITE_RADIUS, siteIntro, type EncounterSite } from '../pve/exploration/site';
 import { restThought } from '../pve/exploration/thoughts';
@@ -54,7 +54,6 @@ import {
   dangerWord,
   exploreAlong,
   findRoute,
-  findsWord,
   planTrip,
   rollTrip,
   TRAVEL_MODES,
@@ -1398,8 +1397,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         title: 'SHORT REST',
         text: camp.by === me ? 'You sit down for a short rest. The others rest too, or keep watch.' : `${session.nameOf(camp.by)} wants a short rest here.`,
         rows: [
-          { id: 'camp-join', label: 'Rest too', detail: `${SHORT_REST_HOURS.min}-${SHORT_REST_HOURS.max} h: a quarter of everything back`, enabled: camp.by !== me },
-          { id: 'camp-refuse', label: 'Keep watch', detail: 'Stay on your feet; no rest for you', enabled: camp.by !== me },
+          { id: 'camp-join', label: 'Rest too', detail: '', enabled: camp.by !== me },
+          { id: 'camp-refuse', label: 'Keep watch', detail: '', enabled: camp.by !== me },
         ],
         picks,
         looks: {},
@@ -1424,11 +1423,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       rows = plans.map((plan) => ({
         id: `mode:${plan.mode}`,
         label: TRAVEL_MODES[plan.mode].label,
-        detail: !plan.allowed
-          ? plan.reason ?? 'Not possible'
-          : plan.mode === 'fast'
-            ? `${durationLabel(plan.hours)}  /  one roll, danger ${dangerWord(plan.fights)}`
-            : `${durationLabel(plan.hours)}  /  danger ${dangerWord(plan.fights)}  /  finds ${findsWord(plan.finds)}`,
+        detail: !plan.allowed ? plan.reason ?? 'Not possible' : '',
         enabled: free && plan.allowed,
       }));
       council.travel.forEach((other, seat) => {
@@ -1447,13 +1442,11 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       }
       if (session.isHost) {
         buttons.push({ id: 'foot', label: 'Explore on Foot', enabled: free });
-        const picked = pickedOver(run, run.pos);
-        buttons.push({ id: 'search', label: `Search the Area  ${SEARCH_HOURS} h${picked ? `  /  +${picked} DC today` : ''}`, enabled: free });
+        buttons.push({ id: 'search', label: 'Search the Area', enabled: free });
       }
-      const risk = shortRestRisk(run, { safe: false, tile: run.pos });
       buttons.push({
         id: 'rest',
-        label: `Short Rest  ${SHORT_REST_HOURS.min}-${SHORT_REST_HOURS.max} h  /  ${risk > 0 ? `${Math.round(risk * 100)}% ambush` : 'safe here'}`,
+        label: 'Short Rest',
         enabled: free && !council.camp,
       });
     }
@@ -1553,24 +1546,19 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       const stops = stopsAlong(run, route.length).length;
       lines.push(`To ${describeTile(world, end.x, end.y)}`);
       lines.push(`${route.length} tiles, ${stops} stop${stops === 1 ? '' : 's'} on the way, ${Math.round(plans[0].known * 100)}% explored`);
-      lines.push(`Leaving now at a sprint: in by ${this.arrivalLabel(plans[0].hours)}.`);
       if (plans[0].storm) lines.push('A sandstorm hides the desert: the way counts as unknown.');
       plans.forEach((plan) => actions.push({ id: `mode:${plan.mode}`, label: this.modeLabel(plan), enabled: !this.busy && plan.allowed }));
       actions.push({ id: 'clear', label: 'Clear route', enabled: !this.busy });
     } else {
-      lines.push('Click anywhere on the map to plan a trip,');
-      lines.push('or stay and see to the country round you.');
-      actions.push({ id: 'foot', label: 'Explore on Foot  walk the country round you', enabled: !this.busy, tone: place ? 'normal' : 'primary' });
-      const picked = pickedOver(run, run.pos);
+      actions.push({ id: 'foot', label: 'Explore on Foot', enabled: !this.busy, tone: place ? 'normal' : 'primary' });
       actions.push({
         id: 'search',
-        label: `Search the Area  ${SEARCH_HOURS} h${picked ? `  /  searched today, +${picked} DC` : ''}`,
+        label: 'Search the Area',
         enabled: !this.busy,
       });
-      const risk = shortRestRisk(run, { safe: false, tile: run.pos });
       actions.push({
         id: 'rest',
-        label: `Short Rest  ${SHORT_REST_HOURS.min}-${SHORT_REST_HOURS.max} h  /  ${risk > 0 ? `${Math.round(risk * 100)}% ambush` : 'safe here'}`,
+        label: 'Short Rest',
         enabled: !this.busy,
       });
     }
@@ -1586,8 +1574,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private modeLabel(plan: TripPlan): string {
     const rule = TRAVEL_MODES[plan.mode];
     if (!plan.allowed) return `${rule.label}  (${plan.reason ?? 'not possible'})`;
-    if (plan.mode === 'fast') return `${rule.label}  ${durationLabel(plan.hours)}  /  one roll, danger ${dangerWord(plan.fights)}`;
-    return `${rule.label}  ${durationLabel(plan.hours)}  /  danger ${dangerWord(plan.fights)}  /  finds ${findsWord(plan.finds)}`;
+    return rule.label;
   }
 
   /** The panel on the road: where to, when the next stop falls and when the party gets in. */

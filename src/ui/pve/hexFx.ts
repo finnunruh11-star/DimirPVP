@@ -274,9 +274,88 @@ export const FX: Record<Facet, FxStyle> = {
     core: 0xffffff, width: 3, breathe: 0.45, rate: 3.2, flow: 2, flowSpeed: 0.7, ring: 1, ringRate: 0.6,
     motes: rise('star', [0xfff4c0, 0xffffff], { every: 80, size: [9, 0], speed: [4, 14] }), burst: 'radiance',
   }),
-  gloom: style(0x7a5ac8, {
+  shadow: style(0x7a5ac8, {
     core: 0x140a24, width: 3, breathe: 0.3, rate: 1.2, wave: 2, waveSpeed: 2.5, waveLen: 34, flow: 0,
     motes: rise('soft', [0x4a2a80, 0x2a1850], { size: [10, 20], alpha: 0.55, speed: [4, 12], life: 1800, every: 110 }), burst: 'smoke',
+  }),
+  mist: style(0xb0c8d8, {
+    core: 0xf0f8ff, breathe: 0.35, rate: 1, wave: 1.5, waveSpeed: 2, waveLen: 40, flow: 0,
+    motes: rise('soft', [0xb0c8d8, 0xe8f0f8], { size: [12, 24], alpha: 0.4, speed: [2, 8], life: 2200, every: 120 }), burst: 'smoke',
+  }),
+  fire: style(0xff6a2a, {
+    core: 0xfff0b0, flicker: 0.5, wave: 1, waveSpeed: 9,
+    motes: rise('soft', [0xff6a2a, 0xffc040, 0xff3010], { speed: [20, 55], gravity: -50, every: 50, life: 800, size: [5, 0] }), burst: 'blast',
+  }),
+  frost: style(0x9fdcff, {
+    core: 0xffffff, breathe: 0.2, rate: 1.4, flowSpeed: 0.2,
+    motes: fall('flake', [0x9fdcff, 0xffffff], { speed: [2, 10], gravity: 30, every: 140, life: 1800, size: [5, 3], spin: true }), burst: 'crack',
+  }),
+  shatter: style(0xd8c8a8, {
+    core: 0xfff8e8, width: 3.5, jag: 1.8,
+    motes: scatter('shard', [0xd8c8a8, 0x8a7a5a], { speed: [30, 90], gravity: 200, every: 160, life: 700, spin: true }), burst: 'quake',
+  }),
+  pierce: style(0xe8e8f0, {
+    core: 0xffffff, width: 2, flow: 3, flowSpeed: 2.6, flowSize: 1.6,
+    motes: streaks([0xe8e8f0, 0xffffff], { speed: [200, 280], every: 130, life: 320, size: [18, 3] }), burst: 'crack',
+  }),
+  water: style(0x4aa0e0, {
+    core: 0xd0f0ff, wave: 3, waveLen: 30, waveSpeed: 4, flow: 2, flowSpeed: 0.8,
+    motes: fall('bubble', [0x4aa0e0, 0xa0d8ff], { speed: [0, 10], gravity: 60, every: 150, life: 1100, size: [4, 6] }), burst: 'splash',
+  }),
+  mind: style(0xd080e0, {
+    core: 0xffe0ff, breathe: 0.4, rate: 2.6, orbit: 3, orbitSpeed: 1.8, orbitRadius: 50,
+    motes: gather([0xd080e0, 0xffc8ff]), burst: 'ripple',
+  }),
+  malform: style(0x80b070, {
+    core: 0xe0ffd0, wave: 2.5, waveLen: 14, waveSpeed: 3, flicker: 0.15,
+    motes: rise('bubble', [0x80b070, 0x506a40], { speed: [4, 14], every: 140, life: 1300, size: [6, 10], alpha: 0.75 }), burst: 'splash',
+  }),
+  edge: style(0xc04050, {
+    core: 0xffe0e4, width: 2, jag: 0.8, flow: 2, flowSpeed: 2,
+    motes: fall('soft', [0xc04050, 0x801020], { gravity: 200, speed: [0, 6], every: 200, size: [3, 2], life: 800 }), burst: 'crack',
+  }),
+  void: style(0x6040a0, {
+    core: 0x0a0414, width: 3.5, breathe: 0.45, rate: 0.9, ring: -1, ringRate: 0.5, flow: 0,
+    motes: gather([0x6040a0, 0x20103a]), burst: 'vortex',
+  }),
+  lance: style(0xfff0a0, {
+    core: 0xffffff, width: 3, flow: 4, flowSpeed: 3, flowSize: 1.8,
+    motes: streaks([0xfff0a0, 0xffffff], { speed: [220, 320], every: 100, life: 300, size: [24, 4] }), burst: 'radiance',
+  }),
+  ricochet: style(0xd0d0ff, {
+    core: 0xffffff, jag: 1.4, flow: 2, flowSpeed: 2.2,
+    motes: scatter('soft', [0xd0d0ff, 0xffffff], { speed: [60, 140], every: 140, life: 360, size: [3, 0] }), burst: 'arc',
+  }),
+  blink: style(0xb8a8ff, {
+    core: 0xffffff, flicker: 0.35, flow: 0,
+    motes: scatter('star', [0xb8a8ff, 0xffffff], { speed: [0, 4], every: 180, life: 500, size: [7, 0] }), burst: 'glimmer',
+  }),
+  swap: style(0x9a88e8, {
+    orbit: 2, orbitSpeed: 2.4, orbitRadius: 50, flow: 2, flowSpeed: 1.2,
+    motes: scatter('star', [0x9a88e8, 0xffffff], { speed: [0, 6], every: 200, life: 600, size: [6, 0] }), burst: 'spin',
+  }),
+  infuse: style(0x5a9aff, {
+    core: 0xe0f0ff, flow: 3, flowSpeed: 0.8, inward: true,
+    motes: gather([0x5a9aff, 0xc0e0ff]), burst: 'bloom',
+  }),
+  manaburn: style(0x3a5ad0, {
+    core: 0xc0d0ff, flicker: 0.4, jag: 1,
+    motes: rise('soft', [0x3a5ad0, 0x8aa0ff], { speed: [16, 40], gravity: -30, every: 80, life: 700, size: [4, 0] }), burst: 'blast',
+  }),
+  mark: style(0xff6060, {
+    core: 0xffe0e0, ring: -1, ringRate: 0.7, flow: 0, burst: 'lock',
+  }),
+  silence: style(0xc0c0d0, {
+    core: 0xffffff, breathe: 0.1, flow: 0,
+    motes: fall('soft', [0xc0c0d0, 0x8a8a9a], { gravity: 20, speed: [0, 4], every: 260, life: 1600, size: [4, 2] }), burst: 'lock',
+  }),
+  might: style(0xffa040, {
+    core: 0xfff0d0, width: 3.5, heartbeat: true, flow: 2,
+    motes: rise('soft', [0xffa040, 0xffe0a0], { every: 120, size: [6, 1] }), burst: 'radiance',
+  }),
+  feeble: style(0x8a7a6a, {
+    core: 0xd0c8b8, breathe: 0.15, rate: 0.7, flowSpeed: 0.15,
+    motes: fall('soft', [0x8a7a6a, 0x5a4a3a], { gravity: 40, every: 220, life: 1400, size: [4, 2] }), burst: 'smoke',
   }),
   twist: style(0xc8d878, {
     orbit: 3, orbitSpeed: 2.6, orbitRadius: 54, flow: 2, flowSpeed: 0.9,

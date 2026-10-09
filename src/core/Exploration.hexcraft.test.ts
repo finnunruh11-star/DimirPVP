@@ -1,5 +1,7 @@
 import { RANGE_UNIT } from '../config/constants';
 import { activateHexzettel, hexUnits } from '../effects/hexzettel';
+import { dealDamage } from '../effects/effects';
+import { dmg } from './Damage';
 import { capturePartySnapshot } from '../pve/exploration/party';
 import { buyItem, drawHex, partyOf, runeOffers, shopStock, withParty } from '../pve/exploration/economy';
 import { applyIntent, parseIntent } from '../pve/exploration/intents';
@@ -20,12 +22,14 @@ import {
   hexAction,
   hexManaCost,
   hexPotency,
+  partLabel,
   readHex,
   RUNE_LINES,
   RUNE_ORDER,
   RUNES,
   SEAL_BIT,
   strokeEdges,
+  unitPlan,
   type PaperKind,
   type RuneId,
 } from './hexcraft/runes';
@@ -47,6 +51,9 @@ function equal(actual: unknown, expected: unknown, label: string): void {
 function glyph(rune: RuneId, ...marks: ('seal' | 'bridge')[]): number {
   return RUNES[rune].masks[0] | (marks.includes('seal') ? SEAL_BIT : 0) | (marks.includes('bridge') ? BRIDGE_BIT : 0);
 }
+
+/** Only Allies, sealed. */
+const ENEMIES = glyph('allies', 'seal');
 
 /** A sheet with these grids drawn in order, the rest left blank. */
 function sheet(paper: PaperKind, ...grids: (RuneId | number)[]): number[] {
@@ -111,7 +118,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       const inverse = RUNES[id].inverse;
       equal(FACETS[inverse].kind, FACETS[id].kind, `${id} inverts to ${inverse}, a rune of the same kind`);
     }
-    equal(RUNE_ORDER.length, 23, 'twelve effects, five targets and six modifiers');
+    equal(RUNE_ORDER.length, 29, 'twenty-one effects, five targets and three modifiers');
     equal(strokeEdges(0, 2)?.length, 2, 'a stroke across a row lays two lines');
     equal(strokeEdges(0, 8)?.length, 2, 'a stroke corner to corner lays two lines');
     equal(strokeEdges(0, 5), null, "a knight's move is no stroke");
@@ -129,7 +136,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const stray = readHex('plain', [1, 0, 0]);
     equal([stray.problem, stray.recipe?.parts, stray.recipe?.lines], [null, [{ target: 'touch', effects: [], modifiers: [] }], 1], 'stray lines are skipped, and still paid');
     equal(readHex('plain', [1, glyph('heal'), 0]).recipe?.parts[0].effects, ['heal'], 'a scribble beside a rune leaves the rune');
-    equal(readHex('plain', sheet('plain', 'heal', 'allies', 'enemies')).recipe?.parts[0].modifiers, [], 'Only Allies and Only Enemies cancel each other out');
+    equal(readHex('plain', sheet('plain', 'heal', 'allies', ENEMIES)).recipe?.parts[0].modifiers, [], 'Only Allies and Only Enemies cancel each other out');
     assert(readHex('plain', sheet('fine', 'heal')).problem, 'plain paper has three grids');
     equal(readHex('plain', sheet('plain', 'heal')).recipe?.parts[0].target, 'touch', 'without a target rune it touches one unit');
 
@@ -138,7 +145,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(hexPotency(quick), 1.05, 'and weakens it (1.5 x 0.7)');
     const haste = readHex('plain', sheet('plain', 'single', 'corrosive', 'accelerate')).recipe!;
     equal([haste.parts[0].effects, hexAction(haste)], [['corrosive', 'accelerate'], 'main'], 'Accelerate last is an effect of its own');
-    const heavy = readHex('plain', sheet('plain', 'slow', 'explosion', 'single')).recipe!;
+    const heavy = readHex('plain', sheet('plain', glyph('accelerate', 'seal'), 'explosion', 'single')).recipe!;
     equal([hexAction(heavy), hexPotency(heavy)], ['full', 2.1], 'Slow before an effect takes the whole turn and hits harder');
   }],
 
@@ -364,7 +371,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const hexer = unit('Hexer', 1, 200);
     const foes = [0, 1, 2, 3, 4].map((i) => unit(`F${i}`, 2, 500 + i * 80));
     const game = new GameState([hexer, ...foes], 11);
-    loose(game, hexer, hex('battlefield', 'enemies', glyph('missile', 'bridge'), glyph('regen', 'seal')), null);
+    loose(game, hexer, hex('battlefield', ENEMIES, glyph('missile', 'bridge'), glyph('regen', 'seal')), null);
     equal(foes.filter((foe) => foe.maxHp < 300).length, ECHO_LIMIT, 'only three are withered');
     equal(hexer.maxHp, 300, 'and never you');
   }],
@@ -406,7 +413,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const bearer = unit('Bearer', 1, 400);
     const foe = unit('Foe', 2, 640);
     const game = new GameState([hexer, bearer, foe], 14);
-    loose(game, hexer, hex(glyph('environment', 'seal'), 'enemies', 'dot', 'corrosive'), bearer);
+    loose(game, hexer, hex(glyph('environment', 'seal'), ENEMIES, 'dot', 'corrosive'), bearer);
     const aura = game.hazardZones[game.hazardZones.length - 1];
     equal([aura.x, aura.carrierIndex], [400, game.mages.indexOf(bearer)], 'laid on the bearer');
     game.forceMove(hexer, bearer, { x: 590, y: 270 });
@@ -422,7 +429,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const foe = unit('Foe', 2, 400);
     const friend = unit('Friend', 1, 420, 300);
     const game = new GameState([hexer, foe, friend], 7);
-    loose(game, hexer, hex('environment', 'dot', 'corrosive', 'enemies'), null, { x: 410, y: 280 });
+    loose(game, hexer, hex('environment', 'dot', 'corrosive', ENEMIES), null, { x: 410, y: 280 });
     const ground = game.hazardZones[game.hazardZones.length - 1];
     equal(ground.hex?.hits, [{ spec: '1d6', type: 'corrosive' }], 'the ground itself corrodes');
     for (const m of [foe, friend]) startTurn(game, m);
@@ -494,7 +501,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       setHexLore([]);
       equal([first.price, parseHexItemId(first.id)?.paper, isBoughtHex(first.id)], [2, 'plain', true], 'two gold, plain paper, bought');
       assert(getItem(first.id).name.startsWith("Scribe's Hexzettel "), `unnamed: ${getItem(first.id).name}`);
-      assert(getItem(first.id).blurb.includes('the scribe told what it does'), 'but described');
+      assert(getItem(first.id).blurb.includes('mana') && !getItem(first.id).blurb.includes('Unread Hexzettel'), 'but described');
       assert(buyItem(run, shop.id, first.key).ok, 'bought');
       equal(run.gold, 8, 'for two gold');
       assert(partyOf(run)[0].utility.includes(first.id), 'it goes on the belt, ready to loose');
@@ -504,6 +511,91 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     } finally {
       setHexLore(null);
     }
+  }],
+
+  ['opposites are one rune: sealed, Only Allies is Only Enemies, Increase Range is Decrease Range, Accelerate is Slow', () => {
+    equal(readHex('plain', [ENEMIES, glyph('heal'), 0]).recipe?.parts[0].modifiers, ['enemies'], 'Only Enemies');
+    equal(readHex('plain', [glyph('rangeUp', 'seal'), glyph('heal'), 0]).recipe?.parts[0].modifiers, ['rangeDown'], 'Decrease Range');
+    equal(readHex('plain', [glyph('heal'), glyph('accelerate', 'seal'), 0]).recipe?.parts[0].effects, ['heal', 'slow'], 'Slow');
+    equal(readHex('plain', [glyph('light', 'seal'), 0, 0]).recipe?.parts[0].effects, ['shadow'], 'Light sealed is Shadow');
+  }],
+
+  ['the first element names every blow, a form carries it, and every element rides along', () => {
+    const part = (...grids: (RuneId | number)[]) => readHex('plain', sheet('plain', ...grids)).recipe!.parts[0];
+    const darts = unitPlan(part('fire', 'missile'));
+    equal(darts.filter((step) => step.k === 'hit').length, 0, 'the darts carry the fire: no strike of its own');
+    equal(darts.find((step) => step.k === 'missiles')?.type, 'heat', 'fire darts');
+    assert(darts.some((step) => step.k === 'rider' && step.rider === 'burn'), 'that set it burning');
+    equal(partLabel(part('fire', 'missile')), 'Fire Magic Missile', 'named as one');
+    equal(unitPlan(part(glyph('fire', 'seal'), 'explosion')).find((step) => step.k === 'explosion')?.type, 'cold', 'a frost blast');
+    const alone = unitPlan(part('shatter'));
+    equal(alone.map((step) => [step.k, 'type' in step ? step.type : null]), [['hit', 'shatter'], ['rider', null]], 'alone an element strikes, then rides');
+    const both = unitPlan(part('water', 'fire', 'lance'));
+    equal(both.find((step) => step.k === 'lance')?.type, 'water', 'the first element drawn names the beam');
+    equal(both.filter((step) => step.k === 'rider').map((step) => step.k === 'rider' && step.rider), ['tide', 'burn'], 'both ride along');
+    const lingering = unitPlan(part('dot', 'fire')).find((step) => step.k === 'dot');
+    equal(lingering?.k === 'dot' && [lingering.name, lingering.type], ['Hex Burn', 'heat'], 'Over Time makes the fire linger');
+    equal(unitPlan(part('dot', 'missile', glyph('edge', 'seal'))).find((step) => step.k === 'dot')?.type, 'typeless', 'and bleeds in the part element beside a form');
+  }],
+
+  ['a lance burns through everyone on its line; a ricochet bounces on', () => {
+    const hexer = unit('Hexer', 1, 200);
+    const a = unit('A', 2, 300);
+    const b = unit('B', 2, 400);
+    const far = unit('Far', 2, 700);
+    const game = new GameState([hexer, a, b, far], 21);
+    loose(game, hexer, hex('lance'), b);
+    equal([a.hp < 300, b.hp < 300, far.hp], [true, true, 300], 'the beam passes through A on its way to B');
+    for (const m of game.mages) m.hp = 300;
+    loose(game, hexer, hex(glyph('lance', 'seal')), a);
+    equal([a.hp < 300, b.hp < 300, far.hp, hexer.hp], [true, true, 300, 300], 'the bolt bounces from A to B, and no farther');
+  }],
+
+  ['blink, swap, mana, silence and might', () => {
+    const hexer = unit('Hexer', 1, 200);
+    const foe = unit('Foe', 2, 400);
+    const ally = unit('Ally', 1, 200, 400);
+    const game = new GameState([hexer, foe, ally], 23);
+    loose(game, hexer, hex('blink'), foe);
+    assert(foe.x > 500, `blinked away (${foe.x})`);
+    foe.x = 400;
+    loose(game, hexer, hex(glyph('blink', 'seal')), foe);
+    equal([Math.round(hexer.x), Math.round(foe.x)], [400, 200], 'traded places');
+    foe.mana = 10;
+    loose(game, hexer, hex(glyph('infuse', 'seal')), foe);
+    assert(foe.mana < 10, 'mana burned');
+    loose(game, hexer, hex(glyph('mark', 'seal')), foe);
+    assert(foe.statuses.some((s) => s.kind === 'stifle'), 'silenced');
+    loose(game, hexer, hex('might'), ally);
+    assert(ally.statuses.some((s) => s.kind === 'debuff' && (s.mods.damageDealt ?? 0) > 0), 'empowered');
+  }],
+
+  ['a coupled haste fires wherever its bearer ends a move', async () => {
+    const hexer = unit('Hexer', 1, 200);
+    const ally = unit('Ally', 1, 300);
+    const foe = unit('Foe', 2, 550);
+    const game = new GameState([hexer, ally, foe], 22);
+    loose(game, hexer, hex(glyph('accelerate', 'bridge'), glyph('aoe', 'seal'), 'explosion'), ally);
+    equal(foe.hp, 300, 'nothing goes off yet');
+    const haste = ally.statuses.find((s) => s.key === 'debuff:hex-haste');
+    assert(haste?.kind === 'debuff' && haste.hexEcho?.on === 'move', 'the haste carries the coupling');
+    game.currentIndex = game.mages.indexOf(ally);
+    await game.makeMoveItem(ally, { x: 450, y: 270 }).resolve(game);
+    assert(foe.hp < 300 && hexer.hp === 300, 'the blast goes off around it where it stops');
+  }],
+
+  ['a coupled mark fires once, when it is struck', () => {
+    const hexer = unit('Hexer', 1, 200);
+    const foe = unit('Foe', 2, 300);
+    const game = new GameState([hexer, foe], 24);
+    loose(game, hexer, hex(glyph('mark', 'bridge'), 'shatter'), foe);
+    equal(foe.hp, 300, 'marking deals nothing');
+    dealDamage(game.effectContext(hexer, foe, null), foe, dmg(1, 'typeless'), { canMiss: false });
+    assert(!foe.statuses.some((s) => s.key === 'debuff:hex-mark'), 'the mark is spent');
+    assert(300 - foe.hp >= 4, `1, 2 more for the mark, and the coupled shatter (${300 - foe.hp})`);
+    const after = foe.hp;
+    dealDamage(game.effectContext(hexer, foe, null), foe, dmg(1, 'typeless'), { canMiss: false });
+    equal(after - foe.hp, 1, 'and only once');
   }],
 
   ['with a Hex Codex a scriptorium offers three runes a day by feel, each five silver dearer', () => {

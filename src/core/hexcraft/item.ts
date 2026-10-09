@@ -41,10 +41,9 @@ export function parseHexItemId(id: string): HexRecipe | null {
 function buildHexItem(id: ItemId, recipe: HexRecipe): ItemDef {
   const known = sheetKnown(recipe.grids);
   const bought = isBoughtHex(id);
-  const sheet = `A hex ${bought ? 'bought ready-drawn' : 'drawn'} on ${PAPERS[recipe.paper].name.toLowerCase()}. Anyone may loose it.`;
-  const blurb = known ? [sheet, ...hexLines(recipe)]
-    : bought ? [sheet, 'Its runes are strange to you, but the scribe told what it does:', ...hexLines(recipe, false)]
-    : [sheet, 'Its runes are strange to you: only loosing it will tell what it does.'];
+  const blurb = known ? hexLines(recipe)
+    : bought ? hexLines(recipe, false)
+    : ['Unread Hexzettel.'];
   return {
     id,
     name: known ? hexName(recipe) : `${bought ? "Scribe's " : ''}${unreadHexName(recipe.paper, recipe.grids)}`,

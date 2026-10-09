@@ -13,7 +13,7 @@ import { rollExploreFindLoot } from '../pve/exploration/finds';
 import { applyIntent, parseIntent } from '../pve/exploration/intents';
 import { levelWordPool } from '../pve/exploration/levels';
 import { enterMines, markMineKnown, mineCycle, minePassageDice, parseExplorationMines } from '../pve/exploration/mines';
-import { capturePartySnapshot } from '../pve/exploration/party';
+import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import { parseRun } from '../pve/exploration/save';
 import { SHOPS, shopById, stockCandidates } from '../pve/exploration/shops';
@@ -185,6 +185,45 @@ const tests: [name: string, run: () => void][] = [
     assert(buyItem(run, guild.id, bag.key).ok, 'a bag fits a full pack');
     withParty(run, (leader) => leader.bag.push('herbMoonglow'));
     assert(!dropItem(run, 'smallBag').ok, 'a bag in use stays');
+  }],
+
+  ['guild pouch stores three consumables through a saved party without losing pack weight', () => {
+    const run = freshRun(6, 40);
+    const guild = shopById('capitol-guild')!;
+    const offer = shopStock(run, guild).find((slot) => slot.id === 'consumablePouch')!;
+    equal(offer.price, 0.5, 'guild pouch price');
+    assert(buyItem(run, guild.id, offer.key).ok, 'buy pouch');
+    const mage = partyOf(run)[0];
+    assert(mage.hasConsumablePouch(), 'pouch belongs to buyer');
+    mage.utility.push('manaPotion', 'healthPotion', 'manaPotion', 'healthPotion');
+    const weight = mage.carriedWeight();
+    const slots = packSlotsUsed(mage);
+    assert(mage.stowInPouch('manaPotion'), 'store potion');
+    assert(mage.stowInPouch('healthPotion'), 'store second potion');
+    assert(mage.stowInPouch('manaPotion'), 'store third potion');
+    assert(!mage.stowInPouch('healthPotion'), 'fourth does not fit');
+    assert(!mage.stowInPouch('smallBag'), 'non-consumable cannot be stored');
+    equal([mage.carriedWeight(), packSlotsUsed(mage)], [weight, slots], 'contents still count');
+    const [loaded] = restoreParty(capturePartySnapshot([mage]));
+    equal(loaded.pouch, mage.pouch, 'contents survive save and restore');
+    assert(!packFits(loaded, [], ['consumablePouch']), 'full pouch cannot be removed');
+    assert(loaded.removeFromPouch('manaPotion'), 'remove one potion');
+    equal(loaded.pouch.length, 2, 'two remain');
+    loaded.readyConsumable = 'manaPotion';
+    equal(restoreParty(capturePartySnapshot([loaded]))[0].readyConsumable, 'manaPotion', 'readied potion survives save');
+    assert(loaded.stowInPouch('manaPotion'), 'readied potion can be stored');
+    equal(loaded.readyConsumable, null, 'stowing clears readied state');
+  }],
+
+  ['throws directly from a pouch and spends the stored item', () => {
+    const caster = unit('Caster', 1, 200);
+    const foe = unit('Foe', 2, 230);
+    caster.utility.push('consumablePouch', 'throwingDagger');
+    assert(caster.stowInPouch('throwingDagger'), 'dagger stored');
+    const game = new GameState([caster, foe], 3);
+    game.throwItem(caster, foe, 'throwingDagger');
+    equal(caster.pouch.length, 0, 'dagger spent from pouch');
+    assert(foe.hp < foe.maxHp, 'throw dealt damage');
   }],
 
   ['sells pickaxes for 3 gold wherever they are sold', () => {

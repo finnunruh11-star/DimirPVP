@@ -243,6 +243,7 @@ export type ItemId =
   | 'pickaxe'
   // ---- Adventure bags and key items ----
   | 'smallBag'
+  | 'consumablePouch'
   | 'goodBag'
   | 'mineMap'
   // ---- Hexcraft paper ----
@@ -2658,6 +2659,16 @@ export const ITEM_DEFS: ItemDef[] = [
     blurb: 'Bag. 15 pack slots.',
     adventureOnly: true,
     pack: { slots: 15 },
+  },
+  {
+    id: 'consumablePouch',
+    name: 'Consumable Pouch',
+    slot: 'utility',
+    rarity: 'common',
+    cost: 5,
+    weight: 0.2,
+    blurb: 'Holds up to 3 potions or thrown consumables. Use them directly from the pouch in one bonus action.',
+    adventureOnly: true,
   },
   {
     id: 'goodBag',

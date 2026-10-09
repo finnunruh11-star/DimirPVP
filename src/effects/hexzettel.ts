@@ -28,12 +28,15 @@ import {
   partReach,
   partSide,
   partTurns,
+  RICOCHET_HOP,
   SIPHON_DART,
   unitPlan,
+  type EffectFacet,
   type HexPart,
   type HexRecipe,
   type HexSide,
   type HexStep,
+  type Rider,
 } from '../core/hexcraft/runes';
 import { getItem, type ItemDef, type ItemId } from '../core/Items';
 import type { Mage } from '../core/Mage';
@@ -42,19 +45,24 @@ import { dist, stepTowards, type Vec2 } from '../core/utils';
 import {
   applyDebuff,
   applyDot,
+  applyFireStacks,
   applyInvisibility,
   applyStun,
+  blinkstep,
   dash,
   dealDamage,
   dispelVeil,
   drainDamage,
   heal,
   placeShadow,
+  teleport,
   type DealDamageOptions,
 } from './effects';
+import { applyStifle } from './classKit';
 
 const R = (cm: number): number => cm * RANGE_UNIT;
 const REGEN_KEY = 'regen:hex';
+const MARK_KEY = 'debuff:hex-mark';
 
 /** Where the hex is loosed: a unit or a point, as its first target rune asks. */
 export interface HexAim {
@@ -87,6 +95,8 @@ interface Landing {
   turns: number;
   /** Areas and fields never miss; a unit picked out can still dodge. */
   area: boolean;
+  /** Units a lance has already burned through on this landing. */
+  beamed: Set<Mage>;
 }
 
 /** The hex drawn on `itemId`, if it is a Hexzettel. */
@@ -262,6 +272,7 @@ function runPart(cast: Cast, index: number, origin: Origin): void {
     potency: partPotency(part),
     turns: partTurns(part),
     area: part.target === 'aoe' || part.target === 'nova' || part.target === 'battlefield',
+    beamed: new Set(),
   };
   const mode = couplingMode(part);
   const steps = unitPlan(part);
@@ -276,7 +287,56 @@ function runPart(cast: Cast, index: number, origin: Origin): void {
       }
     }
     if (mode === 'tick') bindEcho(cast, index, unit, steps);
+    if (mode === 'move' || mode === 'struck') bindTrigger(cast, index, unit, mode);
   }
+}
+
+/** The status each carrier of a move or struck coupling leaves on its bearer. */
+const TRIGGER_KEYS: Partial<Record<EffectFacet, string>> = {
+  accelerate: 'debuff:hex-haste',
+  slow: 'debuff:hex-slow',
+  barrier: 'debuff:hex-ward',
+  breach: 'debuff:hex-breach',
+  mark: MARK_KEY,
+};
+
+/** Tie the next part to the haste, slow, ward, breach or mark this part left on `unit`. */
+function bindTrigger(cast: Cast, index: number, unit: Mage, on: 'move' | 'struck'): void {
+  const key = TRIGGER_KEYS[cast.recipe.parts[index].carrier!];
+  const status = unit.statuses.find((entry) => entry.key === key);
+  if (status?.kind !== 'debuff') return;
+  status.hexEcho = { hex: cast.hex, part: index + 1, ownerIndex: cast.game.mages.indexOf(cast.user), on, charges: ECHO_LIMIT };
+}
+
+/** Bearers whose triggers are firing: what their coupled parts do to them sets off nothing more. */
+const firing = new Set<Mage>();
+
+function fireTriggers(game: GameState, bearer: Mage, on: 'move' | 'struck', statuses: readonly Status[] = bearer.statuses): void {
+  if (firing.has(bearer)) return;
+  firing.add(bearer);
+  try {
+    for (const status of [...statuses]) {
+      const echo = status.kind === 'debuff' ? status.hexEcho : undefined;
+      if (!echo || echo.on !== on || (echo.charges ?? 0) <= 0 || !bearer.alive) continue;
+      echo.charges = (echo.charges ?? 1) - 1;
+      hexEcho(game, bearer, echo);
+    }
+  } finally {
+    firing.delete(bearer);
+  }
+}
+
+/** `mover` ended a move: hastes and slows that carry a coupling fire where it stands. */
+export function hexMoved(game: GameState, mover: Mage): void {
+  fireTriggers(game, mover, 'move');
+}
+
+/** `bearer` took damage: a mark is spent on it, and wards, breaches and marks that carry a coupling fire. */
+export function hexStruck(game: GameState, bearer: Mage): void {
+  if (firing.has(bearer)) return;
+  const statuses = [...bearer.statuses];
+  bearer.statuses = bearer.statuses.filter((status) => status.key !== MARK_KEY);
+  fireTriggers(game, bearer, 'struck', statuses);
 }
 
 /** The part after `index` fires at an impact, while the coupling has firings left. */
@@ -392,8 +452,8 @@ function applyStep(cast: Cast, landing: Landing, unit: Mage, step: HexStep): voi
       game.wither(unit, step.amount, 6);
       vfx?.godFx?.('skull', unit.pos, { size: 60, color });
       return;
-    case 'reveal':
-      dispelVeil(ctx, unit);
+    case 'rider':
+      if (step.rider) applyRider(cast, landing, unit, step.rider);
       return;
     case 'veil':
       applyInvisibility(ctx, unit, { duration: turns, mode: 'partial' });
@@ -427,7 +487,7 @@ function applyStep(cast: Cast, landing: Landing, unit: Mage, step: HexStep): voi
       return;
     }
     case 'implosion': {
-      dealDamage(ctx, unit, dmg(scaled(game, step.spec, potency), 'shatter'), { canMiss: false, aoe: true });
+      dealDamage(ctx, unit, dmg(scaled(game, step.spec, potency), step.type), { canMiss: false, aoe: true });
       vfx?.godFx?.('implode', unit.pos, { size: IMPLOSION_RADIUS * 2, color });
       const side = partSide(part);
       for (const other of game.magesInRadius(unit.pos, IMPLOSION_RADIUS, unit)) {
@@ -502,7 +562,139 @@ function applyStep(cast: Cast, landing: Landing, unit: Mage, step: HexStep): voi
       game.burstDots(user, unit);
       vfx?.shatterBurst?.(unit.pos, 70);
       return;
+    case 'lance': {
+      const from = launchPoint(cast, landing);
+      const side = partSide(part);
+      const burn = (m: Mage): void => {
+        landing.beamed.add(m);
+        dealDamage(game.effectContext(user, m, centre), m, dmg(scaled(game, step.spec, potency), step.type), { canMiss: false, aoe: landing.area });
+      };
+      void vfx?.lightningBolt?.(from, unit.pos);
+      if (!landing.beamed.has(unit)) burn(unit);
+      // Everyone the beam passes through on its way.
+      for (const other of game.mages) {
+        if (other === unit || other === user || !other.alive || landing.beamed.has(other) || game.isUnreachable(other) || !onSide(user, side, other)) continue;
+        if (segmentGap(other.pos, from, unit.pos) <= other.bodyRadius()) burn(other);
+      }
+      return;
+    }
+    case 'ricochet': {
+      const side = partSide(part) === 'allies' ? 'allies' : 'enemies';
+      const struck = new Set<Mage>([unit]);
+      let from = launchPoint(cast, landing);
+      let at = unit;
+      for (let bounce = 0; bounce <= step.bounces && at.alive; bounce++) {
+        void vfx?.boomerang?.(from, at.pos, color, 9, 1.8);
+        dealDamage(game.effectContext(user, at, centre), at, dmg(scaled(game, step.spec, potency), step.type), { canMiss: false, aoe: landing.area });
+        const here = at.pos;
+        const next = nearestTo(game, here, game.mages.filter((m) =>
+          m.alive && m !== user && !struck.has(m) && !game.isUnreachable(m) && onSide(user, side, m) && dist(m.pos, here) <= RICOCHET_HOP + m.bodyRadius()))[0];
+        if (!next) return;
+        struck.add(next);
+        from = here;
+        at = next;
+      }
+      return;
+    }
+    case 'blink': {
+      if (self || unit === user) {
+        const foe = nearestFoe(game, user);
+        const direction = foe ? { x: user.x - foe.x, y: user.y - foe.y } : { x: 1, y: 0 };
+        blinkstep(ctx, user, { direction, distance: R(step.cm) });
+        return;
+      }
+      const anchor = anchorOf(cast, landing) ?? user.pos;
+      const away = dist(unit.pos, anchor) >= 0.5 ? anchor : user.pos;
+      blinkstep(ctx, unit, { direction: { x: unit.x - away.x, y: unit.y - away.y }, distance: R(step.cm) });
+      return;
+    }
+    case 'swap': {
+      if (unit === user || game.isImmovable(unit) || game.isImmovable(user)) return;
+      const mine = { ...user.pos };
+      const theirs = { ...unit.pos };
+      teleport(ctx, unit, mine, user);
+      teleport(ctx, user, theirs, unit);
+      return;
+    }
+    case 'mana': {
+      const amount = scaled(game, step.spec, potency);
+      if (step.gain) {
+        unit.gainMana(amount);
+        game.log(`${unit.name} is infused with ${amount} mana.`);
+      } else {
+        const burned = Math.min(unit.mana, amount);
+        unit.mana -= burned;
+        game.log(`${burned} of ${unit.name}'s mana burns away.`);
+      }
+      vfx?.sigil?.(unit.pos, color, 48);
+      return;
+    }
+    case 'mark':
+      applyDebuff(ctx, unit, { name: 'Hexmarked', key: MARK_KEY, duration: turns, mods: { damageTaken: step.amount } });
+      vfx?.godFx?.('hex', unit.pos, { size: 60, color });
+      return;
+    case 'silence':
+      applyStifle(ctx, unit, { turns });
+      return;
+    case 'might':
+      if (step.amount > 0) {
+        addOrExtendStatus(
+          unit.statuses,
+          { key: 'debuff:hex-might', name: 'Empowered', kind: 'debuff', duration: turns, mods: { damageDealt: step.amount } },
+          false
+        );
+        game.log(`${unit.name} is empowered: ${step.amount} more damage with every hit for ${turns} turns.`);
+      } else {
+        applyDebuff(ctx, unit, { name: 'Sapped', key: 'debuff:hex-feeble', duration: turns, mods: { damageDealt: step.amount } });
+      }
+      return;
   }
+}
+
+/** What an element leaves on whoever its part lands on. */
+function applyRider(cast: Cast, landing: Landing, unit: Mage, rider: Rider): void {
+  const { game, user } = cast;
+  const centre = 'impact' in landing.origin ? landing.origin.impact.point : landing.origin.aim.point;
+  const ctx = game.effectContext(user, unit, centre);
+  const anchor = anchorOf(cast, landing);
+  switch (rider) {
+    case 'reveal':
+      dispelVeil(ctx, unit);
+      return;
+    case 'shade':
+      if (user.alive) applyInvisibility(game.effectContext(user, user, null), user, { duration: 1, mode: 'partial' });
+      return;
+    case 'burn':
+      applyFireStacks(ctx, unit, 1);
+      return;
+    case 'chill':
+      applyDebuff(ctx, unit, { name: 'Chilled', key: 'debuff:hex-chill', duration: 2, mods: { moveRange: -Math.round(unit.baseMoveRange() / 3) } });
+      return;
+    case 'knock':
+      if (anchor && unit !== user) shove(game, user, unit, anchor, R(1));
+      return;
+    case 'open':
+      applyDebuff(ctx, unit, { name: 'Opened', key: 'debuff:hex-open', duration: landing.turns, mods: { damageTaken: 1 } });
+      return;
+    case 'tide':
+      if (anchor && unit !== user) drag(game, user, unit, anchor, R(1));
+      return;
+    case 'warp':
+      game.wither(unit, 1, 6);
+      return;
+    case 'bleed':
+      applyDot(ctx, unit, { name: 'Hex Bleed', key: 'dot:hex:Hex Bleed', duration: 2, damage: dmg(0, 'slashing'), damageSpec: '1d2' });
+      return;
+  }
+}
+
+/** How far `p` lies from the segment from `a` to `b`. */
+function segmentGap(p: Vec2, a: Vec2, b: Vec2): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = dx * dx + dy * dy;
+  const t = len ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len)) : 0;
+  return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
 }
 
 /** The glyph a part flashes where it lands, and the lightning of a chain. */

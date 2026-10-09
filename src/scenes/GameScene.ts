@@ -635,6 +635,8 @@ type TurnCommand =
   | { t: 'item-pickup'; dropId: number }
   | { t: 'item-pickup-swap'; dropId: number; discard: ItemId }
   | { t: 'item-use'; itemId: string }
+  | { t: 'item-ready'; itemId: string }
+  | { t: 'pouch-store' | 'pouch-remove'; itemId: string }
   | { t: 'item-equip'; itemId: string }
   | { t: 'item-unequip'; itemId: string }
   | { t: 'item-throw'; itemId: string; target: number }
@@ -4972,9 +4974,11 @@ export class GameScene extends Phaser.Scene {
   /** Drink a potion: spend it from the utility belt and apply its effect. */
   private useConsumable(mage: Mage, itemId: ItemId): void {
     const def = getItem(itemId);
-    const i = mage.utility.indexOf(itemId);
+    const store = mage.pouch.includes(itemId) ? mage.pouch : mage.utility;
+    const i = store.indexOf(itemId);
     if (i < 0 || !def.potion) return;
-    mage.utility.splice(i, 1);
+    store.splice(i, 1);
+    if (mage.readyConsumable === itemId) mage.readyConsumable = null;
     if (def.potion === 'mana') {
       mage.gainMana(10);
       this.gs.log(`${mage.name} drinks a Mana Potion (+10 mana).`);
@@ -6288,6 +6292,7 @@ export class GameScene extends Phaser.Scene {
       }
       case 'item-use': {
         const itemId = cmd.itemId as ItemId;
+        if (!me.pouch.includes(itemId) && me.readyConsumable !== itemId) break;
         if (me.isItemBanned(itemId)) {
           this.gs.log(
             `${me.name} reaches for ${getItem(itemId).name}, but ${me.itemsSacrificed() ? 'the Shikigami holds it until the day is over' : 'it has been stifled forever'}.`
@@ -6306,6 +6311,37 @@ export class GameScene extends Phaser.Scene {
             },
           })
         );
+        break;
+      }
+      case 'item-ready': {
+        const itemId = cmd.itemId as ItemId;
+        const definition = getItem(itemId);
+        if (!me.utility.includes(itemId) || (!definition.potion && !definition.throwable) || me.swordFormLocked()) break;
+        spend('bonus');
+        await runAction(this.gs.makeActionItem({
+          source: me,
+          label: 'Ready',
+          description: `${me.name} draws ${definition.name}.`,
+          resolve: () => { if (me.utility.includes(itemId)) me.readyConsumable = itemId; },
+        }));
+        break;
+      }
+      case 'pouch-store':
+      case 'pouch-remove': {
+        const itemId = cmd.itemId as ItemId;
+        if (me.swordFormLocked() || (cmd.t === 'pouch-store'
+          ? !me.hasConsumablePouch() || me.pouch.length >= 3 || !me.utility.includes(itemId) || !(getItem(itemId).potion || getItem(itemId).throwable)
+          : !me.pouch.includes(itemId))) break;
+        spend('bonus');
+        await runAction(this.gs.makeActionItem({
+          source: me,
+          label: cmd.t === 'pouch-store' ? 'Store' : 'Remove',
+          description: `${me.name} moves ${getItem(itemId).name} ${cmd.t === 'pouch-store' ? 'into' : 'out of'} the pouch.`,
+          resolve: () => {
+            if (cmd.t === 'pouch-store') me.stowInPouch(itemId);
+            else me.removeFromPouch(itemId);
+          },
+        }));
         break;
       }
       case 'item-equip': {
@@ -6348,6 +6384,7 @@ export class GameScene extends Phaser.Scene {
       }
       case 'item-throw': {
         const itemId = cmd.itemId as ItemId;
+        if (!me.pouch.includes(itemId) && me.readyConsumable !== itemId) break;
         if (me.isItemBanned(itemId)) {
           this.gs.log(
             `${me.name} reaches for ${getItem(itemId).name}, but ${me.itemsSacrificed() ? 'the Shikigami holds it until the day is over' : 'it has been stifled forever'}.`
@@ -8676,7 +8713,13 @@ export class GameScene extends Phaser.Scene {
     if (me.swordFormLocked()) return this.flashHint('Locked in sword form — cannot throw.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Throwing takes a bonus action.');
-    if (me.utility.indexOf(itemId) < 0) return this.flashHint('Nothing to throw.');
+    if (!me.utility.includes(itemId) && !me.pouch.includes(itemId)) return this.flashHint('Nothing to throw.');
+    if (!me.pouch.includes(itemId) && me.readyConsumable !== itemId) {
+      this.closeInventory();
+      this.resetSelection();
+      this.submitTurn({ t: 'item-ready', itemId });
+      return;
+    }
     this.closeInventory();
     this.throwPendingItem = itemId;
     this.pendingSpell = null;
@@ -8689,7 +8732,7 @@ export class GameScene extends Phaser.Scene {
   private beginThrowFirst(): void {
     if (!this.humanActive) return;
     const me = this.gs.current;
-    const itemId = me.utility.find((id) => getItem(id).throwable && !me.isItemBanned(id));
+    const itemId = [...me.pouch, ...me.utility].find((id) => getItem(id).throwable && !me.isItemBanned(id));
     if (!itemId) return this.flashHint('Nothing to throw.');
     this.beginThrow(itemId);
   }
@@ -9869,7 +9912,7 @@ export class GameScene extends Phaser.Scene {
     if (me.isItemBanned(itemId)) return this.flashHint(this.bannedItemHint(me));
     if (me.swordFormLocked())
       return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
-    if (!me.utility.includes(itemId) || !getItem(itemId).potion) return;
+    if ((!me.utility.includes(itemId) && !me.pouch.includes(itemId)) || !getItem(itemId).potion) return;
     const potion = getItem(itemId).potion;
     if (potion === 'mana' && me.mana >= me.maxMana)
       return this.flashHint('Your mana is already full.');
@@ -9877,6 +9920,12 @@ export class GameScene extends Phaser.Scene {
       return this.flashHint('Your health is already full.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Consuming an item needs a bonus action.');
+    if (!me.pouch.includes(itemId) && me.readyConsumable !== itemId) {
+      this.closeInventory();
+      this.resetSelection();
+      this.submitTurn({ t: 'item-ready', itemId });
+      return;
+    }
     this.closeInventory();
     this.resetSelection();
     this.submitTurn({ t: 'item-use', itemId });
@@ -10180,10 +10229,20 @@ export class GameScene extends Phaser.Scene {
       ...mage.utility.map((id) => {
         const definition = getItem(id);
         const actions: InventoryItemView['actions'] = [];
-        if (definition.potion) actions.push({ kind: 'consume', label: 'Consume', tone: 'positive' });
-        if (definition.throwable) actions.push({ kind: 'throw', label: 'Throw' });
+        if (definition.potion) actions.push({ kind: 'consume', label: mage.readyConsumable === id ? 'Consume' : 'Ready', tone: 'positive' });
+        if (definition.throwable) actions.push({ kind: 'throw', label: mage.readyConsumable === id ? 'Throw' : 'Ready' });
+        if (mage.hasConsumablePouch() && mage.pouch.length < 3 && (definition.potion || definition.throwable))
+          actions.push({ kind: 'pouch-store', label: 'Store' });
         if (definition.hexzettel) actions.push({ kind: 'hex', label: `Loose (${hexManaCost(definition.hexzettel)} mana)`, tone: 'positive' });
         return item(id, 'Supply', actions);
+      }),
+      ...mage.pouch.map((id) => {
+        const definition = getItem(id);
+        return item(id, `Pouch ${mage.pouch.length}/3`, [
+          ...(definition.potion ? [{ kind: 'consume' as const, label: 'Consume', tone: 'positive' as const }] : []),
+          ...(definition.throwable ? [{ kind: 'throw' as const, label: 'Throw' }] : []),
+          { kind: 'pouch-remove', label: 'Remove' },
+        ]);
       }),
       ...(mage.arrows > 0
         ? [{
@@ -10232,10 +10291,23 @@ export class GameScene extends Phaser.Scene {
       case 'throw': this.beginThrow(id); break;
       case 'hex': this.beginHex(id); break;
       case 'equip': this.equipItem(id); break;
+      case 'pouch-store': this.movePouchItem(id, true); break;
+      case 'pouch-remove': this.movePouchItem(id, false); break;
       case 'unequip': this.unequipItem(id); break;
       case 'drop-hand': this.dropItemById(id); break;
       case 'drop-accessory': this.dropAccessory(id); break;
     }
+  }
+
+  private movePouchItem(id: ItemId, store: boolean): void {
+    if (!this.humanActiveOrInventory || this.gs.current.swordFormLocked()) return;
+    const me = this.gs.current;
+    if (me.actions.bonus <= 0 && !Dev.infiniteActions)
+      return this.flashHint('Moving a pouch item needs a bonus action.');
+    if (store ? (!me.hasConsumablePouch() || me.pouch.length >= 3 || !me.utility.includes(id) || !(getItem(id).potion || getItem(id).throwable)) : !me.pouch.includes(id)) return;
+    this.closeInventory();
+    this.resetSelection();
+    this.submitTurn({ t: store ? 'pouch-store' : 'pouch-remove', itemId: id });
   }
 
   /** Activate every held weapon's ability at once (bonus action). */
@@ -11433,18 +11505,18 @@ export class GameScene extends Phaser.Scene {
       }
     }
 
-    for (const itemId of source.utility) {
+    for (const itemId of [...source.utility, ...source.pouch]) {
       const item = getItem(itemId);
       if (source.isItemBanned(itemId) || source.swordFormLocked()) continue;
       if (
-        item.potion &&
+        item.potion && (source.pouch.includes(itemId) || source.readyConsumable === itemId) &&
         !((item.potion === 'mana' && source.mana >= source.maxMana) ||
           (item.potion === 'health' && source.hp >= source.maxHp))
       ) {
         add(`item-use:${itemId}`, `Consume ${item.name}`, 'Use the item without spending your stored bonus action.');
       }
       if (
-        item.throwable &&
+        item.throwable && (source.pouch.includes(itemId) || source.readyConsumable === itemId) &&
         this.gs.mages.some((target) => target.team !== source.team && this.canThrowAt(source, target, itemId))
       ) {
         add(`item-throw:${itemId}`, `Throw ${item.name}`, 'Choose an enemy in throwing range.');

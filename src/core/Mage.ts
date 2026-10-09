@@ -160,6 +160,29 @@ export class Mage {
   accessories: ItemId[] = [];
   /** Utility items carried (potions). Unlimited slots. */
   utility: ItemId[] = [];
+  /** Consumables kept ready in a carried pouch. */
+  pouch: ItemId[] = [];
+  /** Loose consumable drawn from the pack for its next bonus action. */
+  readyConsumable: ItemId | null = null;
+  hasConsumablePouch(): boolean {
+    return this.utility.includes('consumablePouch') || this.bag.includes('consumablePouch');
+  }
+  stowInPouch(id: ItemId): boolean {
+    if (!this.hasConsumablePouch() || this.pouch.length >= 3 || !this.utility.includes(id)) return false;
+    const def = getItem(id);
+    if (!def.potion && !def.throwable) return false;
+    this.utility.splice(this.utility.indexOf(id), 1);
+    if (this.readyConsumable === id) this.readyConsumable = null;
+    this.pouch.push(id);
+    return true;
+  }
+  removeFromPouch(id: ItemId): boolean {
+    const index = this.pouch.indexOf(id);
+    if (index < 0) return false;
+    this.pouch.splice(index, 1);
+    this.utility.push(id);
+    return true;
+  }
   /** Arrows carried as ammunition for bows. */
   arrows = 0;
   /** Combats remaining on a currently-lit (held) torch; 0 when none is lit. */
@@ -813,6 +836,8 @@ export class Mage {
     this.hands = this.hands.filter((id) => !fleeting(id));
     this.bag = this.bag.filter((id) => !fleeting(id));
     this.utility = this.utility.filter((id) => !fleeting(id));
+    this.pouch = this.pouch.filter((id) => !fleeting(id));
+    if (this.readyConsumable && !this.utility.includes(this.readyConsumable)) this.readyConsumable = null;
     for (const id of this.stowedForConjured) {
       const i = this.bag.indexOf(id);
       if (i < 0 || !this.hasFreeHand() || (getItem(id).twoHanded && this.hands.length > 0)) continue;
@@ -1647,7 +1672,7 @@ export class Mage {
     if (this.head) worn.push(this.head);
     if (this.torso) worn.push(this.torso);
     if (this.boots) worn.push(this.boots);
-    const stowed = [...this.utility, ...this.bag];
+    const stowed = [...this.utility, ...this.bag, ...this.pouch];
     const bags = stowed.filter((id) => !!getItem(id).pack);
     const inside = stowed.filter((id) => !getItem(id).pack);
     const sandWeight = this.hasSandPocket() ? this.sandPocketKg : 0;

@@ -108,6 +108,7 @@ export const MINE_MAP_PRICE = 3;
 const GUILD_STOCK: StockRule = {
   fixed: [
     { id: 'smallBag', price: 0.5 },
+    { id: 'consumablePouch', price: 0.5 },
     { id: 'goodBag', price: 2 },
     { id: 'bagOfHolding', price: 10 },
     { id: 'mineMap', price: MINE_MAP_PRICE },

@@ -437,6 +437,8 @@ export interface DebuffStatus extends BaseStatus {
   }>;
   /** Multiplier on HP healing the bearer receives (0 = healing cannot reach them). */
   healMult?: number;
+  /** A coupled part of a Hexzettel that fires when the bearer moves or is struck. */
+  hexEcho?: HexEcho;
 }
 
 /** A consumable counter (e.g. "Mind Dodge") that negates the next matching hit. */
@@ -685,12 +687,16 @@ export interface RegenStatus extends BaseStatus {
   hexEcho?: HexEcho;
 }
 
-/** Which part of which Hexzettel fires when a lingering hex ticks or bites. */
+/** Which part of which Hexzettel fires when a lingering hex ticks or bites, or its bearer moves or is struck. */
 export interface HexEcho {
   /** The Hexzettel's id: it spells out the whole sheet. */
   hex: string;
   part: number;
   ownerIndex: number;
+  /** Set on a haste, slow, ward or mark: what sets it off. Ticks and bites need none. */
+  on?: 'move' | 'struck';
+  /** Firings left. */
+  charges?: number;
 }
 
 export type Status =

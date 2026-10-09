@@ -22,7 +22,7 @@ import { Dice } from './Dice';
 import { stormWordsCompatible, type ColorName } from './Colors';
 import type { MageClass } from './Classes';
 import { MAGE_CLASSES, toMageClass } from './Classes';
-import { asItemIds, type ItemId } from './Items';
+import { asItemIds, getItem, type ItemId } from './Items';
 import { Mage } from './Mage';
 import type { Scarab, ScarabState } from './Scarab';
 import type { Status } from './Status';
@@ -158,6 +158,8 @@ export interface ScenarioEntity {
     boots: ItemId | null;
     accessories: ItemId[];
     utility: ItemId[];
+    pouch?: ItemId[];
+    readyConsumable?: ItemId | null;
   };
   statuses: Status[];
   numbers: Partial<Record<NumberFlag, number>>;
@@ -313,6 +315,8 @@ function captureEntity(m: Mage, index: Map<Mage, number>): ScenarioEntity {
       boots: m.boots,
       accessories: [...m.accessories],
       utility: [...m.utility],
+      pouch: [...m.pouch],
+      readyConsumable: m.readyConsumable,
     },
     statuses: JSON.parse(JSON.stringify(m.statuses)) as Status[],
     numbers,
@@ -605,6 +609,8 @@ function parseEntity(raw: unknown): ScenarioEntity {
       boots: item(gear.boots),
       accessories: items(gear.accessories).slice(0, 2),
       utility: items(gear.utility),
+      pouch: items(gear.pouch).filter((id) => !!(getItem(id).potion || getItem(id).throwable)).slice(0, 3),
+      readyConsumable: item(gear.readyConsumable),
     },
     statuses: statuses(e.statuses),
     numbers,
@@ -808,6 +814,10 @@ function buildMage(e: ScenarioEntity, rng: Dice): Mage {
   m.boots = e.gear.boots;
   m.accessories = [...e.gear.accessories];
   m.utility = [...e.gear.utility];
+  m.pouch = m.hasConsumablePouch() ? [...(e.gear.pouch ?? [])] : [];
+  m.readyConsumable = e.gear.readyConsumable && m.utility.includes(e.gear.readyConsumable) &&
+    (getItem(e.gear.readyConsumable).potion || getItem(e.gear.readyConsumable).throwable)
+    ? e.gear.readyConsumable : null;
   m.statuses = e.statuses;
 
   for (const key of NUMBER_FLAGS) {

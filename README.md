@@ -125,6 +125,9 @@ and combat-speed control.
   appear as dashed branches, the party's location is highlighted, and connected
   routes are selected directly on the map. The map's **Inventory** button or `I`
   opens a read-only view of the local explorer's gear, supplies, and statuses.
+  Guilds sell a Consumable Pouch. In combat, store up to three potions or thrown
+  consumables in it; each can be used directly for one bonus action. Loose
+  consumables must first be readied for a bonus action, then used for another.
   A room's contents stay concealed at its threshold, although waiting enemies can
   be heard; enter to reveal it or turn around through the tunnel just used. Once
   entered, empty, opened-treasure, and cleared-combat rooms can be crossed without

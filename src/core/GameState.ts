@@ -2,7 +2,7 @@ import { Dice, type RollResult } from './Dice';
 import { Mage } from './Mage';
 import { packCapacity, packSlotsUsed } from './Pack';
 import type { HexGroundSpec, HexSide } from './hexcraft/runes';
-import { hexEcho } from '../effects/hexzettel';
+import { hexEcho, hexMoved, hexStruck } from '../effects/hexzettel';
 import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
 import { applyMindLightningStack, mindLightningBoltTarget, mindLightningDamage } from '../spells/mindLightning';
@@ -3965,6 +3965,7 @@ export class GameState {
     if (target.enemyKind === 'crusadeHelper') return;
     if (dealt > 0 && target.statuses.some((s) => s.kind === 'imbue')) imbueOnDamaged(this, target, dealt, dot);
     if (dealt > 0 && target.summonKind) minionStruck(this, target, dealt);
+    if (dealt > 0 && target.statuses.some((s) => s.kind === 'debuff' && (s.key === 'debuff:hex-mark' || s.hexEcho))) hexStruck(this, target);
   }
 
   /** Keep Curse Corrode's (and Curse of Thirst's) 75% slow exactly as long as the bearer's longest DoT. */
@@ -6627,9 +6628,11 @@ export class GameState {
     const def = getItem(itemId);
     const spec = def.throwable;
     if (!spec) return;
-    const i = source.utility.indexOf(itemId);
+    const store = source.pouch.includes(itemId) ? source.pouch : source.utility;
+    const i = store.indexOf(itemId);
     if (i < 0) return;
-    source.utility.splice(i, 1);
+    store.splice(i, 1);
+    if (source.readyConsumable === itemId) source.readyConsumable = null;
     this.log(`${source.name} hurls ${def.name} at ${target.name}.`);
     const ctx = this.effectContext(source, target, null);
     const dealt = spec.rollSpec
@@ -7332,6 +7335,8 @@ export class GameState {
   private previewItemDrop(source: Mage, itemId: ItemId): Mage | null {
     const def = getItem(itemId);
     if (def.keyItem || def.permanentlyBinding || (itemId === 'bastionSword' && !source.bastionShieldForm)) return null;
+    if (itemId === 'consumablePouch' && source.pouch.length &&
+      [...source.bag, ...source.utility].filter((id) => id === itemId).length <= 1) return null;
     const preview: Mage = Object.assign(Object.create(Mage.prototype), source, {
       hands: [...source.hands], accessories: [...source.accessories], bag: [...source.bag], utility: [...source.utility],
     });
@@ -7379,6 +7384,7 @@ export class GameState {
     source.accessories = preview.accessories;
     source.bag = preview.bag;
     source.utility = preview.utility;
+    if (source.readyConsumable === itemId && !source.utility.includes(itemId)) source.readyConsumable = null;
     source.head = preview.head;
     source.torso = preview.torso;
     source.boots = preview.boots;
@@ -7889,6 +7895,8 @@ export class GameState {
    * sits) and reverse its one-time vital changes. Returns whether one was found.
    */
   removeItem(mage: Mage, id: ItemId): boolean {
+    if (id === 'consumablePouch' && mage.pouch.length &&
+      [...mage.bag, ...mage.utility].filter((item) => item === id).length <= 1) return false;
     const def = getItem(id);
     const pull = (arr: ItemId[]): boolean => {
       const i = arr.indexOf(id);
@@ -7902,7 +7910,7 @@ export class GameState {
         mage.arrows -= 1;
         removed = true;
       }
-    } else if (pull(mage.hands) || pull(mage.bag) || pull(mage.accessories) || pull(mage.utility)) {
+    } else if (pull(mage.hands) || pull(mage.bag) || pull(mage.accessories) || pull(mage.utility) || pull(mage.pouch)) {
       removed = true;
     } else if (mage.head === id) {
       mage.head = null;
@@ -7915,6 +7923,7 @@ export class GameState {
       removed = true;
     }
     if (removed) this.reverseGrantedVitals(mage, def);
+    if (removed && mage.readyConsumable === id && !mage.utility.includes(id)) mage.readyConsumable = null;
     return removed;
   }
 
@@ -8126,6 +8135,7 @@ export class GameState {
         game.updateAttachedScarabs();
         game.log(step < 1 ? `${source.name} stays in place.` : `${source.name} repositions.`);
         for (let index = 1; index < move.path.length; index++) game.burnPhaseWalkPath(source, move.path[index - 1], move.path[index]);
+        if (step >= 1 && source.alive) hexMoved(game, source);
         if (move.roots) {
           const ttl = Math.max(1, game.barrierTtlAt({ x: dest.x, y: dest.y }) + 1);
           addOrExtendStatus(

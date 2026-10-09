@@ -18,7 +18,7 @@ export function stackSize(def: ItemDef): number {
 
 /** Everything a mage carries but does not wear: the stowed bag, the belt, and arrows. */
 export function packItems(mage: Mage): ItemId[] {
-  const items: ItemId[] = [...mage.bag, ...mage.utility];
+  const items: ItemId[] = [...mage.bag, ...mage.utility, ...mage.pouch];
   for (let i = 0; i < mage.arrows; i++) items.push('arrow');
   return items;
 }
@@ -66,6 +66,9 @@ export function packLabel(mage: Mage): string {
  * a bag is always allowed, so an overfull pack can still be emptied.
  */
 export function packFits(mage: Mage, adds: readonly ItemId[] = [], removes: readonly ItemId[] = []): boolean {
+  if (mage.pouch.length && removes.includes('consumablePouch') &&
+      [...packItems(mage), ...adds].filter((id) => id === 'consumablePouch').length <=
+      removes.filter((id) => id === 'consumablePouch').length) return false;
   const before = packItems(mage);
   const items = [...before];
   for (const id of removes) {

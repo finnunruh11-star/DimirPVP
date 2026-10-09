@@ -1,7 +1,4 @@
-// The search window. Say what you are after, see your odds, and roll for it.
-// Two shelves (resources and creatures) list every target, each
-// marked by how much it belongs here. The roll plays out on a d20 over a meter
-// that shows where "nothing", "a lucky turn" and "found" begin.
+// The search window. Choose a target, see its broad likelihood, and roll for it.
 
 import Phaser from 'phaser';
 import { playSound } from '../../audio';
@@ -9,7 +6,6 @@ import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
 import { SceneInput } from '../../engine/SceneInput';
 import { MINE_ENEMY_DEFS, type MineEnemyKind } from '../../pve/minerun';
 import {
-  NEAR_MISS,
   type SearchCategory,
   type SearchOutcome,
   type SearchRoll,
@@ -71,9 +67,9 @@ export interface SearchViewHooks {
   close(result: SearchViewResult | null): void;
 }
 
-const SHELVES: readonly { id: SearchCategory; label: string; blurb: string }[] = [
-  { id: 'resource', label: 'Resources', blurb: 'Herbs, ore and stones.' },
-  { id: 'creature', label: 'Creatures', blurb: 'Track something down.' },
+const SHELVES: readonly { id: SearchCategory; label: string }[] = [
+  { id: 'resource', label: 'Resources' },
+  { id: 'creature', label: 'Creatures' },
 ];
 
 const STANDING: Record<SearchStanding, { label: string; color: number }> = {
@@ -82,10 +78,10 @@ const STANDING: Record<SearchStanding, { label: string; color: number }> = {
   foreign: { label: 'NOT FROM HERE', color: 0xc85e52 },
 };
 
-const OUTCOME: Record<SearchOutcome, { label: string; color: number }> = {
-  found: { label: 'FOUND', color: 0x86d096 },
-  near: { label: 'A LUCKY TURN', color: 0xe6b55a },
-  nothing: { label: 'NOTHING', color: 0x948d7e },
+const OUTCOME: Record<SearchOutcome, { color: number }> = {
+  found: { color: 0x86d096 },
+  near: { color: 0xe6b55a },
+  nothing: { color: 0x948d7e },
 };
 
 const ITEM_TINT: Record<string, number> = {
@@ -115,7 +111,8 @@ const ROW_GAP = 5;
 const TUMBLE_MS = 950;
 
 const chanceColor = (found: number): number => (found >= 0.6 ? 0x86d096 : found >= 0.3 ? 0xe6b55a : 0xd46a5c);
-const percent = (share: number): string => `${Math.round(share * 100)}%`;
+const likelihood = (found: number): string =>
+  found >= 0.8 ? 'Very likely' : found >= 0.6 ? 'Likely' : found >= 0.4 ? 'Possible' : found >= 0.2 ? 'Unlikely' : found >= 0.1 ? 'Rare' : 'Extremely rare';
 
 function tintOf(target: SearchTarget): number {
   if (target.category === 'creature') {
@@ -157,7 +154,7 @@ function drawTargetGlyph(g: Phaser.GameObjects.Graphics, target: SearchTarget, s
   }
 }
 
-/** A row on a shelf: emblem, name and standing on the left, DC and the chance of finding it on the right. */
+/** A row on a shelf: emblem, name and standing on the left, likelihood on the right. */
 class SearchRow extends Phaser.GameObjects.Container implements MenuControl {
   readonly isEnabled = true;
   private readonly face: Phaser.GameObjects.Graphics;
@@ -193,28 +190,19 @@ class SearchRow extends Phaser.GameObjects.Container implements MenuControl {
       fontStyle: 'bold',
       color: cssColor(choice.note ? 0xe6c77a : standing.color),
     }).setLetterSpacing(1);
-    const dc = scene.add.text(rowW - 150, ROW_H / 2, `DC ${target.dc}`, {
+    const chance = scene.add.text(rowW - 16, ROW_H / 2, likelihood(odds.found), {
       fontFamily: MENU_FONT.control,
       fontSize: '13px',
-      color: MENU_HEX.boneDim,
-    }).setOrigin(0, 0.5);
-    const chance = scene.add.text(rowW - 16, 15, percent(odds.found), {
-      fontFamily: MENU_FONT.display,
-      fontSize: '19px',
       fontStyle: 'bold',
       color: cssColor(chanceColor(odds.found)),
     }).setOrigin(1, 0.5);
-    const bar = scene.add.graphics({ x: rowW - 76, y: 30 });
-    bar.fillStyle(MENU_COLOR.pitch, 1).fillRect(0, 0, 60, 5);
-    bar.fillStyle(OUTCOME.near.color, 0.85).fillRect(60 - Math.round(60 * (odds.found + odds.near)), 0, Math.round(60 * odds.near), 5);
-    bar.fillStyle(OUTCOME.found.color, 1).fillRect(60 - Math.round(60 * odds.found), 0, Math.round(60 * odds.found), 5);
     const hit = scene.add.zone(0, 0, rowW, ROW_H).setOrigin(0).setInteractive({ useHandCursor: true });
     hit.on('pointerover', () => this.focusRequest?.());
     hit.on('pointerdown', () => {
       playSound('ui.click');
       this.onPick();
     });
-    this.add([this.face, glyph, name, tag, dc, chance, bar, hit]);
+    this.add([this.face, glyph, name, tag, chance, hit]);
     this.redraw();
   }
 
@@ -344,14 +332,13 @@ export class SearchView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.bone,
     });
-    const when = model.night ? '  ·  night: the country is more dangerous' : '';
-    const sub = scene.add.text(74, 80, `${model.place}  ·  Depth ${model.depth}${when}  ·  ${model.searcher} searches  ·  ${model.hours} h each`, {
+    const sub = scene.add.text(74, 80, model.place, {
       fontFamily: MENU_FONT.body,
       fontSize: '14px',
       color: MENU_HEX.boneDim,
     });
     const fresh = model.pickedOver <= 0;
-    const plate = scene.add.text(1206, 50, fresh ? 'FRESH GROUND' : `PICKED OVER  +${model.pickedOver} DC`, {
+    const plate = scene.add.text(1206, 50, fresh ? 'FRESH GROUND' : 'PICKED OVER', {
       fontFamily: MENU_FONT.control,
       fontSize: '14px',
       fontStyle: 'bold',
@@ -375,13 +362,6 @@ export class SearchView extends Phaser.GameObjects.Container {
       this.add(chip);
       this.focus.add(chip);
     });
-    const blurb = SHELVES.find((entry) => entry.id === this.shelf)?.blurb ?? '';
-    this.add(scene.add.text(1222, 151, `${blurb}  Q / E switch.`, {
-      fontFamily: MENU_FONT.body,
-      fontSize: '13px',
-      color: MENU_HEX.boneDim,
-    }).setOrigin(1, 0.5));
-
     addRecess(scene, this, LIST.x, LIST.y, LIST.w, LIST.h);
     addRecess(scene, this, CARD.x, CARD.y, CARD.w, CARD.h, MENU_COLOR.woodDeep);
 
@@ -428,7 +408,7 @@ export class SearchView extends Phaser.GameObjects.Container {
     const go = new CabinetChip(scene, CARD.x + 24, CARD.y + CARD.h - 62, {
       width: 300,
       height: 42,
-      label: `Search  (${model.hours} h)`,
+      label: 'Search',
       tone: 'primary',
       enabled: shelf.length > 0,
       onActivate: () => {
@@ -445,11 +425,6 @@ export class SearchView extends Phaser.GameObjects.Container {
     this.focus.add(go);
     this.focus.add(back);
 
-    this.add(scene.add.text(76, 664, 'Arrows: choose     Enter: search     Q / E: shelf     Esc: back', {
-      fontFamily: MENU_FONT.control,
-      fontSize: '12px',
-      color: MENU_HEX.boneDim,
-    }).setOrigin(0, 0.5));
     this.renderCard();
     // Land the keyboard on the first target rather than the tabs.
     const first = this.rows.findIndex((row) => row.isEnabled);
@@ -529,14 +504,7 @@ export class SearchView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: cssColor(standing.color),
     }).setLetterSpacing(2);
-    const home = scene.add.text(177, 90, `At home in: ${target.home}`, {
-      fontFamily: MENU_FONT.body,
-      fontSize: '13px',
-      color: MENU_HEX.boneDim,
-      wordWrap: { width: CARD.w - 196 },
-      lineSpacing: 2,
-    });
-    card.add([name, tag, home]);
+    card.add([name, tag]);
     if (choice.note) {
       card.add(scene.add.text(177, 144, choice.note, {
         fontFamily: MENU_FONT.control,
@@ -556,53 +524,12 @@ export class SearchView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.brassLight,
     }).setLetterSpacing(3));
-    const formula = choice.bonus > 0 ? `d20 + ${choice.bonus}   vs   DC ${target.dc}` : `d20   vs   DC ${target.dc}`;
-    card.add(scene.add.text(24, 218, formula, {
+    card.add(scene.add.text(24, 218, likelihood(odds.found), {
       fontFamily: MENU_FONT.display,
       fontSize: '24px',
       fontStyle: 'bold',
-      color: MENU_HEX.bone,
+      color: cssColor(chanceColor(odds.found)),
     }));
-    const why = [
-      choice.bonus > 0 ? `+${choice.bonus} from ${choice.knack}.` : `${choice.knack} adds nothing.`,
-      target.standing === 'foreign' ? 'It does not belong here: much harder.' : target.standing === 'scarce' ? 'Seldom met this close to a town.' : '',
-      this.model.pickedOver > 0 ? `Searched already today: +${this.model.pickedOver} DC.` : '',
-    ].filter(Boolean).join(' ');
-    card.add(scene.add.text(24, 254, why, {
-      fontFamily: MENU_FONT.body,
-      fontSize: '12px',
-      color: MENU_HEX.boneDim,
-      wordWrap: { width: CARD.w - 48 },
-    }));
-
-    const barY = 292;
-    const barW = CARD.w - 48;
-    const bar = scene.add.graphics({ x: 24, y: barY });
-    const segments: [SearchOutcome, number][] = [['nothing', odds.nothing], ['near', odds.near], ['found', odds.found]];
-    let at = 0;
-    bar.fillStyle(MENU_COLOR.pitch, 1).fillRect(-2, -2, barW + 4, 22);
-    for (const [outcome, share] of segments) {
-      const w = Math.round(barW * share);
-      if (w <= 0) continue;
-      bar.fillStyle(mixColor(OUTCOME[outcome].color, 0x000000, 0.2), 1).fillRect(at, 0, w, 18);
-      bar.fillStyle(mixColor(OUTCOME[outcome].color, 0xffffff, 0.18), 1).fillRect(at, 0, w, 4);
-      at += w;
-    }
-    bar.lineStyle(1, MENU_COLOR.brassDark, 1).strokeRect(-1.5, -1.5, barW + 3, 21);
-    card.add(bar);
-    const legend = scene.add.text(24, barY + 30,
-      `Found ${percent(odds.found)}     Lucky turn ${percent(odds.near)}     Nothing ${percent(odds.nothing)}`, {
-        fontFamily: MENU_FONT.control,
-        fontSize: '13px',
-        color: MENU_HEX.bone,
-      });
-    const rules = scene.add.text(24, barY + 50, `Miss by ${NEAR_MISS} or less and you still turn up something good. A natural 20 always finds it.`, {
-      fontFamily: MENU_FONT.body,
-      fontSize: '12px',
-      color: MENU_HEX.boneDim,
-      wordWrap: { width: CARD.w - 48 },
-    });
-    card.add([legend, rules]);
   }
 
   /** The creature itself in the medal: its own art, or the tinted figure it fights as. */
@@ -653,7 +580,7 @@ export class SearchView extends Phaser.GameObjects.Container {
       frame.fillStyle(MENU_COLOR.ink, 1).fillCircle(x, y + 0.5, 3);
       frame.fillStyle(MENU_COLOR.brass, 1).fillCircle(x, y, 2.4);
     }
-    const kicker = scene.add.text(GAME_WIDTH / 2, top + 30, `SEARCHING  ·  ${this.model.searcher.toUpperCase()}  ·  ${this.model.hours} H`, {
+    const kicker = scene.add.text(GAME_WIDTH / 2, top + 30, `SEARCHING  ·  ${this.model.searcher.toUpperCase()}`, {
       fontFamily: MENU_FONT.control,
       fontSize: '12px',
       fontStyle: 'bold',
@@ -690,7 +617,6 @@ export class SearchView extends Phaser.GameObjects.Container {
     }).setOrigin(0.5);
     stage.add([glow, rays, die, formula]);
 
-    const meter = this.buildMeter(stage, left + 60, top + 302, W - 120, choice);
     const stamp = scene.add.text(GAME_WIDTH / 2, top + 382, '', {
       fontFamily: MENU_FONT.display,
       fontSize: '24px',
@@ -766,11 +692,10 @@ export class SearchView extends Phaser.GameObjects.Container {
     playSound(crit ? 'dice.crit' : fumble ? 'dice.fumble' : roll.outcome === 'found' ? 'ui.confirm' : roll.outcome === 'near' ? 'travel.notice' : 'ui.back');
 
     formula.setText(roll.bonus > 0 ? `${roll.die} + ${roll.bonus} = ${roll.total}   vs   DC ${roll.dc}` : `${roll.die}   vs   DC ${roll.dc}`).setColor(MENU_HEX.bone);
-    meter(roll.total);
     await this.wait(this.reduced ? 60 : 380);
     if (this.disposed) return;
     if (crit || fumble) natural.setText(crit ? 'NATURAL 20' : 'NATURAL 1').setColor(cssColor(crit ? 0xf3dc8a : 0xd46a5c)).setVisible(true);
-    stamp.setText(look.label).setBackgroundColor(cssColor(look.color)).setVisible(true);
+    stamp.setText(roll.outcome === 'found' ? 'SUCCESS' : roll.outcome === 'near' ? 'SUCCESS · LUCKY TURN' : 'FAILED').setBackgroundColor(cssColor(look.color)).setVisible(true);
     if (!this.reduced) {
       stamp.setScale(1.6).setAlpha(0);
       scene.tweens.add({ targets: stamp, scale: 1, alpha: 1, duration: 260, ease: 'Back.Out' });
@@ -778,49 +703,6 @@ export class SearchView extends Phaser.GameObjects.Container {
     message.setText(result.message);
     scene.tweens.add({ targets: message, alpha: 1, duration: this.reduced ? 60 : 260, delay: this.reduced ? 0 : 120 });
     this.offerButtons(stage, top + H - 64, choice, result);
-  }
-
-  /** The meter under the die: where nothing, a lucky turn and finding it begin. Returns the marker's mover. */
-  private buildMeter(stage: Phaser.GameObjects.Container, x: number, y: number, w: number, choice: SearchChoice): (total: number) => void {
-    const { scene } = this;
-    const dc = choice.target.dc;
-    const low = 1 + choice.bonus;
-    const high = Math.max(20 + choice.bonus, dc + 2);
-    const span = Math.max(1, high - low + 1);
-    const px = (value: number): number => x + ((Phaser.Math.Clamp(value, low, high) - low + 0.5) / span) * w;
-    const g = scene.add.graphics();
-    g.fillStyle(MENU_COLOR.pitch, 1).fillRect(x - 3, y - 3, w + 6, 20);
-    const nearFrom = Phaser.Math.Clamp(dc - NEAR_MISS, low, high + 1);
-    const foundFrom = Phaser.Math.Clamp(dc, low, high + 1);
-    const edge = (value: number): number => x + ((value - low) / span) * w;
-    const paint = (from: number, to: number, color: number): void => {
-      const a = edge(from);
-      const b = edge(to);
-      if (b <= a) return;
-      g.fillStyle(mixColor(color, 0x000000, 0.25), 1).fillRect(a, y, b - a, 14);
-      g.fillStyle(mixColor(color, 0xffffff, 0.15), 1).fillRect(a, y, b - a, 3);
-    };
-    paint(low, nearFrom, OUTCOME.nothing.color);
-    paint(nearFrom, foundFrom, OUTCOME.near.color);
-    paint(foundFrom, high + 1, OUTCOME.found.color);
-    g.lineStyle(1, MENU_COLOR.brassDark, 1).strokeRect(x - 1.5, y - 1.5, w + 3, 17);
-    const dcX = edge(foundFrom);
-    g.lineStyle(2, MENU_COLOR.brassLight, 1).lineBetween(dcX, y - 7, dcX, y + 21);
-    const dcLabel = scene.add.text(dcX, y + 24, `DC ${dc}`, {
-      fontFamily: MENU_FONT.control,
-      fontSize: '11px',
-      fontStyle: 'bold',
-      color: MENU_HEX.brassLight,
-    }).setOrigin(0.5, 0);
-    const marker = scene.add.graphics({ x: x, y: y - 6 });
-    marker.fillStyle(MENU_COLOR.ink, 1).fillTriangle(-8, -12, 8, -12, 0, 1);
-    marker.fillStyle(MENU_COLOR.bone, 1).fillTriangle(-6, -11, 6, -11, 0, -1);
-    marker.setAlpha(0);
-    stage.add([g, dcLabel, marker]);
-    return (total: number) => {
-      marker.setAlpha(1).setX(x);
-      scene.tweens.add({ targets: marker, x: px(total), duration: this.reduced ? 80 : 420, ease: 'Cubic.Out' });
-    };
   }
 
   private offerButtons(stage: Phaser.GameObjects.Container, y: number, choice: SearchChoice, result: SearchRollResult | null): void {

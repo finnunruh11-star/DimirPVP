@@ -168,7 +168,9 @@ const TXT = { gold: '#e8c872', bone: '#ece3cc', ash: '#9d94bb', ember: '#ff8a9c'
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
 const KIND_LABEL: Record<RuneKind, string> = { effect: 'EFFECT', target: 'TARGET', modifier: 'MODIFIER' };
 const ACTION_LABEL: Record<HexAction, string> = { main: 'MAIN ACTION', bonus: 'BONUS ACTION', full: 'MAIN + BONUS ACTION' };
-const LINK_WORD: Record<CouplingMode, string> = { impact: 'ON IMPACT', tick: 'EACH TICK', ground: 'FROM THE GROUND' };
+const LINK_WORD: Record<CouplingMode, string> = {
+  impact: 'ON IMPACT', tick: 'EACH TICK', ground: 'FROM THE GROUND', move: 'WHEN IT MOVES', struck: 'WHEN STRUCK',
+};
 const BURST_SOUND: Record<BurstKind, Parameters<typeof playSound>[0]> = {
   tap: 'ui.hover',
   blast: 'spell.fire',

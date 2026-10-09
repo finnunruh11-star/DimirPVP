@@ -90,23 +90,32 @@ function shape(...strokes: string[]): number {
 // -----------------------------------------------------------------------------
 
 export type EffectRune =
-  | 'heal' | 'regen' | 'dot' | 'wind' | 'corrosive' | 'light'
-  | 'twist' | 'missile' | 'explosion' | 'barrier' | 'accelerate' | 'slow';
+  | 'heal' | 'regen' | 'dot' | 'wind' | 'corrosive' | 'light' | 'twist' | 'missile' | 'explosion' | 'barrier' | 'accelerate'
+  | 'fire' | 'shatter' | 'water' | 'mind' | 'edge' | 'lance' | 'blink' | 'infuse' | 'mark' | 'might';
 export type TargetRune = 'single' | 'aoe' | 'multi' | 'battlefield' | 'environment';
-export type ModifierRune = 'bigger' | 'smaller' | 'rangeUp' | 'rangeDown' | 'allies' | 'enemies';
+export type ModifierRune = 'bigger' | 'rangeUp' | 'allies';
 export type RuneId = EffectRune | TargetRune | ModifierRune;
 export type RuneKind = 'effect' | 'target' | 'modifier';
 
+/** Elements give every blow of their part its damage type, and mark whoever the part lands on. */
+export type ElementFacet =
+  | 'corrosive' | 'light' | 'shadow' | 'fire' | 'frost' | 'shatter' | 'pierce' | 'water' | 'mind' | 'malform' | 'edge' | 'void';
+/** Forms carry the part's damage to its mark: darts, blasts, beams, bolts. */
+export type FormFacet = 'missile' | 'siphon' | 'explosion' | 'implosion' | 'lance' | 'ricochet';
+
 /** What an effect rune does on this sheet: itself, or its inversion. */
 export type EffectFacet =
-  | EffectRune
-  | 'blight' | 'wither' | 'burst' | 'cyclone' | 'purify' | 'gloom' | 'anchor' | 'siphon' | 'implosion' | 'breach';
+  | ElementFacet
+  | FormFacet
+  | 'heal' | 'blight' | 'regen' | 'wither' | 'dot' | 'burst' | 'wind' | 'cyclone' | 'purify' | 'mist' | 'twist' | 'anchor'
+  | 'barrier' | 'breach' | 'accelerate' | 'slow' | 'blink' | 'swap' | 'infuse' | 'manaburn' | 'mark' | 'silence' | 'might' | 'feeble';
 export type TargetFacet = TargetRune | 'self' | 'nova' | 'chain' | 'seeker' | 'aura';
-export type Facet = EffectFacet | TargetFacet | ModifierRune;
+export type ModifierFacet = ModifierRune | 'smaller' | 'rangeDown' | 'enemies';
+export type Facet = EffectFacet | TargetFacet | ModifierFacet;
 /** Where a part of the hex lands. A part with no target rune touches one unit: the one you pick, or the one struck. */
 export type HexTarget = TargetFacet | 'touch';
 /** Accelerate and Slow modify their part when another effect follows them. */
-export type HexModifier = ModifierRune | 'accelerate' | 'slow';
+export type HexModifier = ModifierFacet | 'accelerate' | 'slow';
 
 export interface FacetDef {
   label: string;
@@ -126,7 +135,7 @@ export const FACETS: Record<Facet, FacetDef> = {
   },
   blight: {
     label: 'Blight', kind: 'effect', cost: 3, color: 0xa04ab8,
-    text: '1d6 shadow, and nothing can heal it for 3 turns. On the ground: festering earth where nothing heals.',
+    text: "1d6 in the part's element (shadow without one), and nothing can heal it for 3 turns. On the ground: festering earth where nothing heals.",
   },
   regen: {
     label: 'Regeneration', kind: 'effect', cost: 3, color: 0x9ce08a,
@@ -138,7 +147,7 @@ export const FACETS: Record<Facet, FacetDef> = {
   },
   dot: {
     label: 'Over Time', kind: 'effect', cost: 1, color: 0xd0405a,
-    text: 'Corrosion, Light, Blight and Healing work over 3 turns instead of at once; alone it bleeds. On the ground the hex lingers. A coupling on it fires every tick.',
+    text: "Elements, Blight and Healing work over 3 turns instead of at once; otherwise it bleeds in the part's element. On the ground the hex lingers. A coupling on it fires every tick.",
   },
   burst: {
     label: 'Burst', kind: 'effect', cost: 2, color: 0xff5a2a,
@@ -154,7 +163,7 @@ export const FACETS: Record<Facet, FacetDef> = {
   },
   corrosive: {
     label: 'Corrosion', kind: 'effect', cost: 2, color: 0x9be870,
-    text: '1d6 corrosive. On the ground: melts walls, dropped items and totems.',
+    text: 'Element: corrosive. Strikes 1d6 unless a form carries it. On the ground: melts walls, dropped items and totems.',
   },
   purify: {
     label: 'Purify', kind: 'effect', cost: 2, color: 0xe6fff2,
@@ -162,11 +171,11 @@ export const FACETS: Record<Facet, FacetDef> = {
   },
   light: {
     label: 'Light', kind: 'effect', cost: 2, color: 0xf3e9a0,
-    text: '1d6 light and tears veils away. On the ground: burns shadows off.',
+    text: 'Element: light. Strikes 1d6 unless a form carries it, and tears veils away. On the ground: burns shadows off.',
   },
-  gloom: {
-    label: 'Gloom', kind: 'effect', cost: 2, color: 0x7a5ac8,
-    text: 'Wraps it in a half veil for 3 turns. On the ground: a pool of shadow.',
+  shadow: {
+    label: 'Shadow', kind: 'effect', cost: 2, color: 0x7a5ac8,
+    text: 'Element: shadow. Strikes 1d6 unless a form carries it, and you slip into a half veil for a turn. On the ground: a pool of shadow.',
   },
   twist: {
     label: 'Twist', kind: 'effect', cost: 3, color: 0xc8d878,
@@ -178,35 +187,115 @@ export const FACETS: Record<Facet, FacetDef> = {
   },
   missile: {
     label: 'Magic Missile', kind: 'effect', cost: 3, color: 0xb98bff,
-    text: 'Darts of 1d4+1 that never miss, 2 per unit, 3 on one heightened target. On the ground: shoots down scarabs and totems.',
+    text: "Form: darts of 1d4+1 that never miss, 2 per unit, 3 on one heightened target, in the part's element (typeless without one). On the ground: shoots down scarabs and totems.",
   },
   siphon: {
     label: 'Siphon', kind: 'effect', cost: 3, color: 0xe0405a,
-    text: 'Darts of 1d3 that never miss; you heal for what they draw. On the ground: earth that drinks for you.',
+    text: "Form: darts of 1d3 that never miss, in the part's element (corrosive without one); you heal for what they draw. On the ground: earth that drinks for you.",
   },
   explosion: {
     label: 'Explosion', kind: 'effect', cost: 4, color: 0xff8a2f,
-    text: "2d6 heat (or the hex's element); one target splashes 1d6 within 2cm. On the ground: wrecks walls, totems, items and sand.",
+    text: "Form: a 2d6 blast in the part's element (heat without one); one target splashes 1d6 within 2cm. On the ground: wrecks walls, totems, items and sand.",
   },
   implosion: {
     label: 'Implosion', kind: 'effect', cost: 4, color: 0xa86aff,
-    text: '2d6 shatter, and everyone else within 3cm is dragged 2cm toward it. On the ground: a crushing sinkhole.',
+    text: "Form: 2d6 in the part's element (shatter without one), and everyone else within 3cm is dragged 2cm toward it. On the ground: a crushing sinkhole.",
+  },
+  lance: {
+    label: 'Lance', kind: 'effect', cost: 3, color: 0xfff0a0,
+    text: "Form: a beam of 1d8 in the part's element (light without one) through its mark and everyone on the line from the source to it.",
+  },
+  ricochet: {
+    label: 'Ricochet', kind: 'effect', cost: 3, color: 0xd0d0ff,
+    text: "Form: a bolt of 1d6 in the part's element (pierce without one) that bounces on to the nearest other foe within 4cm, twice.",
   },
   barrier: {
     label: 'Barrier', kind: 'effect', cost: 2, color: 0x8ad1ff,
-    text: 'A ward: 2 less damage taken for 3 turns. On the ground: a wall.',
+    text: 'A ward: 2 less damage taken for 3 turns. A coupling on it fires each time it is struck. On the ground: a wall.',
   },
   breach: {
     label: 'Breach', kind: 'effect', cost: 2, color: 0xe0803a,
-    text: 'Exposed: 2 more damage taken for 3 turns. On the ground: breaks walls.',
+    text: 'Exposed: 2 more damage taken for 3 turns. A coupling on it fires each time it is struck. On the ground: breaks walls.',
   },
   accelerate: {
     label: 'Accelerate', kind: 'effect', cost: 2, modCost: 1, color: 0xffd166,
-    text: 'As the last effect of its part: +2cm move for 3 turns. Before another effect it modifies: a bonus action, but weaker (x0.7).',
+    text: 'As the last effect of its part: +2cm move for 3 turns, and a coupling on it fires wherever it ends a move. Before another effect it modifies: a bonus action, but weaker (x0.7).',
   },
   slow: {
     label: 'Slow', kind: 'effect', cost: 2, modCost: 0, color: 0x6a8ad8,
-    text: 'As the last effect of its part: -40% move for 3 turns. Before another effect it modifies: the whole turn, but stronger (x1.4).',
+    text: 'As the last effect of its part: -40% move for 3 turns, and a coupling on it fires wherever it ends a move. Before another effect it modifies: the whole turn, but stronger (x1.4).',
+  },
+  fire: {
+    label: 'Fire', kind: 'effect', cost: 2, color: 0xff6a2a,
+    text: 'Element: heat. Strikes 1d6 unless a form carries it, and sets it burning. On the ground: burns away mists and scarabs.',
+  },
+  frost: {
+    label: 'Frost', kind: 'effect', cost: 2, color: 0x9fdcff,
+    text: 'Element: cold. Strikes 1d6 unless a form carries it, and chills it: a third less move for a turn. On the ground: freezes mists away; with Over Time, icy ground.',
+  },
+  shatter: {
+    label: 'Shatter', kind: 'effect', cost: 2, color: 0xd8c8a8,
+    text: 'Element: shatter. Strikes 1d6 unless a form carries it, and knocks it 1cm back. On the ground: wrecks walls and totems.',
+  },
+  pierce: {
+    label: 'Pierce', kind: 'effect', cost: 2, color: 0xe8e8f0,
+    text: 'Element: pierce. Strikes 1d6 unless a form carries it, and opens it: 1 more damage taken for its turns. On the ground: shoots down scarabs.',
+  },
+  water: {
+    label: 'Water', kind: 'effect', cost: 2, color: 0x4aa0e0,
+    text: 'Element: water. Strikes 1d6 unless a form carries it, and the tide drags it 1cm toward the source. On the ground: washes away sand, acid and blight.',
+  },
+  mist: {
+    label: 'Mist', kind: 'effect', cost: 2, color: 0xb0c8d8,
+    text: 'Wraps it in a half veil for its turns. On the ground: a pool of shadow.',
+  },
+  mind: {
+    label: 'Mind', kind: 'effect', cost: 2, color: 0xd080e0,
+    text: 'Element: sanity. Strikes 1d6 unless a form carries it; every blow of the part lands on the mind instead of the body.',
+  },
+  malform: {
+    label: 'Malform', kind: 'effect', cost: 3, color: 0x80b070,
+    text: 'Element: malforming. Strikes 1d6 unless a form carries it, and strips 1 maximum health until the fight ends.',
+  },
+  edge: {
+    label: 'Edge', kind: 'effect', cost: 2, color: 0xc04050,
+    text: 'Element: slashing. Strikes 1d6 unless a form carries it, and leaves it bleeding 1d2 for 2 turns.',
+  },
+  void: {
+    label: 'Void', kind: 'effect', cost: 3, color: 0x6040a0,
+    text: 'Element: typeless, which nothing resists. Strikes 1d6 unless a form carries it.',
+  },
+  blink: {
+    label: 'Blink', kind: 'effect', cost: 2, color: 0xb8a8ff,
+    text: 'Blinks it 3cm away from the source, through walls; on yourself, away from the nearest foe. A coupling on it fires where it lands.',
+  },
+  swap: {
+    label: 'Swap', kind: 'effect', cost: 2, color: 0x9a88e8,
+    text: 'It and you trade places. A coupling on it fires where it lands.',
+  },
+  infuse: {
+    label: 'Infuse', kind: 'effect', cost: 1, color: 0x5a9aff,
+    text: 'Restores 1d4 mana.',
+  },
+  manaburn: {
+    label: 'Manaburn', kind: 'effect', cost: 2, color: 0x3a5ad0,
+    text: 'Burns away 1d4 mana.',
+  },
+  mark: {
+    label: 'Mark', kind: 'effect', cost: 1, color: 0xff6060,
+    text: 'Marked for its turns: the next hit it takes deals 2 more, and spends the mark. A coupling on it fires when the mark is struck.',
+  },
+  silence: {
+    label: 'Silence', kind: 'effect', cost: 2, color: 0xc0c0d0,
+    text: 'Its next action other than moving fails.',
+  },
+  might: {
+    label: 'Might', kind: 'effect', cost: 2, color: 0xffa040,
+    text: 'Empowered: 1 more damage with every hit it deals for its turns.',
+  },
+  feeble: {
+    label: 'Feeble', kind: 'effect', cost: 2, color: 0x8a7a6a,
+    text: 'Sapped: 1 less damage with every hit it deals for its turns.',
   },
   single: {
     label: 'Single Target', kind: 'target', cost: 0, color: 0x7ec8b4,
@@ -286,25 +375,31 @@ export const RUNES: Record<RuneId, RuneDef> = {
   regen: { masks: [shape('047', '24')], inverse: 'wither' },
   dot: { masks: [shape('145')], inverse: 'burst' },
   wind: { masks: [shape('345', '157')], inverse: 'cyclone' },
-  corrosive: { masks: [shape('14', '648')], inverse: 'purify' },
-  light: { masks: [shape('04', '14', '24')], inverse: 'gloom' },
   twist: { masks: [shape('430125')], inverse: 'anchor' },
-  missile: { masks: [shape('642', '125')], inverse: 'siphon' },
-  explosion: { masks: [shape('147', '048', '246')], inverse: 'implosion' },
   barrier: { masks: [shape('036', '258')], inverse: 'breach' },
   accelerate: { masks: [shape('046', '157')], inverse: 'slow' },
-  slow: { masks: [shape('248', '137')], inverse: 'accelerate' },
+  corrosive: { masks: [shape('14', '648')], inverse: 'purify' },
+  light: { masks: [shape('04', '14', '24')], inverse: 'shadow' },
+  fire: { masks: [shape('3415')], inverse: 'frost' },
+  shatter: { masks: [shape('048', '25')], inverse: 'pierce' },
+  water: { masks: [shape('345', '678')], inverse: 'mist' },
+  mind: { masks: [shape('3145', '3745')], inverse: 'malform' },
+  edge: { masks: [shape('048')], inverse: 'void' },
+  missile: { masks: [shape('642', '125')], inverse: 'siphon' },
+  explosion: { masks: [shape('147', '048', '246')], inverse: 'implosion' },
+  lance: { masks: [shape('345')], inverse: 'ricochet' },
+  blink: { masks: [shape('2468')], inverse: 'swap' },
+  infuse: { masks: [shape('1375')], inverse: 'manaburn' },
+  mark: { masks: [shape('048', '246')], inverse: 'silence' },
+  might: { masks: [shape('147', '678')], inverse: 'feeble' },
   single: { masks: [shape('147')], inverse: 'self' },
   aoe: { masks: [shape('15731')], inverse: 'nova' },
   multi: { masks: [shape('03', '14', '25')], inverse: 'chain' },
   battlefield: { masks: [shape('012', '678')], inverse: 'seeker' },
   environment: { masks: [shape('01430'), shape('12541'), shape('34763'), shape('45874')], inverse: 'aura' },
   bigger: { masks: [shape('315')], inverse: 'smaller' },
-  smaller: { masks: [shape('375')], inverse: 'bigger' },
   rangeUp: { masks: [shape('012', '14')], inverse: 'rangeDown' },
-  rangeDown: { masks: [shape('678', '47')], inverse: 'rangeUp' },
   allies: { masks: [shape('36785')], inverse: 'enemies' },
-  enemies: { masks: [shape('048', '246')], inverse: 'allies' },
 };
 
 export const RUNE_ORDER = Object.keys(RUNES) as RuneId[];
@@ -505,9 +600,10 @@ export const IMPACT_REACH = R(6);
 /** How often an impact coupling can fire in one loosing. */
 export const ECHO_LIMIT = 3;
 
-const HARMFUL: ReadonlySet<EffectFacet> = new Set([
-  'blight', 'wither', 'burst', 'wind', 'cyclone', 'corrosive', 'light', 'twist', 'anchor',
-  'missile', 'siphon', 'explosion', 'implosion', 'breach', 'slow',
+const HARMFUL: ReadonlySet<EffectFacet> = new Set<EffectFacet>([
+  'blight', 'wither', 'burst', 'wind', 'cyclone', 'twist', 'anchor', 'breach', 'slow',
+  'corrosive', 'light', 'shadow', 'fire', 'frost', 'shatter', 'pierce', 'water', 'mind', 'malform', 'edge', 'void',
+  'missile', 'siphon', 'explosion', 'implosion', 'lance', 'ricochet', 'manaburn', 'mark', 'silence', 'feeble',
 ]);
 
 /** Would the part hurt or hinder whoever it lands on? */
@@ -526,24 +622,71 @@ export function partSide(part: HexPart): HexSide {
   return 'any';
 }
 
-/** The element a part's missiles, siphons and blasts carry. */
-function partElement(part: HexPart): DamageType | null {
-  if (part.effects.includes('corrosive')) return 'corrosive';
-  if (part.effects.includes('light')) return 'light';
-  if (part.effects.includes('blight')) return 'shadow';
-  return null;
+/** What an element leaves on whoever its part lands on, beside its damage. */
+export type Rider = 'reveal' | 'shade' | 'burn' | 'chill' | 'knock' | 'open' | 'tide' | 'warp' | 'bleed';
+
+export interface ElementDef {
+  type: DamageType;
+  rider: Rider | null;
+  /** What its lingering wound is called. */
+  dot: string;
 }
 
-/** How a part's carrier sets off the next part: where it strikes, each time its lingering wound ticks, or each time its ground bites. */
-export type CouplingMode = 'impact' | 'tick' | 'ground';
+export const ELEMENTS: Record<ElementFacet, ElementDef> = {
+  corrosive: { type: 'corrosive', rider: null, dot: 'Hexed Rot' },
+  light: { type: 'light', rider: 'reveal', dot: 'Searing Hex' },
+  shadow: { type: 'shadow', rider: 'shade', dot: 'Festering Hex' },
+  fire: { type: 'heat', rider: 'burn', dot: 'Hex Burn' },
+  frost: { type: 'cold', rider: 'chill', dot: 'Hex Frostbite' },
+  shatter: { type: 'shatter', rider: 'knock', dot: 'Hex Fracture' },
+  pierce: { type: 'pierce', rider: 'open', dot: 'Hex Thorns' },
+  water: { type: 'water', rider: 'tide', dot: 'Hex Drowning' },
+  mind: { type: 'sanity', rider: null, dot: 'Hex Dread' },
+  malform: { type: 'malforming', rider: 'warp', dot: 'Hex Mutation' },
+  edge: { type: 'slashing', rider: 'bleed', dot: 'Hex Bleed' },
+  void: { type: 'typeless', rider: null, dot: 'Hex Unmaking' },
+};
 
-const LINGERS: ReadonlySet<EffectFacet> = new Set(['heal', 'blight', 'corrosive', 'light']);
+/** What a form deals when no element names it. */
+export const FORM_TYPE: Record<FormFacet, DamageType> = {
+  missile: 'typeless', siphon: 'corrosive', explosion: 'heat', implosion: 'shatter', lance: 'light', ricochet: 'pierce',
+};
+
+export const isElement = (facet: Facet): facet is ElementFacet => Object.prototype.hasOwnProperty.call(ELEMENTS, facet);
+export const isForm = (facet: Facet): facet is FormFacet => Object.prototype.hasOwnProperty.call(FORM_TYPE, facet);
+
+/** The element that names every blow of a part: the first one drawn. */
+export function partElement(part: HexPart): ElementFacet | null {
+  return part.effects.find(isElement) ?? null;
+}
+
+/** The forms that carry a part's damage, each once, in the order drawn. */
+export const partForms = (part: HexPart): FormFacet[] => [...new Set(part.effects.filter(isForm))];
+const partElements = (part: HexPart): ElementFacet[] => [...new Set(part.effects.filter(isElement))];
+
+/** The damage type of a part's blows: its element's, or `fallback` without one. */
+export function partType(part: HexPart, fallback: DamageType): DamageType {
+  const element = partElement(part);
+  return element ? ELEMENTS[element].type : fallback;
+}
+
+/**
+ * How a part's carrier sets off the next part: where it strikes, each time its
+ * lingering wound ticks, each time its ground bites, each time the unit it
+ * hastened or slowed ends a move, or each time the unit it warded, opened or
+ * marked is struck.
+ */
+export type CouplingMode = 'impact' | 'tick' | 'ground' | 'move' | 'struck';
 
 export function couplingMode(part: HexPart): CouplingMode | null {
-  if (!part.carrier) return null;
+  const carrier = part.carrier;
+  if (!carrier) return null;
   if (isGround(part.target)) return 'ground';
-  if (part.carrier === 'dot' || part.carrier === 'regen') return 'tick';
-  return part.effects.includes('dot') && LINGERS.has(part.carrier) ? 'tick' : 'impact';
+  if (carrier === 'dot' || carrier === 'regen') return 'tick';
+  if (carrier === 'accelerate' || carrier === 'slow') return 'move';
+  if (carrier === 'barrier' || carrier === 'breach' || carrier === 'mark') return 'struck';
+  const lingers = carrier === 'heal' || carrier === 'blight' || (isElement(carrier) && partForms(part).length === 0);
+  return part.effects.includes('dot') && lingers ? 'tick' : 'impact';
 }
 
 // -----------------------------------------------------------------------------
@@ -608,12 +751,14 @@ type StepBody =
   | { k: 'dot'; name: string; spec: string; type: DamageType }
   | { k: 'noHeal' }
   | { k: 'wither'; amount: number }
-  | { k: 'reveal' }
+  | { k: 'rider'; rider: Rider | null; element: ElementFacet }
   | { k: 'veil' }
   | { k: 'missiles'; darts: number; type: DamageType }
   | { k: 'siphon'; darts: number; type: DamageType }
   | { k: 'explosion'; spec: string; type: DamageType; splash: string | null }
-  | { k: 'implosion'; spec: string; cm: number }
+  | { k: 'implosion'; spec: string; type: DamageType; cm: number }
+  | { k: 'lance'; spec: string; type: DamageType }
+  | { k: 'ricochet'; spec: string; type: DamageType; bounces: number }
   | { k: 'push'; cm: number }
   | { k: 'pull'; cm: number }
   | { k: 'twist'; turns: number }
@@ -622,6 +767,12 @@ type StepBody =
   | { k: 'expose'; amount: number }
   | { k: 'haste'; cm: number }
   | { k: 'slow'; pct: number }
+  | { k: 'blink'; cm: number }
+  | { k: 'swap' }
+  | { k: 'mana'; spec: string; gain: boolean }
+  | { k: 'mark'; amount: number }
+  | { k: 'silence' }
+  | { k: 'might'; amount: number }
   | { k: 'burst' };
 
 /** One thing a part does to each unit it lands on, and the effect it came from. `heal`, `hit`, `explosion` and `implosion` rolls are multiplied by the potency. */
@@ -631,12 +782,25 @@ export const MISSILE_DART = '1d4+1';
 export const SIPHON_DART = '1d3';
 export const EXPLOSION_SPLASH_RADIUS = R(2);
 export const IMPLOSION_RADIUS = R(3);
+/** How far a ricochet looks for its next mark. */
+export const RICOCHET_HOP = R(4);
 
+/**
+ * What a part does to each unit, in order. The grammar: the first element
+ * names the damage type of every blow; with no form an element strikes on its
+ * own, while a form carries the blow and the element only rides along. Every
+ * element then leaves its rider. Over Time makes elements, Blight and Healing
+ * linger instead; with nothing to linger it bleeds in the part's type.
+ */
 export function unitPlan(part: HexPart): HexStep[] {
   const p = partPotency(part);
   const n = (facet: EffectFacet): number => countOf(part.effects, facet);
   const over = n('dot') > 0;
   const element = partElement(part);
+  const elements = partElements(part);
+  const carried = partForms(part).length > 0;
+  const type = (fallback: DamageType): DamageType => partType(part, fallback);
+  const scaledBy = (facet: EffectFacet, base: number): number => Math.max(1, Math.round(base * p * n(facet)));
   const steps: HexStep[] = [];
   const add = (from: EffectFacet, body: StepBody): void => {
     steps.push({ ...body, from });
@@ -644,36 +808,49 @@ export function unitPlan(part: HexPart): HexStep[] {
   if (n('heal')) add('heal', over ? { k: 'regen', spec: tierSpec(p * n('heal')) } : { k: 'heal', spec: dice(2 * n('heal'), 4) });
   if (n('regen')) add('regen', { k: 'regen', spec: tierSpec(p * n('regen')) });
   if (n('purify')) add('purify', { k: 'purify', spec: dice(n('purify'), 4) });
-  const elements = [
-    ['corrosive', 'corrosive', 'Hexed Rot'],
-    ['light', 'light', 'Searing Hex'],
-    ['blight', 'shadow', 'Festering Hex'],
-  ] as const;
-  for (const [facet, type, name] of elements) {
-    if (!n(facet)) continue;
-    add(facet, over ? { k: 'dot', name, spec: tierSpec(p * n(facet)), type } : { k: 'hit', spec: dice(n(facet), 6), type });
+  if (n('infuse')) add('infuse', { k: 'mana', spec: dice(n('infuse'), 4), gain: true });
+  if (!carried) {
+    for (const facet of elements) {
+      const def = ELEMENTS[facet];
+      add(facet, over ? { k: 'dot', name: def.dot, spec: tierSpec(p * n(facet)), type: def.type } : { k: 'hit', spec: dice(n(facet), 6), type: def.type });
+    }
   }
-  if (n('blight')) add('blight', { k: 'noHeal' });
-  if (n('light')) add('light', { k: 'reveal' });
-  if (over && !n('heal') && !n('regen') && !n('corrosive') && !n('light') && !n('blight')) {
-    add('dot', { k: 'dot', name: 'Hexed Wound', spec: tierSpec(p * n('dot')), type: 'slashing' });
+  if (n('blight')) {
+    const blow = type('shadow');
+    add('blight', over ? { k: 'dot', name: 'Festering Hex', spec: tierSpec(p * n('blight')), type: blow } : { k: 'hit', spec: dice(n('blight'), 6), type: blow });
+    add('blight', { k: 'noHeal' });
   }
-  if (n('wither')) add('wither', { k: 'wither', amount: Math.max(1, Math.round(2 * p * n('wither'))) });
-  if (n('missile')) add('missile', { k: 'missiles', darts: Math.max(1, Math.round(2 * p * n('missile'))), type: element ?? 'typeless' });
-  if (n('siphon')) add('siphon', { k: 'siphon', darts: Math.max(1, Math.round(2 * p * n('siphon'))), type: element ?? 'corrosive' });
+  const lingering = n('heal') + n('regen') + n('blight') + (carried ? 0 : elements.length);
+  if (over && !lingering) {
+    add('dot', { k: 'dot', name: element ? ELEMENTS[element].dot : 'Hexed Wound', spec: tierSpec(p * n('dot')), type: type('slashing') });
+  }
+  if (n('missile')) add('missile', { k: 'missiles', darts: scaledBy('missile', 2), type: type(FORM_TYPE.missile) });
+  if (n('siphon')) add('siphon', { k: 'siphon', darts: scaledBy('siphon', 2), type: type(FORM_TYPE.siphon) });
   if (n('explosion')) {
     const splashes = part.target === 'touch' || part.target === 'single' || part.target === 'self';
-    add('explosion', { k: 'explosion', spec: dice(2 * n('explosion'), 6), type: element ?? 'heat', splash: splashes ? dice(n('explosion'), 6) : null });
+    add('explosion', { k: 'explosion', spec: dice(2 * n('explosion'), 6), type: type(FORM_TYPE.explosion), splash: splashes ? dice(n('explosion'), 6) : null });
   }
-  if (n('implosion')) add('implosion', { k: 'implosion', spec: dice(2 * n('implosion'), 6), cm: 2 * n('implosion') });
-  if (n('wind')) add('wind', { k: 'push', cm: Math.max(1, Math.round(3 * p * n('wind'))) });
-  if (n('cyclone')) add('cyclone', { k: 'pull', cm: Math.max(1, Math.round(3 * p * n('cyclone'))) });
+  if (n('implosion')) add('implosion', { k: 'implosion', spec: dice(2 * n('implosion'), 6), type: type(FORM_TYPE.implosion), cm: 2 * n('implosion') });
+  if (n('lance')) add('lance', { k: 'lance', spec: dice(n('lance'), 8), type: type(FORM_TYPE.lance) });
+  if (n('ricochet')) add('ricochet', { k: 'ricochet', spec: dice(n('ricochet'), 6), type: type(FORM_TYPE.ricochet), bounces: 2 * n('ricochet') });
+  // Each element marks whoever the part lands on; a coupling on an element that a form carries fires here.
+  for (const facet of elements) add(facet, { k: 'rider', rider: ELEMENTS[facet].rider, element: facet });
+  if (n('wither')) add('wither', { k: 'wither', amount: scaledBy('wither', 2) });
+  if (n('wind')) add('wind', { k: 'push', cm: scaledBy('wind', 3) });
+  if (n('cyclone')) add('cyclone', { k: 'pull', cm: scaledBy('cyclone', 3) });
   if (n('twist')) add('twist', { k: 'twist', turns: n('twist') });
+  if (n('blink')) add('blink', { k: 'blink', cm: scaledBy('blink', 3) });
+  if (n('swap')) add('swap', { k: 'swap' });
   if (n('anchor')) add('anchor', { k: 'root' });
-  if (n('gloom')) add('gloom', { k: 'veil' });
-  if (n('barrier')) add('barrier', { k: 'ward', amount: Math.max(1, Math.round(2 * p * n('barrier'))) });
-  if (n('breach')) add('breach', { k: 'expose', amount: Math.max(1, Math.round(2 * p * n('breach'))) });
-  if (n('accelerate')) add('accelerate', { k: 'haste', cm: Math.max(1, Math.round(2 * p * n('accelerate'))) });
+  if (n('mist')) add('mist', { k: 'veil' });
+  if (n('manaburn')) add('manaburn', { k: 'mana', spec: dice(n('manaburn'), 4), gain: false });
+  if (n('silence')) add('silence', { k: 'silence' });
+  if (n('barrier')) add('barrier', { k: 'ward', amount: scaledBy('barrier', 2) });
+  if (n('breach')) add('breach', { k: 'expose', amount: scaledBy('breach', 2) });
+  if (n('mark')) add('mark', { k: 'mark', amount: scaledBy('mark', 2) });
+  if (n('might')) add('might', { k: 'might', amount: scaledBy('might', 1) });
+  if (n('feeble')) add('feeble', { k: 'might', amount: -scaledBy('feeble', 1) });
+  if (n('accelerate')) add('accelerate', { k: 'haste', cm: scaledBy('accelerate', 2) });
   if (n('slow')) add('slow', { k: 'slow', pct: Math.min(0.9, round2(0.4 * p * n('slow'))) });
   // Last, so it reaps every wound laid before it.
   if (n('burst')) add('burst', { k: 'burst' });
@@ -715,6 +892,24 @@ export interface GroundPlan {
   zone: HexGroundSpec | null;
 }
 
+/** What each element wrecks or cleans on bare ground. */
+const ELEMENT_CLEARS: Partial<Record<ElementFacet, GroundClear[]>> = {
+  corrosive: ['walls', 'items', 'totems'],
+  light: ['shadows'],
+  fire: ['mists', 'scarabs'],
+  frost: ['mists'],
+  shatter: ['walls', 'totems'],
+  pierce: ['scarabs'],
+  water: ['sand', 'blight'],
+};
+
+const FORM_CLEARS: Partial<Record<FormFacet, GroundClear[]>> = {
+  missile: ['scarabs', 'totems'],
+  explosion: ['walls', 'totems', 'items', 'sand', 'scarabs'],
+  lance: ['scarabs', 'totems'],
+  ricochet: ['scarabs'],
+};
+
 /** Environment and Aura: without Over Time a part acts on things, with it the ground carries the part. */
 export function groundPlan(part: HexPart): GroundPlan {
   const p = partPotency(part);
@@ -726,33 +921,24 @@ export function groundPlan(part: HexPart): GroundPlan {
   const burn = (facet: EffectFacet, type: DamageType, scale = 1): void => {
     hits.push({ spec: tierSpec(scale * p * n(facet)), type });
   };
-  const element = partElement(part);
-  if (n('corrosive')) {
-    if (over) burn('corrosive', 'corrosive');
-    else clear('walls', 'items', 'totems');
+  const forms = partForms(part);
+  for (const facet of partElements(part)) {
+    // A form carries the element's bite; alone the element bites with its own.
+    if (over && !forms.length) burn(facet, ELEMENTS[facet].type);
+    else if (!over) clear(...(ELEMENT_CLEARS[facet] ?? []));
   }
-  if (n('light')) {
-    if (over) burn('light', 'light');
-    else clear('shadows');
-  }
-  if (n('missile')) {
-    if (over) burn('missile', 'typeless');
-    else clear('scarabs', 'totems');
-  }
-  if (n('explosion')) {
-    if (over) burn('explosion', element ?? 'heat', 1.4);
-    else clear('walls', 'totems', 'items', 'sand', 'scarabs');
+  for (const form of forms) {
+    if (over || form === 'implosion' || form === 'siphon') burn(form, partType(part, FORM_TYPE[form]), form === 'explosion' ? 1.4 : 1);
+    else clear(...(FORM_CLEARS[form] ?? []));
   }
   if (n('wind') && !over) clear('mists', 'sand');
   if (n('purify')) clear('blight');
   if (n('breach')) clear('walls');
-  if (n('blight') && over) burn('blight', 'shadow');
-  if (n('implosion')) burn('implosion', 'shatter');
-  if (n('siphon')) burn('siphon', element ?? 'corrosive');
+  if (n('blight') && over) burn('blight', partType(part, 'shadow'));
   const healing = n('heal') + n('regen');
-  const wounds = ['corrosive', 'light', 'missile', 'explosion', 'blight', 'implosion', 'siphon'] as const;
-  if (over && !healing && wounds.every((facet) => !n(facet))) burn('dot', 'slashing');
-  const pace = Math.max(-0.9, Math.min(1, round2(0.5 * p * (n('accelerate') - n('slow')))));
+  if (over && !healing && !hits.length) burn('dot', partType(part, 'slashing'));
+  const frost = over && n('frost') ? -0.3 : 0;
+  const pace = Math.max(-0.9, Math.min(1, round2(0.5 * p * (n('accelerate') - n('slow')) + frost)));
   const drift = 2 * (n('cyclone') + n('implosion')) - (over ? 2 * n('wind') : 0);
   const zone: HexGroundSpec = { hits };
   if (healing) zone.heal = tierSpec(p * healing);
@@ -761,12 +947,13 @@ export function groundPlan(part: HexPart): GroundPlan {
   if (n('twist')) zone.spin = true;
   if (n('anchor')) zone.root = true;
   if (n('blight')) zone.noHeal = true;
-  if (n('wither')) zone.wither = Math.max(1, Math.round(p * n('wither')));
+  const wither = n('wither') * 2 + (over ? n('malform') : 0);
+  if (wither) zone.wither = Math.max(1, Math.round((p * wither) / 2));
   if (n('siphon')) zone.drink = true;
   const lingers = hits.length > 0 || !!(zone.heal || zone.pace || zone.drift || zone.spin || zone.root || zone.noHeal || zone.wither);
   return {
     wall: n('barrier') > 0,
-    shadow: n('gloom') > 0,
+    shadow: n('mist') > 0 || (n('shadow') > 0 && !over),
     erupt: n('burst') > 0,
     clears: [...clears],
     zone: lingers ? zone : null,
@@ -791,13 +978,25 @@ const CLEAR_TEXT: Record<GroundClear, string> = {
 };
 
 const cm = (px: number): number => Math.round((px / RANGE_UNIT) * 10) / 10;
+const rangeWord = (px: number): string => cm(px) <= 4 ? 'Short range' : cm(px) <= 8 ? 'Medium range' : 'Long range';
+const sizeWord = (px: number): string => cm(px) <= 2 ? 'small' : cm(px) <= 4 ? 'medium' : 'large';
+const strengthWord = (spec: string): string => {
+  const sides = Number(spec.split('d')[1]);
+  return sides <= 3 ? 'small' : sides <= 6 ? 'moderate' : 'strong';
+};
 const times = (p: number): string => (p === 1 ? '' : ` x${p}`);
 const listed = (parts: readonly string[]): string =>
   parts.length <= 1 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 
-/** "Magic Missile + Wind (Area)": a part's effects, and where it lands. */
+/** "Fire Magic Missile + Wind (Area)": a part's effects, elements naming the forms that carry them, and where it lands. */
 export function partLabel(part: HexPart): string {
-  const effects = [...new Set(part.effects)].map((effect) => FACETS[effect].label).join(' + ') || 'Nothing';
+  const unique = [...new Set(part.effects)];
+  const forms = partForms(part);
+  const elements = forms.length ? partElements(part).map((facet) => FACETS[facet].label).join(' ') : '';
+  const labels = unique
+    .filter((effect) => !(forms.length && isElement(effect)))
+    .map((effect) => (elements && effect === forms[0] ? `${elements} ${FACETS[effect].label}` : FACETS[effect].label));
+  const effects = labels.join(' + ') || 'Nothing';
   return part.target === 'touch' ? effects : `${effects} (${FACETS[part.target].label})`;
 }
 
@@ -808,44 +1007,58 @@ export function hexName(recipe: HexRecipe): string {
 /** Where a part lands, in words; a coupled part lands around what its carrier struck. */
 function targetLine(part: HexPart, coupled: boolean): string {
   const [unit, units] = SIDE_UNIT[partSide(part)];
-  const reach = cm(partReach(part));
-  const radius = cm(partRadius(part));
+  const reach = rangeWord(partReach(part));
+  const radius = sizeWord(partRadius(part));
   const p = partPotency(part);
   const potency = p === 1 ? '' : ` (x${p})`;
   const lines: Record<HexTarget, string> = {
-    touch: coupled ? 'The unit struck.' : `One unit within ${reach}cm.`,
-    single: coupled ? 'The unit struck, heightened.' : `One ${unit} within ${reach}cm, heightened.`,
+    touch: coupled ? 'The unit struck.' : `${reach}, one unit.`,
+    single: coupled ? 'The unit struck, heightened.' : `${reach}, one ${unit}, heightened.`,
     self: 'You alone, heightened.',
-    aoe: coupled ? `Every ${unit} within ${radius}cm of the impact.` : `Every ${unit} within ${radius}cm of a point within ${reach}cm.`,
-    nova: coupled ? `Every other ${unit} within ${radius}cm of the one struck.` : `Every other ${unit} within ${radius}cm of you.`,
+    aoe: coupled ? `Every ${unit} in a ${radius} area around the impact.` : `${reach}, every ${unit} in a ${radius} area.`,
+    nova: coupled ? `Every other ${unit} in a ${radius} area around the one struck.` : `Every other ${unit} in a ${radius} area around you.`,
     multi: coupled
       ? `The ${partCount(part)} ${units} nearest the impact, other than the one struck.`
-      : `The ${partCount(part)} nearest ${units} within ${reach}cm.`,
+      : `${reach}, the ${partCount(part)} nearest ${units}.`,
     chain: coupled
-      ? `Leaps from the one struck to the nearest ${unit} ${cm(partHop(part))}cm on, ${partCount(part)} times.`
-      : `One ${unit} within ${reach}cm, then the nearest ${unit} ${cm(partHop(part))}cm on from it, ${partCount(part)} in all.`,
+      ? `Leaps from the one struck to the nearest ${unit} a ${rangeWord(partHop(part)).toLowerCase()} away, ${partCount(part)} times.`
+      : `${reach}, one ${unit}, then the nearest ${unit} a ${rangeWord(partHop(part)).toLowerCase()} away, ${partCount(part)} in all.`,
     battlefield: `Every ${unit} on the field.`,
     seeker: `The most wounded ${unit} on the field, heightened.`,
-    environment: coupled ? `The ground, ${radius}cm around the impact.` : `The ground, ${radius}cm around a point within ${reach}cm.`,
-    aura: coupled ? `A ${radius}cm circle riding on the one struck.` : `A ${radius}cm circle riding on a unit within ${reach}cm.`,
+    environment: coupled ? `A ${radius} area of ground around the impact.` : `${reach}, a ${radius} area of ground.`,
+    aura: coupled ? `A ${radius} aura riding on the one struck.` : `${reach}, a ${radius} aura riding on a unit.`,
   };
   return `${lines[part.target]}${potency}`;
 }
 
-function stepLine(part: HexPart, step: HexStep, coupled: boolean): string {
+function riderLine(rider: Rider, source: string, turns: number): string {
+  switch (rider) {
+    case 'reveal': return 'Tears veils away.';
+    case 'shade': return 'You slip into a half veil for a turn.';
+    case 'burn': return 'Set burning.';
+    case 'chill': return 'Chilled: a third less move for a turn.';
+    case 'knock': return `Knocked 1cm away from ${source}.`;
+    case 'open': return `Opened: 1 more damage taken for ${turns} turns.`;
+    case 'tide': return `The tide drags it 1cm toward ${source}.`;
+    case 'warp': return 'Loses 1 maximum health until the fight ends.';
+    case 'bleed': return 'Bleeds 1d2 slashing at the start of its next 2 turns.';
+  }
+}
+
+function stepLine(part: HexPart, step: HexStep, coupled: boolean): string | null {
   const p = partPotency(part);
   const turns = partTurns(part);
   const self = part.target === 'self';
   const source = coupled ? 'the impact' : part.target === 'aoe' ? 'the centre' : 'you';
   switch (step.k) {
     case 'heal': return `Heals ${step.spec}${times(p)}.`;
-    case 'regen': return `Regenerates ${step.spec} at the start of each of its next ${turns} turns.`;
+    case 'regen': return `Apply ${turns} rounds of ${strengthWord(step.spec)} regen.`;
     case 'purify': return `Strips its afflictions and heals ${step.spec}${times(p)}.`;
     case 'hit': return `${step.spec}${times(p)} ${step.type}.`;
-    case 'dot': return `${step.name}: ${step.spec} ${step.type} at the start of each of its next ${turns} turns.`;
+    case 'dot': return `${step.name}: ${turns} rounds of ${strengthWord(step.spec)} ${step.type} damage.`;
     case 'noHeal': return `Nothing can heal it for ${turns} turns.`;
     case 'wither': return `Loses ${step.amount} maximum health until the fight ends.`;
-    case 'reveal': return 'Tears veils away.';
+    case 'rider': return step.rider ? riderLine(step.rider, source, turns) : null;
     case 'veil': return `Hidden in a half veil for ${turns} turns.`;
     case 'missiles': return `${step.darts} dart${step.darts === 1 ? '' : 's'} of ${MISSILE_DART} ${step.type}, never missing.`;
     case 'siphon': return `${step.darts} siphon${step.darts === 1 ? '' : 's'} of ${SIPHON_DART} ${step.type}, never missing; you heal for what they draw.`;
@@ -853,7 +1066,9 @@ function stepLine(part: HexPart, step: HexStep, coupled: boolean): string {
       return self
         ? `Bursts around you: everyone else within 2cm takes ${step.splash}${times(p)} ${step.type}.`
         : `${step.spec}${times(p)} ${step.type} blast${step.splash ? `; everyone else within 2cm takes ${step.splash}${times(p)}` : ''}.`;
-    case 'implosion': return `${step.spec}${times(p)} shatter; everyone else within 3cm is dragged ${step.cm}cm toward it.`;
+    case 'implosion': return `${step.spec}${times(p)} ${step.type}; everyone else within 3cm is dragged ${step.cm}cm toward it.`;
+    case 'lance': return `A ${step.spec}${times(p)} ${step.type} beam through it and everyone on the line from ${source}.`;
+    case 'ricochet': return `A ${step.spec}${times(p)} ${step.type} bolt that bounces on to the nearest foe within 4cm, ${step.bounces} times.`;
     case 'push':
       return self ? `Carries you ${step.cm}cm away from the nearest foe.` : `Shoved ${step.cm}cm away from ${source}; a wall or the edge slams for 2d6.`;
     case 'pull':
@@ -862,9 +1077,18 @@ function stepLine(part: HexPart, step: HexStep, coupled: boolean): string {
       const turn = step.turns === 1 ? 'a quarter circle' : `${step.turns} quarter circles`;
       return self ? `Turns you ${turn} around the nearest foe.` : `Turned ${turn} around ${source}; a wall slams for 2d6.`;
     }
+    case 'blink': return self ? `You blink ${step.cm}cm away from the nearest foe.` : `Blinks ${step.cm}cm away from ${source}, through walls.`;
+    case 'swap': return self ? 'Nothing to trade places with.' : 'It and you trade places.';
     case 'root': return 'Rooted through its next turn.';
     case 'ward': return `Ward: ${step.amount} less damage taken for ${turns} turns.`;
     case 'expose': return `Exposed: ${step.amount} more damage taken for ${turns} turns.`;
+    case 'mark': return `Marked for ${turns} turns: the next hit it takes deals ${step.amount} more.`;
+    case 'silence': return 'Its next action other than moving fails.';
+    case 'might':
+      return step.amount > 0
+        ? `Empowered: ${step.amount} more damage with every hit for ${turns} turns.`
+        : `Sapped: ${-step.amount} less damage with every hit for ${turns} turns.`;
+    case 'mana': return step.gain ? `Restores ${step.spec}${times(p)} mana.` : `Burns away ${step.spec}${times(p)} mana.`;
     case 'haste': return `+${step.cm}cm move for ${turns} turns.`;
     case 'slow': return `-${Math.round(step.pct * 100)}% move for ${turns} turns.`;
     case 'burst': return 'Every lingering wound on it lands at once.';
@@ -903,8 +1127,20 @@ export function couplingLine(recipe: HexRecipe, index: number, named = true): st
   switch (couplingMode(before)) {
     case 'tick': return `${coupled}: each time it ticks,`;
     case 'ground': return groundPlan(before).zone ? 'Coupled to the ground: each time it bites someone,' : 'Coupled to the ground: once, at its heart,';
+    case 'move': return `${coupled}: wherever it ends a move, ${ECHO_LIMIT} times at most,`;
+    case 'struck': return before.carrier === 'mark' ? `${coupled}: when the mark is struck,` : `${coupled}: each time it is struck, ${ECHO_LIMIT} times at most,`;
     default: return `${coupled}: wherever it lands, ${ECHO_LIMIT} times at most,`;
   }
+}
+
+/** How the part's runes combine: which element names its blows and what carries them. */
+function grammarLine(part: HexPart): string | null {
+  const element = partElement(part);
+  const forms = partForms(part);
+  if (!element) return null;
+  const type = ELEMENTS[element].type;
+  if (!forms.length) return `${FACETS[element].label}: every blow is ${type}.`;
+  return `${FACETS[element].label} rides the ${listed(forms.map((form) => FACETS[form].label))}: every blow is ${type}.`;
 }
 
 /** The rules of one part, a sentence at a time. */
@@ -913,8 +1149,10 @@ export function partLines(recipe: HexRecipe, index: number): string[] {
   const coupled = index > 0;
   const lines = [targetLine(part, coupled)];
   if (part.effects.length === 0) return [...lines, 'It holds no effect: it fizzles.'];
+  const grammar = grammarLine(part);
+  if (grammar) lines.push(grammar);
   if (isGround(part.target)) return [...lines, ...groundLines(part)];
-  return [...lines, ...unitPlan(part).map((step) => stepLine(part, step, coupled))];
+  return [...lines, ...unitPlan(part).flatMap((step) => stepLine(part, step, coupled) ?? [])];
 }
 
 /** The rules of a whole hex, a sentence at a time. */

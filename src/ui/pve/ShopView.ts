@@ -16,7 +16,6 @@ import {
 } from '../../pve/exploration/bounties';
 import {
   craftersIn,
-  LONG_REST_HOURS,
   memberIn,
   moneyLabel,
   partyHasCodex,
@@ -26,13 +25,11 @@ import {
   sellOffers,
   shopStock,
 } from '../../pve/exploration/economy';
-import { bloodmoonDue, hoursBeforeBloodmoon } from '../../pve/exploration/bloodmoon';
-import { clockTime, spanLabel } from '../../pve/exploration/clock';
+import { bloodmoonDue } from '../../pve/exploration/bloodmoon';
 import type { RestNap } from '../../pve/exploration/nap';
 import type { ExplorationActions, ExplorationIntent } from '../../pve/exploration/intents';
 import { partyXpScale } from '../../pve/exploration/coop';
 import type { ExplorationRun } from '../../pve/exploration/run';
-import { SHORT_REST_HOURS } from '../../pve/exploration/shortRest';
 import type { ShopDef } from '../../pve/exploration/shops';
 import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
 import { addCabinetBackdrop, addRecess, addSectionRule, MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
@@ -425,7 +422,6 @@ export class ShopView extends Phaser.GameObjects.Container {
     }
     const price = roomPrice(this.run, this.shop) ?? 0;
     const party = partyOf(this.run);
-    const fallen = party.filter((mage) => !mage.alive).map((mage) => mage.name);
     const leader = memberIn(this.run, this.member);
     const vitals = leader
       ? leader.alive
@@ -433,22 +429,13 @@ export class ShopView extends Phaser.GameObjects.Container {
         : `${leader.name} has fallen and gets up after a night here.`
       : '';
     const leads = this.hooks.actions.leads;
-    const rooms = party.length > 1 ? `Rooms for the party (${party.length}), ${LONG_REST_HOURS} hours` : `A room for ${LONG_REST_HOURS} hours`;
-    const risen = fallen.length && hoursBeforeBloodmoon(this.run, LONG_REST_HOURS) < LONG_REST_HOURS
-      ? ` ${fallen.join(' and ')} get${fallen.length > 1 ? '' : 's'} up with 1 HP, 1 sanity, no mana and no charges.` : '';
+    const rooms = party.length > 1 ? `Rooms for the party (${party.length})` : 'A room for the night';
     const due = bloodmoonDue(this.run);
-    const hours = hoursBeforeBloodmoon(this.run, LONG_REST_HOURS);
-    const nextDay = this.run.hour + hours >= 24;
-    const night = hours < LONG_REST_HOURS
-      ? `The bloodmoon rises in ${spanLabel(hours)} and will wake you: only the hours slept count.`
-      : `Sleep until ${clockTime((this.run.hour + hours) % 24)}${nextDay ? ` on day ${this.run.day + 1}` : ''}: fully restore health, mana, sanity and words. Earned XP levels up here.${nextDay ? ' Shops restock at midnight.' : ''}`;
     const button = new CabinetButton(this.scene, 290, 204, {
       width: 700,
       height: 104,
       label: `${rooms}  /  ${moneyLabel(price)}`,
-      detail: due
-        ? 'The bloodmoon is up. Nobody sleeps through it.'
-        : leads ? `${night}${risen}` : 'The host books the rooms for the party.',
+      detail: due ? 'The bloodmoon is up. Nobody sleeps through it.' : leads ? '' : 'The host books the rooms for the party.',
       index: '1',
       enabled: leads && !due && this.run.gold >= price,
       onActivate: () => void this.sleep(),
@@ -472,7 +459,7 @@ export class ShopView extends Phaser.GameObjects.Container {
       width: 700,
       height: 76,
       label: 'Short rest at a table  /  free',
-      detail: blocked ?? `${SHORT_REST_HOURS.min}-${SHORT_REST_HOURS.max} h: a quarter of HP, mana, sanity and charges back.${online ? ' The others are asked to join.' : ''}`,
+      detail: blocked ?? (online ? 'The others are asked to join.' : ''),
       index,
       enabled: !blocked && !this.working,
       onActivate: () => {
@@ -493,7 +480,7 @@ export class ShopView extends Phaser.GameObjects.Container {
     const party = partyOf(this.run);
     const due = bloodmoonDue(this.run);
     const call = inn.call();
-    const rooms = `Rooms for the party (${party.length}), ${LONG_REST_HOURS} hours  /  ${moneyLabel(price)}`;
+    const rooms = `Rooms for the party (${party.length})  /  ${moneyLabel(price)}`;
     const buttons: CabinetButton[] = [];
     let note: string;
     if (!call) {
