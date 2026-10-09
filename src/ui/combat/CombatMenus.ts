@@ -52,10 +52,13 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
   private readonly items: ListItem[] = [];
   private readonly rowItems: ListItem[] = [];
   private readonly scrollBar: Phaser.GameObjects.Graphics;
+  private readonly scrollUp: CabinetChip;
+  private readonly scrollDown: CabinetChip;
+  private rowStep = ROW_STEP;
   private scroll = 0;
   private maxScroll = 0;
   private readonly onWheel = (_p: Phaser.Input.Pointer, _over: unknown, _dx: number, dy: number): void => {
-    if (dy !== 0) this.scrollTo(this.scroll + Math.sign(dy) * ROW_STEP);
+    if (dy !== 0) this.scrollTo(this.scroll + Math.sign(dy) * this.rowStep);
   };
 
   constructor(scene: Phaser.Scene, private readonly options: ActionMenuOptions) {
@@ -100,6 +103,12 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
     const twoColumns = totalRows > 8;
     this.rowsPerColumn = Math.max(1, Math.ceil(totalRows / (twoColumns ? 2 : 1)));
     const columns = this.splitSections(options.sections, twoColumns ? 2 : 1);
+    const available = LIST_VIEW.bottom - 154;
+    this.rowStep = Math.min(ROW_STEP, Math.max(30, Math.floor(Math.min(...columns.map((sections) => {
+      const rows = sections.reduce((sum, section) => sum + section.entries.length, 0);
+      return rows ? (available - sections.length * 27 + 5) / rows : ROW_STEP;
+    })))));
+    const rowHeight = this.rowStep - 5;
     let entryIndex = 0;
     columns.forEach((sections, column) => {
       const x = twoColumns ? 128 + column * 522 : 318;
@@ -120,7 +129,7 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
           const pinnable = !!options.onTogglePin;
           const row = new CabinetChip(scene, x, y, {
             width: pinnable ? width - 40 : width,
-            height: 34,
+            height: rowHeight,
             label: `[${entry.hotkey}]  ${entry.label}`,
             tone: entry.id === 'end' || entry.id === 'pass' ? 'primary' : 'normal',
             enabled: entry.enabled,
@@ -133,12 +142,11 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
             },
           });
           this.add(row);
-          this.focus.add(row);
-          const item: ListItem = { objects: [row], baseY: y, height: 34 };
-          if (pinnable) item.objects.push(this.pinStar(x + width - 17, y + 17, entry.id));
+          const item: ListItem = { objects: [row], baseY: y, height: rowHeight };
+          if (pinnable) item.objects.push(this.pinStar(x + width - 17, y + rowHeight / 2, entry.id));
           this.items.push(item);
           this.rowItems.push(item);
-          y += ROW_STEP;
+          y += this.rowStep;
         }
         y += 7;
       }
@@ -148,6 +156,16 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
     this.maxScroll = Math.max(0, contentBottom - LIST_VIEW.bottom);
     this.scrollBar = scene.add.graphics();
     this.add(this.scrollBar);
+    this.scrollUp = new CabinetChip(scene, 1050, 112, {
+      width: 48, height: 28, label: '\u2191',
+      onActivate: () => this.scrollTo(this.scroll - this.rowStep * 3),
+    });
+    this.scrollDown = new CabinetChip(scene, 1104, 112, {
+      width: 48, height: 28, label: '\u2193',
+      onActivate: () => this.scrollTo(this.scroll + this.rowStep * 3),
+    });
+    this.add([this.scrollUp, this.scrollDown]);
+    if (this.maxScroll > 0) subtitle.setText('More actions below \u2193');
     if (this.maxScroll > 0) scene.input.on('wheel', this.onWheel);
     this.layoutList();
 
@@ -166,6 +184,7 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
       wordWrap: { width: 980 },
     });
     this.add([this.inspectorTitle, this.inspectorBody]);
+    for (const item of this.rowItems) this.focus.add(item.objects[0] as CabinetChip);
     this.setSelection(options.selectedIndex);
   }
 
@@ -223,12 +242,14 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
       for (const object of item.objects) object.setY(object.y + shift).setVisible(inside);
     }
     this.scrollBar.clear();
+    this.scrollUp.setVisible(this.maxScroll > 0 && this.scroll > 0);
+    this.scrollDown.setVisible(this.maxScroll > 0 && this.scroll < this.maxScroll);
     if (this.maxScroll <= 0) return;
     const trackH = LIST_VIEW.bottom - LIST_VIEW.top;
     const thumbH = Math.max(30, (trackH * trackH) / (trackH + this.maxScroll));
     const thumbY = LIST_VIEW.top + ((trackH - thumbH) * this.scroll) / this.maxScroll;
-    this.scrollBar.fillStyle(MENU_COLOR.pitch, 0.9).fillRect(1166, LIST_VIEW.top, 6, trackH);
-    this.scrollBar.fillStyle(MENU_COLOR.brass, 1).fillRect(1166, thumbY, 6, thumbH);
+    this.scrollBar.fillStyle(MENU_COLOR.brassDark, 1).fillRect(1160, LIST_VIEW.top, 16, trackH);
+    this.scrollBar.fillStyle(MENU_COLOR.brassLight, 1).fillRect(1162, thumbY, 12, thumbH);
   }
 
   private showEntry(entry: CabinetActionEntry): void {
@@ -240,16 +261,18 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
 
   private splitSections(sections: CabinetActionSection[], count: number): CabinetActionSection[][] {
     if (count === 1) return [sections];
-    const total = sections.reduce((sum, section) => sum + section.entries.length + 1, 0);
-    const columns: CabinetActionSection[][] = [[], []];
-    let used = 0;
-    for (const section of sections) {
-      const weight = section.entries.length + 1;
-      const column = used > 0 && used + weight / 2 > total / 2 ? 1 : 0;
-      columns[column].push(section);
-      if (column === 0) used += weight;
+    const heightOf = (group: CabinetActionSection[]): number =>
+      group.reduce((sum, section) => sum + section.entries.length * ROW_STEP + 27, 0);
+    let split = 1;
+    let bestHeight = Infinity;
+    for (let boundary = 1; boundary < sections.length; boundary++) {
+      const height = Math.max(heightOf(sections.slice(0, boundary)), heightOf(sections.slice(boundary)));
+      if (height < bestHeight) {
+        split = boundary;
+        bestHeight = height;
+      }
     }
-    return columns;
+    return [sections.slice(0, split), sections.slice(split)];
   }
 }
 

@@ -768,8 +768,9 @@ const SHOUT_DESC: Record<SummonOrderKind, string> = {
 
 /** How the action palette is grouped, so it reads as short lists. */
 const ACTION_GROUPS: { title: string; ids: string[] }[] = [
+  { title: 'SUMMONS', ids: ['command', 'shout:*', 'summon-shoulder:*'] },
   { title: 'CORE', ids: ['cast', 'move', 'attack', 'end'] },
-  { title: 'MANOEUVRE', ids: ['leap', 'cleave', 'focus', 'command', 'shout:*', 'summon-shoulder:*', 'flee'] },
+  { title: 'MANOEUVRE', ids: ['leap', 'cleave', 'focus', 'flee'] },
   {
     title: 'POWERS',
     ids: [
@@ -6853,6 +6854,7 @@ export class GameScene extends Phaser.Scene {
           this.gs.currentIndex = savedIndex;
           this.puppet = null;
           this.gs.log(`${owner.name} resumes their turn.`);
+          this.redraw();
         }
         break;
       }
@@ -9813,7 +9815,7 @@ export class GameScene extends Phaser.Scene {
     const sections: { title: string; entries: ActionEntry[] }[] = [];
     const taken = new Set<ActionEntry>();
     for (const group of ACTION_GROUPS) {
-      const entries = raw.filter((entry) => group.ids.some((id) =>
+      const entries = group.ids.flatMap((id) => raw.filter((entry) =>
         id.endsWith('*') ? entry.id.startsWith(id.slice(0, -1)) : id === entry.id));
       for (const entry of entries) taken.add(entry);
       if (entries.length > 0) sections.push({ title: group.title, entries });
