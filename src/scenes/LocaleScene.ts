@@ -9,6 +9,7 @@ import { playMusic, playSound } from '../audio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../config/constants';
 import type { ExplorationOpening, MatchConfig } from '../config/MatchConfig';
 import type { MageClass } from '../core/Classes';
+import { setHexLore } from '../core/hexcraft/lore';
 import { getItem, isRangedWeapon, type ItemId } from '../core/Items';
 import type { Mage } from '../core/Mage';
 import { comboKey, isModifierWord, spellDisplayName, WORDS, type WordId } from '../core/Words';
@@ -200,7 +201,15 @@ const RULE_TEXT: Record<FieldEffect, string> = {
 };
 
 export class LocaleScene extends Phaser.Scene implements HudOwner {
-  private run!: ExplorationRun;
+  private currentRun!: ExplorationRun;
+  /** The run the party plays; its rune lore decides how this client names every Hexzettel. */
+  private get run(): ExplorationRun {
+    return this.currentRun;
+  }
+  private set run(run: ExplorationRun) {
+    this.currentRun = run;
+    setHexLore(run.hexLore.runes);
+  }
   private place!: ResolvedLocale;
   private model!: LocaleModel;
   private view?: LocaleView;

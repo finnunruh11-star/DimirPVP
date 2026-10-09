@@ -55,7 +55,7 @@ const buildings: BuildingPlacement[] = [
   { x: 3, y: 11, shop: 'thassa-guild', spec: { w: 8, h: 5, roof: 'blue', wall: 'plaster', door: 3, windows: [1, 5, 6], banner: 0x3f66a8 } },
   { x: 13, y: 11, shop: 'thassa-apothecary', spec: { w: 5, h: 5, roof: 'teal', wall: 'plaster', door: 1, windows: [3], sign: 'potion', awning: 0x3f8a86 } },
   { x: 26, y: 11, shop: 'thassa-pearls', spec: { w: 6, h: 5, roof: 'teal', wall: 'sandstone', door: 2, windows: [4], sign: 'pearl', awning: 0x3f8a86 } },
-  { x: 34, y: 11, spec: { w: 6, h: 5, roof: 'blue', wall: 'plaster', door: 3, windows: [1, 5] } },
+  { x: 34, y: 11, shop: 'thassa-scriptorium', spec: { w: 6, h: 5, roof: 'plum', wall: 'plaster', door: 3, windows: [1, 5], sign: 'quill', awning: 0x4a3a7a } },
 ];
 
 const PALMS = [3, 8, 13, 21, 28, 35, 40];

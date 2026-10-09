@@ -178,8 +178,8 @@ export function ensureCreatureSprites(scene: Phaser.Scene, kind: CreatureSpriteK
   }
 }
 
-/** The wisp and defender sheets face right; the rest face left. */
-export const creatureFacesRight = (kind: CreatureSpriteKind): boolean => kind === 'wisp' || kind === 'defender' || kind === 'boss-rock';
+/** These sheets face right; the rest face left. */
+export const creatureFacesRight = (kind: CreatureSpriteKind): boolean => kind === 'wisp' || kind === 'defender' || kind === 'jurgen' || kind === 'boss-rock';
 
 /** The texture a creature's sprite is made on before its first animation plays. */
 export const creatureTexture = (kind: CreatureSpriteKind): string =>

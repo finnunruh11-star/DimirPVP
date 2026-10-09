@@ -14,10 +14,11 @@ export type ShopKind =
   | 'forge'
   | 'bowyer'
   | 'herbalist'
-  | 'supply';
+  | 'supply'
+  | 'scriptorium';
 
-/** 'forge': a crafting bench, where an Objects mage designs gear from templates (core/crafting). */
-export type ShopService = 'rest' | 'bounties' | 'forge';
+/** 'forge': a crafting bench, where an Objects mage designs gear from templates (core/crafting). 'runes': runes for sale to a party with a Hex Codex. */
+export type ShopService = 'rest' | 'bounties' | 'forge' | 'runes';
 
 /** Which pixel shopkeeper stands at the door. */
 export type KeeperLook =
@@ -34,7 +35,8 @@ export type KeeperLook =
   | 'miner'
   | 'pearler'
   | 'nomad'
-  | 'priest';
+  | 'priest'
+  | 'scribe';
 
 export interface StockRule {
   /** Always on the shelf, never sold out. `qty` is how many one purchase gives; `price` (gold) overrides the usual markup. */
@@ -44,6 +46,8 @@ export interface StockRule {
   rarities?: readonly Rarity[];
   size?: number;
   priceMult?: number;
+  /** Gold for a ready-drawn Hexzettel on the counter; a new one is drawn after every sale. */
+  hexSheet?: number;
 }
 
 export interface BuyRule {
@@ -100,17 +104,39 @@ export const PICKAXE_PRICE = 3;
 /** Gold for the Minemap. */
 export const MINE_MAP_PRICE = 3;
 
-/** Every guild sells bags (the pack grows with them), the Minemap, and paper for a Hexcraft mage to draw on. */
+/** Every guild sells bags (the pack grows with them) and the Minemap. */
 const GUILD_STOCK: StockRule = {
   fixed: [
     { id: 'smallBag', price: 0.5 },
     { id: 'goodBag', price: 2 },
     { id: 'bagOfHolding', price: 10 },
     { id: 'mineMap', price: MINE_MAP_PRICE },
-    { id: 'paper', price: 0.1 },
-    { id: 'finePaper', price: 1 },
   ],
 };
+
+/** Gold for the Hex Codex. */
+export const HEX_CODEX_PRICE = 1.5;
+/** Gold for a ready-drawn Hexzettel. */
+export const HEX_SHEET_PRICE = 2;
+
+/** Paper for a Hexcraft mage to draw on, ready-drawn sheets, the Hex Codex, and runes to a party that owns one. */
+const scriptorium = (town: string, name: string): ShopDef => ({
+  id: `${town}-scriptorium`,
+  kind: 'scriptorium',
+  name,
+  sign: 'SCRIPTORIUM',
+  keeper: 'scribe',
+  stock: {
+    fixed: [
+      { id: 'paper', price: 0.1 },
+      { id: 'finePaper', price: 1 },
+      { id: 'hexCodex', price: HEX_CODEX_PRICE },
+    ],
+    hexSheet: HEX_SHEET_PRICE,
+  },
+  buys: [],
+  services: ['runes'],
+});
 
 const guild = (town: string, name: string): ShopDef => ({
   id: `${town}-guild`,
@@ -180,6 +206,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     // ---- The Capitol: everything ----
     guild('capitol', "Adventurers' Guild"),
     apothecary('capitol', 'Royal Apothecary'),
+    scriptorium('capitol', 'The Inkwell Scriptorium'),
     {
       id: 'capitol-weaponsmith',
       kind: 'weaponsmith',
@@ -297,6 +324,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     // ---- Kerusai: a small town ----
     guild('kerusai', 'Kerusai Lodge'),
     apothecary('kerusai', 'Mirewater Tonics'),
+    scriptorium('kerusai', 'Reedpen Scriptorium'),
     valuables('kerusai', 'The Drowned Coin', ['rare', 'epic']),
     // ---- Oakhaven: a timber town in the Northwood ----
     guild('oakhaven', 'Oakhaven Lodge'),
@@ -350,6 +378,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     // ---- Thassa: the lake port ----
     guild('thassa', 'Tidewatch Guild'),
     apothecary('thassa', 'Saltwind Apothecary'),
+    scriptorium('thassa', 'The Tidal Script'),
     {
       id: 'thassa-pearls',
       kind: 'jeweller',

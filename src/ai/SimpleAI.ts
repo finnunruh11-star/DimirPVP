@@ -22,6 +22,9 @@ import { isBaralUnit } from '../pve/baral';
 import { chooseBaralAction } from './baralAI';
 import { chooseMoayAction } from './moayAI';
 import type { MineActionChoice } from '../pve/mineActions';
+import { isCrusadeKind } from '../pve/crusade';
+import type { CrusadeAction } from '../pve/crusadeCombat';
+import { chooseCrusadeAction } from './crusadeAI';
 
 export type AIDecision =
   | { type: 'move'; point: Vec2 }
@@ -47,6 +50,7 @@ export type AIDecision =
   | { type: 'goblin-hex'; target: Mage }
   // A routed goblin at the edge of the field leaves the fight.
   | { type: 'goblin-escape' }
+  | { type: 'crusade-action'; choice: CrusadeAction }
   | { type: 'end' };
 
 export interface AIReaction {
@@ -99,6 +103,7 @@ export class SimpleAI {
     if (this.self.enemyKind === 'lich') return this.chooseLichAction();
     if (isGoblin(this.self)) return chooseGoblinAction(this.game, this.self);
     if (isBaralUnit(this.self)) return chooseBaralAction(this.game, this.self);
+    if (isCrusadeKind(this.self.enemyKind)) return chooseCrusadeAction(this.game, this.self);
     if (this.self.enemyKind === 'moay') return chooseMoayAction(this.game, this.self);
     if (this.self.reaperKind) return this.chooseReaperAction();
     if (this.self.ghastKind) return this.chooseGhastAction();

@@ -154,7 +154,7 @@ export const RAID_BOSS_COPY: Record<RaidBossKind, MenuEntryCopy> = {
 const BLOODMOON_LABELS: Record<BossId, string> = {
   goblins: 'Snazzlegob',
   rock: 'G Moay',
-  crusade: 'Crucade',
+  crusade: 'The Crusading Crusaders',
   baral: 'Baral',
   lillith: 'Lillith',
 };

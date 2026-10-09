@@ -5,6 +5,7 @@
 
 import type { ExplorationCombat } from '../../config/MatchConfig';
 import { Dice } from '../../core/Dice';
+import { crusadeRoster } from '../crusade';
 import type { ItemId } from '../../core/Items';
 import type { EnemyKind } from '../swamprun';
 import { hashString } from './economy';
@@ -87,7 +88,7 @@ export interface BossDef {
 export const BOSSES: Record<BossId, BossDef> = {
   goblins: { id: 'goblins', name: 'The Feared "Hrrrk Snazzlegob"', color: 'red', tier: 1 },
   rock: { id: 'rock', name: 'G Moay, the hard-headed', color: 'green', tier: 1 },
-  crusade: { id: 'crusade', name: 'Crucade', color: 'white', tier: 2 },
+  crusade: { id: 'crusade', name: 'The Crusading Crusaders', color: 'white', tier: 2 },
   baral: { id: 'baral', name: 'Baral, Artificer of Nope', color: 'blue', tier: 2 },
   lillith: { id: 'lillith', name: 'Lillith Belvus, the Nice and Friendly', color: 'black', tier: 3 },
 };
@@ -114,7 +115,11 @@ export interface BossUnit {
 }
 
 /** Who takes the field for boss `id` against `players`. Unwritten bosses are one stand-in in the boss's shape. */
-export function bossRoster(id: BossId, players: number): BossUnit[] {
+export function bossRoster(id: BossId, players: number, rng = new Dice(0)): BossUnit[] {
+  if (id === 'crusade') {
+    const { counts } = crusadeRoster(players, rng);
+    return (Object.keys(counts) as (keyof typeof counts)[]).map((kind) => ({ kind, art: kind, count: counts[kind], leader: kind === 'crusadeSoldier' }));
+  }
   if (id === 'goblins') {
     const band = goblinBand(players);
     return [
@@ -141,7 +146,7 @@ export function bossRoster(id: BossId, players: number): BossUnit[] {
 
 /** Whether a boss's damage grows with the party too; a band that grows in number does not, nor Baral or Lillith, whose damage was not written to. */
 export function bossDamageScales(id: BossId): boolean {
-  return id !== 'goblins' && id !== 'baral' && id !== 'lillith' && id !== 'rock';
+  return id !== 'goblins' && id !== 'baral' && id !== 'lillith' && id !== 'rock' && id !== 'crusade';
 }
 
 export function bossPool(cycle: number): BossId[] {
@@ -158,7 +163,7 @@ export function bloodmoonBoss(seed: number, cycle: number): BossId {
 export function bossScaling(players: number, id?: BossId): { damage: number; health: number } {
   const extra = Math.max(0, Math.floor(players) - 1);
   const round = (value: number): number => Math.round(value * 100) / 100;
-  return { damage: round(1 + 0.3 * extra), health: round((1 + 0.75 * extra) / (id === 'lillith' ? 2.5 : 1)) };
+  return { damage: round(1 + 0.3 * extra), health: id === 'crusade' ? 1 : round((1 + 0.75 * extra) / (id === 'lillith' ? 2.5 : 1)) };
 }
 
 export interface BossFight {

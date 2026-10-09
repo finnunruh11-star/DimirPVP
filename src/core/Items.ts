@@ -248,6 +248,7 @@ export type ItemId =
   // ---- Hexcraft paper ----
   | 'paper'
   | 'finePaper'
+  | 'hexCodex'
   // ---- Bloodmoon boss materials ----
   | 'moonshardWhite'
   | 'moonshardBlue'
@@ -2701,6 +2702,17 @@ export const ITEM_DEFS: ItemDef[] = [
     blurb: 'Heavy vellum ruled with five peg grids. A Hexcraft mage draws a hex on it from the pack, 1 mana a line.',
     adventureOnly: true,
     paper: 'fine',
+  },
+  {
+    id: 'hexCodex',
+    name: 'Hex Codex',
+    slot: 'utility',
+    rarity: 'rare',
+    cost: g(1.5),
+    weight: 0,
+    blurb: 'Key item. With it, a scriptorium will sell the party runes: three a day, offered by what they feel like, not by name.',
+    adventureOnly: true,
+    keyItem: true,
   },
   ...(
     [

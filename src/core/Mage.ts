@@ -40,6 +40,7 @@ import type { PendingCast, StackItem } from './Stack';
 import type { Vec2 } from './utils';
 import type { LillithCopy, LillithState } from '../pve/lillith';
 import { BARAL_FAST_MOVE_UNITS, baralBelowMarks } from '../pve/baral';
+import type { CrusadeState } from '../pve/crusade';
 
 /**
  * A build carries at most ONE modifier word, chosen on the menu screen. It sits
@@ -360,6 +361,7 @@ export class Mage {
   denial?: { charges: number; threshold: number };
   /** A drake's own turns left before it falls apart. */
   drakeTurns?: number;
+  crusade?: CrusadeState;
   /** Takes the last turn of every round, whoever joins the fight later (Lillith Belvus). */
   initiativeLast = false;
   /** Lillith Belvus's own state: her phase, graves, pools and whom she has held. */
@@ -645,6 +647,7 @@ export class Mage {
    */
   get canEverReact(): boolean {
     return (
+      this.enemyKind === 'crusadeSoldier' ||
       this.grantsReaction ||
       this.profile.bluePrimaryTier ||
       this.profile.whitePrimaryTier

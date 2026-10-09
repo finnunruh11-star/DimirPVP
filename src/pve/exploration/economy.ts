@@ -18,7 +18,8 @@ import { shopById, stockCandidates, type ShopDef } from './shops';
 import { designProblem, rollCraft } from '../../core/crafting/craft';
 import { craftItemId, type CraftDesign } from '../../core/crafting/item';
 import { hexItemId } from '../../core/hexcraft/item';
-import { readHex } from '../../core/hexcraft/runes';
+import { randomHexSheet, RUNE_HINTS, runePrice, setHexLore } from '../../core/hexcraft/lore';
+import { FACETS, readHex, RUNE_ORDER, RUNES, type RuneId } from '../../core/hexcraft/runes';
 import { claimXpLevels } from '../progression';
 
 export interface ShopResult {
@@ -153,6 +154,8 @@ export interface StockSlot {
   price: number;
   fixed: boolean;
   sold: boolean;
+  /** What else a sale changes on the run. */
+  onBuy?: (run: ExplorationRun) => void;
 }
 
 export function shopStock(run: ExplorationRun, shop: ShopDef): StockSlot[] {
@@ -167,6 +170,19 @@ export function shopStock(run: ExplorationRun, shop: ShopDef): StockSlot[] {
     fixed: true,
     sold: false,
   }));
+  if (rule.hexSheet != null) {
+    // Keyed by the sheets sold so far: a sale puts a freshly drawn one on the counter.
+    const count = run.hexLore.sheetsBought;
+    slots.push({
+      key: `hexsheet:${count}`,
+      id: hexItemId('plain', randomHexSheet(runDice(run, `hexsheet:${shop.id}:${count}`)), true),
+      qty: 1,
+      price: rule.hexSheet,
+      fixed: true,
+      sold: false,
+      onBuy: (sold) => { sold.hexLore.sheetsBought += 1; },
+    });
+  }
   const pool = stockCandidates(rule).filter((def) => !slots.some((slot) => slot.id === def.id));
   const dice = runDice(run, `stock:${shop.id}`);
   for (let i = pool.length - 1; i > 0; i--) {
@@ -236,6 +252,7 @@ export function buyItem(run: ExplorationRun, shopId: string, key: string, member
     for (let i = 0; i < slot.qty; i++) grantToMage(buyer, slot.id);
     run.gold = money(run.gold - slot.price);
     if (!slot.fixed) run.purchases.push(slot.key);
+    slot.onBuy?.(run);
     return { ok: true, message: `Bought ${slot.qty > 1 ? `${slot.qty}x ` : ''}${def.name} for ${moneyLabel(slot.price)}.` };
   });
 }
@@ -412,6 +429,7 @@ export function craftItem(run: ExplorationRun, shopId: string, design: CraftDesi
 /**
  * Draw a hex on a sheet of `paper` the scribe carries: a Hexcraft mage on their
  * feet pays 1 mana a line, and the sheet becomes a Hexzettel in their belt.
+ * Nothing is checked but the lines: whatever does not hold is skipped when it is loosed.
  */
 export function drawHex(run: ExplorationRun, paper: ItemId, grids: readonly number[], member?: MageClass | null): CraftResult {
   const kind = (getItem(paper) as ItemDef | undefined)?.paper;
@@ -419,6 +437,7 @@ export function drawHex(run: ExplorationRun, paper: ItemId, grids: readonly numb
   const reading = readHex(kind, grids);
   if (!reading.recipe) return { ok: false, message: reading.problem ?? 'That is no hex.' };
   const lines = reading.recipe.lines;
+  if (lines === 0) return { ok: false, message: 'Nothing is drawn.' };
   return withMember(run, member, (scribe): CraftResult => {
     if (scribe.spellClass !== 'hexcraft') return { ok: false, message: 'Only a Hexcraft mage can draw a hex.' };
     if (!scribe.alive) return { ok: false, message: `${scribe.name} has fallen.` };
@@ -432,6 +451,57 @@ export function drawHex(run: ExplorationRun, paper: ItemId, grids: readonly numb
     grantToMage(scribe, id);
     return { ok: true, message: `Drew ${getItem(id).name} for ${lines} mana.`, item: id };
   });
+}
+
+/** Does anyone in the party carry the Hex Codex? */
+export function partyHasCodex(run: ExplorationRun): boolean {
+  return partyOf(run).some((mage) => carries(mage, 'hexCodex'));
+}
+
+export interface RuneOffer {
+  rune: RuneId;
+  /** What the scribe calls it before it is paid for. */
+  hint: string;
+  key: string;
+  price: number;
+  sold: boolean;
+}
+
+/** The three runes a scriptorium offers today: ones the party does not know, and those it bought here today. */
+export function runeOffers(run: ExplorationRun, shop: ShopDef): RuneOffer[] {
+  if (!shop.services.includes('runes')) return [];
+  const known = run.hexLore.runes;
+  const order = [...RUNE_ORDER];
+  const dice = runDice(run, `runes:${shop.id}`);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(dice.float() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  const keyOf = (rune: RuneId): string => `${shop.id}:${run.day}:rune:${rune}`;
+  const price = runePrice(known.length);
+  return order
+    .filter((rune) => !known.includes(rune) || run.purchases.includes(keyOf(rune)))
+    .slice(0, 3)
+    .map((rune) => ({ rune, hint: RUNE_HINTS[rune], key: keyOf(rune), price, sold: run.purchases.includes(keyOf(rune)) }));
+}
+
+/** Learn one of today's runes at a scriptorium. Each costs five silver more than the last. */
+export function learnRune(run: ExplorationRun, shopId: string, rune: RuneId): ShopResult {
+  const shop = shopById(shopId);
+  if (!shop?.services.includes('runes')) return { ok: false, message: 'No runes are sold here.' };
+  if (!partyHasCodex(run)) return { ok: false, message: 'The scribe sells runes only to a party with a Hex Codex.' };
+  const offer = runeOffers(run, shop).find((entry) => entry.rune === rune);
+  if (!offer) return { ok: false, message: 'That rune is not on offer today.' };
+  if (offer.sold) return { ok: false, message: 'Already learned.' };
+  if (run.gold < offer.price) return { ok: false, message: `Costs ${moneyLabel(offer.price)}.` };
+  run.gold = money(run.gold - offer.price);
+  run.purchases.push(offer.key);
+  run.hexLore.runes.push(rune);
+  setHexLore(run.hexLore.runes);
+  return {
+    ok: true,
+    message: `${offer.hint} turns out to be ${FACETS[rune].label}; sealed, it is ${FACETS[RUNES[rune].inverse].label}. Learned for ${moneyLabel(offer.price)}.`,
+  };
 }
 
 // -----------------------------------------------------------------------------

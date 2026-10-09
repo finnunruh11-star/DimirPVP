@@ -3,6 +3,7 @@
 // or dropped rather than trusted.
 
 import { MAGE_CLASSES, type MageClass } from '../../core/Classes';
+import { parseHexLore } from '../../core/hexcraft/lore';
 import { currentItemId } from '../../core/Items';
 import { parseScenario, type Scenario } from '../../core/Scenario';
 import { AREA_RADIUS } from './area';
@@ -208,6 +209,7 @@ export function parseRun(raw: string): ExplorationRun | null {
       mines: parseExplorationMines(parsed.mines),
       bloodmoons,
       crafts: clamp(parsed.crafts, 0, 1_000_000, 0),
+      hexLore: parseHexLore(parsed.hexLore),
     };
   } catch {
     return null;

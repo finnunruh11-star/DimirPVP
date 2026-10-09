@@ -7,6 +7,7 @@ import type { ItemId } from '../core/Items';
 import type { Mage } from '../core/Mage';
 import type { DamageType } from '../core/Damage';
 import { MELEE_RANGE, RANGE_UNIT } from '../config/constants';
+import { CRUSADE_HP, isCrusadeKind } from './crusade';
 
 export type EnemyKind =
   | 'zombie'
@@ -28,6 +29,11 @@ export type EnemyKind =
   | 'baral'
   | 'denialArtifact'
   | 'baralDrake'
+  | 'crusadeSoldier'
+  | 'crusadePriest'
+  | 'crusadeBallista'
+  | 'crusadeCamp'
+  | 'crusadeHelper'
   | 'lillith'
   | 'lillithCopy'
   | 'lillithOrb'
@@ -476,6 +482,36 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     resistTypes: ['pierce'],
     tint: 0xcf9738,
   },
+  crusadeSoldier: {
+    kind: 'crusadeSoldier', name: 'Righteous Soldier', power: 3.5, unlockDepth: 100_000,
+    hpSpec: String(CRUSADE_HP.crusadeSoldier), sanity: 15, moveUnits: 3,
+    meleeSpec: '1d6', meleeType: 'slashing', meleeReach: MELEE_RANGE + RANGE_UNIT,
+    weakTypes: ['pierce', 'shatter'], resistTypes: ['slashing', 'light'], tint: 0xe7d99b,
+  },
+  crusadePriest: {
+    kind: 'crusadePriest', name: 'Saintly Priest', power: 2.5, unlockDepth: 100_000,
+    hpSpec: String(CRUSADE_HP.crusadePriest), sanity: 30, moveUnits: 4,
+    meleeSpec: '1d3', meleeType: 'light', meleeReach: MELEE_RANGE + 10 * RANGE_UNIT,
+    weakTypes: ['pierce'], resistTypes: ['shatter'], immuneTypes: ['light'], tint: 0xfff5cb,
+  },
+  crusadeBallista: {
+    kind: 'crusadeBallista', name: 'Balista of Light', power: 2.5, unlockDepth: 100_000,
+    hpSpec: String(CRUSADE_HP.crusadeBallista), sanity: MINDLESS_SANITY, moveUnits: 4,
+    meleeSpec: '2d6', meleeType: 'light', meleeReach: MELEE_RANGE + 16 * RANGE_UNIT,
+    weakTypes: ['shatter', 'shadow'], resistTypes: ['light'], immuneTypes: ['sanity'],
+    bodyRadius: 22, tint: 0xd6b96b,
+  },
+  crusadeCamp: {
+    kind: 'crusadeCamp', name: 'Camp of the good guys', power: 3, unlockDepth: 100_000,
+    hpSpec: String(CRUSADE_HP.crusadeCamp), sanity: MINDLESS_SANITY, moveUnits: 0,
+    meleeSpec: '0', meleeType: 'generic', weakTypes: ['shatter'], immuneTypes: ['sanity', 'light'],
+    pacifist: true, inert: true, bodyRadius: 28, tint: 0xc8c8ac,
+  },
+  crusadeHelper: {
+    kind: 'crusadeHelper', name: '"Neatly treated Helpers"', power: 0.5, unlockDepth: 100_000,
+    hpSpec: String(CRUSADE_HP.crusadeHelper), sanity: 10, moveUnits: 6,
+    meleeSpec: '0', meleeType: 'generic', pacifist: true, tint: 0xb8b2a0,
+  },
   moay: {
     kind: 'moay',
     name: 'G Moay, the hard-headed',
@@ -536,6 +572,11 @@ export function applyEnemyTraits(m: Mage, kind: EnemyKind, rng: Dice): void {
   m.damageCapPerSource = def.damageCapPerSource ?? 0;
   m.intrinsicArmorFlat = kind === 'soldierDemon' ? 2 : kind === 'moay' || kind === 'lillith' || kind === 'lillithCopy' ? 1 : 0;
   m.intrinsicMagicArmorFlat = kind === 'moay' || kind === 'lillith' || kind === 'lillithCopy' ? 1 : 0;
+  if (isCrusadeKind(kind)) {
+    m.crusade = { loaded: kind === 'crusadeBallista' ? false : undefined };
+    m.intrinsicArmorFlat = kind === 'crusadeSoldier' ? 1 : kind === 'crusadeCamp' ? 2 : 0;
+    m.intrinsicMagicArmorFlat = kind === 'crusadePriest' || kind === 'crusadeCamp' ? 1 : 0;
+  }
   m.beastDemonKind = kind === 'beastDemon';
   m.beastDemonBlood = 0;
   m.oniKind = kind === 'oni';

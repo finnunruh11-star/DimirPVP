@@ -60,6 +60,7 @@ const LOOKS: Record<KeeperLook, Look> = {
   pearler: { head: 'hair', hair: 0xe8e0d0, skin: 0xc98f66, top: 0x2f7a8a, apron: 0xe6f0f4, pants: 0x2a3a42, boots: 0x1f1a16 },
   nomad: { head: 'hood', hair: 0xb89a6a, skin: 0xc98f66, top: 0xb89a6a, apron: 0x6a5a3a, pants: 0x5a4a34, boots: 0x2a211b, eyes: 0x3f6fe0 },
   priest: { head: 'hat', hair: 0xf0ead8, skin: 0xe0b48f, top: 0xf0ead8, apron: 0xe7c24a, pants: 0xd8cfb8, boots: 0x6a5a3a },
+  scribe: { head: 'hood', hair: 0x4a3a7a, skin: 0xe8c2a0, top: 0x4a3a7a, apron: 0xe9dfc8, pants: 0x2a2530, boots: 0x16131a, eyes: 0xb98bff },
 };
 
 const OUTLINE = 0x16171a;

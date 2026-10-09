@@ -5,7 +5,7 @@
 import { MAGE_CLASSES, type MageClass } from '../../core/Classes';
 import { CRAFT_TEMPLATE_IDS, MAX_CRAFT_MANA, type CraftForm, type CraftTemplateId } from '../../core/crafting/data';
 import type { CraftDesign } from '../../core/crafting/item';
-import { FULL_GRID, PAPERS } from '../../core/hexcraft/runes';
+import { FULL_GRID, PAPERS, RUNE_ORDER, type RuneId } from '../../core/hexcraft/runes';
 import { asItemIds, type ItemId } from '../../core/Items';
 import { abandonBounty, acceptBounty, claimBounty } from './bounties';
 import { enterLodge, takeStarterWeapon } from './arms';
@@ -18,6 +18,7 @@ import {
   equipItem,
   giveItem,
   learnMoonshard,
+  learnRune,
   memberIn,
   moneyLabel,
   partyOf,
@@ -35,6 +36,7 @@ export type ExplorationIntent =
   | { op: 'sell-all'; shop: string; items: ItemId[] }
   | { op: 'craft'; shop: string; design: CraftDesign; crafter?: MageClass }
   | { op: 'hex'; paper: ItemId; grids: number[] }
+  | { op: 'hex-rune'; shop: string; rune: RuneId }
   | { op: 'learn-shard'; item: ItemId; replace?: number }
   | { op: 'rest'; shop: string }
   | { op: 'equip'; item: ItemId }
@@ -70,6 +72,7 @@ export function applyIntent(run: ExplorationRun, member: MageClass | null, inten
       case 'sell-all': return sellAll(run, intent.shop, intent.items, member);
       case 'craft': return craftItem(run, intent.shop, intent.design, member, intent.crafter);
       case 'hex': return drawHex(run, intent.paper, intent.grids, member);
+      case 'hex-rune': return learnRune(run, intent.shop, intent.rune);
       case 'learn-shard': return learnMoonshard(run, intent.item, member, intent.replace);
       case 'rest': return rest(run, intent.shop);
       case 'equip': return equipItem(run, intent.item, member);
@@ -164,6 +167,11 @@ export function parseIntent(value: unknown): ExplorationIntent | null {
       const paper = itemId(raw.paper);
       const grids = parseGrids(raw.grids);
       return paper && grids ? { op: 'hex', paper, grids: [...grids] } : null;
+    }
+    case 'hex-rune': {
+      const shop = text(raw.shop);
+      const rune = RUNE_ORDER.find((id) => id === raw.rune);
+      return shop && rune ? { op: 'hex-rune', shop, rune } : null;
     }
     case 'learn-shard': {
       const item = itemId(raw.item);

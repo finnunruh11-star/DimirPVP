@@ -33,6 +33,16 @@ end-state surfaces without starting a match.
 For online, LAN, Creative Swamprun, and Campaign hosting instructions, see
 [MULTIPLAYER.md](MULTIPLAYER.md).
 
+The white second-Bloodmoon encounter, **The Crusading Crusaders**, is also
+available in Raid. At three players its minimum is two soldiers, one priest,
+two helpers, one camp and one ballista, plus a seeded 8-12-point assortment.
+All five unit types use two-thirds of their original health; only helper
+health scales with player count. Priest healing is 1d3. Killing every soldier
+and priest ends the fight immediately, with surviving support units fleeing.
+Helpers grant no usual damage/kill bonuses; their deaths inflict 0-1 mill on
+the killer and, while a camp remains, produce two replacements next turn.
+Run `npm run test:crusade` for the encounter's focused checks.
+
 ## How to play
 
 1. **Menu**: choose **Versus**, **Adventures**, or **Workshop**, then follow the

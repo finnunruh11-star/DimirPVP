@@ -27,6 +27,8 @@ import { dist, stepTowards, type Vec2 } from '../core/utils';
 import { FIELD, RANGE_UNIT, SCARAB, VEIL } from '../config/constants';
 import { Dev } from '../config/dev';
 import { lillithHit, lillithIllusory, mirrorLillith } from '../pve/lillith';
+import { crusadeGuard } from '../pve/crusadeCombat';
+import { isCrusadeBuilding } from '../pve/crusade';
 
 export type CombatFeedbackKind =
   | 'damage'
@@ -292,9 +294,9 @@ export function castPotencyScale(ctx: EffectContext, value: number): number {
  * after crit + modifier scaling and the target's own debuff resistance. Warded
  * gear can shorten an affliction but never erase it: the floor is one cycle.
  */
-export function afflictDuration(ctx: EffectContext, target: Mage, value: number): number {
+export function afflictDuration(ctx: EffectContext, target: Mage, value: number, dot = false): number {
   const scaled = critScale(ctx, value);
-  const resisted = target.debuffDurationMult();
+  const resisted = target.debuffDurationMult() * (!dot && isCrusadeBuilding(target) ? 0.5 : 1);
   if (resisted === 1 || !Number.isFinite(scaled)) return scaled;
   return Math.max(1, Math.round(scaled * resisted));
 }
@@ -377,6 +379,7 @@ export interface DealDamageOptions {
   staffShaped?: boolean;
   /** A damage-over-time tick rather than a hit (Thundering Mantle only rolls on hits). */
   dot?: boolean;
+  crusadeGuarded?: boolean;
 }
 
 export function dealDamage(
@@ -386,6 +389,11 @@ export function dealDamage(
   opts: DealDamageOptions = {}
 ): number {
   const game = ctx.game;
+  if (damage.amount > 0 && target.alive && !opts.crusadeGuarded && !opts.dot && !opts.aoe
+    && !opts.trueDamage && damage.type !== 'typeless' && damage.type !== 'sanity') {
+    const guard = crusadeGuard(game, ctx.caster, target);
+    if (guard) return dealDamage(ctx, guard, { ...damage, amount: damage.amount * 0.67 }, { ...opts, crusadeGuarded: true });
+  }
   if (!opts.staffShaped && game.castThroughCaster === ctx.caster && target.team !== ctx.caster.team && damage.amount > 0) {
     const staffs = ctx.caster.castThroughs();
     if (staffs.length > 0) return dealThroughStaffs(ctx, target, damage, opts, staffs);
@@ -563,6 +571,11 @@ function dealOneHit(
   }
 
   // Stone is brittle: shatter damage against a petrified body is doubled.
+  if (amount > 0 && !opts.ignoreResist && !isTrue && opts.dot && damage.type === 'heat' && isCrusadeBuilding(target)) {
+    amount *= 2;
+    feedbackLabel = 'BURN VULNERABLE';
+  }
+
   if (amount > 0 && damage.type === 'shatter' && ctx.game.isPetrified(target)) {
     amount *= 2;
     feedbackLabel = 'BRITTLE';
@@ -652,7 +665,7 @@ function dealOneHit(
     });
   }
 
-  if (amount > 0 && ctx.caster.deathknightKind && ctx.caster.alive) {
+  if (amount > 0 && target.enemyKind !== 'crusadeHelper' && ctx.caster.deathknightKind && ctx.caster.alive) {
     const before = ctx.caster.hp;
     ctx.caster.hp = Math.min(ctx.caster.maxHp, ctx.caster.hp + amount);
     const healed = ctx.caster.hp - before;
@@ -676,7 +689,7 @@ function dealOneHit(
 
   // Lich "Link": HP damage dealt to a linked victim is mirrored back to the
   // owning lich as healing (it profits from the party wounding its thralls).
-  if (amount > 0 && damage.type !== 'sanity' && target.drainLinkTo) {
+  if (amount > 0 && target.enemyKind !== 'crusadeHelper' && damage.type !== 'sanity' && target.drainLinkTo) {
     const lich = target.drainLinkTo;
     if (lich !== target && lich.alive && lich.hp < lich.maxHp) {
       const before = lich.hp;
@@ -707,6 +720,15 @@ function dealOneHit(
   if (targetWasAlive && !target.alive) {
     ctx.game.notifyMageDefeated(target, ctx.caster);
     ctx.game.restoreEdgelordCaptives();
+  }
+
+  if (target.enemyKind === 'crusadeHelper') {
+    if (amount > 0) {
+      ctx.vfx?.hit?.(target);
+      breakVeilOnStruck(ctx, target, damage.type, amount);
+      if (canMiss) breakVeilOnStrike(ctx, ctx.caster, amount);
+    }
+    return 0;
   }
 
   // Death-word marks resolve after ordinary lethality, so a blow that already
@@ -1278,11 +1300,12 @@ export function applyDot(
     extend?: boolean;
   }
 ): void {
+  if (isCrusadeBuilding(target) && opts.damage.type === 'sanity') return;
   if (target.isDebuffImmune()) {
     ctx.log(`${target.name} is immune to debuffs. ${opts.name} fails.`);
     return;
   }
-  const duration = afflictDuration(ctx, target, opts.duration);
+  const duration = afflictDuration(ctx, target, opts.duration, true);
   addOrExtendStatus(
     target.statuses,
     {

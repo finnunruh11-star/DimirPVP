@@ -82,7 +82,7 @@ const buildings: BuildingPlacement[] = [
   // Homes.
   { x: 14, y: 26, spec: { w: 5, h: 5, roof: 'red', wall: 'plaster', door: 1, windows: [3], chimney: 3 } },
   { x: 21, y: 26, spec: { w: 5, h: 5, roof: 'thatch', wall: 'wood', door: 3, windows: [1] } },
-  { x: 34, y: 26, spec: { w: 5, h: 5, roof: 'blue', wall: 'plaster', door: 1, windows: [3], chimney: 1 } },
+  { x: 34, y: 26, shop: 'capitol-scriptorium', spec: { w: 5, h: 5, roof: 'plum', wall: 'plaster', door: 1, windows: [3], chimney: 1, sign: 'quill', awning: 0x4a3a7a } },
   { x: 41, y: 26, spec: { w: 6, h: 5, roof: 'green', wall: 'wood', door: 2, windows: [4] } },
   { x: 48, y: 26, spec: { w: 6, h: 5, roof: 'red', wall: 'stone', door: 2, windows: [4], chimney: 4 } },
 ];

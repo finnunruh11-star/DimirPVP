@@ -224,6 +224,8 @@ import { BOSSES, BOSS_STAND_IN, MOONSHARD, bossDamageScales, bossRoster, bossSca
 import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_RANGE } from '../pve/goblins';
 import { MOAY_AOE_RADIUS } from '../pve/moay';
 import { BARAL_HP_MARK, DENIAL_SPAWN_RADIUS_UNITS, DRAKE_LIFESPAN, denialLabel, denialStartCharges, denialThreshold } from '../pve/baral';
+import { crusadeCrew, crusadeHelperHealth, crusadeLabel, isCrusadeBuilding, isCrusadeFighter, isCrusadeKind } from '../pve/crusade';
+import { canCrusadeAction, resolveCrusadeAction, spawnCrusadeHelpers } from '../pve/crusadeCombat';
 import {
   LILLITH_CIRCLE_RADIUS,
   LILLITH_ORB_HP,
@@ -470,6 +472,7 @@ type HeldWeaponKind = 'sword' | 'dagger' | 'spear' | 'axe' | 'hammer' | 'club' |
 /** Per-mage sprite + animation-state machine. */
 interface MageAnim {
   sprite: Phaser.GameObjects.Sprite;
+  baseScale: number;
   shoulderScale?: number;
   held?: Phaser.GameObjects.Image;
   heldVisualKey?: string;
@@ -692,6 +695,11 @@ function bossSpawnPoint(unit: BossUnit, index: number): Vec2 {
     x: FIELD.x + FIELD.w * share,
     y: FIELD.y + (FIELD.h * (i + 1)) / (count + 1),
   });
+  if (isCrusadeKind(unit.kind)) {
+    const share = unit.kind === 'crusadeSoldier' ? 0.6 : unit.kind === 'crusadePriest' ? 0.91
+      : unit.kind === 'crusadeHelper' ? 0.76 : unit.kind === 'crusadeCamp' ? 0.94 : 0.82;
+    return row(share, index, unit.count);
+  }
   if (unit.leader) return row(0.72, 0, 1);
   if (unit.kind === 'goblinShaman') return row(0.9, index, unit.count);
   return row(0.6 + (index % 2) * 0.04, index, unit.count);
@@ -1598,7 +1606,9 @@ export class GameScene extends Phaser.Scene {
       this.showDefeatSeal(target);
       this.impactFx?.killBlow();
       playSound('unit.death');
-      if (this.raid && target === this.raidTarget) {
+      if (this.raid && (this.raidBoss === 'crusade'
+        ? target.team === 2 && isCrusadeFighter(target) && !this.gs.mages.some((m) => m.alive && m.team === 2 && isCrusadeFighter(m))
+        : target === this.raidTarget)) {
         this.raidVictory = true;
         for (const enemy of this.gs.mages) {
           if (enemy.team !== 2 || enemy === target) continue;
@@ -1608,6 +1618,7 @@ export class GameScene extends Phaser.Scene {
         this.gs.coopSurvivalTeam = null;
         this.gs.log(`${target.name} falls. The raid is won.`);
       }
+      if (target.enemyKind === 'crusadeHelper') return;
       if (
         !this.explorationCombat ||
         target.team === 1 ||
@@ -2203,7 +2214,7 @@ export class GameScene extends Phaser.Scene {
     const scale = bossScaling(fighters, fight.id);
     this.bossPlayers = fighters;
     this.bossScale = { health: scale.health, damage: bossDamageScales(fight.id) ? scale.damage : 1 };
-    const roster = bossRoster(fight.id, fighters);
+    const roster = bossRoster(fight.id, fighters, this.gs.rng);
     let leader: Mage | undefined;
     for (const unit of roster) {
       const charges = denialStartCharges(unit.count);
@@ -2321,7 +2332,8 @@ export class GameScene extends Phaser.Scene {
     const m = new Mage({ name: ENEMY_DEFS[kind].name, isAI: true, team: 2, position: at, loadout: [] });
     applyEnemyTraits(m, kind, this.gs.rng);
     if (authored) m.bossArt = art;
-    m.maxHp = Math.max(1, Math.round(m.maxHp * this.bossScale.health));
+    m.maxHp = kind === 'crusadeHelper' ? crusadeHelperHealth(this.bossPlayers)
+      : isCrusadeKind(kind) ? m.maxHp : Math.max(1, Math.round(m.maxHp * this.bossScale.health));
     m.hp = m.maxHp;
     m.damageScale = this.bossScale.damage;
     m.resetDodges();
@@ -2471,7 +2483,11 @@ export class GameScene extends Phaser.Scene {
       .filter((entry): entry is { mage: Mage; rec: MageAnim } => !!entry.rec);
     const fighters = party.length;
     const scale = bossScaling(fighters, fight.id);
-    const band = bossRoster(fight.id, fighters);
+    const band = fight.id === 'crusade'
+      ? (['crusadeSoldier', 'crusadePriest', 'crusadeHelper', 'crusadeCamp', 'crusadeBallista'] as const).map((kind) => ({
+        kind, art: kind, count: this.gs.mages.filter((m) => m.team === 2 && m.enemyKind === kind).length,
+      }))
+      : bossRoster(fight.id, fighters);
     this.mode = 'busy';
     await playBossIntro(this, {
       boss: BOSSES[fight.id],
@@ -4326,7 +4342,7 @@ export class GameScene extends Phaser.Scene {
         : this.raid
           ? this.raidPrepActive
             ? `RAID PREP  Effigies: ${alive}  Action menu → free restores  •  Summon ${raidTargetName(this.raidBoss)} when ready`
-            : `RAID  ${raidTargetName(this.raidBoss)}  ${this.raidTarget?.alive ? 'ACTIVE' : 'DEFEATED'}  Foes: ${alive}`
+            : `RAID  ${raidTargetName(this.raidBoss)}  ${(this.raidBoss === 'crusade' ? !this.raidVictory : this.raidTarget?.alive) ? 'ACTIVE' : 'DEFEATED'}  Foes: ${alive}`
           : `${swamprunDepth(this.swamprunWave)}m  Power ${this.swamprunEncounterPower}  Foes: ${alive}  Gold: ${this.swamprunGold}g${this.swamprunCurse ? `  Curse: ${this.swamprunCurse}` : ''}`;
     if (!this.swamprunHudText) {
       this.swamprunHudText = this.add
@@ -5672,6 +5688,18 @@ export class GameScene extends Phaser.Scene {
     }
     if (this.gs.isOver) return this.endGame();
 
+    const helpers = spawnCrusadeHelpers(this.gs);
+    for (const helper of helpers) {
+      ensureBossSprites(this, 'crusadeHelper');
+      helper.bossArt = 'crusadeHelper';
+      this.ais.set(helper, new SimpleAI(this.gs, helper));
+      this.swamprunWaveEnemies.push(helper);
+    }
+    if (helpers.length) {
+      this.syncMageSprites();
+      for (const helper of helpers) this.styleBossSprite(helper);
+    }
+
     // A queued extra turn (Shatter Mind Reality) jumps the queue before the
     // normal rotation, and does not advance the round.
     const extra = this.gs.takeExtraTurn();
@@ -5717,6 +5745,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Who an AI decision is aimed at, when it is aimed at anyone. */
   private aiDecisionTarget(decision: AIDecision): Mage | null {
+    if (decision.type === 'crusade-action') return decision.choice.target;
     return 'target' in decision && decision.target ? decision.target : null;
   }
 
@@ -5738,6 +5767,7 @@ export class GameScene extends Phaser.Scene {
       case 'goblin-heal': return 'mends';
       case 'goblin-hex': return 'hexes';
       case 'goblin-escape': return 'flees the battle';
+      case 'crusade-action': return decision.choice.kind === 'stock' ? `takes ${decision.choice.supply}` : decision.choice.kind;
       default: return 'acts';
     }
   }
@@ -5885,10 +5915,21 @@ export class GameScene extends Phaser.Scene {
   private async performAIDecision(d: AIDecision): Promise<void> {
     const me = this.gs.current;
     switch (d.type) {
-      case 'move':
+      case 'move': {
+        const crew = me.enemyKind === 'crusadeBallista' ? crusadeCrew(this.gs.mages, me) : [];
+        if (me.enemyKind === 'crusadeBallista' && !crew.length) break;
+        const from = { ...me.pos };
+        if (me.enemyKind === 'crusadeHelper' && me.crusade) me.crusade.manning = undefined;
         me.spend('move');
         await this.runStack(this.gs.makeMoveItem(me, d.point));
+        for (const helper of crew) {
+          const before = { ...helper.pos };
+          helper.x += me.x - from.x;
+          helper.y += me.y - from.y;
+          this.gs.notifyMageRelocation(helper, before, helper.pos, true);
+        }
         break;
+      }
       case 'melee':
         me.spend(me.attackIsBonusAction() ? 'bonus' : 'main');
         await this.runStack(this.gs.makeMeleeItem(me, d.target));
@@ -5946,6 +5987,19 @@ export class GameScene extends Phaser.Scene {
         const cost = commitMineAction(me, d.choice);
         me.spend(cost);
         await this.runStack(makeMineActionItem(this.gs, me, d.choice));
+        break;
+      }
+      case 'crusade-action': {
+        if (!canCrusadeAction(this.gs, me, d.choice)) break;
+        const choice = d.choice;
+        await this.runStack(this.gs.makeActionItem({
+          source: me, target: choice.target, label: choice.kind,
+          description: `${me.name}: ${choice.kind} (${choice.target.name}).`,
+          isStillValid: () => canCrusadeAction(this.gs, me, choice),
+          resolve: (game) => { resolveCrusadeAction(game, me, choice); },
+        }));
+        me.actions.main = 0;
+        if (choice.kind !== 'priest-heal') me.actions = { move: 0, main: 0, bonus: 0 };
         break;
       }
       case 'goblin-heal':
@@ -7555,7 +7609,17 @@ export class GameScene extends Phaser.Scene {
     // them all back for a single roll once the spell has played out.
     this.deferDice = diceTiming() === 'after';
     this.pendingDice = [];
-    await item.resolve(this.gs);
+    try {
+      await item.resolve(this.gs);
+    } finally {
+      if (item.kind === 'move') {
+        const rec = this.mageAnims.get(item.source);
+        if (rec?.lock === 'move') {
+          rec.lock = null;
+          rec.posLocked = false;
+        }
+      }
+    }
     this.deferDice = false;
     this.gs.counteredItem = null;
     if (item.spell?.nullifiesStack && this.gs.stack.length > 0) {
@@ -10258,9 +10322,8 @@ export class GameScene extends Phaser.Scene {
     }
 
     if (this.mode === 'aiming-move') {
-      const dest = stepTowards(me.pos, pt, me.moveRange());
       this.mode = 'busy';
-      this.submitTurn({ t: 'move', x: dest.x, y: dest.y });
+      this.submitTurn({ t: 'move', x: pt.x, y: pt.y });
       return;
     }
     if (this.mode === 'aiming-leap') {
@@ -13757,9 +13820,10 @@ export class GameScene extends Phaser.Scene {
       if (!m.alive) continue;
       const r = this.gs.effectiveLightRadius(m);
       if (r <= 0) continue;
-      g.fillStyle(0xffd27a, 0.12).fillCircle(m.pos.x, m.pos.y, r);
-      g.fillStyle(0xffe6a8, 0.1).fillCircle(m.pos.x, m.pos.y, r * 0.6);
-      g.lineStyle(1, 0xffd27a, 0.35).strokeCircle(m.pos.x, m.pos.y, r);
+      const position = this.mageVisualPosition(m);
+      g.fillStyle(0xffd27a, 0.12).fillCircle(position.x, position.y, r);
+      g.fillStyle(0xffe6a8, 0.1).fillCircle(position.x, position.y, r * 0.6);
+      g.lineStyle(1, 0xffd27a, 0.35).strokeCircle(position.x, position.y, r);
     }
   }
 
@@ -13767,10 +13831,11 @@ export class GameScene extends Phaser.Scene {
     for (const mage of this.gs.mages) {
       if (!mage.alive || !mage.hasEdgelordLantern() || !mage.edgelordLanternActive) continue;
       const radius = 15 * RANGE_UNIT;
-      g.fillStyle(0x030308, 0.48).fillCircle(mage.x, mage.y, radius);
-      g.fillStyle(0x1a0d20, 0.2).fillCircle(mage.x, mage.y, radius * 0.72);
-      g.lineStyle(3, 0x8a5aa5, 0.75).strokeCircle(mage.x, mage.y, radius);
-      g.lineStyle(1, 0xc98dd8, 0.35).strokeCircle(mage.x, mage.y, radius - 5);
+      const position = this.mageVisualPosition(mage);
+      g.fillStyle(0x030308, 0.48).fillCircle(position.x, position.y, radius);
+      g.fillStyle(0x1a0d20, 0.2).fillCircle(position.x, position.y, radius * 0.72);
+      g.lineStyle(3, 0x8a5aa5, 0.75).strokeCircle(position.x, position.y, radius);
+      g.lineStyle(1, 0xc98dd8, 0.35).strokeCircle(position.x, position.y, radius - 5);
     }
   }
 
@@ -13778,8 +13843,9 @@ export class GameScene extends Phaser.Scene {
     for (const mage of this.gs.mages) {
       if (!mage.alive || !mage.intrinsicDamageAura) continue;
       const radius = mage.intrinsicDamageAura.radius;
-      g.fillStyle(0x8ecf58, 0.08).fillCircle(mage.x, mage.y, radius);
-      g.lineStyle(1, 0x9be870, 0.55).strokeCircle(mage.x, mage.y, radius);
+      const position = this.mageVisualPosition(mage);
+      g.fillStyle(0x8ecf58, 0.08).fillCircle(position.x, position.y, radius);
+      g.lineStyle(1, 0x9be870, 0.55).strokeCircle(position.x, position.y, radius);
     }
   }
 
@@ -13789,9 +13855,10 @@ export class GameScene extends Phaser.Scene {
       const radius = mage.alive && mage.summonKind ? MINIONS[mage.summonKind]?.shroud : undefined;
       if (radius == null) continue;
       const tint = mage.team === 1 ? COLORS.team1 : COLORS.team2;
-      g.fillStyle(0x7f8fb8, 0.12).fillCircle(mage.x, mage.y, radius);
-      g.lineStyle(2, 0xaab8e0, 0.6).strokeCircle(mage.x, mage.y, radius);
-      g.lineStyle(1, tint, 0.5).strokeCircle(mage.x, mage.y, radius - 3);
+      const position = this.mageVisualPosition(mage);
+      g.fillStyle(0x7f8fb8, 0.12).fillCircle(position.x, position.y, radius);
+      g.lineStyle(2, 0xaab8e0, 0.6).strokeCircle(position.x, position.y, radius);
+      g.lineStyle(1, tint, 0.5).strokeCircle(position.x, position.y, radius - 3);
     }
   }
 
@@ -13832,10 +13899,11 @@ export class GameScene extends Phaser.Scene {
   private drawBindCurseAuras(g: Phaser.GameObjects.Graphics): void {
     for (const mage of this.gs.mages) {
       if (!mage.alive) continue;
+      const position = this.mageVisualPosition(mage);
       for (const status of mage.statuses) {
         if (status.kind !== 'bindCurseAura') continue;
-        g.fillStyle(0x6a7bd0, 0.06).fillCircle(mage.x, mage.y, status.radius);
-        g.lineStyle(1, 0x8b96df, 0.5).strokeCircle(mage.x, mage.y, status.radius);
+        g.fillStyle(0x6a7bd0, 0.06).fillCircle(position.x, position.y, status.radius);
+        g.lineStyle(1, 0x8b96df, 0.5).strokeCircle(position.x, position.y, status.radius);
       }
     }
   }
@@ -13848,19 +13916,21 @@ export class GameScene extends Phaser.Scene {
     }
     for (const mage of this.gs.mages) {
       if (!mage.alive || mage.unseen) continue;
+      const position = this.mageVisualPosition(mage);
       this.drawGodMarks(g, mage);
       const partner = this.gs.rivetPartner(mage);
       if (partner && this.gs.mages.indexOf(mage) < this.gs.mages.indexOf(partner)) {
-        g.lineStyle(5, 0x5a4a30, 0.85).lineBetween(mage.x, mage.y, partner.x, partner.y);
-        g.lineStyle(2, 0xc9b27a, 0.95).lineBetween(mage.x, mage.y, partner.x, partner.y);
+        const partnerPosition = this.mageVisualPosition(partner);
+        g.lineStyle(5, 0x5a4a30, 0.85).lineBetween(position.x, position.y, partnerPosition.x, partnerPosition.y);
+        g.lineStyle(2, 0xc9b27a, 0.95).lineBetween(position.x, position.y, partnerPosition.x, partnerPosition.y);
       }
       if (this.gs.isVeiled(mage)) continue;
       for (const status of mage.statuses) {
         if (status.kind !== 'mirrorImages') continue;
         for (let i = 0; i < status.images; i++) {
           const angle = (i / status.images) * Math.PI * 2 - Math.PI / 2;
-          const x = mage.x + Math.cos(angle) * MAGE_RADIUS * 1.7;
-          const y = mage.y + Math.sin(angle) * MAGE_RADIUS * 1.7;
+          const x = position.x + Math.cos(angle) * MAGE_RADIUS * 1.7;
+          const y = position.y + Math.sin(angle) * MAGE_RADIUS * 1.7;
           g.fillStyle(0xcfe8f5, 0.2).fillCircle(x, y, MAGE_RADIUS * 0.85);
           g.lineStyle(1, 0xeaf6ff, 0.65).strokeCircle(x, y, MAGE_RADIUS * 0.85);
         }
@@ -13870,6 +13940,8 @@ export class GameScene extends Phaser.Scene {
 
   /** The god words leave their marks on a body: stopped clocks, glass, dooms, crosshairs, pins. */
   private drawGodMarks(g: Phaser.GameObjects.Graphics, mage: Mage): void {
+    const position = this.mageVisualPosition(mage);
+    g.save().translateCanvas(position.x - mage.x, position.y - mage.y);
     const stop = this.gs.timeStopOn(mage);
     if (stop?.sanctuary) {
       const r = MAGE_RADIUS * 1.8;
@@ -13923,6 +13995,7 @@ export class GameScene extends Phaser.Scene {
         g.lineStyle(1, 0x9ee7ff, 0.7).strokeCircle(mage.x, mage.y, MAGE_RADIUS * 1.35);
       }
     }
+    g.restore();
   }
 
   private drawTotems(g: Phaser.GameObjects.Graphics): void {
@@ -13969,14 +14042,16 @@ export class GameScene extends Phaser.Scene {
       show(`mv${z.id}`, z.x, z.y - z.radius - 10, z.turnsLeft, z.owner);
     for (const pool of this.gs.corrosionPools)
       show(`cp${pool.id}`, pool.x, pool.y - pool.radius - 10, pool.roundsLeft, pool.ownerTeam);
-    for (const zone of this.gs.hazardZones.filter((z) => z.untilTurn == null))
+    for (const zone of this.gs.hazardZones.filter((z) => z.untilTurn == null)) {
+      const position = this.hazardVisualPosition(zone);
       show(
         `hz${zone.id}`,
-        zone.toX != null ? (zone.x + zone.toX) / 2 : zone.x,
-        (zone.toY != null ? (zone.y + zone.toY) / 2 : zone.y) - zone.radius - 10,
+        position.x + (zone.toX != null ? (zone.toX - zone.x) / 2 : 0),
+        position.y + (zone.toY != null ? (zone.toY - zone.y) / 2 : 0) - zone.radius - 10,
         zone.roundsLeft,
         zone.ownerTeam
       );
+    }
     for (const b of this.gs.barriers) show(`ba${b.id}`, b.x, b.y, b.ttl, b.owner);
     for (const field of this.gs.desecrationFields)
       show(`dg${field.id}`, field.x, field.y - field.radius - 10, field.turnsLeft, field.ownerTeam);
@@ -14301,16 +14376,18 @@ export class GameScene extends Phaser.Scene {
       g.lineStyle(1, 0x263d2b, 0.8).strokeCircle(pool.x, pool.y, pool.radius * 0.62);
     }
     for (const zone of this.gs.hazardZones) {
+      const position = this.hazardVisualPosition(zone);
       if (zone.toX != null && zone.toY != null) {
+        const end = { x: position.x + zone.toX - zone.x, y: position.y + zone.toY - zone.y };
         g.lineStyle(zone.radius * 2, zone.color, 0.22);
-        g.lineBetween(zone.x, zone.y, zone.toX, zone.toY);
+        g.lineBetween(position.x, position.y, end.x, end.y);
         g.lineStyle(2, zone.color, 0.7);
-        g.lineBetween(zone.x, zone.y, zone.toX, zone.toY);
+        g.lineBetween(position.x, position.y, end.x, end.y);
         continue;
       }
-      g.fillStyle(zone.color, 0.16).fillCircle(zone.x, zone.y, zone.radius);
-      g.lineStyle(2, zone.color, 0.7).strokeCircle(zone.x, zone.y, zone.radius);
-      g.lineStyle(1, zone.color, 0.35).strokeCircle(zone.x, zone.y, zone.radius * 0.7);
+      g.fillStyle(zone.color, 0.16).fillCircle(position.x, position.y, zone.radius);
+      g.lineStyle(2, zone.color, 0.7).strokeCircle(position.x, position.y, zone.radius);
+      g.lineStyle(1, zone.color, 0.35).strokeCircle(position.x, position.y, zone.radius * 0.7);
     }
     for (const field of this.gs.desecrationFields) {
       g.fillStyle(0x2a1630, 0.32).fillCircle(field.x, field.y, field.radius);
@@ -14550,6 +14627,19 @@ export class GameScene extends Phaser.Scene {
   }
 
   private moveGhost?: Phaser.GameObjects.Sprite;
+  private movePreview?: { mage: Mage; origin: Vec2; pointer: Vec2; range: number; time: number; path: Vec2[] };
+
+  private previewMovePath(me: Mage): Vec2[] {
+    const cached = this.movePreview;
+    const range = me.moveRange();
+    if (cached && cached.mage === me && cached.range === range &&
+        cached.origin.x === me.x && cached.origin.y === me.y &&
+        cached.pointer.x === this.pointer.x && cached.pointer.y === this.pointer.y &&
+        this.time.now - cached.time < 100) return cached.path;
+    const path = this.gs.planMove(me, this.pointer).path;
+    this.movePreview = { mage: me, origin: me.pos, pointer: { ...this.pointer }, range, time: this.time.now, path };
+    return path;
+  }
 
   /**
    * A translucent body standing where a move would actually put you — clamped
@@ -14562,7 +14652,8 @@ export class GameScene extends Phaser.Scene {
       this.moveGhost?.setVisible(false);
       return;
     }
-    const dest = stepTowards(me.pos, this.pointer, me.moveRange());
+    const path = this.previewMovePath(me);
+    const dest = path[path.length - 1];
     if (!this.moveGhost) {
       this.moveGhost = this.add.sprite(dest.x, dest.y, rec.sprite.texture.key).setDepth(4.6);
     }
@@ -14660,7 +14751,12 @@ export class GameScene extends Phaser.Scene {
     let range = 0;
     if (this.mode === 'aiming-move') {
       range = me.moveRange();
-      this.drawAimGuide(g, me.pos, stepTowards(me.pos, this.pointer, range));
+      const path = this.previewMovePath(me);
+      for (let index = 1; index < path.length - 1; index++) {
+        g.lineStyle(3, MENU_COLOR.pitch, 0.72).lineBetween(path[index - 1].x, path[index - 1].y, path[index].x, path[index].y);
+        g.lineStyle(1, MENU_COLOR.brassLight, 0.9).lineBetween(path[index - 1].x, path[index - 1].y, path[index].x, path[index].y);
+      }
+      this.drawAimGuide(g, path[Math.max(0, path.length - 2)], path[path.length - 1]);
     } else if (this.mode === 'aiming-leap') {
       // The farthest a leap can carry: a max d6 roll of 6.
       range = (1 + 0.25 * me.effectiveDex()) * RANGE_UNIT;
@@ -14979,7 +15075,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     const facing = rec.sprite.flipX ? -1 : 1;
-    const visualScale = mage.mine ? mineEnemyVisual(mage).scale : 1;
+    const visualScale = mage.mine ? mineEnemyVisual(mage).scale : rec.sprite.scaleX / rec.baseScale;
     const baseSize: Record<HeldWeaponKind, number> = {
       sword: 43,
       dagger: 35,
@@ -14992,13 +15088,13 @@ export class GameScene extends Phaser.Scene {
       shield: 38,
       lantern: 38,
     };
-    const size = baseSize[kind] * Phaser.Math.Clamp(visualScale, 0.8, 1.55);
+    const size = baseSize[kind] * Phaser.Math.Clamp(visualScale, 0.8, 1.6);
     const attacking = rec.lock === 'attack';
     rec.held
       .setDisplaySize(size, size)
       .setPosition(
-        rec.sprite.x + facing * MAGE_RADIUS * 0.48,
-        rec.sprite.y - MAGE_RADIUS * 1.15 + (attacking ? 3 : 0)
+        rec.sprite.x + facing * MAGE_RADIUS * 0.48 * visualScale,
+        rec.sprite.y - MAGE_RADIUS * 1.15 * visualScale + (attacking ? 3 : 0)
       )
       .setFlipX(facing < 0)
       .setRotation(facing * (attacking ? 1.02 : 0.38))
@@ -15109,9 +15205,12 @@ export class GameScene extends Phaser.Scene {
         if (m.bossArt) bindBossIdleSpecial(sprite, m.bossArt);
         sprite.play(idleKey);
         const srcH = sprite.height || 1;
-        sprite.setScale((customCreature ? CREATURE_SPRITE_HEIGHT : MAGE_RADIUS * 2.8) / srcH);
+        const baseScale = ((customCreature ? CREATURE_SPRITE_HEIGHT : MAGE_RADIUS * 2.8) / srcH)
+          * (m.summonKind === 'sentry' ? 0.5 : 1);
+        sprite.setScale(baseScale);
         rec = {
           sprite,
+          baseScale,
           lock: null,
           posLocked: false,
           charging: false,
@@ -15130,6 +15229,12 @@ export class GameScene extends Phaser.Scene {
       } else if (rec.shoulderScale != null) {
         s.setScale(rec.shoulderScale);
         rec.shoulderScale = undefined;
+      }
+      if (!shoulderOwner && !m.isSummon && !m.isAI && !m.sceneSide && !m.enemyKind && !m.mine && !m.bossArt) {
+        const hpScale = m.maxHp < 15
+          ? 0.8 + 0.2 * Math.max(0, (m.maxHp - 9) / 6)
+          : m.maxHp <= 20 ? 1 : 1 + 0.6 * Math.min(1, (m.maxHp - 20) / 15);
+        s.setScale(rec.baseScale * hpScale);
       }
       s.setDepth(shoulderOwner ? 5.2 : 5);
       s.setOrigin(0.5, m.enemyKind === 'moay' && m.bossArt ? bossSheet(m.bossArt).originY : customCreature ? 0.9 : 1);
@@ -15923,10 +16028,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Turn a body toward what it is striking, honouring each sheet's own facing. */
-  private faceStrike(rec: MageAnim, source: Mage, at: Vec2): void {
+  private faceStrike(rec: MageAnim, source: Mage, at: Vec2, from: Vec2 = source.pos): void {
     const kind = creatureSpriteKind(source);
     const nativeFacesRight = !kind || creatureFacesRight(kind);
-    const targetIsRight = at.x > source.x;
+    const targetIsRight = at.x > from.x;
     rec.sprite.setFlipX(nativeFacesRight ? !targetIsRight : targetIsRight);
   }
 
@@ -16239,17 +16344,20 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Glide a mage to a point over ~1s while the run loop plays. */
-  private animateMove(m: Mage, to: Vec2): Promise<void> {
+  private animateMove(m: Mage, path: Vec2[]): Promise<void> {
     return new Promise((resolve) => {
       const rec = this.mageAnims.get(m);
-      const from = { x: m.x, y: m.y };
-      if (!rec || dist(from, to) < 1) {
+      const distance = path.slice(1).reduce((total, point, index) => total + dist(path[index], point), 0);
+      if (!rec || distance < 1) {
         resolve();
         return;
       }
       rec.lock = 'move';
+      rec.posLocked = true;
       rec.sprite.play(bodyAnimationKey(m, 'run'), true);
-      const strides = this.startFootfalls(m, dist(from, to), FX_MOTION.move.duration);
+      const strides = this.startFootfalls(m, distance, FX_MOTION.move.duration);
+      const visual = { x: path[0].x, y: path[0].y };
+      const to = path[path.length - 1];
       let settled = false;
       let timeout: Phaser.Time.TimerEvent | null = null;
       let tween: Phaser.Tweens.Tween | null = null;
@@ -16261,26 +16369,40 @@ export class GameScene extends Phaser.Scene {
         this.events.off(Phaser.Scenes.Events.SHUTDOWN, onShutdown);
         if (snapToDestination) {
           tween?.stop();
-          m.x = to.x;
-          m.y = to.y;
+          rec.sprite.setPosition(to.x, to.y + MAGE_RADIUS * 1.4);
           this.redraw();
           console.warn(`${m.name}'s movement tween timed out; snapped to its resolved destination.`);
         }
-        if (rec.lock === 'move') rec.lock = null;
         resolve();
       };
-      const onShutdown = (): void => finish(false);
+      const onShutdown = (): void => {
+        finish(false);
+        if (rec.lock === 'move') {
+          rec.lock = null;
+          rec.posLocked = false;
+        }
+      };
       this.events.once(Phaser.Scenes.Events.SHUTDOWN, onShutdown);
-      tween = this.tweens.add({
-        targets: m,
-        x: to.x,
-        y: to.y,
-        duration: FX_MOTION.move.duration,
-        ease: FX_MOTION.move.ease,
-        onUpdate: () => this.redraw(),
-        onComplete: () => finish(false),
-        onStop: () => finish(false),
-      });
+      const walkLeg = (index: number): void => {
+        if (settled) return;
+        if (index >= path.length) return finish(false);
+        const next = path[index];
+        if (Math.abs(next.x - visual.x) > 0.01) this.faceStrike(rec, m, next, visual);
+        tween = this.tweens.add({
+          targets: visual,
+          x: next.x,
+          y: next.y,
+          duration: FX_MOTION.move.duration * dist(path[index - 1], next) / distance,
+          ease: 'Linear',
+          onUpdate: () => {
+            rec.sprite.setPosition(visual.x, visual.y + MAGE_RADIUS * 1.4);
+            this.redraw();
+          },
+          onComplete: () => walkLeg(index + 1),
+          onStop: () => finish(false),
+        });
+      };
+      walkLeg(1);
       timeout = this.time.delayedCall(FX_MOTION.move.duration + 300, () => finish(true));
     });
   }
@@ -16320,7 +16442,7 @@ export class GameScene extends Phaser.Scene {
       repeat: steps - 1,
       callback: () => {
         if (!m.alive) return;
-        this.kickDust(m.pos, 3, 55);
+        this.kickDust(this.mageVisualPosition(m), 3, 55);
         playSound('move.step');
       },
     });
@@ -16487,9 +16609,23 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private hazardVisualPosition(zone: GameState['hazardZones'][number]): Vec2 {
+    const carrier = zone.carrierIndex == null ? undefined : this.gs.mages[zone.carrierIndex];
+    if (!carrier) return zone;
+    const position = this.mageVisualPosition(carrier);
+    return { x: zone.x + position.x - carrier.x, y: zone.y + position.y - carrier.y };
+  }
+
+  private mageVisualPosition(m: Mage): Vec2 {
+    const rec = this.mageAnims.get(m);
+    return rec?.lock === 'move' && rec.posLocked
+      ? { x: rec.sprite.x, y: rec.sprite.y - MAGE_RADIUS * 1.4 }
+      : m.pos;
+  }
+
   private mageBarY(m: Mage): number {
     const sprite = m.enemyKind === 'moay' ? this.mageAnims.get(m)?.sprite : undefined;
-    return sprite ? sprite.getTopLeft().y - 20 : m.y - MAGE_RADIUS - 26;
+    return sprite ? sprite.getTopLeft().y - 20 : this.mageVisualPosition(m).y - MAGE_RADIUS - 26;
   }
 
   private drawMage(g: Phaser.GameObjects.Graphics, m: Mage): void {
@@ -16506,39 +16642,40 @@ export class GameScene extends Phaser.Scene {
           ? MENU_COLOR.verdigris
           : MENU_COLOR.amethyst;
     const active = m === this.gs.current && !this.gs.isOver;
-    const bodyY = m.y + MAGE_RADIUS * 0.72;
+    const position = this.mageVisualPosition(m);
+    const bodyY = position.y + MAGE_RADIUS * 0.72;
     if (m.lightningMindStacks > 0) {
       const strength = Math.min(1, 0.28 + Math.log2(m.lightningMindStacks + 1) * 0.22);
       const pulse = this.reducedMotion ? 1 : 0.9 + Math.sin(this.time.now / 170) * 0.1;
       const thickness = 2 + Math.min(6, m.lightningMindStacks) * 0.7;
       g.lineStyle(thickness + 5, 0x0d4f9c, 0.18 * strength * alpha)
-        .strokeEllipse(m.x, m.y, MAGE_RADIUS * 2.55, MAGE_RADIUS * 3.25);
+        .strokeEllipse(position.x, position.y, MAGE_RADIUS * 2.55, MAGE_RADIUS * 3.25);
       g.lineStyle(thickness, 0x4aa8ff, strength * pulse * alpha)
-        .strokeEllipse(m.x, m.y, MAGE_RADIUS * 2.4, MAGE_RADIUS * 3.1);
+        .strokeEllipse(position.x, position.y, MAGE_RADIUS * 2.4, MAGE_RADIUS * 3.1);
     }
-    g.fillStyle(MENU_COLOR.pitch, 0.62 * alpha).fillEllipse(m.x + 2, bodyY + 3, MAGE_RADIUS * 2.1, 13);
+    g.fillStyle(MENU_COLOR.pitch, 0.62 * alpha).fillEllipse(position.x + 2, bodyY + 3, MAGE_RADIUS * 2.1, 13);
     if (m.shikigami && m.alive) this.drawShikigami(g, m, alpha);
-    g.fillStyle(teamColor, 0.12 * alpha).fillEllipse(m.x, bodyY, MAGE_RADIUS * 2.35, 16);
+    g.fillStyle(teamColor, 0.12 * alpha).fillEllipse(position.x, bodyY, MAGE_RADIUS * 2.35, 16);
     g.lineStyle(active ? 3 : 2, active ? MENU_COLOR.brassLight : teamColor, active ? alpha : 0.72 * alpha)
-      .strokeEllipse(m.x, bodyY, MAGE_RADIUS * 2.4, 17);
+      .strokeEllipse(position.x, bodyY, MAGE_RADIUS * 2.4, 17);
     if (active) {
       const markerY = this.mageBarY(m) - 10;
       // The caret bobs so the eye finds the acting unit without reading the HUD.
       const bob = this.reducedMotion ? 0 : Math.sin(this.time.now / 260) * 3;
       const halo = 0.10 + (this.reducedMotion ? 0 : Math.sin(this.time.now / 340) * 0.05);
       g.lineStyle(2, MENU_COLOR.brassLight, Math.max(0, halo * 3) * alpha)
-        .strokeEllipse(m.x, bodyY, MAGE_RADIUS * 3.1, 22);
+        .strokeEllipse(position.x, bodyY, MAGE_RADIUS * 3.1, 22);
       g.fillStyle(MENU_COLOR.brassLight, alpha);
-      g.fillTriangle(m.x - 7, markerY - 7 + bob, m.x + 7, markerY - 7 + bob, m.x, markerY + 1 + bob);
+      g.fillTriangle(position.x - 7, markerY - 7 + bob, position.x + 7, markerY - 7 + bob, position.x, markerY + 1 + bob);
       g.lineStyle(1, MENU_COLOR.ink, 0.8 * alpha)
-        .lineBetween(m.x - 4, markerY - 5 + bob, m.x + 4, markerY - 5 + bob);
+        .lineBetween(position.x - 4, markerY - 5 + bob, position.x + 4, markerY - 5 + bob);
     }
 
     // The mage body itself is drawn by its animated sprite (see syncMageSprites).
 
     // Bars.
     const bw = 56;
-    const bx = m.x - bw / 2;
+    const bx = position.x - bw / 2;
     const by = this.mageBarY(m);
     const hpFrac = m.maxHp > 0 ? m.hp / m.maxHp : 0;
     const sanFrac = m.maxSanity > 0 ? m.sanity / m.maxSanity : 0;
@@ -16571,8 +16708,9 @@ export class GameScene extends Phaser.Scene {
     const rank = shikigamiTier(m.shikigami?.points ?? 0);
     const size = 5 + rank * 1.5;
     const sway = this.reducedMotion ? 0 : Math.sin(this.time.now / 420) * 1.5;
-    const x = m.x + MAGE_RADIUS * 0.85;
-    const y = m.y - MAGE_RADIUS * 0.55 + sway;
+    const position = this.mageVisualPosition(m);
+    const x = position.x + MAGE_RADIUS * 0.85;
+    const y = position.y - MAGE_RADIUS * 0.55 + sway;
     g.fillStyle(0x140b1f, 0.92 * alpha).fillEllipse(x, y, size * 2, size * 2.3);
     g.lineStyle(1, 0x8f7ab8, 0.7 * alpha).strokeEllipse(x, y, size * 2, size * 2.3);
     g.fillStyle(0xe8e0ff, alpha).fillCircle(x - size * 0.35, y - size * 0.2, 1.4).fillCircle(x + size * 0.35, y - size * 0.2, 1.4);
@@ -16803,11 +16941,13 @@ export class GameScene extends Phaser.Scene {
       : '';
     const fleeing = m.fleeChannel ? `WITHDRAWING ${FLEE_EDGE_LABEL[m.fleeChannel].toUpperCase()}` : '';
     const denial = denialLabel(m);
+    const crusade = crusadeLabel(this.gs.mages, m);
     t.setText(
-      `${m.name}${mineDetails ? ` · ${mineDetails}` : ''}${denial ? `\n${denial}` : ''}${lantern ? `\n${lantern}` : ''}${wings ? `\n${wings}` : ''}${fleeing ? `\n${fleeing}` : ''}${statuses ? `\n${statuses}` : ''}`
+      `${m.name}${mineDetails ? ` · ${mineDetails}` : ''}${denial ? `\n${denial}` : ''}${crusade ? `\n${crusade}` : ''}${lantern ? `\n${lantern}` : ''}${wings ? `\n${wings}` : ''}${fleeing ? `\n${fleeing}` : ''}${statuses ? `\n${statuses}` : ''}`
     );
     t.setColor(m.hp / Math.max(1, m.maxHp) <= 0.25 ? '#d99286' : MENU_HEX.bone);
-    t.setPosition(m.x, m.y + MAGE_RADIUS + 15).setVisible(true);
+    const position = this.mageVisualPosition(m);
+    t.setPosition(position.x, position.y + MAGE_RADIUS + 15).setVisible(true);
   }
 
   private initiativeLabels: Phaser.GameObjects.Text[] = [];
@@ -17149,9 +17289,21 @@ export class GameScene extends Phaser.Scene {
 
   /** Everything a player can legitimately learn by looking at a combatant. */
   private inspectCard(m: Mage): string {
+    const health = (value: number): number => Number(value.toFixed(2));
     const lines: string[] = [
-      `${m.name}${m.isSummon ? ' (summon)' : ''}  ·  ${m.hp}/${m.maxHp} HP  ·  ${m.sanity}/${m.maxSanity} mind`,
+      `${m.name}${m.isSummon ? ' (summon)' : ''}  ·  ${health(m.hp)}/${health(m.maxHp)} HP  ·  ${isCrusadeBuilding(m) ? 'Building (no mind)' : `${m.sanity}/${m.maxSanity} mind`}`,
     ];
+    if (isCrusadeBuilding(m)) lines.push('Weak: Burn specifically. Resists non-DoT debuffs.');
+    if (m.enemyKind === 'crusadeHelper') {
+      lines.push(`(${'Cheap Slaves'.split('').map((letter) => `${letter}\u0336`).join('')}) "Neatly treated Helpers"`);
+      lines.push('Damaging or killing helpers grants no usual bonuses. Killing one deals 1d2-1 mill to the killer.');
+      lines.push('With a camp alive: two replacements appear next turn and act immediately.');
+    }
+    if (m.enemyKind === 'crusadeSoldier') lines.push('One reaction: blocks 33%, including attacks aimed behind it. May decline to block.');
+    if (m.enemyKind === 'crusadePriest') lines.push('Saintly Mending: heals another non-building, non-helper ally for 1d3.');
+    if (m.enemyKind === 'crusadeBallista') lines.push('Requires a helper; one loaded shot per turn, before moving. Its 2cm-wide beam heals other Crusaders except helpers for 1d6.');
+    const crusade = crusadeLabel(this.gs.mages, m);
+    if (crusade) lines.push(crusade);
 
     const defences: string[] = [];
     if (m.debuffImmune) defences.push('Immune to debuffs');
@@ -17540,7 +17692,12 @@ export class GameScene extends Phaser.Scene {
 
   /** Play the animation for a resolving action before its effect lands. */
   private playActionVisual(item: StackItem): Promise<void> {
-    if (item.kind === 'move') return this.animateMove(item.source, item.targetPoint ?? item.source.pos);
+    if (item.kind === 'move') {
+      const planned = this.gs.planMove(item.source, item.moveDestination ?? item.targetPoint ?? item.source.pos);
+      item.movePath = planned.path;
+      item.targetPoint = planned.path[planned.path.length - 1];
+      return this.animateMove(item.source, planned.path);
+    }
     // Generic actions (item use / throw / Eldritch / Thunder / weapon action)
     // paint their own effects inside resolve — no default cast animation.
     if (item.kind === 'action') {

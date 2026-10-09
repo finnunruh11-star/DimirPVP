@@ -372,13 +372,13 @@ export interface HexReading {
 
 const isPace = (facet: Facet | null): boolean => facet === 'accelerate' || facet === 'slow';
 
-/** Read a sheet: what each grid says, and the hex they make, or why they make none. */
-export function readHex(paper: PaperKind, grids: readonly number[]): HexReading {
+/** Each grid as it reads with these chains holding: its rune, its part, and how it counts there. */
+function layGrids(grids: readonly number[], runes: readonly (RuneId | null)[], bridges: readonly boolean[]): GridReading[] {
   let part = 0;
-  const base = grids.map((mask) => {
-    const rune = readRune(mask);
-    const inverted = !!(mask & SEAL_BIT);
-    const coupled = !!(mask & BRIDGE_BIT);
+  const base = grids.map((mask, index) => {
+    const rune = runes[index];
+    const inverted = !!rune && !!(mask & SEAL_BIT);
+    const coupled = bridges[index];
     const reading = {
       lines: lineCount(mask),
       rune,
@@ -390,37 +390,54 @@ export function readHex(paper: PaperKind, grids: readonly number[]): HexReading 
     if (coupled) part += 1;
     return reading;
   });
-  const readings: GridReading[] = base.map((grid, index) => {
+  const targeted = new Set<number>();
+  return base.map((grid, index) => {
     if (!grid.facet) return { ...grid, role: null };
     const followed = base.some((later, at) =>
       at > index && later.part === grid.part && !!later.facet && FACETS[later.facet].kind === 'effect' && !isPace(later.facet));
-    return { ...grid, role: isPace(grid.facet) && followed ? 'modifier' : FACETS[grid.facet].kind };
+    let role: RuneKind | null = isPace(grid.facet) && followed ? 'modifier' : FACETS[grid.facet].kind;
+    // Only the first target rune of a part counts.
+    if (role === 'target') {
+      if (targeted.has(grid.part)) role = null;
+      else targeted.add(grid.part);
+    }
+    return { ...grid, role };
   });
-  const fail = (problem: string): HexReading => ({ grids: readings, recipe: null, problem });
-  if (grids.length !== PAPERS[paper].grids || grids.some((mask) => !Number.isInteger(mask) || mask < 0 || mask > FULL_GRID)) {
-    return fail('That is not how this paper is ruled.');
+}
+
+/**
+ * Read a sheet: what each grid says, and the hex they make. Whatever does not
+ * hold is skipped: stray lines, a seal over no rune, a chain that couples nothing.
+ * A sheet with no effect left still makes a hex; it fizzles. Only a sheet ruled
+ * wrong for its paper makes none.
+ */
+export function readHex(paper: PaperKind, grids: readonly number[]): HexReading {
+  const runes = grids.map((mask) => readRune(mask));
+  const last = grids.length - 1;
+  const bridges = grids.map((mask, index) => !!(mask & BRIDGE_BIT) && index < last && !!runes[index] && !!runes[index + 1]);
+  let readings = layGrids(grids, runes, bridges);
+  for (;;) {
+    // A chain holds when an effect carries it into a part with an effect of its own.
+    const broken = readings.findIndex((grid, index) => bridges[index] &&
+      (grid.role !== 'effect' || !readings.some((later) => later.part === grid.part + 1 && later.role === 'effect')));
+    if (broken < 0) break;
+    bridges[broken] = false;
+    readings = layGrids(grids, runes, bridges);
   }
-  for (const [index, grid] of readings.entries()) {
-    const at = `Grid ${index + 1}`;
-    if ((grids[index] & RUNE_LINES) && !grid.rune) return fail(`${at} holds no rune.`);
-    if (grid.inverted && !grid.rune) return fail(`${at}: the seal has no rune to turn.`);
-    if (!grid.coupled) continue;
-    if (index === grids.length - 1 || !readings[index + 1].rune) return fail(`${at}: a coupling needs a rune on both sides.`);
-    if (grid.role !== 'effect') return fail(`${at}: only an effect rune can carry a coupling.`);
+  if (grids.length !== PAPERS[paper].grids || grids.some((mask) => !Number.isInteger(mask) || mask < 0 || mask > FULL_GRID)) {
+    return { grids: readings, recipe: null, problem: 'That is not how this paper is ruled.' };
   }
   const parts: HexPart[] = [];
-  for (let index = 0; index <= part; index++) {
+  for (let index = 0; index <= readings[last].part; index++) {
     const members = readings.filter((grid) => grid.part === index && grid.facet);
-    const targets = members.filter((grid) => grid.role === 'target');
+    const target = members.find((grid) => grid.role === 'target');
     const effects = members.filter((grid) => grid.role === 'effect').map((grid) => grid.facet as EffectFacet);
-    const modifiers = members.filter((grid) => grid.role === 'modifier').map((grid) => grid.facet as HexModifier);
-    const where = index === 0 ? 'The hex' : `Coupled part ${index}`;
-    if (targets.length > 1) return fail(`${where} has more than one target rune.`);
-    if (effects.length === 0) return fail(`${where} needs an effect rune.`);
-    if (modifiers.includes('allies') && modifiers.includes('enemies')) return fail(`${where}: Only Allies and Only Enemies cancel each other out.`);
+    let modifiers = members.filter((grid) => grid.role === 'modifier').map((grid) => grid.facet as HexModifier);
+    // Only Allies and Only Enemies cancel each other out.
+    if (modifiers.includes('allies') && modifiers.includes('enemies')) modifiers = modifiers.filter((mod) => mod !== 'allies' && mod !== 'enemies');
     const bridge = members.find((grid) => grid.coupled);
     parts.push({
-      target: (targets[0]?.facet as TargetFacet | undefined) ?? 'touch',
+      target: (target?.facet as TargetFacet | undefined) ?? 'touch',
       effects,
       modifiers,
       ...(bridge ? { carrier: bridge.facet as EffectFacet } : {}),
@@ -780,7 +797,7 @@ const listed = (parts: readonly string[]): string =>
 
 /** "Magic Missile + Wind (Area)": a part's effects, and where it lands. */
 export function partLabel(part: HexPart): string {
-  const effects = [...new Set(part.effects)].map((effect) => FACETS[effect].label).join(' + ');
+  const effects = [...new Set(part.effects)].map((effect) => FACETS[effect].label).join(' + ') || 'Nothing';
   return part.target === 'touch' ? effects : `${effects} (${FACETS[part.target].label})`;
 }
 
@@ -879,14 +896,14 @@ function groundLines(part: HexPart): string[] {
   return lines;
 }
 
-/** How part `index` is set off by the part before it. */
-export function couplingLine(recipe: HexRecipe, index: number): string {
+/** How part `index` is set off by the part before it; unnamed, it keeps quiet about which rune carries it. */
+export function couplingLine(recipe: HexRecipe, index: number, named = true): string {
   const before = recipe.parts[index - 1];
-  const carrier = before.carrier ? FACETS[before.carrier].label : 'it';
+  const coupled = named && before.carrier ? `Coupled to ${FACETS[before.carrier].label}` : 'Coupled';
   switch (couplingMode(before)) {
-    case 'tick': return `Coupled to ${carrier}: each time it ticks,`;
+    case 'tick': return `${coupled}: each time it ticks,`;
     case 'ground': return groundPlan(before).zone ? 'Coupled to the ground: each time it bites someone,' : 'Coupled to the ground: once, at its heart,';
-    default: return `Coupled to ${carrier}: wherever it lands, ${ECHO_LIMIT} times at most,`;
+    default: return `${coupled}: wherever it lands, ${ECHO_LIMIT} times at most,`;
   }
 }
 
@@ -895,15 +912,16 @@ export function partLines(recipe: HexRecipe, index: number): string[] {
   const part = recipe.parts[index];
   const coupled = index > 0;
   const lines = [targetLine(part, coupled)];
+  if (part.effects.length === 0) return [...lines, 'It holds no effect: it fizzles.'];
   if (isGround(part.target)) return [...lines, ...groundLines(part)];
   return [...lines, ...unitPlan(part).map((step) => stepLine(part, step, coupled))];
 }
 
 /** The rules of a whole hex, a sentence at a time. */
-export function hexLines(recipe: HexRecipe): string[] {
+export function hexLines(recipe: HexRecipe, named = true): string[] {
   const lines = [`${ACTION_TEXT[hexAction(recipe)]}, ${hexManaCost(recipe)} mana.`];
   recipe.parts.forEach((_, index) => {
-    if (index > 0) lines.push(couplingLine(recipe, index));
+    if (index > 0) lines.push(couplingLine(recipe, index, named));
     lines.push(...partLines(recipe, index));
   });
   return lines;

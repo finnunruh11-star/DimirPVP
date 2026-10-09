@@ -13,6 +13,7 @@ import type { DamageType, DamageInstance } from './Damage';
 import type { ItemId, ItemDef, StaffBolt } from './Items';
 import { getItem, isRangedWeapon, SLOT_CAPS, staffDice } from './Items';
 import { dist, segmentCircleFirstIntersection, stepTowards, type Vec2 } from './utils';
+import { findPath } from '../world/pathfind';
 import {
   CONE_DEGREES,
   CLEAVE_DEGREES,
@@ -87,6 +88,8 @@ import {
 import { cheatDeath, deathLawEnds, deathRites, echoFetch } from '../effects/deathKit';
 import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_TURNS } from '../pve/goblins';
 import { BARAL_SANITY_MARK, BARAL_WOUND_DASH_UNITS, DENIAL_RELOCATION_DAMAGE, DENIAL_STIFLE_MILL, denialArmed } from '../pve/baral';
+import { crusadeDeath, fireCrusadeBallista } from '../pve/crusadeCombat';
+import { crusadeBallistaCanFire, isCrusadeBuilding, isCrusadeKind } from '../pve/crusade';
 import { applyMineEnemyTraits, type MineEnemyKind } from '../pve/minerun';
 import { illusoryReap, isLillithUnit, lillithOnDeath, lillithReap, lillithStride } from '../pve/lillith';
 import { clampToMoayArena, moayTargets, moayTurnStart, type MoayArena } from '../pve/moay';
@@ -1283,6 +1286,11 @@ export class GameState {
       m.reactedThisCycle = false;
       // Per-round-cycle reset of the Reaper's per-source damage accounting.
       if (m.damageBySourceThisCycle.size > 0) m.damageBySourceThisCycle.clear();
+      if (m.alive && m.enemyKind === 'crusadeCamp' && m.inert) {
+        this.applyFireDamage(m);
+        if (m.alive) this.applyDotDamage(m);
+        for (const line of m.tickStatuses()) this.log(line);
+      }
     }
   }
 
@@ -3954,6 +3962,7 @@ export class GameState {
   }
 
   imbueOnDamaged(target: Mage, dealt: number, dot = false): void {
+    if (target.enemyKind === 'crusadeHelper') return;
     if (dealt > 0 && target.statuses.some((s) => s.kind === 'imbue')) imbueOnDamaged(this, target, dealt, dot);
     if (dealt > 0 && target.summonKind) minionStruck(this, target, dealt);
   }
@@ -5025,6 +5034,10 @@ export class GameState {
 
   /** Attribute one confirmed defeat, including summon kills, before scene hooks run. */
   notifyMageDefeated(target: Mage, source: Mage): void {
+    if (crusadeDeath(this, target, source)) {
+      this.onMageDefeated?.(target, source);
+      return;
+    }
     lillithOnDeath(this, target);
     const offspring = target.mine?.kind === 'huge-spider' ? 'small-spider'
       : target.mine?.kind === 'gigantuan-spider' ? 'huge-spider' : null;
@@ -5201,14 +5214,15 @@ export class GameState {
       zone.x = mover.x;
       zone.y = mover.y;
     }
-    if (physicalTravel && mover.venomStacks > 0) {
-      const travelled = mover.venomDistance + dist(origin, destination);
-      mover.venomDistance = travelled % RANGE_UNIT;
-      this.removeSpiderVenom(mover, Math.floor(travelled / RANGE_UNIT));
-    }
     const points: Vec2[] = physicalTravel
       ? [origin, ...(path?.length ? path : [destination])]
       : [destination];
+    if (physicalTravel && mover.venomStacks > 0) {
+      const distance = points.slice(1).reduce((total, point, index) => total + dist(points[index], point), 0);
+      const travelled = mover.venomDistance + distance;
+      mover.venomDistance = travelled % RANGE_UNIT;
+      this.removeSpiderVenom(mover, Math.floor(travelled / RANGE_UNIT));
+    }
     const firstContact = (center: Vec2, radius: number): Vec2 | null => {
       if (points.length === 1) return dist(points[0], center) <= radius ? { ...points[0] } : null;
       for (let i = 1; i < points.length; i++) {
@@ -6083,6 +6097,7 @@ export class GameState {
     const opponent = this.opponentOf(m);
     const dots = m.statuses.filter((s) => s.kind === 'dot') as DotStatus[];
     for (const s of dots) {
+      if (isCrusadeKind(m.enemyKind) && !m.alive) break;
       const source = s.sourceIndex == null ? undefined : this.mages[s.sourceIndex];
       if (source) this.triggerOniAmbush(source, m);
       if (s.band) {
@@ -6109,11 +6124,12 @@ export class GameState {
           ? Math.max(0, this.rng.roll(s.bonusNoDamageSpec).total)
           : 0;
       const total =
-        amount + bonus + this.hexcraftDamageBonus(s.damage.type) + lawDotBonus(this, m, s);
+        (amount + bonus + this.hexcraftDamageBonus(s.damage.type) + lawDotBonus(this, m, s))
+        * (isCrusadeBuilding(m) && s.damage.type === 'heat' ? 2 : 1);
       if (s.damage.type === 'sanity') m.sanity = Math.max(0, m.sanity - total);
       else m.hp = Math.max(0, m.hp - total);
       // Order Curse Drain: the curse's author drinks the damage as healing (a summon's curse feeds it and its summoner).
-      if (s.lifestealToIndex !== undefined && total > 0) {
+      if (s.lifestealToIndex !== undefined && total > 0 && m.enemyKind !== 'crusadeHelper') {
         const owner = this.mages[s.lifestealToIndex];
         if (owner && owner.alive && owner !== m) {
           this.vfxSink?.spellEffect?.(m, 'corrosive');
@@ -6123,8 +6139,10 @@ export class GameState {
           }
         }
       }
-      lawAfterDotTick(this, m, s, total);
-      imbueOnDotTick(this, m, total);
+      if (m.enemyKind !== 'crusadeHelper') {
+        lawAfterDotTick(this, m, s, total);
+        imbueOnDotTick(this, m, total);
+      }
       if (total > 0) {
         this.vfxSink?.hit?.(m);
         // Several afflictions can tick at once, so each number names its cause.
@@ -6136,6 +6154,7 @@ export class GameState {
         });
       }
       this.log(`${m.name} suffers ${total} ${s.damage.type} from ${s.name}.`);
+      if (isCrusadeKind(m.enemyKind) && !m.alive) this.notifyMageDefeated(m, source ?? m);
       if (s.reapPerTick) this.applyReap(m, s.reapPerTick, source ?? m);
       if (total > 0) this.checkReapDeath(m, source ?? m);
       // An emptied mind cannot hold the virus, so it moves on even in death.
@@ -6986,6 +7005,7 @@ export class GameState {
 
   /** Drakes Baral calls up mid-action; the scene raises them once the action settles. */
   pendingDrakes: { baral: Mage; count: number }[] = [];
+  pendingCrusadeHelpers: { team: number; afterTurn: number }[] = [];
 
   /** The living Artifacts of Denial that answer `item`: a party action, never a bare reaction window. */
   private artifactsAgainst(item: StackItem): Mage[] {
@@ -7242,6 +7262,7 @@ export class GameState {
   }
 
   canMelee(source: Mage, target: Mage): boolean {
+    if (source.enemyKind === 'crusadeBallista' && (!crusadeBallistaCanFire(this.mages, source) || source.crusade?.firedTurn === this.turnSeq)) return false;
     if (source.cannotAttack) return false;
     if (source.attackCooldownRounds > 0 && this.round - source.lastAttackRound < source.attackCooldownRounds)
       return false;
@@ -8012,47 +8033,100 @@ export class GameState {
     return usesMain && source.isStunned('main') ? 'disarmed' : null;
   }
 
-  makeMoveItem(source: Mage, destination: Vec2): StackItem {
+  planMove(source: Mage, destination: Vec2): { path: Vec2[]; roots: boolean } {
     const fieldDest = {
       x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, destination.x)),
       y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, destination.y)),
     };
-    // A reality-break barrier halts a runner at its edge and roots them.
     const phased = this.edgelordCanPhaseWalk(source) || this.isPhaseWalking(source);
-    const clamp = phased
-      ? { dest: fieldDest, blocked: false, roots: false }
-      : this.clampToBarriers(source.pos, fieldDest, source.bodyRadius());
-    // A Mutivarg crushing field is a wall — you cannot dash through it.
-    const mut = phased ? { dest: clamp.dest } : this.clampToMutivargZones(source, source.pos, clamp.dest);
-    // A Reaper leashes its prey: you cannot flee further than allowed.
-    const leash = this.clampToReaperLeash(source, source.pos, mut.dest);
-    // A sealed desecration will not let its prisoners walk back out.
-    const sealed = this.clampToDesecrationFields(source, source.pos, leash);
-    // A tether holds its bearer within reach of whatever it is tied to.
-    const tethered = clampToTethers(this, source, source.pos, sealed);
-    // Stop short of running into the other mage's body.
-    const uncluttered = this.nearestFreePosition(source, tethered, source.pos, !phased);
-    const dest = phased ? uncluttered : this.clampToMages(source, source.pos, uncluttered);
-    return {
+    const clampSegment = (from: Vec2, to: Vec2): { dest: Vec2; roots: boolean } => {
+      const barrier = phased
+        ? { dest: to, roots: false }
+        : this.clampToBarriers(from, to, source.bodyRadius());
+      const mut = phased ? barrier : this.clampToMutivargZones(source, from, barrier.dest);
+      const leash = this.clampToReaperLeash(source, from, mut.dest);
+      const sealed = this.clampToDesecrationFields(source, from, leash);
+      const tethered = clampToTethers(this, source, from, sealed);
+      return { dest: phased ? tethered : this.clampToMages(source, from, tethered), roots: barrier.roots };
+    };
+    const goal = this.nearestFreePosition(source, fieldDest);
+    const clear = (from: Vec2, to: Vec2): boolean => dist(clampSegment(from, to).dest, to) < 0.01;
+    let route = [source.pos, goal];
+    if (!clear(source.pos, goal)) {
+      const spacing = 10;
+      const start = {
+        x: Math.floor((source.x - FIELD.x) / spacing),
+        y: Math.floor((source.y - FIELD.y) / spacing),
+      };
+      const offset = { x: source.x - start.x * spacing, y: source.y - start.y * spacing };
+      const width = Math.floor((FIELD.x + FIELD.w - offset.x) / spacing) + 1;
+      const height = Math.floor((FIELD.y + FIELD.h - offset.y) / spacing) + 1;
+      const point = (cell: Vec2): Vec2 => ({ x: offset.x + cell.x * spacing, y: offset.y + cell.y * spacing });
+      const target = {
+        x: Math.max(0, Math.min(width - 1, Math.round((goal.x - offset.x) / spacing))),
+        y: Math.max(0, Math.min(height - 1, Math.round((goal.y - offset.y) / spacing))),
+      };
+      const cells = findPath(width, height, () => false, start, target, 20000,
+        (from, to) => clear(point(from), point(to)), true);
+      if (cells?.length) {
+        const raw = [source.pos, ...cells.map(point)];
+        const last = cells[cells.length - 1];
+        if (last.x === target.x && last.y === target.y && clear(raw[raw.length - 1], goal)) raw.push(goal);
+        route = [source.pos];
+        let index = 0;
+        while (index < raw.length - 1) {
+          let next = raw.length - 1;
+          while (next > index + 1 && !clear(raw[index], raw[next])) next--;
+          route.push(raw[next]);
+          index = next;
+        }
+      }
+    }
+    const path = [source.pos];
+    let remaining = Math.max(0, source.moveRange());
+    let roots = false;
+    for (const next of route.slice(1)) {
+      const from = path[path.length - 1];
+      const capped = stepTowards(from, next, remaining);
+      const clamped = clampSegment(from, capped);
+      const free = this.nearestFreePosition(source, clamped.dest, from, !phased);
+      const dest = dist(from, free) <= remaining + 0.01 ? clampSegment(from, free).dest : from;
+      path.push(dest);
+      remaining = Math.max(0, remaining - dist(from, dest));
+      roots = clamped.roots;
+      if (remaining < 0.01 || dist(dest, next) > 0.01) break;
+    }
+    return { path, roots };
+  }
+
+  makeMoveItem(source: Mage, destination: Vec2): StackItem {
+    const planned = this.planMove(source, destination);
+    const item: StackItem = {
       id: this.nextId++,
       kind: 'move',
       source,
       label: 'Move',
       description: `${source.name} moves.`,
-      targetPoint: dest,
+      targetPoint: planned.path[planned.path.length - 1],
+      movePath: planned.path,
+      moveDestination: destination,
       isStillValid: () => source.alive,
       resolve: (game) => {
+        const move = game.planMove(source, destination);
+        const dest = move.path[move.path.length - 1];
+        item.movePath = move.path;
+        item.targetPoint = dest;
         const origin = source.pos;
-        const step = Math.hypot(dest.x - source.x, dest.y - source.y);
+        const step = move.path.slice(1).reduce((total, point, index) => total + dist(move.path[index], point), 0);
         source.x = dest.x;
         source.y = dest.y;
-        game.notifyMageRelocation(source, origin, dest, true);
+        game.notifyMageRelocation(source, origin, dest, true, move.path);
         source.movedThisTurn = true;
         source.distMovedThisTurn += step;
         game.updateAttachedScarabs();
         game.log(step < 1 ? `${source.name} stays in place.` : `${source.name} repositions.`);
-        game.burnPhaseWalkPath(source, origin, dest);
-        if (clamp.roots) {
+        for (let index = 1; index < move.path.length; index++) game.burnPhaseWalkPath(source, move.path[index - 1], move.path[index]);
+        if (move.roots) {
           const ttl = Math.max(1, game.barrierTtlAt({ x: dest.x, y: dest.y }) + 1);
           addOrExtendStatus(
             source.statuses,
@@ -8063,6 +8137,7 @@ export class GameState {
         }
       },
     };
+    return item;
   }
 
   /**
@@ -8141,6 +8216,10 @@ export class GameState {
         // carries its own damage type / class (e.g. the Specter's mental jab).
         const im = source.intrinsicMelee;
         if (im) {
+          if (source.enemyKind === 'crusadeBallista') {
+            fireCrusadeBallista(game, source, target);
+            return;
+          }
           const ictx = game.effectContext(source, target, null);
           const distance = dist(source.pos, target.pos);
           if (source.deathknightKind) {

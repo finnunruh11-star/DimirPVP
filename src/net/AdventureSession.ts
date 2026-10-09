@@ -15,6 +15,7 @@
 import type Phaser from 'phaser';
 import type { MatchConfig } from '../config/MatchConfig';
 import type { MageClass } from '../core/Classes';
+import { setHexLore } from '../core/hexcraft/lore';
 import { asItemIds } from '../core/Items';
 import {
   applyIntent,
@@ -277,6 +278,7 @@ export class AdventureSession {
     this.rev = rev;
     if (this.run) Object.assign(this.run, parsed);
     else this.run = parsed;
+    setHexLore(parsed.hexLore.runes);
     this.emit({ k: 'x-run' });
   }
 

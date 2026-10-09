@@ -95,7 +95,8 @@ export function hexOf(itemId: ItemId): HexRecipe | undefined {
 }
 
 export function partColor(part: HexPart): number {
-  return FACETS[part.effects.find((effect) => effect !== 'dot') ?? part.effects[0]].color;
+  const effect = part.effects.find((entry) => entry !== 'dot') ?? part.effects[0];
+  return effect ? FACETS[effect].color : 0xb8b0d0;
 }
 
 export const hexColor = (recipe: HexRecipe): number => partColor(recipe.parts[0]);
@@ -240,6 +241,10 @@ export function hexEcho(game: GameState, bearer: Mage, echo: HexEcho): void {
 function runPart(cast: Cast, index: number, origin: Origin): void {
   const { game, user, recipe } = cast;
   const part = recipe.parts[index];
+  if (part.effects.length === 0) {
+    game.log('The hex fizzles.');
+    return;
+  }
   if (isGround(part.target)) {
     layGround(cast, index, origin);
     return;

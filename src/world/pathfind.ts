@@ -22,8 +22,10 @@ export function findPath(
   from: Cell,
   to: Cell,
   maxNodes = 20000,
+  canStep?: (from: Cell, to: Cell) => boolean,
+  allowPartial = false,
 ): Cell[] | null {
-  return findWeightedPath(w, h, (x, y) => (blocked(x, y) ? Infinity : 1), from, to, maxNodes);
+  return findWeightedPath(w, h, (x, y) => (blocked(x, y) ? Infinity : 1), from, to, maxNodes, 1, canStep, allowPartial);
 }
 
 /**
@@ -39,6 +41,8 @@ export function findWeightedPath(
   to: Cell,
   maxNodes = 20000,
   minCost = 1,
+  canStep?: (from: Cell, to: Cell) => boolean,
+  allowPartial = false,
 ): Cell[] | null {
   const blocked = (x: number, y: number): boolean => !Number.isFinite(cost(x, y));
   if (to.x < 0 || to.y < 0 || to.x >= w || to.y >= h || blocked(to.x, to.y)) return null;
@@ -87,6 +91,13 @@ export function findWeightedPath(
   const start = idx(from.x, from.y);
   g[start] = 0;
   push(heur(from.x, from.y), start);
+  let closest = start;
+  let closestDistance = heur(from.x, from.y);
+  const reconstruct = (end: number): Cell[] => {
+    const path: Cell[] = [];
+    for (let at = end; at !== start; at = came[at]) path.push({ x: at % w, y: Math.floor(at / w) });
+    return path.reverse();
+  };
   let expanded = 0;
   while (heap.length && expanded++ < maxNodes) {
     const [, current] = pop();
@@ -94,16 +105,20 @@ export function findWeightedPath(
     closed[current] = 1;
     const cx = current % w;
     const cy = (current - cx) / w;
+    const remaining = heur(cx, cy);
+    if (remaining < closestDistance) {
+      closest = current;
+      closestDistance = remaining;
+    }
     if (cx === to.x && cy === to.y) {
-      const path: Cell[] = [];
-      for (let at = current; at !== start; at = came[at]) path.push({ x: at % w, y: Math.floor(at / w) });
-      return path.reverse();
+      return reconstruct(current);
     }
     for (const [dx, dy, step] of DIRS) {
       const nx = cx + dx;
       const ny = cy + dy;
       if (nx < 0 || ny < 0 || nx >= w || ny >= h || blocked(nx, ny)) continue;
       if (dx && dy && (blocked(cx + dx, cy) || blocked(cx, cy + dy))) continue;
+      if (canStep && !canStep({ x: cx, y: cy }, { x: nx, y: ny })) continue;
       const next = idx(nx, ny);
       const tentative = g[current] + step * cost(nx, ny);
       if (tentative >= g[next]) continue;
@@ -112,7 +127,7 @@ export function findWeightedPath(
       push(tentative + heur(nx, ny), next);
     }
   }
-  return null;
+  return allowPartial ? reconstruct(closest) : null;
 }
 
 /** Every cell reachable from `from`, as a flat mask. */

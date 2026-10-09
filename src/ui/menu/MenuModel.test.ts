@@ -295,7 +295,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
 
   ['offers only the retained Bloodmoon bosses in Raid', () => {
     equal(RAID_TARGETS.filter(isBloodmoonRaid), ['goblins', 'rock', 'crusade', 'baral', 'lillith'], 'Bloodmoon raid roster');
-    equal(raidTargetCopy('crusade').label, 'Crucade', 'Crucade short label');
+    equal(raidTargetCopy('crusade').label, 'The Crusading Crusaders', 'Crusaders label');
     const model = new MenuModel();
     model.setMode('raid');
     equal(model.setRaidBoss('crusade'), true, 'Select Crucade');

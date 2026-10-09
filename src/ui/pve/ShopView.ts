@@ -19,8 +19,10 @@ import {
   LONG_REST_HOURS,
   memberIn,
   moneyLabel,
+  partyHasCodex,
   partyOf,
   roomPrice,
+  runeOffers,
   sellOffers,
   shopStock,
 } from '../../pve/exploration/economy';
@@ -36,7 +38,7 @@ import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls'
 import { addCabinetBackdrop, addRecess, addSectionRule, MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
 import { CraftingView } from './CraftingView';
 
-type Tab = 'buy' | 'sell' | 'rest' | 'bounties' | 'forge';
+type Tab = 'buy' | 'sell' | 'rest' | 'bounties' | 'forge' | 'runes';
 
 const TAB_LABEL: Record<Tab, string> = {
   buy: 'Buy',
@@ -44,6 +46,7 @@ const TAB_LABEL: Record<Tab, string> = {
   rest: 'Rest',
   bounties: 'Bounties',
   forge: 'Forge',
+  runes: 'Runes',
 };
 
 const RARITY_NAME: Record<Rarity, string> = {
@@ -172,6 +175,7 @@ export class ShopView extends Phaser.GameObjects.Container {
       ...(shop.services.includes('rest') ? (['rest'] as const) : []),
       ...(shop.services.includes('bounties') ? (['bounties'] as const) : []),
       ...(shop.services.includes('forge') ? (['forge'] as const) : []),
+      ...(shop.services.includes('runes') ? (['runes'] as const) : []),
     ];
   }
 
@@ -314,6 +318,7 @@ export class ShopView extends Phaser.GameObjects.Container {
       case 'rest': this.renderRest(); break;
       case 'bounties': this.renderBounties(); break;
       case 'forge': this.renderForge(); break;
+      case 'runes': this.renderRunes(); break;
     }
     this.focus.add(close);
   }
@@ -581,6 +586,26 @@ export class ShopView extends Phaser.GameObjects.Container {
       });
     }
     this.rows(entries);
+  }
+
+  /** Today's runes, offered by feel rather than by name, to a party with a Hex Codex. */
+  private renderRunes(): void {
+    if (!partyHasCodex(this.run)) {
+      this.rows([{
+        label: 'No Hex Codex',
+        detail: 'The scribe sells runes only to a party that owns a Hex Codex. It is on the Buy tab.',
+        enabled: false,
+        run: () => undefined,
+      }]);
+      return;
+    }
+    this.rows(runeOffers(this.run, this.shop).map((offer) => ({
+      label: offer.sold ? `${offer.hint}  /  learned` : `${offer.hint}  /  ${moneyLabel(offer.price)}`,
+      detail: 'The scribe will not say more until it is paid for. Once learned, it lights up on the table with its name and what it becomes sealed.\n'
+        + 'Each rune costs five silver more than the last. New runes are offered each day.',
+      enabled: !offer.sold && this.run.gold >= offer.price,
+      run: () => void this.apply({ op: 'hex-rune', shop: this.shop.id, rune: offer.rune }),
+    })));
   }
 
   private renderForge(): void {

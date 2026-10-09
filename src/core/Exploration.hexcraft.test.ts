@@ -1,13 +1,16 @@
 import { RANGE_UNIT } from '../config/constants';
 import { activateHexzettel, hexUnits } from '../effects/hexzettel';
 import { capturePartySnapshot } from '../pve/exploration/party';
-import { buyItem, drawHex, partyOf, shopStock, withParty } from '../pve/exploration/economy';
+import { buyItem, drawHex, partyOf, runeOffers, shopStock, withParty } from '../pve/exploration/economy';
 import { applyIntent, parseIntent } from '../pve/exploration/intents';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
+import { parseRun } from '../pve/exploration/save';
 import { shopById } from '../pve/exploration/shops';
 import { itemIconKind } from '../visuals/itemIcons';
+import { Dice } from './Dice';
 import { GameState } from './GameState';
-import { hexItemId, parseHexItemId } from './hexcraft/item';
+import { hexItemId, isBoughtHex, parseHexItemId } from './hexcraft/item';
+import { randomHexSheet, RUNE_HINTS, setHexLore } from './hexcraft/lore';
 import {
   BRIDGE_BIT,
   couplingMode,
@@ -18,6 +21,7 @@ import {
   hexManaCost,
   hexPotency,
   readHex,
+  RUNE_LINES,
   RUNE_ORDER,
   RUNES,
   SEAL_BIT,
@@ -114,16 +118,18 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(strokeEdges(4, 4), null, 'nor is a dot');
   }],
 
-  ['reads a sheet: one target per part, at least one effect, and Accelerate or Slow modify when an effect follows', () => {
+  ['reads a sheet: one target per part, and Accelerate or Slow modify when an effect follows; whatever does not hold is skipped', () => {
     const area = readHex('plain', sheet('plain', 'aoe', 'dot', 'corrosive'));
     assert(area.recipe, `AoE + DoT + Corrosive reads: ${area.problem}`);
     equal(area.recipe.parts, [{ target: 'aoe', effects: ['dot', 'corrosive'], modifiers: [] }], 'an area of lingering corrosion');
     equal(area.recipe.lines, 4 + 2 + 3, 'one mana a line to draw');
     equal(hexManaCost(area.recipe), 5, 'and 5 to loose');
-    equal(readHex('plain', sheet('plain', 'aoe', 'single', 'heal')).problem, 'The hex has more than one target rune.', 'one target only');
-    equal(readHex('plain', sheet('plain', 'aoe', 'bigger')).problem, 'The hex needs an effect rune.', 'an effect is needed');
-    equal(readHex('plain', [1, 0, 0]).problem, 'Grid 1 holds no rune.', 'stray lines read as nothing');
-    equal(readHex('plain', sheet('plain', 'heal', 'allies', 'enemies')).problem, 'The hex: Only Allies and Only Enemies cancel each other out.', 'no side and both');
+    equal(readHex('plain', sheet('plain', 'aoe', 'single', 'heal')).recipe?.parts[0].target, 'aoe', 'only the first target counts');
+    equal(readHex('plain', sheet('plain', 'aoe', 'bigger')).recipe?.parts[0].effects, [], 'without an effect it fizzles');
+    const stray = readHex('plain', [1, 0, 0]);
+    equal([stray.problem, stray.recipe?.parts, stray.recipe?.lines], [null, [{ target: 'touch', effects: [], modifiers: [] }], 1], 'stray lines are skipped, and still paid');
+    equal(readHex('plain', [1, glyph('heal'), 0]).recipe?.parts[0].effects, ['heal'], 'a scribble beside a rune leaves the rune');
+    equal(readHex('plain', sheet('plain', 'heal', 'allies', 'enemies')).recipe?.parts[0].modifiers, [], 'Only Allies and Only Enemies cancel each other out');
     assert(readHex('plain', sheet('fine', 'heal')).problem, 'plain paper has three grids');
     equal(readHex('plain', sheet('plain', 'heal')).recipe?.parts[0].target, 'touch', 'without a target rune it touches one unit');
 
@@ -145,7 +151,8 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(readHex('plain', [glyph('single', 'seal'), glyph('heal'), 0]).recipe?.parts[0].target, 'self', 'Single Target sealed is Self');
     equal(readHex('plain', [glyph('bigger', 'seal'), glyph('heal'), 0]).recipe?.parts[0].modifiers, ['smaller'], 'Bigger sealed is Smaller');
     equal(readHex('plain', [glyph('environment', 'seal'), glyph('heal'), 0]).recipe?.parts[0].target, 'aura', 'Environment sealed is an Aura');
-    equal(readHex('plain', [SEAL_BIT, glyph('heal'), 0]).problem, 'Grid 1: the seal has no rune to turn.', 'a seal needs a rune');
+    const blank = readHex('plain', [SEAL_BIT, glyph('heal'), 0]);
+    equal([blank.grids[0].inverted, blank.recipe?.parts[0].effects], [false, ['heal']], 'a seal over no rune is skipped');
   }],
 
   ['a chain couples the next part to the effect before it', () => {
@@ -160,16 +167,17 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(couplingMode(reading.recipe.parts[0]), 'impact', 'it fires where the missile lands');
     equal(couplingMode(readHex('plain', [glyph('dot'), glyph('corrosive', 'bridge'), glyph('wind')]).recipe!.parts[0]), 'tick', 'a lingering carrier fires each tick');
     equal(couplingMode(readHex('fine', sheet('fine', 'environment', 'dot', glyph('corrosive', 'bridge'), 'wind')).recipe!.parts[0]), 'ground', 'ground fires each bite');
-    equal(readHex('plain', [glyph('single'), glyph('heal'), glyph('missile', 'bridge')]).problem, 'Grid 3: a coupling needs a rune on both sides.', 'a chain into nothing');
-    equal(readHex('plain', [glyph('single', 'bridge'), glyph('heal'), 0]).problem, 'Grid 1: only an effect rune can carry a coupling.', 'only effects carry');
-    equal(readHex('plain', [glyph('missile', 'bridge'), glyph('aoe'), 0]).problem, 'Coupled part 1 needs an effect rune.', 'each part needs an effect');
+    const dangling = readHex('plain', [glyph('single'), glyph('heal'), glyph('missile', 'bridge')]);
+    equal([dangling.recipe?.parts.length, dangling.grids[2].coupled], [1, false], 'a chain into nothing is skipped');
+    equal(readHex('plain', [glyph('single', 'bridge'), glyph('heal'), 0]).recipe?.parts, [{ target: 'single', effects: ['heal'], modifiers: [] }], 'only effects carry');
+    equal(readHex('plain', [glyph('missile', 'bridge'), glyph('aoe'), 0]).recipe?.parts, [{ target: 'aoe', effects: ['missile'], modifiers: [] }], 'a chain into no effect is skipped');
     const targeted = readHex('fine', sheet('fine', 'single', glyph('missile', 'bridge'), 'aoe', 'wind')).recipe;
     equal(targeted?.parts.map((part) => part.target), ['single', 'aoe'], 'each part takes its own target');
     const quick = readHex('plain', [glyph('accelerate'), glyph('missile', 'bridge'), glyph('wind')]).recipe!;
     equal([quick.parts[0].modifiers, hexAction(quick)], [['accelerate'], 'bonus'], 'a pace rune modifies only its own part');
   }],
 
-  ['a Hexzettel is its own id, seals and chains included, and only a sound one reads', () => {
+  ['a Hexzettel is its own id, seals and chains included, and any sheet with lines reads', () => {
     const id = hex('aoe', 'dot', 'corrosive');
     assert(isItemId(id), 'a drawn id is an item id');
     const def = getItem(id);
@@ -184,19 +192,20 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     for (const bad of [
       'hex:p:1',
       'hex:x:1.2.3',
+      'hex:p:0.0.0',
       `hex:p:${RUNES.heal.masks[0].toString(36)}.0`,
       `hex:p:0${RUNES.heal.masks[0].toString(36)}.0.0`,
       'hex:p:zzzzz.0.0',
-      'hex:p:1.0.0',
       `hex:p:${(FULL_GRID + 1).toString(36)}.0.0`,
-      `hex:p:${glyph('heal', 'bridge').toString(36)}.0.0`,
     ]) assert(!isItemId(bad), `${bad} is no item`);
-    equal(asItemIds([id, 'hex:p:1.0.0']), [id], 'only the sound id passes');
+    assert(isItemId('hex:p:1.0.0'), 'a scribble is a sheet too');
+    assert(isItemId(`hex:p:${glyph('heal', 'bridge').toString(36)}.0.0`), 'and so is a chain into nothing');
+    equal(asItemIds([id, 'hex:p:0.0.0']), [id], 'only the sound id passes');
   }],
 
-  ['the guild sells paper for a silver and fine paper for a gold', () => {
+  ['the scriptorium sells paper for a silver and fine paper for a gold; the guild no longer does', () => {
     const run = scribeRun();
-    const guild = shopById('capitol-guild')!;
+    const guild = shopById('capitol-scriptorium')!;
     const stock = shopStock(run, guild);
     const price = (id: ItemId): number | undefined => stock.find((slot) => slot.id === id)?.price;
     equal([price('paper'), price('finePaper')], [0.1, 1], 'guild prices');
@@ -211,7 +220,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const grids = sheet('plain', 'aoe', 'dot', 'corrosive');
     equal(drawHex(run, 'paper', grids, 'objects').message, 'Only a Hexcraft mage can draw a hex.', 'the smith cannot');
     equal(drawHex(run, 'finePaper', sheet('fine', 'heal'), 'hexcraft').message, 'No Fine Paper to draw on.', 'only on paper carried');
-    equal(drawHex(run, 'paper', [1, 0, 0], 'hexcraft').message, 'Grid 1 holds no rune.', 'only a readable hex');
+    equal(drawHex(run, 'paper', [0, 0, 0], 'hexcraft').message, 'Nothing is drawn.', 'only a sheet with lines');
     const result = drawHex(run, 'paper', grids, 'hexcraft');
     assert(result.ok && result.item, `drawn: ${result.message}`);
     const scribe = partyOf(run)[0];
@@ -439,6 +448,92 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     hexer.mana = 1;
     assert(!activateHexzettel(game, hexer, id, { target: foe, point: null }), 'not enough mana');
     assert(hexer.utility.includes(id) && foe.hp === 300, 'nothing happens');
+  }],
+
+  ['a sheet with no effect fizzles, and its mana is spent', () => {
+    const hexer = unit('Hexer', 1, 200);
+    const foe = unit('Foe', 2, 300);
+    const game = new GameState([hexer, foe], 15);
+    const scribble = hexItemId('plain', [1, 0, 0]);
+    loose(game, hexer, scribble, foe);
+    equal([foe.hp, hexer.mana, hexer.utility.includes(scribble)], [300, 19, false], 'nothing lands; one mana and the sheet spent');
+  }],
+
+  ['a sheet is named and described only once the party knows every rune on it', () => {
+    const id = hex('single', 'missile');
+    try {
+      setHexLore([]);
+      assert(/^Hexzettel [A-Z]{3}$/.test(getItem(id).name), `unread: ${getItem(id).name}`);
+      assert(!getItem(id).blurb.includes('dart'), 'and undescribed');
+      equal(getItem(id).name, getItem(id).name, 'the same sheet keeps its mark');
+      assert(getItem(hex('single', 'heal')).name !== getItem(id).name, 'another sheet bears another mark');
+      setHexLore(['single']);
+      assert(getItem(id).name.startsWith('Hexzettel '), 'one rune of two is not enough');
+      setHexLore(['single', 'missile']);
+      equal(getItem(id).name, 'Hexzettel: Magic Missile (Single Target)', 'named once both are known');
+      assert(getItem(id).blurb.includes('dart'), 'and described');
+      assert(getItem(hexItemId('plain', [glyph('single'), glyph('missile'), 1])).name.startsWith('Hexzettel '), 'stray lines keep it unread');
+    } finally {
+      setHexLore(null);
+    }
+  }],
+
+  ['a scriptorium sells ready-drawn sheets: plain, one to three runes, said what they do, a new one after each sale', () => {
+    for (let seed = 1; seed <= 300; seed++) {
+      const grids = randomHexSheet(new Dice(seed));
+      const runes = grids.filter((mask) => mask & RUNE_LINES).length;
+      assert(grids.length === 3 && runes >= 1 && runes <= 3, `seed ${seed}: three grids, one to three runes`);
+      assert(readHex('plain', grids).recipe!.parts[0].effects.length > 0, `seed ${seed}: it does something`);
+    }
+    const run = scribeRun();
+    run.gold = 10;
+    const shop = shopById('kerusai-scriptorium')!;
+    const sheet = () => shopStock(run, shop).find((slot) => slot.key.startsWith('hexsheet:'))!;
+    const first = sheet();
+    try {
+      setHexLore([]);
+      equal([first.price, parseHexItemId(first.id)?.paper, isBoughtHex(first.id)], [2, 'plain', true], 'two gold, plain paper, bought');
+      assert(getItem(first.id).name.startsWith("Scribe's Hexzettel "), `unnamed: ${getItem(first.id).name}`);
+      assert(getItem(first.id).blurb.includes('the scribe told what it does'), 'but described');
+      assert(buyItem(run, shop.id, first.key).ok, 'bought');
+      equal(run.gold, 8, 'for two gold');
+      assert(partyOf(run)[0].utility.includes(first.id), 'it goes on the belt, ready to loose');
+      assert(sheet().key !== first.key, 'another is drawn');
+      equal(buyItem(run, shop.id, first.key).message, 'Not in stock.', 'the sold one is gone');
+      assert(!shopStock(run, shopById('capitol-guild')!).some((slot) => slot.id === 'paper'), 'the guild sells no paper');
+    } finally {
+      setHexLore(null);
+    }
+  }],
+
+  ['with a Hex Codex a scriptorium offers three runes a day by feel, each five silver dearer', () => {
+    const run = scribeRun();
+    run.gold = 10;
+    const shop = shopById('capitol-scriptorium')!;
+    const learn = (rune: RuneId) => applyIntent(run, 'hexcraft', parseIntent({ op: 'hex-rune', shop: shop.id, rune })!);
+    try {
+      const offers = runeOffers(run, shop);
+      equal(offers.length, 3, 'three runes');
+      assert(offers.every((offer) => offer.hint === RUNE_HINTS[offer.rune] && !offer.hint.includes(FACETS[offer.rune].label)), 'by feel, not by name');
+      equal(learn(offers[0].rune).message, 'The scribe sells runes only to a party with a Hex Codex.', 'the codex comes first');
+      const codex = shopStock(run, shop).find((slot) => slot.id === 'hexCodex')!;
+      assert(buyItem(run, shop.id, codex.key).ok, 'the codex bought');
+      equal(run.gold, 8.5, 'for one and a half gold');
+      assert(learn(offers[0].rune).ok, 'a rune learned');
+      equal([run.hexLore.runes, run.gold], [[offers[0].rune], 8], 'for five silver');
+      const after = runeOffers(run, shop);
+      equal([after.map((offer) => offer.rune), after.map((offer) => offer.sold)], [offers.map((offer) => offer.rune), [true, false, false]], "the day's offers stay put");
+      assert(learn(offers[1].rune).ok, 'a second');
+      equal(run.gold, 7, 'for ten silver');
+      equal(learn(offers[0].rune).message, 'Already learned.', 'once');
+      equal(learn(RUNE_ORDER.find((rune) => !offers.some((offer) => offer.rune === rune))!).message, 'That rune is not on offer today.', 'only what is offered');
+      equal(parseIntent({ op: 'hex-rune', shop: shop.id, rune: 'nonsense' }), null, 'only runes there are');
+      run.day += 1;
+      assert(runeOffers(run, shop).every((offer) => !offer.sold && !run.hexLore.runes.includes(offer.rune)), 'a new day, runes not yet known');
+      equal(parseRun(JSON.stringify(run))?.hexLore, run.hexLore, 'the lore is saved');
+    } finally {
+      setHexLore(null);
+    }
   }],
 ];
 

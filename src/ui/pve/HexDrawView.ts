@@ -1,24 +1,28 @@
 // Drawing a hex. A Hexcraft mage lays a sheet on a scribing table under a slowly
 // turning magic circle: a row of 3x3 peg grids, each with a seal (an eye) above
-// it. Dragging peg to peg draws lines, and each grid's lines read as a rune.
-// Striking a seal turns its rune inside out; a chain from one grid into the next
-// couples them, so the rest of the hex rides on the effect before the chain.
-// Scribing spends 1 mana a stroke and turns the sheet into a Hexzettel.
+// it. Dragging peg to peg draws lines. Nothing tells the hand what its lines
+// mean: only runes the party has learned light up, name themselves and can be
+// traced from the grimoire. Ready-drawn sheets bought at a scriptorium can be
+// studied here beside your own.
+// Scribing spends 1 mana a stroke and turns the sheet into a Hexzettel, whatever is on it.
 
 import Phaser from 'phaser';
 import { playSound } from '../../audio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
+import { sheetKnown, unreadHexName } from '../../core/hexcraft/lore';
+import { isBoughtHex, parseHexItemId } from '../../core/hexcraft/item';
+import { getItem, type ItemId } from '../../core/Items';
 import {
   BRIDGE_BIT,
   BRIDGE_FROM,
   BRIDGE_TO,
   couplingLine,
   couplingMode,
-  ECHO_LIMIT,
   edgeIndex,
   FACETS,
   HEX_EDGES,
   hexAction,
+  hexLines,
   hexManaCost,
   hexName,
   maskEdges,
@@ -48,7 +52,7 @@ import {
 import type { Mage } from '../../core/Mage';
 import type { Vec2 } from '../../core/utils';
 import { SceneInput } from '../../engine/SceneInput';
-import { memberIn } from '../../pve/exploration/economy';
+import { memberIn, partyOf } from '../../pve/exploration/economy';
 import type { ExplorationActions } from '../../pve/exploration/intents';
 import type { ExplorationRun } from '../../pve/exploration/run';
 import { ensureGlowTextures, GLOW } from '../../visuals/glowTextures';
@@ -92,7 +96,9 @@ interface Peg {
   peg: number;
 }
 
-type CodexSlot = RuneId | 'legend';
+/** A known rune in the grimoire, or a bought sheet the party carries (`sheet:<index>`). */
+type CodexSlot = RuneId | `sheet:${number}`;
+type CodexTab = 'runes' | 'sheets';
 type TextStyle = Phaser.Types.GameObjects.Text.TextStyle;
 type ParticleEmitter = Phaser.GameObjects.Particles.ParticleEmitter;
 
@@ -139,7 +145,10 @@ const GRIDS_TOP = 176;
 const SHEET = { x: 36, y: 112, w: 828, h: 282 };
 const WEAVE = { x: 36, y: 406, w: 828, h: 196 };
 const CODEX = { x: 884, y: 112, w: 360, h: 490 };
-const CELL = { w: 172, h: 36 };
+const CELL = { w: 172, h: 29 };
+/** Where the grimoire's lists begin. */
+const LIST_TOP = CODEX.y + 72;
+const SHEET_ROW = 34;
 const TAU = Math.PI * 2;
 const ADD = Phaser.BlendModes.ADD;
 const CIRCLE_OUTER = 'hexdraw-circle-outer';
@@ -156,7 +165,7 @@ const PLATE = 0x0b0916;
 const RULE = 0x3a2f5c;
 const TXT = { gold: '#e8c872', bone: '#ece3cc', ash: '#9d94bb', ember: '#ff8a9c', dim: '#5f587a' } as const;
 
-const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
 const KIND_LABEL: Record<RuneKind, string> = { effect: 'EFFECT', target: 'TARGET', modifier: 'MODIFIER' };
 const ACTION_LABEL: Record<HexAction, string> = { main: 'MAIN ACTION', bonus: 'BONUS ACTION', full: 'MAIN + BONUS ACTION' };
 const LINK_WORD: Record<CouplingMode, string> = { impact: 'ON IMPACT', tick: 'EACH TICK', ground: 'FROM THE GROUND' };
@@ -179,16 +188,10 @@ const BURST_SOUND: Record<BurstKind, Parameters<typeof playSound>[0]> = {
   glimmer: 'ui.confirm',
 };
 
-const HINT = 'Drag from peg to peg, or click two pegs, to draw; each stroke costs 1 mana. '
-  + 'The eye above a grid inverts its rune; a chain between grids couples them. Z undoes, Esc leaves.';
-const PRIMER = 'Draw a rune on each grid: effects say what happens, one target rune says where, modifiers say how much. '
-  + 'Strike the eye above a grid down to its top peg to turn its rune inside out. '
-  + "Chain a grid's right-hand pegs to the next grid's left-hand pegs to couple them: the effect before the chain carries the rest of the hex.";
-const LEGEND = "The eye above each grid is its seal. A stroke from the seal down to the top peg turns the grid's rune inside out: "
-  + 'Wind becomes Cyclone, Healing becomes Blight, Over Time becomes Burst, Single Target becomes Self, Bigger becomes Smaller.\n'
-  + "A chain from a grid's right-hand pegs into the next grid's left-hand pegs couples them. The effect rune before the chain carries the next part: "
-  + `it fires where the carrier strikes (${ECHO_LIMIT} times at most), each time a lingering carrier ticks, or each time coupled ground bites. `
-  + 'Each part takes its own target rune; without one it touches the unit struck. Seal and chain cost 1 mana each to draw.';
+const HINT = 'Drag from peg to peg, or click two pegs, to draw; each stroke costs 1 mana. Z undoes, Esc leaves.';
+const BLANK = 'Draw lines between the pegs. Which lines make runes, and what the runes do, is yours to find out.';
+const UNREAD = 'Some lines on this sheet are strange to you. Scribe it and loose it in a fight to see what it does, '
+  + 'study sheets bought at a scriptorium, or buy runes there.';
 
 const css = (color: number): string => `#${color.toString(16).padStart(6, '0')}`;
 
@@ -210,7 +213,10 @@ function dotted(g: Phaser.GameObjects.Graphics, a: Vec2, b: Vec2, color: number,
   for (let i = 1; i < count; i++) g.fillCircle(a.x + ((b.x - a.x) * i) / count, a.y + ((b.y - a.y) * i) / count, 1.3);
 }
 
-const partTone = (part: HexPart): number => FACETS[part.carrier ?? part.effects[0]].color;
+const partTone = (part: HexPart): number => {
+  const facet = part.carrier ?? part.effects[0];
+  return facet ? FACETS[facet].color : PALE;
+};
 const hexTone = (recipe: HexRecipe): number => partTone(recipe.parts[0]);
 const shortName = (recipe: HexRecipe): string => hexName(recipe).replace(/^(Fine )?Hexzettel: /, '');
 
@@ -242,6 +248,9 @@ export class HexDrawView extends Phaser.GameObjects.Container {
   private lastBridges: boolean[] = [];
   /** The grimoire entry under the pointer: the weave panel reads it out. */
   private hover: CodexSlot | null = null;
+  private tab: CodexTab = 'runes';
+  /** Bought sheets the Sheets tab lists, in its order. */
+  private boughtList: ItemId[] = [];
   /** A rune picked in the grimoire, ghosted on the grid to trace. */
   private guide: RuneId | null = null;
   private summaryKey = '';
@@ -342,6 +351,20 @@ export class HexDrawView extends Phaser.GameObjects.Container {
 
   private reading(): HexReading {
     return readHex(this.paper, this.grids);
+  }
+
+  private known(): ReadonlySet<RuneId> {
+    return new Set(this.run.hexLore.runes);
+  }
+
+  /** What a grid means, if the party knows its rune; an unknown rune shows no more than stray lines do. */
+  private shown(grid: GridReading | undefined, known = this.known()): Facet | null {
+    return grid?.rune && known.has(grid.rune) ? grid.facet : null;
+  }
+
+  /** Every rune on the sheet is known: the table may say what the sheet does. */
+  private sheetIsKnown(grids: readonly number[] = this.grids): boolean {
+    return sheetKnown(grids, this.known());
   }
 
   private gridOrigin(index: number): Vec2 {
@@ -509,6 +532,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     if (!mage.alive) return `${mage.name} has fallen.`;
     if (this.sheets(this.paper) === 0) return `No ${PAPERS[this.paper].name} to draw on.`;
     if (!reading.recipe) return reading.problem;
+    if (reading.recipe.lines === 0) return 'Nothing is drawn yet.';
     if (mage.mana < reading.recipe.lines) return `Drawing it takes ${reading.recipe.lines} mana; ${mage.name} has ${mage.mana}.`;
     return null;
   }
@@ -549,6 +573,14 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       this.working = false;
       this.render();
     });
+  }
+
+  private pickTab(tab: CodexTab): void {
+    if (tab === this.tab || this.working) return;
+    this.tab = tab;
+    this.hover = null;
+    playSound('ui.click');
+    this.render();
   }
 
   // ---------------------------------------------------------------------------
@@ -600,7 +632,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
   }
 
   /** A magic circle drawn once in white, to be tinted and turned. */
-  private circleTexture(key: string, radius: number, points: number, step: number, glyphs: boolean): string {
+  private circleTexture(key: string, radius: number, points: number, step: number): string {
     const { scene } = this;
     if (scene.textures.exists(key)) return key;
     const size = Math.ceil(radius * 2 + 12);
@@ -634,19 +666,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       g.fillStyle(white, 1).fillCircle(p.x, p.y, 3);
       g.lineStyle(1, white, 0.8).strokeCircle(p.x, p.y, 8);
     }
-    if (glyphs) {
-      // Every rune of the craft, written around the band.
-      const band = (radius - 16 + inner) / 2;
-      RUNE_ORDER.forEach((id, i) => {
-        const a = (i / RUNE_ORDER.length) * TAU;
-        g.lineStyle(1.4, white, 0.85);
-        for (const [p, q] of glyphSegments(RUNES[id].masks[0], c + Math.cos(a) * band, c + Math.sin(a) * band, 8, a + Math.PI / 2)) {
-          g.lineBetween(p.x, p.y, q.x, q.y);
-        }
-      });
-    } else {
-      ring(inner * 0.45, 1, 0.7);
-    }
+    ring(inner * 0.45, 1, 0.7);
     g.generateTexture(key, size, size);
     g.destroy();
     scene.textures.get(key).setFilter(Phaser.Textures.FilterMode.LINEAR);
@@ -676,7 +696,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     this.renderCodex();
     this.renderBar();
     const reading = this.reading();
-    this.lastFacets = reading.grids.map((grid) => grid.facet);
+    this.lastFacets = reading.grids.map((grid) => this.shown(grid));
     this.lastBridges = this.grids.map((mask) => !!(mask & BRIDGE_BIT));
     this.paintSheet();
   }
@@ -692,9 +712,9 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     nebula(1064, 360, 6.5, 0x10284a, 0.6);
     nebula(220, 650, 5, 0x3a1030, 0.4);
     const centre = { x: SHEET.x + SHEET.w / 2, y: SHEET.y + SHEET.h / 2 + 34 };
-    const outer = scene.add.image(centre.x, centre.y, this.circleTexture(CIRCLE_OUTER, 270, 8, 3, true))
+    const outer = scene.add.image(centre.x, centre.y, this.circleTexture(CIRCLE_OUTER, 270, 8, 3))
       .setTint(VIOLET).setAlpha(0.2).setBlendMode(ADD);
-    const inner = scene.add.image(centre.x, centre.y, this.circleTexture(CIRCLE_INNER, 150, 6, 2, false))
+    const inner = scene.add.image(centre.x, centre.y, this.circleTexture(CIRCLE_INNER, 150, 6, 2))
       .setTint(GOLD).setAlpha(0.12).setBlendMode(ADD);
     this.add([outer, inner]);
     if (!this.reduced) {
@@ -734,7 +754,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
         enabled: this.sheets(kind) > 0 || kind === this.paper,
       });
     });
-    this.text(886, 72, `${PAPERS.plain.name} holds ${PAPERS.plain.grids} grids, ${PAPERS.fine.name} ${PAPERS.fine.grids}: room for longer chains.`, 11, TXT.ash, {
+    this.text(886, 72, `${PAPERS.plain.name} holds ${PAPERS.plain.grids} grids, ${PAPERS.fine.name} ${PAPERS.fine.grids}.`, 11, TXT.ash, {
       fontFamily: MENU_FONT.body,
     });
   }
@@ -794,7 +814,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     if (!this.reduced) this.loop({ targets: this.penHalo, scale: 0.46, alpha: 0.45, duration: 620, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
   }
 
-  /** Every rune, its glyph and what it becomes sealed, grouped as effects, targets and modifiers. */
+  /** The party's lore: the runes it knows, and the ready-drawn sheets it carries to study. */
   private renderCodex(): void {
     const { scene } = this;
     const g = scene.add.graphics();
@@ -804,57 +824,137 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     this.add([g, glow, glyphs]);
     this.text(CODEX.x + CODEX.w / 2, CODEX.y + 9, 'GRIMOIRE', 17, TXT.gold, { fontFamily: MENU_FONT.display, fontStyle: 'bold' })
       .setOrigin(0.5, 0).setShadow(0, 0, css(VIOLET), 10, false, true);
-    this.text(CODEX.x + CODEX.w / 2, CODEX.y + 31, 'hover to read  \u00b7  click to trace  \u00b7  below each: what it becomes sealed', 10, TXT.ash).setOrigin(0.5, 0);
-    const of = (kind: RuneKind): RuneId[] => RUNE_ORDER.filter((id) => FACETS[id].kind === kind);
-    const slots: CodexSlot[] = [...of('effect'), ...of('target'), 'legend', ...of('modifier')];
-    slots.forEach((slot, index) => {
-      const row = Math.floor(index / 2);
+    const known = this.known();
+    this.boughtList = this.boughtSheets();
+    const half = (CODEX.w - 24) / 2;
+    this.chip(CODEX.x + 8, CODEX.y + 36, half, 28, `Runes  ${known.size}`, () => this.pickTab('runes'), {
+      tone: this.tab === 'runes' ? 'primary' : 'normal',
+    });
+    this.chip(CODEX.x + 16 + half, CODEX.y + 36, half, 28, `Sheets  ${this.boughtList.length}`, () => this.pickTab('sheets'), {
+      tone: this.tab === 'sheets' ? 'primary' : 'normal',
+    });
+    if (this.tab === 'runes') this.renderRunes(g, glow, glyphs, known);
+    else this.renderSheets(g, glow, glyphs);
+  }
+
+  /** Ready-drawn sheets anyone in the party carries, each once. */
+  private boughtSheets(): ItemId[] {
+    return [...new Set(partyOf(this.run).flatMap((mage) => [...mage.utility, ...mage.bag]).filter(isBoughtHex))];
+  }
+
+  /** Hovering an entry reads it out in the weave panel. */
+  private hoverZone(slot: CodexSlot, x: number, y: number, width: number, height: number, onClick?: () => void): void {
+    const zone = this.scene.add.zone(x, y, width, height).setOrigin(0).setInteractive({ useHandCursor: !!onClick });
+    zone.on('pointerover', () => {
+      this.hover = slot;
+      this.paintSummary(this.reading());
+    });
+    zone.on('pointerout', () => {
+      if (this.hover !== slot) return;
+      this.hover = null;
+      this.paintSummary(this.reading());
+    });
+    if (onClick) zone.on('pointerdown', onClick);
+    this.add(zone);
+  }
+
+  /** Each known rune, its glyph and what it becomes sealed. */
+  private renderRunes(g: Phaser.GameObjects.Graphics, glow: Phaser.GameObjects.Graphics, glyphs: Phaser.GameObjects.Graphics, known: ReadonlySet<RuneId>): void {
+    const runes = RUNE_ORDER.filter((id) => known.has(id));
+    if (runes.length === 0) {
+      this.text(CODEX.x + CODEX.w / 2, LIST_TOP + 90, 'No rune is known yet.\n\nDraw, scribe and loose sheets to find out what your lines do, study sheets bought at a scriptorium, or buy runes there with a Hex Codex.', 12, TXT.ash, {
+        fontFamily: MENU_FONT.body,
+        align: 'center',
+        wordWrap: { width: CODEX.w - 60 },
+        lineSpacing: 3,
+      }).setOrigin(0.5, 0);
+      return;
+    }
+    this.text(CODEX.x + CODEX.w / 2, CODEX.y + CODEX.h - 24, 'hover to read  \u00b7  click to trace', 10, TXT.ash).setOrigin(0.5, 0);
+    runes.forEach((rune, index) => {
       const x = CODEX.x + 8 + (index % 2) * CELL.w;
-      const y = CODEX.y + 48 + row * CELL.h;
-      const def = slot === 'legend' ? null : FACETS[slot];
-      const color = def?.color ?? GOLD;
-      if (row >= 6) g.fillStyle(row >= 9 ? 0xc0a0f0 : 0x7ec8b4, 0.06).fillRect(x, y, CELL.w - 4, CELL.h - 2);
-      g.fillStyle(0x07060d, 0.95).fillRect(x + 2, y + 1, 32, 32);
-      g.lineStyle(1, color, 0.45).strokeRect(x + 2.5, y + 1.5, 31, 31);
-      const cx = x + 18;
-      const cy = y + 17;
-      if (slot === 'legend') {
-        glyphs.fillStyle(0x6a5a96, 0.9);
-        for (let peg = 0; peg < 9; peg++) glyphs.fillCircle(cx + ((peg % 3) - 1) * 8, cy + 2 + (Math.floor(peg / 3) - 1) * 8, 1.2);
-        glow.lineStyle(4, EMBER, 0.3).lineBetween(cx, cy - 13, cx, cy - 6);
-        glyphs.lineStyle(1.5, EMBER, 1).lineBetween(cx, cy - 13, cx, cy - 6);
-        glyphs.fillStyle(EMBER, 1).fillCircle(cx, cy - 13, 2);
-        glow.lineStyle(4, GOLD, 0.3).lineBetween(cx + 8, cy + 2, cx + 15, cy + 2);
-        glyphs.lineStyle(1.5, GOLD, 1).lineBetween(cx + 8, cy + 2, cx + 15, cy + 2);
-      } else {
-        for (const [a, b] of glyphSegments(RUNES[slot].masks[0], cx, cy, 10)) {
-          glow.lineStyle(5, color, 0.22).lineBetween(a.x, a.y, b.x, b.y);
-          glyphs.lineStyle(1.6, mix(color, 0xffffff, 0.3), 1).lineBetween(a.x, a.y, b.x, b.y);
-        }
-        glyphs.fillStyle(0x6a5a96, 0.9);
-        for (let peg = 0; peg < 9; peg++) glyphs.fillCircle(cx + ((peg % 3) - 1) * 10, cy + (Math.floor(peg / 3) - 1) * 10, 1.2);
+      const y = LIST_TOP + Math.floor(index / 2) * CELL.h;
+      const def = FACETS[rune];
+      g.fillStyle(0x07060d, 0.95).fillRect(x + 2, y + 1, 26, 26);
+      g.lineStyle(1, def.color, 0.45).strokeRect(x + 2.5, y + 1.5, 25, 25);
+      const cx = x + 15;
+      const cy = y + 14;
+      for (const [a, b] of glyphSegments(RUNES[rune].masks[0], cx, cy, 8)) {
+        glow.lineStyle(5, def.color, 0.22).lineBetween(a.x, a.y, b.x, b.y);
+        glyphs.lineStyle(1.6, mix(def.color, 0xffffff, 0.3), 1).lineBetween(a.x, a.y, b.x, b.y);
       }
-      const label = def ? def.label : 'Seal & Chain';
-      const inverse = slot === 'legend' ? 'invert  \u00b7  couple' : `\u21ba ${FACETS[RUNES[slot].inverse].label}`;
-      this.text(x + 40, y + 2, label, 12, css(color), { fontStyle: 'bold' });
-      this.text(x + 40, y + 18, inverse, 10, slot === 'legend' ? TXT.ash : TXT.ember);
-      const zone = scene.add.zone(x, y, CELL.w - 4, CELL.h - 2).setOrigin(0).setInteractive({ useHandCursor: slot !== 'legend' });
-      zone.on('pointerover', () => {
-        this.hover = slot;
-        this.paintSummary(this.reading());
-      });
-      zone.on('pointerout', () => {
-        if (this.hover !== slot) return;
-        this.hover = null;
-        this.paintSummary(this.reading());
-      });
-      zone.on('pointerdown', () => {
-        if (slot === 'legend' || this.working) return;
-        this.guide = this.guide === slot ? null : slot;
+      glyphs.fillStyle(0x6a5a96, 0.9);
+      for (let peg = 0; peg < 9; peg++) glyphs.fillCircle(cx + ((peg % 3) - 1) * 8, cy + (Math.floor(peg / 3) - 1) * 8, 1.2);
+      this.text(x + 34, y + 1, def.label, 12, css(def.color), { fontStyle: 'bold' });
+      this.text(x + 34, y + 15, `\u21ba ${FACETS[RUNES[rune].inverse].label}`, 10, TXT.ember);
+      this.hoverZone(rune, x, y, CELL.w - 4, CELL.h - 2, () => {
+        if (this.working) return;
+        this.guide = this.guide === rune ? null : rune;
         playSound('ui.click');
         this.paintSheet();
       });
-      this.add(zone);
+    });
+  }
+
+  /** Bought sheets the party carries: their lines here, what the scribe said of them on hover. */
+  private renderSheets(g: Phaser.GameObjects.Graphics, glow: Phaser.GameObjects.Graphics, glyphs: Phaser.GameObjects.Graphics): void {
+    const x = CODEX.x + 8;
+    const width = CODEX.w - 16;
+    if (this.boughtList.length === 0) {
+      this.text(CODEX.x + CODEX.w / 2, LIST_TOP + 90, 'No bought sheet is carried.\n\nA scriptorium sells ready-drawn Hexzettel. Lay one beside your own lines to tell what its runes do.', 12, TXT.ash, {
+        fontFamily: MENU_FONT.body,
+        align: 'center',
+        wordWrap: { width: CODEX.w - 60 },
+        lineSpacing: 3,
+      }).setOrigin(0.5, 0);
+      return;
+    }
+    const rows = Math.floor((CODEX.y + CODEX.h - 30 - LIST_TOP) / SHEET_ROW);
+    this.boughtList.slice(0, rows).forEach((id, index) => {
+      const recipe = parseHexItemId(id);
+      if (!recipe) return;
+      const y = LIST_TOP + index * SHEET_ROW;
+      g.fillStyle(0x07060d, 0.7).fillRect(x, y, width, SHEET_ROW - 3);
+      g.lineStyle(1, GOLD_DIM, 0.8).strokeRect(x + 0.5, y + 0.5, width - 1, SHEET_ROW - 4);
+      this.sheetGlyphs(glow, glyphs, recipe.paper, recipe.grids, x + 18, y + 17, 4, 22);
+      this.text(x + 84, y + 9, getItem(id).name, 11, TXT.bone, { fixedWidth: width - 92 });
+      this.hoverZone(`sheet:${index}`, x, y, width, SHEET_ROW - 3);
+    });
+    const more = this.boughtList.length - rows;
+    if (more > 0) this.text(CODEX.x + CODEX.w / 2, CODEX.y + CODEX.h - 24, `and ${more} more`, 10, TXT.ash).setOrigin(0.5, 0);
+  }
+
+  /** A sheet's grids in a row, the first centred at (x, y), pegs `gap` apart and grids `step` apart: lines, struck seals and chains. Only known runes show their colour. */
+  private sheetGlyphs(
+    glow: Phaser.GameObjects.Graphics,
+    glyphs: Phaser.GameObjects.Graphics,
+    paper: PaperKind,
+    grids: readonly number[],
+    x: number,
+    y: number,
+    gap: number,
+    step: number,
+  ): void {
+    const reading = readHex(paper, grids);
+    const known = this.known();
+    grids.forEach((mask, index) => {
+      const cx = x + index * step;
+      const facet = this.shown(reading.grids[index], known);
+      const color = facet ? FACETS[facet].color : PALE;
+      glyphs.fillStyle(0x6a5a96, 0.9);
+      for (let peg = 0; peg < 9; peg++) glyphs.fillCircle(cx + ((peg % 3) - 1) * gap, y + (Math.floor(peg / 3) - 1) * gap, 1.1);
+      for (const [a, b] of glyphSegments(mask, cx, y, gap)) {
+        glow.lineStyle(4, color, 0.25).lineBetween(a.x, a.y, b.x, b.y);
+        glyphs.lineStyle(1.5, mix(color, 0xffffff, 0.3), 1).lineBetween(a.x, a.y, b.x, b.y);
+      }
+      if (mask & SEAL_BIT) {
+        glyphs.lineStyle(1.2, EMBER, 1).lineBetween(cx, y - gap, cx, y - gap * 1.9);
+        glyphs.fillStyle(EMBER, 1).fillCircle(cx, y - gap * 1.9, 1.8);
+      }
+      if (mask & BRIDGE_BIT && index < grids.length - 1) {
+        glow.lineStyle(4, GOLD, 0.3).lineBetween(cx + gap + 3, y, cx + step - gap - 3, y);
+        glyphs.lineStyle(1.5, GOLD, 1).lineBetween(cx + gap + 3, y, cx + step - gap - 3, y);
+      }
     });
   }
 
@@ -891,12 +991,13 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     const { base, pegs } = this;
     const mask = this.grids[index];
     const origin = this.gridOrigin(index);
-    const facet = grid.facet;
+    const facet = this.shown(grid);
+    const sealed = !!(mask & SEAL_BIT);
     const color = facet ? FACETS[facet].color : PALE;
-    if (grid.inverted) base.fillStyle(0x6a1030, 0.3).fillRect(origin.x + 1, origin.y + 1, GRID - 2, GRID - 2);
+    if (facet && grid.inverted) base.fillStyle(0x6a1030, 0.3).fillRect(origin.x + 1, origin.y + 1, GRID - 2, GRID - 2);
     if (facet) base.lineStyle(1.5, color, 0.85).strokeRect(origin.x + 0.5, origin.y + 0.5, GRID - 1, GRID - 1);
     const seal = this.pegAt(index, SEAL_PEG);
-    if (!grid.inverted) dotted(base, seal, this.pegAt(index, SEAL_TARGET), EMBER, 0.28);
+    if (!sealed) dotted(base, seal, this.pegAt(index, SEAL_TARGET), EMBER, 0.28);
     const used = new Set<number>();
     for (const [a, b] of maskEdges(mask)) {
       used.add(a);
@@ -913,7 +1014,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       }
     }
     // The seal: an eye that burns open once it is struck.
-    const lit = grid.inverted;
+    const lit = sealed;
     pegs.fillStyle(lit ? 0x3a0816 : PLATE, 1).fillCircle(seal.x, seal.y, 8.5);
     pegs.lineStyle(1.5, EMBER, lit ? 1 : 0.5).strokeCircle(seal.x, seal.y, 8.5);
     pegs.lineStyle(1.2, lit ? 0xffd6dd : EMBER, lit ? 1 : 0.55).strokeEllipse(seal.x, seal.y, 11, 6);
@@ -927,18 +1028,24 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       texts.role.setText('');
       return;
     }
-    if (!grid.rune || !facet) {
-      const drawn = mask & RUNE_LINES;
-      texts.rune.setText(drawn ? 'Unformed' : 'Awaiting a rune').setColor(drawn ? TXT.ember : TXT.ash).setShadow(0, 0, '#000000', 0);
-      const count = maskEdges(mask).length;
-      texts.role.setText(drawn ? `${count} stroke${count === 1 ? '' : 's'}` : grid.inverted ? 'SEALED' : 'CHAINED');
+    const chained = !!(mask & BRIDGE_BIT);
+    if (!facet) {
+      // Stray lines and an unknown rune look alike.
+      const strokes = maskEdges(mask).length;
+      const bits = strokes ? [`${strokes} stroke${strokes === 1 ? '' : 's'}`] : [];
+      if (sealed) bits.push('SEALED');
+      if (chained) bits.push('CHAINED \u00bb');
+      texts.rune.setText(strokes ? 'Unread' : '\u00b7  \u00b7  \u00b7').setColor(strokes ? TXT.ash : TXT.dim).setShadow(0, 0, '#000000', 0);
+      texts.role.setText(bits.join('  \u00b7  '));
       return;
     }
     texts.rune.setText(FACETS[facet].label).setColor(css(color)).setShadow(0, 0, css(color), 10, false, true);
+    // How it counts hangs on its neighbours: told only when every rune on the sheet is known.
+    const whole = this.sheetIsKnown();
     const bits: string[] = [];
-    if (grid.role) bits.push(grid.role === FACETS[facet].kind ? KIND_LABEL[grid.role] : `${KIND_LABEL[grid.role]} HERE`);
-    if (grid.inverted) bits.push(`INVERTED ${FACETS[grid.rune].label.toUpperCase()}`);
-    if (grid.coupled) bits.push('CHAINED \u00bb');
+    if (whole) bits.push(grid.role ? (grid.role === FACETS[facet].kind ? KIND_LABEL[grid.role] : `${KIND_LABEL[grid.role]} HERE`) : 'SKIPPED');
+    if (grid.inverted) bits.push(`INVERTED ${FACETS[grid.rune!].label.toUpperCase()}`);
+    if (chained) bits.push(whole && !grid.coupled ? 'CHAIN SKIPPED' : 'CHAINED \u00bb');
     texts.role.setText(bits.join('  \u00b7  '));
   }
 
@@ -1009,18 +1116,21 @@ export class HexDrawView extends Phaser.GameObjects.Container {
 
   /** Keep each grid's living look in step with what is drawn on it. */
   private syncFx(reading: HexReading): void {
+    const known = this.known();
     reading.grids.forEach((grid, index) => {
       const mask = this.grids[index] & (RUNE_LINES | SEAL_BIT);
-      const key = `${grid.facet ?? '-'}|${mask}`;
+      const facet = this.shown(grid, known);
+      const key = `${facet ?? '-'}|${mask}`;
       const current = this.gridFx[index];
       if (current?.key === key) return;
       for (const emitter of current?.emitters ?? []) emitter.destroy();
-      this.gridFx[index] = mask ? this.buildFx(index, grid, key) : null;
+      this.gridFx[index] = mask ? this.buildFx(index, facet, key) : null;
     });
   }
 
-  private buildFx(index: number, grid: GridReading, key: string): GridFx {
-    const fx = grid.facet ? FX[grid.facet] : RAW_FX;
+  private buildFx(index: number, facet: Facet | null, key: string): GridFx {
+    const fx = facet ? FX[facet] : RAW_FX;
+    const sealed = !!(this.grids[index] & SEAL_BIT);
     const centre = this.plateCentre(index);
     const edges = maskEdges(this.grids[index]);
     const segs = edges.map(([p, q]) => this.segOf(index, p, q, fx, centre));
@@ -1035,7 +1145,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     if (fx.motes && segs.length) {
       emitters.push(this.scene.add.particles(0, 0, textureKey(fx.motes.texture), moteEmitterConfig(fx.motes, alongLines(segs), centre, this.reduced)));
     }
-    if (grid.inverted) {
+    if (sealed) {
       // Embers rising off the burning eye.
       emitters.push(this.scene.add.particles(sealAt.x, sealAt.y, GLOW.soft, {
         lifespan: { min: 500, max: 900 },
@@ -1054,14 +1164,14 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     this.fxMotes.add(emitters);
     return {
       key,
-      facet: grid.facet,
+      facet,
       fx,
       segs,
       pegs: [...lit].map((peg) => this.pegAt(index, peg)),
       centre,
       seed: index * 1.73 + 0.4,
       emitters,
-      inverted: grid.inverted,
+      inverted: sealed,
       seal: { a: top, b: sealAt, len: top.y - sealAt.y, salt: 90 + index, reverse: false, key: 'seal' },
     };
   }
@@ -1181,7 +1291,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       const gone = mask & ~(this.grids[index] ?? 0);
       if (!gone) return;
       this.carves = this.carves.filter((carve) => carve.grid !== index);
-      const facet = was.grids[index]?.facet;
+      const facet = this.shown(was.grids[index]);
       const fx = facet ? FX[facet] : RAW_FX;
       const centre = this.plateCentre(index);
       const segs = maskEdges(gone & RUNE_LINES).map(([p, q]) => this.segOf(index, p, q, fx, centre));
@@ -1208,7 +1318,8 @@ export class HexDrawView extends Phaser.GameObjects.Container {
 
   /** Each rune bursts in its own way as it takes shape, and each chain as it closes, once their carving is done. */
   private greet(reading: HexReading): void {
-    const facets = reading.grids.map((grid) => grid.facet);
+    const known = this.known();
+    const facets = reading.grids.map((grid) => this.shown(grid, known));
     const bridges = this.grids.map((mask) => !!(mask & BRIDGE_BIT));
     if (this.celebrate) {
       facets.forEach((facet, index) => {
@@ -1291,7 +1402,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     if (this.disposed || !this.weave) return;
     const mage = this.scribe();
     const lines = reading.grids.reduce((sum, grid) => sum + grid.lines, 0);
-    const key = [this.paper, this.grids.join('.'), this.hover, this.guide, this.message, mage?.mana, this.working].join('|');
+    const key = [this.paper, this.grids.join('.'), this.hover, this.guide, this.message, mage?.mana, this.working, this.run.hexLore.runes.length].join('|');
     if (key === this.summaryKey) return;
     this.summaryKey = key;
     const problem = this.problem(reading);
@@ -1300,7 +1411,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     this.paintWeave(reading, lines);
     this.scribeChip.setLabel(recipe ? `Scribe the hex  \u00b7  ${recipe.lines} mana` : 'Scribe the hex');
     this.scribeChip.setEnabled(!problem && !this.working);
-    const warning = problem && recipe ? problem : '';
+    const warning = problem && lines ? problem : '';
     const tracing = this.guide ? `Tracing ${FACETS[this.guide].label}: follow the dotted lines. Click it in the grimoire again to put it away.` : '';
     this.infoText.setText(this.message || warning || tracing || HINT).setColor(this.message ? TXT.bone : warning ? TXT.ember : TXT.ash);
   }
@@ -1357,16 +1468,29 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       });
     const below = (text: Phaser.GameObjects.Text): number => text.y + text.height + 8;
 
-    if (this.hover) {
-      put(left, WEAVE.y + 10, 'GRIMOIRE', 11, TXT.gold, { fontStyle: 'bold' });
-      if (this.hover === 'legend') {
-        const title = heading('Seal and Chain', TXT.gold, VIOLET);
-        const end = this.flow(below(title), [{ label: FACETS.wind.label, color: FACETS.wind.color }, { label: FACETS.cyclone.label, color: FACETS.cyclone.color }], ['SEALED'], false);
-        body(end + 4, LEGEND, TXT.bone);
+    if (this.hover?.startsWith('sheet:')) {
+      const id = this.boughtList[Number(this.hover.slice(6))];
+      const recipe = id ? parseHexItemId(id) : null;
+      if (id && recipe) {
+        put(left, WEAVE.y + 10, 'BOUGHT SHEET', 11, TXT.gold, { fontStyle: 'bold' });
+        put(right, WEAVE.y + 10, `${PAPERS[recipe.paper].name.toUpperCase()}  \u00b7  ${recipe.lines} STROKES`, 11, TXT.gold, { fontStyle: 'bold' }).setOrigin(1, 0);
+        const title = heading(getItem(id).name, TXT.bone, VIOLET);
+        const glow = this.scene.add.graphics().setBlendMode(ADD);
+        const glyphs = this.scene.add.graphics();
+        layer.add([glow, glyphs]);
+        const top = below(title) + 20;
+        this.sheetGlyphs(glow, glyphs, recipe.paper, recipe.grids, left + 14, top, 10, 44);
+        // What the sheet does, never what each rune on it means.
+        body(top + 28, hexLines(recipe, this.sheetIsKnown(recipe.grids)).join(' '), TXT.bone);
         return;
       }
-      const base = FACETS[this.hover];
-      const inverse = FACETS[RUNES[this.hover].inverse];
+    }
+
+    if (this.hover && !this.hover.startsWith('sheet:')) {
+      const rune = this.hover as RuneId;
+      put(left, WEAVE.y + 10, 'GRIMOIRE', 11, TXT.gold, { fontStyle: 'bold' });
+      const base = FACETS[rune];
+      const inverse = FACETS[RUNES[rune].inverse];
       put(right, WEAVE.y + 10, `${KIND_LABEL[base.kind]}  \u00b7  ${costText(base).toUpperCase()}`, 11, TXT.gold, { fontStyle: 'bold' }).setOrigin(1, 0);
       const title = heading(base.label, css(base.color), base.color);
       const end = this.flow(below(title), [{ label: base.label, color: base.color }, { label: inverse.label, color: inverse.color }], ['SEALED'], false);
@@ -1376,12 +1500,13 @@ export class HexDrawView extends Phaser.GameObjects.Container {
 
     put(left, WEAVE.y + 10, 'THE WEAVE', 11, TXT.gold, { fontStyle: 'bold' });
     const recipe = reading.recipe;
-    if (!recipe) {
-      if (lines) put(right, WEAVE.y + 10, `${lines} STROKE${lines === 1 ? '' : 'S'}`, 11, TXT.ash, { fontStyle: 'bold' }).setOrigin(1, 0);
-      const title = heading(lines ? 'The weave will not hold' : 'An unwritten sheet', lines ? TXT.ember : TXT.ash, lines ? EMBER : null);
-      let y = below(title);
-      if (lines && reading.problem) y = below(body(y, reading.problem, TXT.ember));
-      body(y, PRIMER, TXT.ash);
+    if (!recipe || !lines) {
+      body(below(heading('An unwritten sheet', TXT.ash, null)), BLANK, TXT.ash);
+      return;
+    }
+    if (!this.sheetIsKnown()) {
+      put(right, WEAVE.y + 10, `${lines} STROKE${lines === 1 ? '' : 'S'}`, 11, TXT.ash, { fontStyle: 'bold' }).setOrigin(1, 0);
+      body(below(heading('Unread runes', TXT.ash, VIOLET)), UNREAD, TXT.ash);
       return;
     }
     put(right, WEAVE.y + 10, `DRAW ${recipe.lines}  \u00b7  LOOSE ${hexManaCost(recipe)} MANA  \u00b7  ${ACTION_LABEL[hexAction(recipe)]}`, 11, TXT.gold, {
@@ -1455,8 +1580,9 @@ export class HexDrawView extends Phaser.GameObjects.Container {
   /** The sheet gathers power while the hex is set down. */
   private charge(reading: HexReading): void {
     playSound('spell.cast');
+    const known = this.known();
     reading.grids.forEach((grid, index) => {
-      const facet = grid.facet;
+      const facet = this.shown(grid, known);
       if (!facet) return;
       this.scene.time.delayedCall(index * 110, () => {
         if (!this.disposed) this.formBurst(index, facet, grid.inverted, true);
@@ -1496,8 +1622,11 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     layer.add(veil);
     scene.tweens.add({ targets: veil, alpha: 0.8, duration: 320, ease: 'Sine.Out' });
 
-    const drawn = reading.grids.flatMap((grid, index) =>
-      grids[index] & RUNE_LINES ? [{ index, color: grid.facet ? FACETS[grid.facet].color : PALE }] : []);
+    const known = this.known();
+    const drawn = reading.grids.flatMap((grid, index) => {
+      const facet = this.shown(grid, known);
+      return grids[index] & RUNE_LINES ? [{ index, color: facet ? FACETS[facet].color : PALE }] : [];
+    });
     const flight = reduced ? 0 : 620;
     const stagger = reduced ? 0 : 95;
     drawn.forEach(({ index, color }, order) => {
@@ -1535,7 +1664,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
 
   private reveal(layer: Phaser.GameObjects.Container, recipe: HexRecipe, grids: number[], centre: Vec2): void {
     const { scene } = this;
-    const tone = hexTone(recipe);
+    const tone = this.sheetIsKnown(grids) ? hexTone(recipe) : VIOLET;
     playSound('dice.crit');
     const flash = scene.add.rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT, tone, 1).setOrigin(0).setAlpha(0.3).setBlendMode(ADD);
     const bloom = scene.add.image(centre.x, centre.y, GLOW.soft).setTint(tone).setBlendMode(ADD).setScale(0.6);
@@ -1583,7 +1712,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     const step = 42;
     const y = -height / 2 + 50;
     drawn.forEach((index, order) => {
-      const facet = reading.grids[index].facet;
+      const facet = this.shown(reading.grids[index]);
       const color = facet ? FACETS[facet].color : PALE;
       const x = -((drawn.length - 1) * step) / 2 + order * step;
       for (const [a, b] of glyphSegments(grids[index], x, y, 8)) {
@@ -1602,7 +1731,8 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: TXT.gold,
     }).setOrigin(0.5, 0);
-    const name = scene.add.text(0, -height / 2 + 74, shortName(recipe), {
+    const read = this.sheetIsKnown(grids);
+    const name = scene.add.text(0, -height / 2 + 74, read ? shortName(recipe) : unreadHexName(recipe.paper, grids), {
       fontFamily: MENU_FONT.display,
       fontSize: '18px',
       fontStyle: 'bold',
@@ -1611,7 +1741,9 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       wordWrap: { width: width - 40 },
       maxLines: 2,
     }).setOrigin(0.5, 0).setShadow(0, 0, css(tone), 12, false, true);
-    const stats = scene.add.text(0, height / 2 - 28, `Loose for ${hexManaCost(recipe)} mana  \u00b7  ${ACTION_LABEL[hexAction(recipe)].toLowerCase()}`, {
+    const stats = scene.add.text(0, height / 2 - 28, read
+      ? `Loose for ${hexManaCost(recipe)} mana  \u00b7  ${ACTION_LABEL[hexAction(recipe)].toLowerCase()}`
+      : 'What it does, only loosing it will tell.', {
       fontFamily: MENU_FONT.control,
       fontSize: '12px',
       color: TXT.ash,

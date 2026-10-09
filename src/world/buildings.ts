@@ -21,6 +21,7 @@ export type SignIcon =
   | 'pearl'
   | 'sun'
   | 'drop'
+  | 'quill'
   | 'none';
 
 export interface BuildingSpec {
@@ -263,6 +264,7 @@ const ICONS: Record<Exclude<SignIcon, 'none'>, readonly string[]> = {
   pearl: ['.......', '.aaaaa.', 'aa...aa', 'a.www.a', 'a.www.a', 'aaaaaaa', '.......'],
   sun: ['a..a..a', '.aaaaa.', '.awwwa.', 'aawwwaa', '.awwwa.', '.aaaaa.', 'a..a..a'],
   drop: ['...a...', '..aaa..', '..aaa..', '.aawaa.', '.awwaa.', '.aaaaa.', '..aaa..'],
+  quill: ['......a', '....aaa', '...aaw.', '..aaw..', '.aaw...', '.k.....', 'k......'],
 };
 
 const ICON_ACCENT: Record<Exclude<SignIcon, 'none'>, number> = {
@@ -280,6 +282,7 @@ const ICON_ACCENT: Record<Exclude<SignIcon, 'none'>, number> = {
   pearl: 0x3f8a86,
   sun: GOLD,
   drop: 0x3f8ad0,
+  quill: 0x6a4ab8,
 };
 
 function paintSign(px: PixelBuffer, x: number, y: number, icon: Exclude<SignIcon, 'none'>, right: boolean): void {

@@ -7,6 +7,7 @@
 import type Phaser from 'phaser';
 import { bufferTexture } from '../../world/localeRender';
 import { BOSS_ART } from './art';
+import { isCrusadeKind } from '../../pve/crusade';
 import { AUTHORED_BOSSES, authoredIdleSpecial, type AuthoredBoss } from './authored';
 import { BOSS_ANIMS, GROUND, renderStrip, type BossAnim } from './rig';
 import lillithIdleUrl from '../../Sprites/ShadeQueen/idle.png';
@@ -27,7 +28,7 @@ export type BossSpriteKind = `boss-${string}`;
 
 export const bossSpriteKind = (id: string): BossSpriteKind => `boss-${id}`;
 /** Whether a boss has authored sheets; the rest are drawn as the tinted mage. */
-export const hasBossSprites = (id: string): boolean => !!AUTHORED_BOSSES[id] || id === 'rock';
+export const hasBossSprites = (id: string): boolean => !!AUTHORED_BOSSES[id] || id === 'rock' || isCrusadeKind(id);
 export const bossAnimKey = (id: string, anim: BossAnim): string => `enemy-boss-${id}-${anim}`;
 const stripKey = (id: string, strip: string): string => `enemy-boss-${id}-${strip}`;
 

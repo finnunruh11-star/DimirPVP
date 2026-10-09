@@ -98,6 +98,7 @@ const tests: [name: string, run: () => Promise<void>][] = [
 
   ['keeps walking and lantern landings free without blocking allied passage', async () => {
     const walker = mage('Walker', 2, 300, 270);
+    walker.intrinsicMoveUnits = 10;
     const ally = mage('Ally', 2, 390, 270);
     const foe = mage('Foe', 1, 700, 270);
     const game = new GameState([walker, ally, foe], 1);
@@ -117,6 +118,73 @@ const tests: [name: string, run: () => Promise<void>][] = [
     assert(dist(first.pos, bearer.pos) >= first.bodyRadius() + bearer.bodyRadius(), 'The bearer stays free');
     assert(dist(second.pos, bearer.pos) >= second.bodyRadius() + bearer.bodyRadius(), 'The bearer stays free for every target');
     assert(dist(first.pos, second.pos) >= first.bodyRadius() + second.bodyRadius(), 'Pulled enemies do not overlap');
+  }],
+
+  ['routes walking around enemies within the movement budget', async () => {
+    const walker = mage('Walker', 1, 300, 270);
+    walker.intrinsicMoveUnits = 5;
+    const foe = mage('Foe', 2, 370, 270);
+    const game = new GameState([walker, foe], 1);
+    const goal = { x: 620, y: 270 };
+    const move = game.makeMoveItem(walker, goal);
+    const path = move.movePath!;
+    assert(path.length > 2, 'The route bends around the enemy');
+    const length = path.slice(1).reduce((sum, point, index) => sum + dist(path[index], point), 0);
+    assert(length <= walker.moveRange() + 0.01, 'Detours count toward movement speed');
+    for (let index = 1; index < path.length; index++) {
+      assert(dist(game.clampToMages(walker, path[index - 1], path[index]), path[index]) < 0.01, 'Every leg avoids enemy bodies');
+    }
+    await move.resolve(game);
+    assert(walker.x > foe.x, 'The walker progresses past the blocking enemy');
+    assert(Math.abs(walker.distMovedThisTurn - length) < 0.01, 'Movement effects count the entire route');
+  }],
+
+  ['limits distant walking targets and escapes enemy contact', async () => {
+    const walker = mage('Walker', 1, 300, 270);
+    const foe = mage('Foe', 2, 344, 270);
+    const game = new GameState([walker, foe], 1);
+    const move = game.makeMoveItem(walker, { x: 800, y: 270 });
+    await move.resolve(game);
+    assert(walker.distMovedThisTurn > 1, 'A touching enemy does not trap the walker');
+    assert(walker.distMovedThisTurn <= walker.moveRange() + 0.01, 'A distant click never exceeds movement speed');
+    assert(dist(walker.pos, foe.pos) >= walker.bodyRadius() + foe.bodyRadius(), 'The landing remains free');
+  }],
+
+  ['approaches unreachable destinations without crossing walls', async () => {
+    const walker = mage('Walker', 1, 300, 270);
+    walker.intrinsicMoveUnits = 5;
+    const game = new GameState([walker, mage('Foe', 2, 800, 270)], 1);
+    game.barriers.push({
+      id: 1, shape: 'rect', x: 400, y: 270, angle: Math.PI / 2,
+      halfAngle: 0, range: FIELD.h + 100, thickness: 20, owner: 2, ttl: 3,
+    });
+    const move = game.makeMoveItem(walker, { x: 700, y: 270 });
+    for (let index = 1; index < move.movePath!.length; index++) {
+      const from = move.movePath![index - 1];
+      const to = move.movePath![index];
+      assert(!game.clampToBarriers(from, to, walker.bodyRadius()).blocked, 'Every leg stays on the reachable side');
+    }
+    await move.resolve(game);
+    assert(walker.x > 300 && walker.x < 400, 'The walker gets closer without crossing the wall');
+    assert(walker.distMovedThisTurn <= walker.moveRange() + 0.01, 'An unreachable destination respects movement speed');
+  }],
+
+  ['replans walking after enemies move and preserves phase walking', async () => {
+    const walker = mage('Walker', 1, 300, 270);
+    walker.intrinsicMoveUnits = 5;
+    const foe = mage('Foe', 2, 370, 400);
+    const game = new GameState([walker, foe], 1);
+    const move = game.makeMoveItem(walker, { x: 620, y: 270 });
+    foe.y = 270;
+    await move.resolve(game);
+    assert(move.movePath!.length > 2, 'A newly blocking enemy changes the route at resolution');
+    walker.x = 300;
+    walker.y = 270;
+    walker.hands = ['edgelordLantern'];
+    walker.edgelordLanternActive = true;
+    const phased = game.makeMoveItem(walker, { x: 620, y: 270 });
+    equal(phased.movePath!.length, 2, 'Phase walking does not detour around enemy bodies');
+    equal(phased.targetPoint, { x: 525, y: 270 }, 'Phase walking still respects movement speed');
   }],
 
   ['lets a melee weapon hit an oversized enemy at its collision boundary', async () => {

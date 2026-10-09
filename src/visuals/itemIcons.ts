@@ -103,7 +103,7 @@ const CRAFTED_KIND: Record<CraftForm, ItemIconKind> = {
 export function itemIconKind(def: ItemDef): ItemIconKind {
   const label = `${def.id} ${def.name}`.toLowerCase();
   if (def.crafted) return CRAFTED_KIND[def.crafted.form];
-  if (def.paper || def.hexzettel) return 'paper';
+  if (def.paper || def.hexzettel || def.id === 'hexCodex') return 'paper';
   if (def.ammo) return 'arrows';
   if (def.potion) return def.potion === 'word' ? 'vial' : 'potion';
   if (def.id === 'pickaxe') return 'pickaxe';

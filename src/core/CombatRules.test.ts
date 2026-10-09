@@ -1533,6 +1533,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       assert(m.statuses.some((s) => s.key === 'dot:rusted-rivet'), `${m.name} rusts`);
     }
 
+    foe.intrinsicMoveUnits = 10;
     void game.makeMoveItem(foe, { x: 800, y: 400 }).resolve(game);
     assert(Math.hypot(foe.x - 800, foe.y - 400) < 1, 'The target walks where it likes');
     assert(Math.hypot(behind.x - foe.x, behind.y - foe.y) <= leash + 1, 'and drags its partner along');

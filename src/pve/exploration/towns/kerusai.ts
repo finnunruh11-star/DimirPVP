@@ -58,7 +58,7 @@ const buildings: BuildingPlacement[] = [
   { x: 14, y: 3, shop: 'kerusai-guild', spec: { w: 7, h: 5, roof: 'plum', wall: 'darkwood', door: 3, windows: [1, 5], dormers: [2, 4], banner: 0x6a4a6e } },
   { x: 4, y: 6, shop: 'kerusai-apothecary', spec: { w: 5, h: 5, roof: 'teal', wall: 'darkwood', door: 1, windows: [3], sign: 'potion', awning: 0x3f8a86 } },
   { x: 28, y: 6, shop: 'kerusai-valuables', spec: { w: 5, h: 5, roof: 'charcoal', wall: 'wood', door: 1, windows: [3], sign: 'coin', awning: 0xa8862c } },
-  { x: 33, y: 3, spec: { w: 5, h: 4, roof: 'thatch', wall: 'darkwood', door: 2 } },
+  { x: 33, y: 3, shop: 'kerusai-scriptorium', spec: { w: 5, h: 4, roof: 'plum', wall: 'darkwood', door: 2, sign: 'quill' } },
   { x: 13, y: 18, spec: { w: 5, h: 4, roof: 'thatch', wall: 'darkwood', door: 2 } },
   { x: 19, y: 18, spec: { w: 5, h: 4, roof: 'plum', wall: 'wood', door: 2, chimney: 3 } },
 ];

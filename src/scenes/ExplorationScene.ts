@@ -3,6 +3,7 @@ import { playMusic, playSound } from '../audio';
 import { COLORS, GAME_HEIGHT, GAME_WIDTH } from '../config/constants';
 import type { ExplorationOpening, MatchConfig } from '../config/MatchConfig';
 import { MAGE_CLASSES, type MageClass } from '../core/Classes';
+import { setHexLore } from '../core/hexcraft/lore';
 import { getItem, type ItemId } from '../core/Items';
 import { Mage } from '../core/Mage';
 import { recordKills } from '../pve/exploration/bounties';
@@ -185,7 +186,15 @@ const SIGHTING_GO: Record<SightingKind, string> = {
  */
 export class ExplorationScene extends Phaser.Scene implements HudOwner {
   private world: WorldMap = createWorld();
-  private run!: ExplorationRun;
+  private currentRun!: ExplorationRun;
+  /** The run the party plays; its rune lore decides how this client names every Hexzettel. */
+  private get run(): ExplorationRun {
+    return this.currentRun;
+  }
+  private set run(run: ExplorationRun) {
+    this.currentRun = run;
+    setHexLore(run.hexLore.runes);
+  }
   private layer?: Phaser.GameObjects.Container;
   private focus = new MenuFocusGroup();
   private keys?: SceneInput;

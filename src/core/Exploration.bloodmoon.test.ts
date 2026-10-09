@@ -85,7 +85,7 @@ const tests: [name: string, run: () => void][] = [
       crusade: 'white', baral: 'blue',
       lillith: 'black',
     }, 'colours as given');
-    equal(BOSSES.crusade.name, 'Crucade', 'Crucade display name');
+    equal(BOSSES.crusade.name, 'The Crusading Crusaders', 'Crusaders display name');
   }],
 
   ['scales damage by 30% and health by 75% for each extra player', () => {
@@ -101,7 +101,7 @@ const tests: [name: string, run: () => void][] = [
     const fight = bloodmoonFight(run);
     assert(bloodmoonDue(run) && fight?.cycle === 1 && bossPool(1).includes(fight.id), 'the first boss is owed');
     const combat = bloodmoonCombat(run, fight, 'forest');
-    equal(bossRoster('crusade', 1), [{ kind: BOSS_STAND_IN, art: 'crusade', count: 1, leader: true }], 'a zombie stands in for an unwritten boss');
+    assert(bossRoster('crusade', 1).every((unit) => unit.kind.startsWith('crusade')), 'Crusaders use their own roster');
     equal(combat.boss, fight, 'the fight carries its boss');
     equal(parseFightWire(JSON.parse(JSON.stringify(toFightWire(combat))))?.boss, fight, 'guests are told the boss');
     run.bloodmoons = 1;

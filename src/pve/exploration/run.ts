@@ -3,6 +3,7 @@
 
 import type { MageClass } from '../../core/Classes';
 import { Dice } from '../../core/Dice';
+import { emptyHexLore, type HexLore } from '../../core/hexcraft/lore';
 import type { Scenario } from '../../core/Scenario';
 import type { MineMazeState } from '../mineMaze';
 import { START_HOUR } from './clock';
@@ -117,6 +118,8 @@ export interface ExplorationRun {
   bloodmoons: number;
   /** Things crafted so far; seeds each bench roll, so no two crafts roll alike. */
   crafts: number;
+  /** The runes the party has learned and the example sheets it has bought. */
+  hexLore: HexLore;
 }
 
 export function createRun(seed: number, party: Scenario, options: { creating?: boolean } = {}): ExplorationRun {
@@ -153,6 +156,7 @@ export function createRun(seed: number, party: Scenario, options: { creating?: b
     mines: null,
     bloodmoons: 0,
     crafts: 0,
+    hexLore: emptyHexLore(),
   };
 }
 
