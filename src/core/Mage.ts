@@ -2065,6 +2065,11 @@ export class Mage {
     }
     // A forgotten 'move' costs this mage its movement for the turn.
     if (this.hasForgotten('move')) this.actions.move = 0;
+    if (this.lillithBound) {
+      this.actions.move = 0;
+      this.actions.main = Math.min(1, this.actions.main);
+      this.actions.bonus = Math.min(1, this.actions.bonus);
+    }
   }
 
   /**

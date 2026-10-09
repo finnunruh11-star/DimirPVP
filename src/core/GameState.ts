@@ -1,5 +1,8 @@
 import { Dice, type RollResult } from './Dice';
 import { Mage } from './Mage';
+import { packCapacity, packSlotsUsed } from './Pack';
+import type { HexGroundSpec, HexSide } from './hexcraft/runes';
+import { hexEcho } from '../effects/hexzettel';
 import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
 import { applyMindLightningStack, mindLightningBoltTarget, mindLightningDamage } from '../spells/mindLightning';
@@ -85,6 +88,7 @@ import { cheatDeath, deathLawEnds, deathRites, echoFetch } from '../effects/deat
 import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_TURNS } from '../pve/goblins';
 import { BARAL_MARK, DENIAL_RELOCATION_DAMAGE, DENIAL_STIFLE_MILL, denialArmed } from '../pve/baral';
 import { applyMineEnemyTraits, type MineEnemyKind } from '../pve/minerun';
+import { illusoryReap, isLillithUnit, lillithOnDeath, lillithReap, lillithStride } from '../pve/lillith';
 import { splitModifiers } from './Words';
 import { stormWordsCompatible } from './Colors';
 import { makeSandCadett, makeRemnant } from './sandSummons';
@@ -136,6 +140,7 @@ import {
   type TimeStopStatus,
   type DoomStatus,
   type DeathMarkStatus,
+  type HexEcho,
   type SoulPactStatus,
   type ForeknownStatus,
   type StillWardStatus,
@@ -340,6 +345,8 @@ export interface DesecrationField {
   turnsLeft: number;
   name: string;
   ticks: DesecrationTick[];
+  hostile?: boolean;
+  heartIndex?: number;
   blocksHealing?: boolean;
   /** The owner drinks everything the ticks deal. */
   lifesteal?: boolean;
@@ -405,6 +412,11 @@ export interface HazardZone {
   damageType: DamageType;
   /** Only bite units that actually moved during the turn that just ended. */
   movedOnly?: boolean;
+  carrierIndex?: number;
+  untilTurn?: number;
+  crossOnly?: boolean;
+  foesOnly?: boolean;
+  hex?: Omit<HexGroundSpec, 'drift'> & { side?: HexSide; text: string; hexEcho?: HexEcho };
   /** Chance (0-1) that a targeted attack on anyone inside simply misses. */
   dodgeChance?: number;
   /** Multiplier applied to healing received inside the zone. */
@@ -507,6 +519,7 @@ export class GameState {
   hexLawDepth = 0;
   /** What the intrinsic strike that is calling its rider just dealt. */
   lastIntrinsicDamage = 0;
+  lillithOutput = new Map<Mage, number>();
   /** Guard so a soul pact's repayment can never demand repayment of its own. */
   private soulPactEchoing = false;
   /** Corpses already walked upright, so no body rises twice. */
@@ -619,7 +632,8 @@ export class GameState {
       return [{ i, total, priority, sloth, tie: this.rng.roll('1d1000').total }];
     });
     scored.sort(
-      (a, b) => a.sloth - b.sloth || b.priority - a.priority || b.total - a.total || b.tie - a.tie
+      (a, b) => Number(this.mages[a.i].initiativeLast) - Number(this.mages[b.i].initiativeLast) ||
+        a.sloth - b.sloth || b.priority - a.priority || b.total - a.total || b.tie - a.tie
     );
     this.initiativeOrder = scored.map((s) => s.i);
     this.initiativeRolls = this.mages.map(() => 0);
@@ -641,7 +655,12 @@ export class GameState {
       this.initiativeRolls[idx] = 0;
       return;
     }
-    this.initiativeOrder.push(idx);
+    const last = m.initiativeLast ? -1 : this.initiativeOrder.findIndex((index) => this.mages[index].initiativeLast);
+    if (last < 0) this.initiativeOrder.push(idx);
+    else {
+      this.initiativeOrder.splice(last, 0, idx);
+      if (last <= this.turnPtr) this.turnPtr += 1;
+    }
     const roll = this.rollD20(m);
     this.initiativeRolls[idx] = roll + m.effectiveDex();
   }
@@ -1267,6 +1286,7 @@ export class GameState {
 
   beginTurn(): void {
     const m = this.current;
+    if (isLillithUnit(m)) lillithStride(this, m);
     this.turnSeq += 1;
     m.turnStartState = { x: m.x, y: m.y, hp: m.hp, sanity: m.sanity };
     this.releaseOrphanedTimeStops();
@@ -1317,6 +1337,7 @@ export class GameState {
     this.applyBlueflareDamage(m);
     this.applySoulRendDamage(m);
     this.applyDotDamage(m);
+    this.applyRegeneration(m);
     this.tickDeathCurse(m, 'turn start');
     this.advanceDoom(m, 'turn start');
     this.tickDeathMark(m);
@@ -1725,6 +1746,32 @@ export class GameState {
     return this.tickDotsNow(bearer, source, (dot) => dot.damage.type === 'corrosive');
   }
 
+  lillithReap(source: Mage, target: Mage): void {
+    lillithReap(this, source, target);
+  }
+
+  recordLillithOutput(source: Mage, amount: number): void {
+    if (amount <= 0 || !this.mages.some((mage) => mage.alive && mage.lillith)) return;
+    const owner = source.isSummon && source.summonOwnerIndex != null ? this.mages[source.summonOwnerIndex] ?? source : source;
+    if (owner.enemyKind) return;
+    this.lillithOutput.set(owner, (this.lillithOutput.get(owner) ?? 0) + amount);
+  }
+
+  burstDots(source: Mage, bearer: Mage): number {
+    const dots = bearer.statuses.filter((status): status is DotStatus => status.kind === 'dot');
+    bearer.statuses = bearer.statuses.filter((status) => !dots.includes(status as DotStatus));
+    let dealt = 0;
+    for (const dot of dots) {
+      if (!bearer.alive) break;
+      let amount = 0;
+      for (let tick = 0; tick < Math.max(1, dot.duration); tick++) amount += this.rollDotDamage(dot);
+      dealt += dealDamage(this.quietContext(source, bearer), bearer, dmg(amount, dot.damage.type), {
+        canMiss: false, noImpactFx: true, cause: dot.name, dot: true,
+      });
+    }
+    return dealt;
+  }
+
   /** Every damage-over-time on `bearer` that `which` picks ticks once, right now. Returns what they dealt. */
   tickDotsNow(bearer: Mage, source: Mage, which: (dot: DotStatus) => boolean = () => true): number {
     const dots = bearer.statuses.filter((s) => s.kind === 'dot' && which(s as DotStatus)) as DotStatus[];
@@ -2020,6 +2067,13 @@ export class GameState {
 
   /** Every hazard zone `m` is currently standing in. */
   private hazardZonesAt(at: Vec2): HazardZone[] {
+    for (const zone of this.hazardZones) {
+      const carrier = zone.carrierIndex == null ? undefined : this.mages[zone.carrierIndex];
+      if (carrier?.alive) {
+        zone.x = carrier.x;
+        zone.y = carrier.y;
+      }
+    }
     return this.hazardZones.filter((zone) => hazardDistance(zone, at) <= zone.radius);
   }
 
@@ -2045,6 +2099,9 @@ export class GameState {
     if (!m.alive || this.hazardZones.length === 0) return;
     const spent = new Set<number>();
     for (const zone of this.hazardZonesAt(m.pos)) {
+      if (zone.crossOnly || (zone.foesOnly && m.team === zone.ownerTeam)) continue;
+      if (zone.hex?.side && zone.hex.side !== 'any' &&
+          (zone.hex.side === 'allies') !== (m.team === zone.ownerTeam)) continue;
       // Read before Mage.beginTurn() clears it, so this is the turn just ended.
       if (zone.movedOnly && !m.movedThisTurn) continue;
       // Overlapping pieces of one cast are a single field, not many hazards.
@@ -2053,18 +2110,44 @@ export class GameState {
         spent.add(zone.groupId);
       }
       const owner = this.mages[zone.ownerIndex] ?? m;
-      const spec = zone.damageSpecs[Math.min(zone.escalateIndex, zone.damageSpecs.length - 1)];
-      dealDamage(
-        this.effectContext(owner, m, m.pos),
-        m,
-        dmg(this.rng.roll(spec).total, zone.damageType),
-        { canMiss: false, aoe: true }
-      );
+      if (zone.hex) this.applyHexGround(m, zone, owner);
+      else {
+        const spec = zone.damageSpecs[Math.min(zone.escalateIndex, zone.damageSpecs.length - 1)];
+        if (spec) dealDamage(
+          this.effectContext(owner, m, m.pos),
+          m,
+          dmg(this.rng.roll(spec).total, zone.damageType),
+          { canMiss: false, aoe: true }
+        );
+      }
       this.log(`${m.name} is caught in ${zone.name}.`);
       if (!m.alive) return;
       if (zone.drift) this.driftInHazard(m, zone, owner);
       if (!m.alive) return;
     }
+  }
+
+  private applyHexGround(m: Mage, zone: HazardZone, owner: Mage): void {
+    const hex = zone.hex;
+    if (!hex) return;
+    const ctx = this.effectContext(owner, m, m.pos);
+    let dealt = 0;
+    for (const hit of hex.hits) {
+      if (!m.alive) return;
+      dealt += dealDamage(ctx, m, dmg(this.rng.roll(hit.spec).total, hit.type), { canMiss: false, aoe: true });
+    }
+    if (hex.drink && dealt > 0) heal(ctx, owner, dealt);
+    if (!m.alive) return;
+    if (hex.heal) heal(ctx, m, this.rng.roll(hex.heal).total);
+    if (hex.pace) addOrExtendStatus(m.statuses, {
+      key: 'debuff:hex-ground-pace', name: 'Hexed Pace', kind: 'debuff', duration: 2,
+      mods: { moveRange: Math.round(m.baseMoveRange() * hex.pace) },
+    }, false);
+    if (hex.root) applyStun(ctx, m, { duration: 2, type: 'movement' });
+    if (hex.noHeal) applyDebuff(ctx, m, { name: 'Blighted', key: 'debuff:hex-blight', duration: 2, mods: {}, healMult: 0 });
+    if (hex.wither) this.wither(m, hex.wither, 6);
+    if (hex.spin) this.orbitAround(m, { x: zone.x, y: zone.y }, this.rng.chance(0.5));
+    if (m.alive && hex.hexEcho) hexEcho(this, m, hex.hexEcho);
   }
 
   /** A current in a standing hazard carries what it bites toward its centre or out of it. */
@@ -4935,6 +5018,7 @@ export class GameState {
 
   /** Attribute one confirmed defeat, including summon kills, before scene hooks run. */
   notifyMageDefeated(target: Mage, source: Mage): void {
+    lillithOnDeath(this, target);
     const offspring = target.mine?.kind === 'huge-spider' ? 'small-spider'
       : target.mine?.kind === 'gigantuan-spider' ? 'huge-spider' : null;
     if (offspring) {
@@ -5094,6 +5178,16 @@ export class GameState {
     physicalTravel: boolean,
     path?: readonly Vec2[]
   ): void {
+    if (mover.lillithBound) {
+      mover.x = mover.lillithBound.x;
+      mover.y = mover.lillithBound.y;
+      return;
+    }
+    for (const zone of this.hazardZones) {
+      if (zone.carrierIndex !== this.mages.indexOf(mover)) continue;
+      zone.x = mover.x;
+      zone.y = mover.y;
+    }
     if (physicalTravel && mover.venomStacks > 0) {
       const travelled = mover.venomDistance + dist(origin, destination);
       mover.venomDistance = travelled % RANGE_UNIT;
@@ -5593,7 +5687,7 @@ export class GameState {
 
   /** A reaped victim dies the moment its health falls to its Reap count (twice that under Long Night). */
   checkReapDeath(target: Mage, source: Mage): boolean {
-    const reap = this.reapOn(target);
+    const reap = this.reapOn(target) - illusoryReap(this, target);
     if (reap <= 0 || !target.alive || target.hp > reap) return false;
     this.log(`${target.name} sinks to ${target.hp} health under ${reap} Reap.`);
     return this.killByDeathWord(target, source);
@@ -5962,6 +6056,16 @@ export class GameState {
    * are conditional on board state — e.g. range bands measured to the opponent,
    * or a chance to stun on each tick.
    */
+  private applyRegeneration(m: Mage): void {
+    for (const status of [...m.statuses]) {
+      if (!m.alive) return;
+      if (status.kind !== 'regen') continue;
+      const owner = this.mages[status.ownerIndex] ?? m;
+      heal(this.effectContext(owner, m, null), m, this.rng.roll(status.spec).total);
+      if (status.hexEcho) hexEcho(this, m, status.hexEcho);
+    }
+  }
+
   private applyDotDamage(m: Mage): void {
     if (!m.alive) return;
     const opponent = this.opponentOf(m);
@@ -6024,6 +6128,8 @@ export class GameState {
       if (total > 0) this.checkReapDeath(m, source ?? m);
       // An emptied mind cannot hold the virus, so it moves on even in death.
       if (s.jumpOnMindBreakRadius && m.sanity <= 0) this.jumpContagion(m, s);
+      if (!m.alive) continue;
+      if (s.hexEcho) hexEcho(this, m, s.hexEcho);
       if (!m.alive) continue;
       this.orbitDotSource(m, s);
       this.driftDot(m, s);
@@ -6988,6 +7094,9 @@ export class GameState {
       requestReroll: this.subTargeter?.requestReroll
         ? (opts) => this.subTargeter!.requestReroll!(source, opts)
         : undefined,
+      requestOffering: this.subTargeter?.requestOffering
+        ? (opts) => this.subTargeter!.requestOffering!(source, opts)
+        : undefined,
       reactionWindow: this.subTargeter
         ? (label, at) => this.subTargeter!.reactionWindow(source, label, at)
         : undefined,
@@ -7169,37 +7278,60 @@ export class GameState {
 
   // ---- Dropped items --------------------------------------------------------
 
+  private previewItemDrop(source: Mage, itemId: ItemId): Mage | null {
+    const def = getItem(itemId);
+    if (def.keyItem || def.permanentlyBinding || (itemId === 'bastionSword' && !source.bastionShieldForm)) return null;
+    const preview: Mage = Object.assign(Object.create(Mage.prototype), source, {
+      hands: [...source.hands], accessories: [...source.accessories], bag: [...source.bag], utility: [...source.utility],
+    });
+    let removed = false;
+    for (const list of [preview.hands, preview.accessories, preview.bag, preview.utility]) {
+      const index = list.indexOf(itemId);
+      if (index < 0) continue;
+      list.splice(index, 1);
+      removed = true;
+      break;
+    }
+    if (!removed) {
+      for (const slot of ['head', 'torso', 'boots'] as const) {
+        if (preview[slot] !== itemId) continue;
+        preview[slot] = null;
+        removed = true;
+        break;
+      }
+    }
+    if (!removed) return null;
+    if (packSlotsUsed(preview) > packCapacity(preview) &&
+        (packSlotsUsed(preview) > packSlotsUsed(source) || packCapacity(preview) < packCapacity(source))) return null;
+    return preview;
+  }
+
+  canSwapDroppedItem(source: Mage, dropId: number, discard: ItemId): boolean {
+    const drop = this.droppedItems.find((entry) => entry.id === dropId);
+    if (!drop || drop.owner !== source.team || dist(source.pos, drop) > PICKUP_RANGE) return false;
+    const preview = this.previewItemDrop(source, discard);
+    return !!preview && preview.hasFreeHand() && preview.canCarry(getItem(drop.itemId).weight) &&
+      !preview.summonItemLimited(drop.itemId);
+  }
+
+  swapDroppedItem(source: Mage, dropId: number, discard: ItemId): boolean {
+    if (!this.canSwapDroppedItem(source, dropId, discard)) return false;
+    if (!this.dropItem(source, discard)) return false;
+    return this.pickUpItem(source, dropId);
+  }
+
   /** Drop a held item onto the ground at the mage's feet. */
   dropItem(source: Mage, itemId: ItemId): boolean {
-    const i = source.hands.indexOf(itemId);
-    if (i < 0) {
-      // Worn accessories can also be dropped (removed and reverted, then loose).
-      const ai = source.accessories.indexOf(itemId);
-      if (ai >= 0) {
-        source.accessories.splice(ai, 1);
-        this.reverseGrantedVitals(source, getItem(itemId));
-        this.droppedItems.push({
-          id: this.nextId++,
-          itemId,
-          x: source.pos.x,
-          y: source.pos.y,
-          owner: source.team,
-        });
-        this.log(`${source.name} takes off and drops ${getItem(itemId).name}.`);
-        return true;
-      }
-      return false;
-    }
-    // The Greatshield is bound while in sword form — it cannot be dropped.
-    if (itemId === 'bastionSword' && !source.bastionShieldForm) {
-      this.log(`${source.name}'s greatshield is in sword form and cannot be dropped.`);
-      return false;
-    }
-    if (getItem(itemId).permanentlyBinding) {
-      this.log(`${getItem(itemId).name} is permanently bound to ${source.name}.`);
-      return false;
-    }
-    source.hands.splice(i, 1);
+    const preview = this.previewItemDrop(source, itemId);
+    if (!preview) return false;
+    source.hands = preview.hands;
+    source.accessories = preview.accessories;
+    source.bag = preview.bag;
+    source.utility = preview.utility;
+    source.head = preview.head;
+    source.torso = preview.torso;
+    source.boots = preview.boots;
+    this.reverseGrantedVitals(source, getItem(itemId));
     // Snuffing a torch by dropping it uses it up (the burn timer clears).
     if (getItem(itemId).torchCombats != null && !source.hands.some((h) => getItem(h).torchCombats != null))
       source.torchCombatsLeft = 0;

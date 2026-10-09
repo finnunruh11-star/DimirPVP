@@ -1227,6 +1227,7 @@ export interface MinionDef {
   onHit?: HitEffect[];
   pulse?: PulseEffect[];
   death?: DeathEffect[];
+  stops?: { radius: number; then?: HitEffect[] };
 }
 
 const corrosive = (spec: string): Hit => ({ spec, type: 'corrosive' });
@@ -1859,6 +1860,8 @@ export interface ImbueDef {
   burst?: { min: number; radius: number; hits: Hit[]; veil: number };
   /** Every turn start of the bearer. */
   turnStart?: PulseEffect[];
+  turnEnd?: PulseEffect[];
+  stops?: { then?: HitEffect[] };
   /** Armour: an enemy single-target spell aimed at the bearer is cast at its own caster instead (a use each). */
   reflect?: boolean;
   /** The bearer's hits of these types deal `dealt` more; such hits on the bearer deal `taken` more. */
@@ -2596,7 +2599,11 @@ export function executeBonus(source: Mage): number {
 //  HEXCRAFT — laws the whole field obeys
 // -----------------------------------------------------------------------------
 
+export type RuleLawKind = `rule:${string}`;
+
 export type HexLawKind =
+  | RuleLawKind
+  | 'mortalCoil'
   | 'chokingRust'
   | 'clingingRust'
   | 'acidFog'
@@ -2721,6 +2728,7 @@ export type HexLawKind =
   | 'danseMacabre';
 
 export const HEX_LAW_NAMES: Record<HexLawKind, string> = {
+  mortalCoil: 'Mortal Coil',
   chokingRust: 'Choking Rust',
   clingingRust: 'Clinging Rust',
   acidFog: 'Acid Fog',

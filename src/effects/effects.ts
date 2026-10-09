@@ -26,6 +26,7 @@ import {
 import { dist, stepTowards, type Vec2 } from '../core/utils';
 import { FIELD, RANGE_UNIT, SCARAB, VEIL } from '../config/constants';
 import { Dev } from '../config/dev';
+import { lillithHit, lillithIllusory, mirrorLillith } from '../pve/lillith';
 
 export type CombatFeedbackKind =
   | 'damage'
@@ -178,6 +179,19 @@ export interface SubTargetRerollOpts {
   sides: number;
 }
 
+export interface OfferingChoice {
+  life: number;
+  items: boolean;
+  summons: Mage[];
+}
+
+export interface OfferingOpts {
+  lifeMax: number;
+  items: boolean;
+  summons: Mage[];
+  points: number;
+}
+
 /**
  * Optional bridge the scene supplies so a spell can ask for *additional* targets
  * while it resolves (e.g. "now pick a point, then an enemy"). Because these run
@@ -190,6 +204,7 @@ export interface SubTargeter {
   requestEnemy(source: Mage, opts: SubTargetEnemyOpts): Promise<Mage | null>;
   requestCombatant(source: Mage, opts: SubTargetCombatantOpts): Promise<Mage | null>;
   requestReroll?(source: Mage, opts: SubTargetRerollOpts): Promise<boolean>;
+  requestOffering?(source: Mage, opts: OfferingOpts): Promise<OfferingChoice>;
   /**
    * Open a reaction window mid-resolution so opponents may spend their reaction
    * in response to the current step (e.g. one blink of a multi-step flurry).
@@ -238,6 +253,7 @@ export interface EffectContext {
   requestCombatant?(opts: SubTargetCombatantOpts): Promise<Mage | null>;
   /** Ask whether one Storm die should be kept or rerolled once. */
   requestReroll?(opts: SubTargetRerollOpts): Promise<boolean>;
+  requestOffering?(opts: OfferingOpts): Promise<OfferingChoice>;
   /**
    * Open a reaction window mid-resolution so opponents may respond to the
    * current step. Absent in headless logic — call as `await ctx.reactionWindow?.(...)`.
@@ -608,13 +624,18 @@ function dealOneHit(
     });
   }
 
-  const floorVital = target.unkillable ? 1 : 0;
+  const beforeHp = target.hp;
+  const beforeSanity = target.sanity;
+  const floorVital = target.unkillable || lillithIllusory(ctx.caster, target) ? 1 : 0;
   if (damage.type === 'sanity') {
     target.sanity = Math.max(floorVital, target.sanity - amount);
   } else {
-    const beforeHp = target.hp;
     target.hp = Math.max(floorVital, target.hp - amount);
     if (amount > 0) ctx.game.resolveHydraWound(target, beforeHp, damage.type);
+  }
+  if (amount > 0) {
+    ctx.game.recordLillithOutput(ctx.caster, Math.max(0, beforeHp - target.hp) + Math.max(0, beforeSanity - target.sanity));
+    lillithHit(ctx.game, ctx.caster, target, Math.max(0, beforeHp - target.hp), Math.max(0, beforeSanity - target.sanity));
   }
   ctx.log(`${target.name} takes ${amount} ${damage.type} damage.`);
   if (amount > 0) {
@@ -866,6 +887,7 @@ export function heal(
     target.sanity = Math.min(target.maxSanity, target.sanity + amount);
     ctx.log(`${target.name} recovers ${amount} sanity.`);
     const restored = target.sanity - before;
+    ctx.game.recordLillithOutput(ctx.caster, restored);
     if (restored > 0) ctx.vfx?.combatFeedback?.(target, { kind: 'sanityHeal', amount: restored });
   } else {
     // Blood Charm and the like make every heal restore more.
@@ -874,12 +896,14 @@ export function heal(
     target.hp = Math.min(target.maxHp, target.hp + amount);
     ctx.log(`${target.name} heals ${amount} health.`);
     const restored = target.hp - before;
+    ctx.game.recordLillithOutput(ctx.caster, restored);
     if (restored > 0) ctx.vfx?.combatFeedback?.(target, { kind: 'heal', amount: restored });
     if (amount > 0) {
       ctx.game.reapOnOwnerHeal(target);
       ctx.game.crackPetrification(target);
     }
   }
+  if (target.lillith) mirrorLillith(ctx.game, target);
 }
 
 // -----------------------------------------------------------------------------
