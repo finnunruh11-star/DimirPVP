@@ -14,7 +14,7 @@ import { MINE_ENEMY_DEFS } from '../pve/minerun';
 import { isReducedMotion } from '../ui/cabinet/motion';
 import { MENU_COLOR, MENU_FONT, MENU_HEX } from '../ui/cabinet/theme';
 import { drawSightingGlyph, SIGHTING_COLORS } from '../ui/pve/sightingGlyphs';
-import { CREATURE_FRAME_RATIO, creatureFacesRight, creatureSpriteFor, creatureTexture, ensureCreatureSprites } from '../world/creatureSprite';
+import { CREATURE_FRAME_RATIO, creatureFacesRight, creatureSpriteFor, creatureTexture } from '../world/creatureSprite';
 import { MAGE_FIRST_FRAME, MAGE_IDLE } from '../world/mageSprite';
 import { OW_CELL, OW_SCALE } from '../world/overworldRender';
 import type { Cell } from '../world/pathfind';
@@ -399,8 +399,7 @@ export class TravelFx {
   /** A creature standing on the map in its own art, or as the tinted figure it wears in a fight. */
   private figure(foe: EncounterSpawn, at: Point): Phaser.GameObjects.Sprite {
     const kind = foe.family === 'swamp' ? foe.kind : foe.spec.kind;
-    const creature = creatureSpriteFor(kind, undefined, foe.family === 'mine' ? foe.spec.role : undefined);
-    ensureCreatureSprites(this.scene, creature);
+    const creature = creatureSpriteFor(kind);
     const sprite = this.scene.add.sprite(at.x, at.y + 6, creature ? creatureTexture(creature) : MAGE_FIRST_FRAME)
       .setOrigin(0.5, creature ? 0.9 : 0.95).setDepth(DEPTH.figure);
     sprite.play(creature ? `enemy-${creature}-idle` : MAGE_IDLE);

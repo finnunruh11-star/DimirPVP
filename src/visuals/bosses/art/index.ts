@@ -9,8 +9,10 @@ import { TIER3, UNITS3 } from './tier3';
 import { WILD } from './wild';
 import { creatureArt } from '../../creatures';
 import { ENEMY_LOOKS } from '../../creatureLooks';
+import { moay } from './moay';
 
 export const BOSS_ART: Record<BossId, BossArt> & Record<string, BossArt> = { ...TIER1, ...TIER2, ...TIER3, ...UNITS1, ...UNITS2, ...UNITS3, ...WILD } as Record<BossId, BossArt>;
+BOSS_ART.rock = moay;
 
 for (const [artId, kind] of Object.entries({
 	goblins: 'goblinChief',

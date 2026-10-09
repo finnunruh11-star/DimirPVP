@@ -107,9 +107,8 @@ export function makeGhostSummon(opts: {
 }
 
 /**
- * Life · Corrode Curse — a slow, pacifist "walking totem". It trudges a fixed 5
- * range-units a step and pulses corrosive damage around itself. A stocky
- * construct (hp 8).
+ * Life · Corrode Curse — Jürgen, a slow, pacifist rot bat. It flutters a fixed 5
+ * range-units a step and pulses corrosive damage around itself (hp 8).
  */
 export function makeCorrosionSentry(opts: {
   ownerInt: number;
@@ -118,10 +117,10 @@ export function makeCorrosionSentry(opts: {
   pos: Vec2;
   team: number;
 }): Mage {
-  const { unit } = baseSummon({ ...opts, suffix: 'Rot Sentry' });
+  const { unit } = baseSummon({ ...opts, suffix: 'J\u00fcrgen' });
   unit.maxHp = 8;
   unit.hp = 8;
-  unit.intrinsicMoveUnits = 5; // ponderous, totem-like crawl
+  unit.intrinsicMoveUnits = 5;
   unit.cannotAttack = true;
   unit.intrinsicDamageAura = {
     radius: R(3),

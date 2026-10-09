@@ -10,9 +10,12 @@ import type { Spell } from '../spells/Spell';
 import { BOSSES, MOONSHARD } from '../pve/exploration/bloodmoon';
 import { buyItem, dropItem, grantToParty, partyOf, sellItem, sellOffers, shopStock, withParty } from '../pve/exploration/economy';
 import { rollExploreFindLoot } from '../pve/exploration/finds';
+import { applyIntent, parseIntent } from '../pve/exploration/intents';
+import { levelWordPool } from '../pve/exploration/levels';
 import { enterMines, markMineKnown, mineCycle, minePassageDice, parseExplorationMines } from '../pve/exploration/mines';
 import { capturePartySnapshot } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
+import { parseRun } from '../pve/exploration/save';
 import { SHOPS, shopById, stockCandidates } from '../pve/exploration/shops';
 import { craftMaterial } from './crafting/item';
 import { MINE_DIRECTIONS, travelMineMaze } from '../pve/mineMaze';
@@ -305,6 +308,64 @@ const tests: [name: string, run: () => void][] = [
     for (const shop of Object.values(SHOPS)) {
       if (shop.stock) assert(!stockCandidates(shop.stock).some((def) => def.crafted || def.keyItem || def.pack), `${shop.id} never rolls crafted or key items`);
     }
+  }],
+
+  ['consumes colored moonshards to learn Fire, Mind and Shadow through checked intents', () => {
+    for (const [item, word] of [['moonshardRed', 'fire'], ['moonshardBlue', 'mind'], ['moonshardBlack', 'shadow']] as const) {
+      const run = freshRun();
+      withParty(run, (mage) => {
+        mage.setLoadout(['pierce', 'subtle']);
+        mage.utility.push(item, item);
+      });
+      const intent = parseIntent({ op: 'learn-shard', item });
+      assert(intent && applyIntent(run, null, intent).ok, `${item} can teach its word`);
+      const mage = partyOf(run)[0];
+      assert(mage.loadout.includes(word) && mage.charges[word]! > 0, 'the learned word is ready');
+      equal(mage.utility.filter((id) => id === item).length, 1, 'consumes exactly one shard');
+      assert(!applyIntent(run, null, intent).ok, 'knowing the word prevents wasting another shard');
+      equal(partyOf(run)[0].utility.filter((id) => id === item).length, 1, 'duplicate learning consumes nothing');
+      const saved = parseRun(JSON.stringify(run));
+      assert(saved && partyOf(saved)[0].loadout.includes(word), 'the word survives a save round trip');
+    }
+    equal(parseIntent({ op: 'learn-shard', item: 'moonshardRed', replace: 0.5 }), null, 'fractional replacement is malformed');
+    const run = freshRun();
+    assert(!applyIntent(run, null, { op: 'learn-shard', item: 'moonshardRed' }).ok, 'cannot use a shard not carried');
+    assert(!applyIntent(run, null, { op: 'learn-shard', item: 'oreIron' }).ok, 'ordinary materials teach nothing');
+  }],
+
+  ['only uses the acting member\'s shard, never a companion\'s', () => {
+    const first = traveller();
+    first.mageClass = 'objects';
+    first.setLoadout(['pierce', 'subtle']);
+    const second = traveller();
+    second.mageClass = 'life';
+    second.setLoadout(['mind', 'subtle']);
+    second.utility.push('moonshardRed');
+    const run = createRun(7, capturePartySnapshot([first, second]));
+    const intent = { op: 'learn-shard', item: 'moonshardRed' } as const;
+    assert(!applyIntent(run, 'objects', intent).ok, 'cannot consume a companion\'s shard');
+    assert(!applyIntent(run, 'hexcraft', intent).ok, 'a missing member cannot learn');
+    assert(applyIntent(run, 'life', intent).ok, 'the owner learns the word');
+    const party = partyOf(run);
+    assert(!party[0].loadout.includes('fire') && party[1].loadout.includes('fire'), 'only the acting member learns Fire');
+  }],
+
+  ['replaces a full rack word with a shard and unlocks only that new color for offers', () => {
+    const run = freshRun();
+    withParty(run, (mage) => {
+      mage.setLoadout(['mind', 'bind', 'veil', 'water', 'pierce', 'subtle']);
+      mage.bag.push('moonshardBlack');
+    });
+    assert(!levelWordPool(partyOf(run)[0].loadout).includes('curse'), 'black words are initially locked');
+    assert(!applyIntent(run, null, { op: 'learn-shard', item: 'moonshardBlack' }).ok, 'a full rack needs a replacement');
+    assert(!applyIntent(run, null, { op: 'learn-shard', item: 'moonshardBlack', replace: 5 }).ok, 'modifiers cannot be replaced');
+    assert(!applyIntent(run, null, { op: 'learn-shard', item: 'moonshardBlack', replace: 99 }).ok, 'invalid replacements are refused');
+    assert(partyOf(run)[0].bag.includes('moonshardBlack'), 'rejected choices keep the shard');
+    assert(applyIntent(run, null, { op: 'learn-shard', item: 'moonshardBlack', replace: 4 }).ok, 'a base word can be replaced');
+    const mage = partyOf(run)[0];
+    equal(mage.loadout, ['mind', 'bind', 'veil', 'water', 'shadow', 'subtle'], 'rack stays within its limit');
+    assert(!mage.bag.includes('moonshardBlack'), 'the bag shard is consumed');
+    assert(levelWordPool(mage.loadout).includes('curse'), 'black choices unlock after learning Shadow');
   }],
 
   ['a party vote goes the way most want, and a tie is settled by chance', () => {

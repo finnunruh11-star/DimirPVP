@@ -14,10 +14,10 @@ import { dist, type Vec2 } from '../core/utils';
 import { cleanse, dealDamage } from '../effects/effects';
 import type { EnemyKind } from './swamprun';
 
-/** Her circles' centimetre: four or five circles, edge to edge, span the field top to bottom. */
+/** Her circles' centimetre, on the existing 22.5cm field scale. */
 export const LILLITH_CM = FIELD.h / 22.5;
-/** Every grave and acid circle is 5cm across. */
-export const LILLITH_CIRCLE_RADIUS = 2.5 * LILLITH_CM;
+/** Every grave and acid circle is 7cm across. */
+export const LILLITH_CIRCLE_RADIUS = 3.5 * LILLITH_CM;
 /** What an acid circle deals everyone in it, at each of her next two turns. */
 export const LILLITH_POOL_DAMAGE = 3;
 export const LILLITH_POOL_FIRES = 2;
@@ -150,9 +150,9 @@ function emptyPlan(): LillithPlan {
   return { risings: [], copies: [], orbs: [] };
 }
 
-/** Her stride: 1d10cm, rolled anew as each of her (or a copy's) turns begins. */
+/** Her stride: 2d6+1cm, rolled anew as each of her (or a copy's) turns begins. */
 export function lillithStride(game: GameState, m: Mage): void {
-  m.intrinsicMoveUnits = game.rng.die(10);
+  m.intrinsicMoveUnits = game.rng.die(6) + game.rng.die(6) + 1;
   game.log(`${m.name} moves up to ${m.intrinsicMoveUnits}cm this turn.`);
 }
 
@@ -187,12 +187,12 @@ export function lillithTurnStart(game: GameState, boss: Mage): LillithPlan {
   return plan;
 }
 
-/** Once her copies stand: each living copy lays an acid circle 2cm from a player, and four more fall 6 and 9cm out; a lingering copy fades. */
+/** Once her copies stand: each lays six acid circles; she lays nine, including one on a player; a lingering copy fades. */
 export function lillithAfterSpawns(game: GameState, boss: Mage): void {
   const s = boss.lillith;
   if (!s || !boss.alive || s.phase !== 2) return;
   const copies = lillithCopies(game, boss);
-  const reaches = [...copies.map(() => 2), 6, 6, 9, 9];
+  const reaches = [...copies.flatMap(() => [3, 6, 6, 9, 9, 9]), 3, 3, 6, 6, 6, 9, 9, 9, 0];
   for (const reach of reaches) {
     const pool = poolNear(game, boss, reach);
     if (pool) s.pools.push(pool);
@@ -273,11 +273,27 @@ function endPhase(game: GameState, boss: Mage, why: string): void {
 
 function raiseGraves(game: GameState, boss: Mage, plan: LillithPlan): void {
   const s = boss.lillith!;
+  let opened = 0;
   for (const grave of s.graves) {
     if (lillithGraveHeld(game, boss, grave)) continue;
-    plan.risings.push({ kind: game.rng.chance(2 / 3) ? 'zombie' : 'wisp', at: { ...grave } });
+    opened += 1;
+    let rerolled = false;
+    const summon = (): void => {
+      const roll = game.rng.die(100);
+      if (roll > 80) {
+        if (rerolled) return;
+        rerolled = true;
+        summon();
+        summon();
+        return;
+      }
+      const kind: EnemyKind = roll <= 33 ? 'zombie' : roll <= 50 ? 'wisp' : roll <= 67 ? 'zombie' : roll <= 74 ? 'skeleton' : roll <= 79 ? 'acidZombie' : 'ghast';
+      const count = roll > 50 && roll <= 67 ? 3 : 1;
+      for (let index = 0; index < count; index++) plan.risings.push({ kind, at: { ...grave } });
+    };
+    summon();
   }
-  if (plan.risings.length) game.log(`The dead climb out of ${plan.risings.length === 1 ? 'an open grave' : `${plan.risings.length} open graves`}.`);
+  if (plan.risings.length) game.log(`The dead climb out of ${opened === 1 ? 'an open grave' : `${opened} open graves`}.`);
 }
 
 function bitePools(game: GameState, boss: Mage): void {
@@ -452,16 +468,17 @@ export function lillithHit(game: GameState, source: Mage, target: Mage, hpLost: 
   if (target.lillith) mirrorLillith(game, target);
 }
 
-/** Her blow's rider: 1 Reap, only seeming when a copy dealt it. */
+/** Her blow's rider: 1d3 Reap, only seeming when a copy dealt it. */
 export function lillithReap(game: GameState, source: Mage, target: Mage): void {
   if (!target.alive) return;
+  const stacks = game.rng.die(3);
   const copy = source.lillithCopy;
   if (copy && lillithIllusory(source, target)) {
     const seen = copy.seeming.get(target) ?? { hp: 0, sanity: 0, reap: 0 };
-    seen.reap += 1;
+    seen.reap += stacks;
     copy.seeming.set(target, seen);
   }
-  game.applyReap(target, 1, source);
+  game.applyReap(target, stacks, source);
 }
 
 /** Reap on `target` that a living copy only seemed to lay. */

@@ -20,6 +20,7 @@ import { isGoblin } from '../pve/goblins';
 import { chooseGoblinAction } from './goblinAI';
 import { isBaralUnit } from '../pve/baral';
 import { chooseBaralAction } from './baralAI';
+import { chooseMoayAction } from './moayAI';
 import type { MineActionChoice } from '../pve/mineActions';
 
 export type AIDecision =
@@ -98,6 +99,7 @@ export class SimpleAI {
     if (this.self.enemyKind === 'lich') return this.chooseLichAction();
     if (isGoblin(this.self)) return chooseGoblinAction(this.game, this.self);
     if (isBaralUnit(this.self)) return chooseBaralAction(this.game, this.self);
+    if (this.self.enemyKind === 'moay') return chooseMoayAction(this.game, this.self);
     if (this.self.reaperKind) return this.chooseReaperAction();
     if (this.self.ghastKind) return this.chooseGhastAction();
     if (this.self.companion === 'dwarf') return this.chooseDwarfAction();

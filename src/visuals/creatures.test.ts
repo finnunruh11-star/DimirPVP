@@ -11,7 +11,7 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-const authored = new Set(['zombie', 'acidZombie', 'skeleton', 'wisp', 'defender', 'reaper']);
+const authored = new Set(['zombie', 'acidZombie', 'skeleton', 'wisp', 'defender', 'reaper', 'moay']);
 for (const kind of [...Object.keys(MINE_ENEMY_DEFS), ...Object.keys(ENEMY_DEFS)]) {
   assert(authored.has(kind) || placeholderSpriteFor(kind), `Missing enemy art: ${kind}`);
 }

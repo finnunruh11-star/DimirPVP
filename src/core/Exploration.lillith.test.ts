@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FIELD, MELEE_RANGE, RANGE_UNIT } from '../config/constants';
 import { chooseLillithAction, lillithPrey } from '../ai/lillithAI';
-import { BOSSES, bossDamageScales, bossRoster } from '../pve/exploration/bloodmoon';
+import { BOSSES, bossDamageScales, bossRoster, bossScaling } from '../pve/exploration/bloodmoon';
 import {
   LILLITH_CIRCLE_RADIUS,
   LILLITH_CM,
@@ -21,7 +21,7 @@ import {
 import { applyEnemyTraits, type EnemyKind } from '../pve/swamprun';
 import { dealDamage, heal } from '../effects/effects';
 import { BOSS_ART } from '../visuals/bosses/art';
-import { AUTHORED_BOSSES } from '../visuals/bosses/authored';
+import { AUTHORED_BOSSES, authoredIdleSpecial } from '../visuals/bosses/authored';
 import { BOSS_ANIMS, renderAnim } from '../visuals/bosses/rig';
 import { dmg } from './Damage';
 import { Dice } from './Dice';
@@ -87,28 +87,35 @@ const mid = FIELD.y + FIELD.h / 2;
 const centre = { x: FIELD.x + FIELD.w / 2, y: mid };
 
 const tests: [name: string, run: () => void | Promise<void>][] = [
-  ['takes the third pool\'s black seat alone, her health scaling with the party but not her damage', () => {
+  ['takes the third pool\'s black seat with one skeleton per player, her health scaling from 130 at three players', () => {
     equal([BOSSES.lillith.tier, BOSSES.lillith.color], [3, 'black'], 'pool and colour');
-    equal(bossRoster('lillith', 3).map((u) => [u.kind, u.art, u.count, u.leader]), [['lillith', 'lillith', 1, true]], 'roster');
+    for (const players of [1, 2, 3, 5]) {
+      equal(bossRoster('lillith', players).map((u) => [u.kind, u.art, u.count, !!u.leader]),
+        [['lillith', 'lillith', 1, true], ['skeleton', 'skeleton', players, false]], `${players}-player roster`);
+    }
+    const boss = unit('lillith', 800, mid);
+    equal([Math.round(boss.maxHp * bossScaling(3, 'lillith').health), boss.maxSanity], [130, 70], 'three-player hp and sanity');
+    assert(bossScaling(1, 'lillith').health < 1 && bossScaling(5, 'lillith').health > 1, 'health still scales with party size');
     assert(!bossDamageScales('lillith'), 'her damage was not written to scale');
     equal([1, 2, 3, 5].map(lillithCopyCount), [2, 3, 4, 6], 'one copy more than players');
     equal([1, 2, 3, 5].map(lillithOrbCount), [2, 2, 3, 5], 'two orbs, one more per player past two');
     equal([0, 2, 6, 14].map(lillithHeldReap), [2, 4, 8, 16], '2 Reap and as much again');
-    assert(Math.abs(FIELD.h / (2 * LILLITH_CIRCLE_RADIUS) - 4.5) < 0.01, 'four or five circles span the field top to bottom');
+    assert(Math.abs(LILLITH_CIRCLE_RADIUS / LILLITH_CM - 3.5) < 0.001, 'circles are 7cm across');
   }],
 
-  ['has the stats she was written with, and lays 1 Reap with a 1d3 corrosive blow at 2cm', async () => {
+  ['has 1 physical and magical armor, and lays 1d3 Reap with a 1d4 corrosive blow at 2cm', async () => {
     const boss = unit('lillith', 800, mid);
     equal([boss.maxHp, boss.maxSanity], [130, 70], 'hp and sanity');
-    equal(boss.intrinsicMelee && [boss.intrinsicMelee.spec, boss.intrinsicMelee.type], ['1d3', 'corrosive'], 'blow');
+    equal([boss.intrinsicArmorFlat, boss.intrinsicMagicArmorFlat], [1, 1], 'armor');
+    equal(boss.intrinsicMelee && [boss.intrinsicMelee.spec, boss.intrinsicMelee.type], ['1d4', 'corrosive'], 'blow');
     equal(boss.intrinsicMeleeReach, MELEE_RANGE + 2 * U, '2cm reach');
     equal([boss.resistMultiplier('light'), boss.resistMultiplier('shadow'), boss.resistMultiplier('corrosive')], [2, 0.5, 1], 'weak to light, resists shadow');
     const a = player(800 - MELEE_RANGE, mid, 'A');
     const game = new GameState([a, boss], 3);
     const hp = a.hp;
     await game.makeMeleeItem(boss, a).resolve(game);
-    assert(a.hp < hp && a.hp >= hp - 3, `1d3 corrosive (${hp - a.hp})`);
-    equal(game.reapOn(a), 1, '1 Reap');
+    assert(a.hp < hp && a.hp >= hp - 4, `1d4 corrosive (${hp - a.hp})`);
+    assert(game.reapOn(a) >= 1 && game.reapOn(a) <= 3, '1d3 Reap');
     const strides = new Set<number>();
     openLillith(game, boss, 1);
     for (let i = 0; i < 40; i++) {
@@ -116,7 +123,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
       game.beginTurn();
       strides.add(boss.moveRange() / U);
     }
-    assert([...strides].every((s) => s >= 1 && s <= 10) && strides.size > 4, `a 1d10cm stride, rolled each turn (${[...strides]})`);
+    assert([...strides].every((s) => s >= 3 && s <= 13) && strides.size > 4, `a 2d6+1cm stride, rolled each turn (${[...strides]})`);
   }],
 
   ['always takes the last turn, whoever joins the fight', () => {
@@ -136,7 +143,7 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     assert(game.upcomingTurns(4)[3] === boss, 'last again in the round after');
   }],
 
-  ['phase one: a grave per player raises a zombie or a wisp at her turn unless stood on; all held, it ends', () => {
+  ['phase one: a grave per player summons from the new table unless stood on; all held, it ends', () => {
     const a = player(200, mid - 100, 'A');
     const b = player(200, mid + 100, 'B');
     const boss = unit('lillith', 1100, mid);
@@ -144,12 +151,10 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     openLillith(game, boss, 2);
     const s = boss.lillith!;
     equal([s.phase, s.graves.length], [1, 2], 'it begins at once, one grave per player');
+    const die = game.rng.die.bind(game.rng);
+    game.rng.die = () => 1;
     const first = turn(game, boss);
-    equal(first.risen.length, 2, 'both open graves raise something');
-    assert(first.risen.every((m) => m.enemyKind === 'zombie' || m.enemyKind === 'wisp'), 'zombies and wisps');
-    let zombies = 0;
-    for (let i = 0; i < 300; i++) zombies += lillithTurnStart(game, boss).risings.filter((r) => r.kind === 'zombie').length;
-    assert(zombies > 340 && zombies < 460, `two in three are zombies (${zombies} of 600)`);
+    equal(first.risen.map((m) => m.enemyKind), ['zombie', 'zombie'], 'both open graves raise a zombie on a low roll');
     Object.assign(a, s.graves[0]);
     equal(lillithTurnStart(game, boss).risings.length, 1, 'a held grave stays shut');
     Object.assign(b, s.graves[1]);
@@ -157,6 +162,38 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal([s.phase, s.graves.length, quiet.risings.length], [0, 0, 0], 'every grave held: the phase ends, and this turn is quiet');
     const next = lillithTurnStart(game, boss);
     equal([s.phase, next.copies.length, !!next.blinkTo], [2, 3, true], 'then phase two: one copy more than players, and she slips among them');
+    game.rng.die = die;
+  }],
+
+  ['grave summon table has exact percentage boundaries and allows only one reroll-twice per circle', () => {
+    const a = player(FIELD.x + 30, FIELD.y + 30, 'A');
+    const boss = unit('lillith', 1100, mid);
+    const game = new GameState([a, boss], 51);
+    openLillith(game, boss, 1);
+    boss.lillith!.graves = [{ ...centre }];
+    const roll = (...rolls: number[]): string[] => {
+      let index = 0;
+      game.rng.die = (sides) => {
+        equal(sides, 100, 'percentage die');
+        assert(index < rolls.length, 'reroll recursion is bounded');
+        return rolls[index++];
+      };
+      const kinds = lillithTurnStart(game, boss).risings.map((r) => r.kind);
+      equal(index, rolls.length, 'all planned rolls consumed');
+      return kinds;
+    };
+    const totals: Record<string, number> = {};
+    for (let value = 1; value <= 80; value++) {
+      const result = roll(value);
+      const outcome = result.length === 3 ? '3 zombies' : result[0];
+      totals[outcome] = (totals[outcome] ?? 0) + 1;
+    }
+    equal(totals, { zombie: 33, wisp: 17, '3 zombies': 17, skeleton: 7, acidZombie: 5, ghast: 1 }, '80 direct results');
+    for (let value = 81; value <= 100; value++) equal(roll(value, 51, 80), ['zombie', 'zombie', 'zombie', 'ghast'], '20 reroll results summon both outcomes');
+    equal(roll(81, 81, 1), ['zombie'], 'a repeated reroll does nothing');
+    equal(roll(100, 100, 100), [], 'two repeated rerolls do nothing');
+    boss.lillith!.graves.push({ x: centre.x + 100, y: centre.y });
+    equal(roll(81, 1, 34, 81, 68, 80), ['zombie', 'wisp', 'skeleton', 'ghast'], 'each circle gets its own reroll');
   }],
 
   ['phase two: copies wear her health, pop at a blow, and what they did comes undone; a lingering one turns real', () => {
@@ -171,17 +208,20 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     s.next = 2;
     const { copies } = turn(game, boss);
     equal(copies.length, 3, 'three copies for two players');
-    equal(s.pools.length, 3 + 4, 'a circle 2cm out per copy, and two each at 6 and 9cm');
-    const reaches = s.pools.map((p) => Math.min(dist(p, a.pos), dist(p, b.pos)) / LILLITH_CM);
-    assert(reaches.filter((r) => r <= 2.01).length >= 3 && reaches.every((r) => r <= 9.01), `each centred 2, 6 or 9cm from a player (${reaches.map((r) => r.toFixed(1))})`);
+    equal(s.pools.length, 3 * 6 + 9, 'six circles per copy, and nine from the original');
+    equal([0, 3, 6, 9].map((reach) => s.pools.filter((pool) => [a, b].some((who) => Math.abs(dist(pool, who.pos) / LILLITH_CM - reach) < 0.001)).length),
+      [1, 3 + 2, 3 * 2 + 3, 3 * 3 + 3], 'one on a player; per-copy and original 3/6/9cm counts');
     assert(copies.every((c) => c.name === boss.name), 'they bear her name');
     dealDamage(game.effectContext(a, boss, null), boss, dmg(10, 'typeless'), { canMiss: false });
     equal(copies.map((c) => [c.hp, c.maxHp, c.sanity]), copies.map(() => [boss.hp, boss.maxHp, boss.sanity]), 'and her wounds');
 
     const hp = a.hp;
     dealDamage(game.effectContext(copies[0], a, null), a, dmg(5, 'corrosive'), { canMiss: false });
+    const die = game.rng.die.bind(game.rng);
+    game.rng.die = () => 3;
     game.lillithReap(copies[0], a);
-    equal([a.hp, game.reapOn(a)], [hp - 5, 1], 'its blow seems real');
+    game.rng.die = die;
+    equal([a.hp, game.reapOn(a)], [hp - 5, 3], 'its rolled Reap seems real');
     dealDamage(game.effectContext(copies[0], a, null), a, dmg(999, 'corrosive'), { canMiss: false });
     assert(a.alive && a.hp === 1, 'but cannot kill');
     dealDamage(game.effectContext(a, copies[0], null), copies[0], dmg(1, 'typeless'), { canMiss: false });
@@ -331,11 +371,19 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     assert(game.isOver, 'and the fight is won');
   }],
 
+  ['idle specials happen half as often and choose Inspect 90% of the time, otherwise the existing taunt', () => {
+    equal(AUTHORED_BOSSES.lillith.special!.every, 8, 'eight idle loops between specials');
+    const results = Array.from({ length: 100 }, (_, index) => authoredIdleSpecial('lillith', index / 100));
+    equal([results.filter((strip) => strip === 'idle_inspect').length, results.filter((strip) => strip === 'taunt').length], [90, 10], '90/10 split');
+    equal([authoredIdleSpecial('lillith', 0.899999), authoredIdleSpecial('lillith', 0.9)], ['idle_inspect', 'taunt'], 'probability boundary');
+    equal(authoredIdleSpecial('rock', 0.5), null, 'bosses without idle specials are unchanged');
+  }],
+
   ['wears the shade queen\'s sheets, every strip on disk the size her registry says, and paints her orb', () => {
     const boss = AUTHORED_BOSSES.lillith;
     assert(boss && !BOSS_ART.lillith, 'she is drawn from sheets, not painted');
     for (const anim of BOSS_ANIMS) assert(boss.strips[anim], `a ${anim} strip`);
-    for (const name of [...boss.attacks, boss.special!.strip, boss.cast!.strip]) assert(boss.strips[name], `a ${name} strip`);
+    for (const name of [...boss.attacks, boss.special!.strip, boss.special!.alternate!.strip, boss.cast!.strip]) assert(boss.strips[name], `a ${name} strip`);
     assert(boss.cast!.peak < boss.strips[boss.cast!.strip].frames, 'the chant peaks within its strip');
     equal(boss.ground / boss.h, 0.9, 'her feet sit nine tenths down, where the arena anchors creatures');
     for (const [name, strip] of Object.entries(boss.strips)) {

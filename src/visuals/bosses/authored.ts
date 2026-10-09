@@ -20,7 +20,7 @@ export interface AuthoredBoss {
   /** Strips played in turn, one per strike. */
   attacks: readonly string[];
   /** A strip played in place of an idle loop after every `every` loops. */
-  special?: { strip: string; every: number };
+  special?: { strip: string; every: number; alternate?: { strip: string; chance: number } };
   /** Its spell, and the frame at which the spell takes effect. */
   cast?: { strip: string; peak: number };
 }
@@ -34,6 +34,7 @@ export const AUTHORED_BOSSES: Readonly<Record<string, AuthoredBoss>> = {
     columns: 12,
     strips: {
       idle: { frames: 20, rate: 10 },
+      idle_inspect: { frames: 24, rate: 10 },
       walk: { frames: 14, rate: 16 },
       attack: { frames: 16, rate: 24 },
       stab: { frames: 16, rate: 24 },
@@ -44,7 +45,13 @@ export const AUTHORED_BOSSES: Readonly<Record<string, AuthoredBoss>> = {
       chant: { frames: 37, rate: 20 },
     },
     attacks: ['attack', 'stab', 'combo'],
-    special: { strip: 'taunt', every: 4 },
+    special: { strip: 'idle_inspect', every: 8, alternate: { strip: 'taunt', chance: 0.1 } },
     cast: { strip: 'chant', peak: 22 },
   },
 };
+
+export function authoredIdleSpecial(id: string, roll: number): string | null {
+  const special = AUTHORED_BOSSES[id]?.special;
+  if (!special) return null;
+  return special.alternate && roll >= 1 - special.alternate.chance ? special.alternate.strip : special.strip;
+}

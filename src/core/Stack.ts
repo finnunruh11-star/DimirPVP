@@ -14,6 +14,8 @@ export interface PendingCast {
   point: Vec2 | null;
   point2: Vec2 | null;
   modifiers: WordId[];
+  /** Channel: the caster picks the target when the spell is released, not when cast. */
+  aimOnRelease?: boolean;
 }
 
 /**
@@ -59,6 +61,8 @@ export interface StackItem {
   noPhysicalReaction?: boolean;
   /** A synthetic trigger that only opens a reaction window (ending a turn, a blink): not an action itself. */
   windowTrigger?: boolean;
+  /** Allied players may answer this window too (ending a turn), not only enemies. */
+  openToAllies?: boolean;
   /** Modifier words attached to this cast (Subtle / Delay / Channel). */
   modifiers?: WordId[];
   /** A silent cast: nobody may react to it at all. */

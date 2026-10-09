@@ -3,7 +3,7 @@ import { chooseBaralAction } from '../ai/baralAI';
 import { bossDamageScales, bossRoster } from '../pve/exploration/bloodmoon';
 import { denialLabel, denialStartCharges, denialThreshold, DRAKE_LIFESPAN } from '../pve/baral';
 import { applyEnemyTraits, type EnemyKind } from '../pve/swamprun';
-import { dealDamage } from '../effects/effects';
+import { applyDebuff, dealDamage } from '../effects/effects';
 import { BOSS_ART } from '../visuals/bosses/art';
 import { BOSS_ANIMS, renderAnim } from '../visuals/bosses/rig';
 import { dmg, type DamageType } from './Damage';
@@ -27,7 +27,7 @@ function unit(kind: EnemyKind, x: number, y: number): Mage {
   const m = new Mage({ name: kind, isAI: true, team: 2, position: { x, y }, loadout: [] });
   applyEnemyTraits(m, kind, new Dice(5));
   m.actions = { move: 1, main: 1, bonus: 2 };
-  if (kind === 'baral') m.baral = { turns: 0, wounded: false, hpMark: 10 };
+  if (kind === 'baral') m.baral = { turns: 0, wounded: false, hpMark: 20 };
   if (kind === 'baralDrake') m.drakeTurns = DRAKE_LIFESPAN;
   return m;
 }
@@ -47,8 +47,12 @@ function player(x: number, y: number, name = 'Walker'): Mage {
 const mid = 300;
 
 const tests: [name: string, run: () => void][] = [
-  ['opens with an artifact per player, charged 3, 2, 1, 0 and round again, armed sooner for bigger parties', () => {
-    equal(bossRoster('baral', 3).map((u) => [u.kind, u.art, u.count]), [['baral', 'baral', 1], ['denialArtifact', 'denial-artifact', 3]], 'three players');
+  ['opens with an artifact and a drake per player, charged 3, 2, 1, 0 and round again, armed sooner for bigger parties', () => {
+    equal(
+      bossRoster('baral', 3).map((u) => [u.kind, u.art, u.count]),
+      [['baral', 'baral', 1], ['denialArtifact', 'denial-artifact', 3], ['baralDrake', 'baral-drake', 3]],
+      'three players'
+    );
     equal(denialStartCharges(6), [3, 2, 1, 0, 3, 2], 'start charges');
     equal([1, 2, 3, 4, 5, 6].map(denialThreshold), [4, 3, 3, 3, 2, 2], 'charges to arm');
     assert(!bossDamageScales('baral'), 'his damage does not scale; his health does');
@@ -58,10 +62,16 @@ const tests: [name: string, run: () => void][] = [
     const baral = unit('baral', 800, mid);
     const art = unit('denialArtifact', 900, mid);
     const drake = unit('baralDrake', 700, mid);
-    equal([baral.maxHp, art.maxHp, drake.maxHp], [20, 6, 2], 'hp');
-    equal([baral.maxSanity, drake.maxSanity], [20, 2], 'sanity');
-    equal([baral.moveRange(), art.moveRange(), drake.moveRange()], [15 * U, 0, 4 * U], 'speed');
-    equal([baral.intrinsicMelee, drake.intrinsicMelee], [{ spec: '1d2', type: 'sanity' }, { spec: '1', type: 'sanity' }], 'mill blows');
+    equal([baral.maxHp, art.maxHp, drake.maxHp], [40, 8, 2], 'hp');
+    equal([baral.maxSanity, drake.maxSanity], [30, 2], 'sanity');
+    equal([baral.moveRange(), art.moveRange(), drake.moveRange()], [10 * U, 0, 4 * U], 'speed');
+    baral.hp = 19;
+    equal(baral.moveRange(), 30 * U, 'below 20 hp he runs');
+    baral.hp = 40;
+    baral.sanity = 14;
+    equal(baral.moveRange(), 30 * U, 'below 15 sanity too');
+    baral.sanity = 30;
+    equal([baral.intrinsicMelee, drake.intrinsicMelee], [{ spec: '1d3', type: 'sanity' }, { spec: '1d2', type: 'sanity' }], 'mill blows');
     equal([baral.intrinsicMeleeReach ?? MELEE_RANGE, drake.intrinsicMeleeReach ?? MELEE_RANGE], [MELEE_RANGE, MELEE_RANGE], '0cm range');
     const types: DamageType[] = ['pierce', 'shatter', 'slashing', 'shadow', 'corrosive', 'heat', 'light', 'cold', 'sanity', 'generic'];
     for (const type of types) equal(baral.resistMultiplier(type), 1, `Baral ${type}`);
@@ -101,29 +111,41 @@ const tests: [name: string, run: () => void][] = [
     game.addMage(a);
     assert(!game.initiativeOrder.includes(game.mages.indexOf(a)), 'never in the turn order');
     game.notifyMageRelocation(a, a.pos, a.pos, false);
-    equal(a.hp, 6, 'standing still costs nothing');
+    equal(a.hp, 8, 'standing still costs nothing');
     const from = { ...a.pos };
     a.x += 60;
     game.notifyMageRelocation(a, from, a.pos, false);
-    equal(a.hp, 1, 'a shove costs 5');
+    equal(a.hp, 3, 'a shove costs 5');
   }],
 
-  ['summons two drakes and vanishes the first time he drops below 10, once', () => {
+  ['the first time he drops below 20 hp or 15 sanity: held at one under, two drakes, unseen, a 10cm dash and a cleanse, once', () => {
     const walker = player(300, mid);
     const baral = unit('baral', 900, mid);
     const game = new GameState([walker, baral], 5);
     const ctx = game.effectContext(walker, baral, null);
-    dealDamage(ctx, baral, dmg(10, 'typeless'), { canMiss: false });
-    equal(game.pendingDrakes.length, 0, 'at 10 he holds');
-    dealDamage(ctx, baral, dmg(1, 'typeless'), { canMiss: false });
+    dealDamage(ctx, baral, dmg(20, 'typeless'), { canMiss: false });
+    equal(game.pendingDrakes.length, 0, 'at 20 he holds');
+    applyDebuff(ctx, baral, { name: 'Mired', duration: 2, mods: { moveRange: -U } });
+    const from = { ...baral.pos };
+    dealDamage(ctx, baral, dmg(99, 'typeless'), { canMiss: false });
+    assert(baral.alive, 'the blow is turned aside');
+    equal(baral.hp, 19, 'he is left at 19');
     equal(game.pendingDrakes.map((p) => p.count), [2], 'below it: two drakes');
     assert(baral.statuses.some((s) => s.kind === 'invisibility' && s.duration === 1), 'unseen until his next turn');
+    assert(!baral.statuses.some((s) => s.kind === 'debuff'), 'fully cleansed');
+    const dashed = Math.hypot(baral.x - from.x, baral.y - from.y);
+    assert(dashed > 0 && dashed <= 10 * U + 1, `dashed up to 10cm (${dashed})`);
+    assert(game.isUntargetable(baral, walker) && baral.unseen, 'gone from sight: nothing can single him out');
+    equal(dealDamage(ctx, baral, dmg(5, 'typeless'), { canMiss: false }), 0, 'and nothing reaches him until his next turn');
+    game.setCurrent(baral);
+    game.beginTurn();
+    assert(!baral.unseen && !game.isUntargetable(baral, walker), 'his turn brings him back into sight');
     dealDamage(ctx, baral, dmg(1, 'typeless'), { canMiss: false });
-    equal(game.pendingDrakes.length, 1, 'only the first time');
+    equal([game.pendingDrakes.length, baral.hp], [1, 18], 'only the first time');
     const other = unit('baral', 950, mid);
     const second = new GameState([walker, other], 6);
-    dealDamage(second.effectContext(walker, other, null), other, dmg(11, 'sanity'), { canMiss: false });
-    equal(second.pendingDrakes.length, 1, 'sanity counts too');
+    dealDamage(second.effectContext(walker, other, null), other, dmg(20, 'sanity'), { canMiss: false });
+    equal([second.pendingDrakes.length, other.sanity, other.hp], [1, 14, 40], 'sanity counts too, held at 14');
   }],
 
   ['builds a drake at the end of odd turns, two at his marks, and an artifact every second turn', () => {
@@ -132,12 +154,12 @@ const tests: [name: string, run: () => void][] = [
     const game = new GameState([walker, baral], 7);
     equal(game.baralEndStep(baral), { artifacts: 0, drakes: 1 }, 'first turn');
     equal(game.baralEndStep(baral), { artifacts: 1, drakes: 0 }, 'second turn');
-    baral.hp = 10;
-    equal(game.baralEndStep(baral), { artifacts: 0, drakes: 2 }, 'at 10 hp, two');
     baral.hp = 20;
-    baral.sanity = 10;
+    equal(game.baralEndStep(baral), { artifacts: 0, drakes: 2 }, 'at 20 hp, two');
+    baral.hp = 40;
+    baral.sanity = 15;
     game.baralEndStep(baral);
-    equal(game.baralEndStep(baral), { artifacts: 0, drakes: 2 }, 'at 10 sanity, two');
+    equal(game.baralEndStep(baral), { artifacts: 0, drakes: 2 }, 'at 15 sanity, two');
   }],
 
   ['lets a drake last three of its turns, and brings his works down with him', () => {
@@ -150,6 +172,7 @@ const tests: [name: string, run: () => void][] = [
     assert(game.wearDrake(drake) && !drake.alive, 'the third ends it');
     const second = unit('baralDrake', 720, mid);
     game.addMage(second);
+    baral.baral!.wounded = true;
     dealDamage(game.effectContext(walker, baral, null), baral, dmg(99, 'typeless'), { canMiss: false });
     assert(!baral.alive && !second.alive && !a.alive, 'drakes and artifacts fail when he falls');
     assert(game.isOver, 'and the fight is won');

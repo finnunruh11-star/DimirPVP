@@ -39,6 +39,7 @@ import type {
 import type { PendingCast, StackItem } from './Stack';
 import type { Vec2 } from './utils';
 import type { LillithCopy, LillithState } from '../pve/lillith';
+import { BARAL_FAST_MOVE_UNITS, baralBelowMarks } from '../pve/baral';
 
 /**
  * A build carries at most ONE modifier word, chosen on the menu screen. It sits
@@ -298,6 +299,8 @@ export class Mage {
   intrinsicInitiativePriority = 0;
   /** Flat physical armour inherent to a creature rather than worn equipment. */
   intrinsicArmorFlat = 0;
+  intrinsicMagicArmorFlat = 0;
+  moayTurns = 0;
   /** Persistent Deep Swamp curse carried between wave combats. */
   swamprunCurse?: 'madness' | 'decay' | 'sloth' | 'feeding';
   /** A companion who fights by its own routine (the dwarven guard of a roadside scene). */
@@ -351,8 +354,8 @@ export class Mage {
   damageScale = 1;
   /** An object on the field, not a creature: it never takes a turn (an Artifact of Denial). */
   inert = false;
-  /** Baral's own count: turns ended, whether his first wound has struck, and his hp mark. */
-  baral?: { turns: number; wounded: boolean; hpMark: number };
+  /** Baral's own count: turns ended, whether his first wound has struck, his hp mark, and whether he is gone from sight. */
+  baral?: { turns: number; wounded: boolean; hpMark: number; vanished?: boolean };
   /** An Artifact of Denial's charges, and how many arm it. */
   denial?: { charges: number; threshold: number };
   /** A drake's own turns left before it falls apart. */
@@ -405,6 +408,11 @@ export class Mage {
   /** Oni remain completely hidden until the party's first damage attempt. */
   oniKind = false;
   oniHidden = false;
+
+  /** Off the field for everyone: not drawn and not targetable by anything. */
+  get unseen(): boolean {
+    return this.oniHidden || !!this.baral?.vanished;
+  }
   /** Deep Swamp solo boss with a spear, target reaction and end-step powers. */
   deathknightKind = false;
   deathknightReactionRound = -1;
@@ -1041,9 +1049,10 @@ export class Mage {
 
   private unslowedMovePx(): number {
     // Swamprun creatures move a fixed number of range-units, independent of Dex.
+    const units = baralBelowMarks(this) ? BARAL_FAST_MOVE_UNITS : this.intrinsicMoveUnits;
     const base =
-      this.intrinsicMoveUnits != null
-        ? this.intrinsicMoveUnits * RANGE_UNIT
+      units != null
+        ? units * RANGE_UNIT
         : (1 + this.effectiveDex()) * RANGE_UNIT;
     let px = Math.round(base * this.equipMoveMult() * this.thunderMoveMult() * this.summonMoveMultiplier);
     if (this.sandStrider && this.onSand) px *= 2;
@@ -1249,7 +1258,7 @@ export class Mage {
 
   /** Combined multiplier on the duration of afflictions landed on this mage. */
   debuffDurationMult(): number {
-    let mult = 1;
+    let mult = this.enemyKind === 'moay' ? 2 : 1;
     for (const id of this.equippedItems()) {
       const m = getItem(id).debuffDurationMult;
       if (m != null) mult *= m;
@@ -1886,6 +1895,29 @@ export class Mage {
     return null;
   }
 
+  /** Held items that can power the basic attack, in hand order. */
+  private strikingHands(): ItemId[] {
+    return this.hands.filter((id) => {
+      if (this.isItemBanned(id)) return false;
+      const def = getItem(id);
+      return id === 'bastionSword' ? !!(this.bastionShieldForm ? def.shieldWeapon : def.weapon) : !!def.weapon;
+    });
+  }
+
+  /** Whether a second, different weapon is held to switch the basic attack to. */
+  canSwitchWeapon(): boolean {
+    return new Set(this.strikingHands()).size >= 2;
+  }
+
+  /** Strike with the next held weapon instead: the active one moves to the back of the hands. */
+  switchWeapon(): boolean {
+    const active = this.activeWeaponId();
+    if (!active || !this.canSwitchWeapon()) return false;
+    this.hands.splice(this.hands.indexOf(active), 1);
+    this.hands.push(active);
+    return true;
+  }
+
   /** Shields currently raised: Buckler always; Bastion only in shield form. */
   heldShields(): ShieldMod[] {
     const out: ShieldMod[] = [];
@@ -1952,6 +1984,7 @@ export class Mage {
       // Anchor Boots add a stack of flat armour for each turn spent stationary.
       if (this.hasAnchorBoots()) flat += Math.min(4, this.anchorStacks);
     } else if (isMagical) {
+      flat += this.intrinsicMagicArmorFlat;
       for (const id of this.equippedItems()) {
         const mag = getItem(id).armor?.magicFlat;
         if (mag) flat += mag;

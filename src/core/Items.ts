@@ -1988,7 +1988,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(2),
     weight: 1,
     blurb:
-      'Light 3cm, 3 combats. Light-weak enemies in the aura: 1d3 per turn. Unarmed strike, +5 true vs light-weak. 10% to break per swing. Stowing destroys it.',
+      'Light 3cm, 3 combats. Light-weak enemies in the aura: 2 typeless per turn. Unarmed strike, +5 true vs light-weak. 10% to break per swing. Stowing destroys it.',
     lightSource: true,
     lightRadiusPx: 3 * U,
     torchCombats: 3,
@@ -2002,7 +2002,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(0),
     weight: 2,
     blurb:
-      'Light 3cm, permanent, works from the bag. Light-weak enemies in the aura: 1d3 per turn. Unarmed strike, +5 true vs light-weak.',
+      'Light 3cm, permanent, works from the bag. Light-weak enemies in the aura: 2 typeless per turn. Unarmed strike, +5 true vs light-weak.',
     lightSource: true,
     lightRadiusPx: 3 * U,
     lightInBag: true,
@@ -2717,7 +2717,10 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'legendary',
     cost: g(8),
     weight: 0.3,
-    blurb: 'Material. Left by a bloodmoon boss of its colour. The finest focus a crafting bench takes.',
+    blurb: 'Material. Left by a bloodmoon boss of its colour. The finest focus a crafting bench takes.'
+      + (id === 'moonshardRed' ? ' Consume from the pack to learn Fire.'
+        : id === 'moonshardBlue' ? ' Consume from the pack to learn Mind.'
+        : id === 'moonshardBlack' ? ' Consume from the pack to learn Shadow.' : ''),
     material: true,
     adventureOnly: true,
   })),

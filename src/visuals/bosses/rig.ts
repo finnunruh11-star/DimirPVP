@@ -35,6 +35,7 @@ export interface BossArt {
   ground?: number;
   /** True when the art inks its own outlines, so the rig adds none. */
   outlined?: boolean;
+  static?: boolean;
   draw(c: Canvas, pose: Pose): void;
 }
 
@@ -56,7 +57,7 @@ export function renderAnim(art: BossArt, anim: BossAnim): Canvas[] {
     art.draw(c, { anim, t, f, n });
     if (anim === 'death' && art.crumble !== false) c.dissolve(span(t, 0.22, 0.96), 9173, art.ember);
     if (!art.outlined) c.edge(art.ink);
-    if (anim === 'hurt' && f === 0) {
+    if (anim === 'hurt' && f === 0 && !art.static) {
       const flash = art.flash;
       c.map((color) => flash ?? lighten(color, 0.62));
     }

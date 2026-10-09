@@ -17,6 +17,7 @@ import {
   dropItem,
   equipItem,
   giveItem,
+  learnMoonshard,
   memberIn,
   moneyLabel,
   partyOf,
@@ -34,6 +35,7 @@ export type ExplorationIntent =
   | { op: 'sell-all'; shop: string; items: ItemId[] }
   | { op: 'craft'; shop: string; design: CraftDesign; crafter?: MageClass }
   | { op: 'hex'; paper: ItemId; grids: number[] }
+  | { op: 'learn-shard'; item: ItemId; replace?: number }
   | { op: 'rest'; shop: string }
   | { op: 'equip'; item: ItemId }
   | { op: 'unequip'; item: ItemId }
@@ -68,6 +70,7 @@ export function applyIntent(run: ExplorationRun, member: MageClass | null, inten
       case 'sell-all': return sellAll(run, intent.shop, intent.items, member);
       case 'craft': return craftItem(run, intent.shop, intent.design, member, intent.crafter);
       case 'hex': return drawHex(run, intent.paper, intent.grids, member);
+      case 'learn-shard': return learnMoonshard(run, intent.item, member, intent.replace);
       case 'rest': return rest(run, intent.shop);
       case 'equip': return equipItem(run, intent.item, member);
       case 'unequip': return unequipItem(run, intent.item, member);
@@ -161,6 +164,12 @@ export function parseIntent(value: unknown): ExplorationIntent | null {
       const paper = itemId(raw.paper);
       const grids = parseGrids(raw.grids);
       return paper && grids ? { op: 'hex', paper, grids: [...grids] } : null;
+    }
+    case 'learn-shard': {
+      const item = itemId(raw.item);
+      const replace = raw.replace;
+      if (!item || (replace != null && (typeof replace !== 'number' || !Number.isInteger(replace) || replace < 0 || replace > 99))) return null;
+      return { op: 'learn-shard', item, ...(replace != null ? { replace: replace as number } : {}) };
     }
     case 'rest': {
       const shop = text(raw.shop);

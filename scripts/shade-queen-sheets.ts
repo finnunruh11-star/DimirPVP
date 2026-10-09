@@ -16,6 +16,7 @@ const range = (from: number, to: number): number[] => Array.from({ length: to - 
 /** Which source animation and which of its frames each strip keeps. */
 const STRIPS: Record<string, { from: string; frames: number[]; text?: string }> = {
   idle: { from: 'idle', frames: range(0, 19) },
+  idle_inspect: { from: 'idle_inspect', frames: range(0, 23) },
   walk: { from: 'run', frames: range(0, 13) },
   // Swing and stab: the wind-up and the blow whole, the slow return at every other frame.
   attack: { from: 'attack1', frames: [...range(0, 10), 11, 13, 15, 17, 19] },

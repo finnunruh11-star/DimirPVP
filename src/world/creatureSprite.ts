@@ -5,7 +5,7 @@
 import Phaser from 'phaser';
 import { bufferTexture } from './localeRender';
 import { creatureArt } from '../visuals/creatures';
-import { PLACEHOLDER_LOOKS, placeholderSpriteFor, type PlaceholderSpriteKind } from '../visuals/creatureLooks';
+import { PLACEHOLDER_LOOKS, type PlaceholderSpriteKind } from '../visuals/creatureLooks';
 import { BOSS_ANIMS, renderStrip } from '../visuals/bosses/rig';
 import zombieAttackSheetUrl from '../Sprites/Zombie/Zombie_Default_Attack1 (1).png';
 import zombieDeathSheetUrl from '../Sprites/Zombie/Zombie_Default_Dead (1).png';
@@ -23,9 +23,10 @@ import reaperWalkSheetUrl from '../Sprites/Reaper/wraith_original_walk_sheet.png
 import reaperAttackSheetUrl from '../Sprites/Reaper/wraith_original_attack_sheet.png';
 import reaperHitSheetUrl from '../Sprites/Reaper/wraith_original_hit_sheet.png';
 import reaperDeathSheetUrl from '../Sprites/Reaper/wraith_original_death_sheet.png';
+import jurgenSheetUrl from '../Sprites/Jurgen/jurgen.png';
 
 /** The authored sheets, plus a bloodmoon boss's painted ones (see visuals/bosses). */
-export type CreatureSpriteKind = 'zombie' | 'skeleton' | 'wisp' | 'defender' | 'reaper' | `boss-${string}` | PlaceholderSpriteKind;
+export type CreatureSpriteKind = 'zombie' | 'skeleton' | 'wisp' | 'defender' | 'reaper' | 'jurgen' | `boss-${string}` | PlaceholderSpriteKind;
 
 /** Creature frames carry more empty margin than the mage's, so they are drawn this much taller. */
 export const CREATURE_FRAME_RATIO = 4.5 / 2.8;
@@ -106,6 +107,16 @@ const CREATURE_ANIM_SETS: CreatureAnimSet[] = [
 
 const WISP_SHEET = 'enemy-wisp-sheet';
 const DEFENDER_SHEET = 'enemy-defender-sheet';
+const JURGEN_SHEET = 'enemy-jurgen-sheet';
+
+// Jürgen (Corrode Curse bat): two 32x32 frames, wings up and wings down.
+const JURGEN_ANIM_SETS: SheetFrameAnimSet[] = [
+  { key: 'enemy-jurgen-idle', frames: [0, 1], frameRate: 4, repeat: -1 },
+  { key: 'enemy-jurgen-walk', frames: [0, 1], frameRate: 8, repeat: -1 },
+  { key: 'enemy-jurgen-attack', frames: [0, 1, 0, 1], frameRate: 12, repeat: 0 },
+  { key: 'enemy-jurgen-hurt', frames: [1, 0], frameRate: 10, repeat: 0 },
+  { key: 'enemy-jurgen-death', frames: [1], frameRate: 4, repeat: 0 },
+];
 
 // ghost.png is a labelled 12x5 grid. Body/effect frames begin at column 2;
 // columns 0-1 contain labels and the trailing columns are transparent padding.
@@ -139,12 +150,13 @@ const DEFENDER_ANIM_SETS: SheetFrameAnimSet[] = [
 ];
 
 /** The sheet an enemy kind wears, or null for one drawn as the tinted mage. */
-export function creatureSpriteFor(enemyKind: string | null | undefined, heads?: number, role?: string): CreatureSpriteKind | null {
+export function creatureSpriteFor(enemyKind: string | null | undefined): CreatureSpriteKind | null {
   if (enemyKind === 'zombie' || enemyKind === 'acidZombie') return 'zombie';
+  if (enemyKind === 'sentry') return 'jurgen';
   if (enemyKind === 'skeleton' || enemyKind === 'wisp' || enemyKind === 'defender' || enemyKind === 'reaper') {
     return enemyKind;
   }
-  return placeholderSpriteFor(enemyKind, heads, role);
+  return null;
 }
 
 export function ensureCreatureSprites(scene: Phaser.Scene, kind: CreatureSpriteKind | null): void {
@@ -167,11 +179,11 @@ export function ensureCreatureSprites(scene: Phaser.Scene, kind: CreatureSpriteK
 }
 
 /** The wisp and defender sheets face right; the rest face left. */
-export const creatureFacesRight = (kind: CreatureSpriteKind): boolean => kind === 'wisp' || kind === 'defender';
+export const creatureFacesRight = (kind: CreatureSpriteKind): boolean => kind === 'wisp' || kind === 'defender' || kind === 'boss-rock';
 
 /** The texture a creature's sprite is made on before its first animation plays. */
 export const creatureTexture = (kind: CreatureSpriteKind): string =>
-  kind === 'wisp' ? WISP_SHEET : kind === 'defender' ? DEFENDER_SHEET : `enemy-${kind}-idle`;
+  kind === 'wisp' ? WISP_SHEET : kind === 'defender' ? DEFENDER_SHEET : kind === 'jurgen' ? JURGEN_SHEET : `enemy-${kind}-idle`;
 
 export function preloadCreatureSprites(scene: Phaser.Scene): void {
   const sheet = (key: string, url: string, frameWidth: number, frameHeight: number): void => {
@@ -180,6 +192,7 @@ export function preloadCreatureSprites(scene: Phaser.Scene): void {
   for (const set of CREATURE_ANIM_SETS) sheet(set.key, set.url, set.frameWidth ?? 64, set.frameHeight ?? 64);
   sheet(WISP_SHEET, ghostSheetUrl, 32, 32);
   sheet(DEFENDER_SHEET, defenderSheetUrl, 90, 90);
+  sheet(JURGEN_SHEET, jurgenSheetUrl, 32, 32);
 }
 
 export function createCreatureAnims(scene: Phaser.Scene): void {
@@ -205,4 +218,5 @@ export function createCreatureAnims(scene: Phaser.Scene): void {
   };
   fromSheet(WISP_SHEET, WISP_ANIM_SETS);
   fromSheet(DEFENDER_SHEET, DEFENDER_ANIM_SETS);
+  fromSheet(JURGEN_SHEET, JURGEN_ANIM_SETS);
 }

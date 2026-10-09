@@ -1,7 +1,8 @@
 // =============================================================================
 //  COLOR ABILITIES
 // -----------------------------------------------------------------------------
-//  Bonus-action powers unlocked by your *primary* color. Unlike word-spells they
+//  Basic powers come from every known color; class powers from the primary.
+//  Unlike word-spells they
 //  never roll a DC (they always resolve) and are paid for with color-charges +
 //  mana rather than per-word charges. They reuse the Spell shape so they flow
 //  through the existing stack / targeting / visual machinery, but are kept out
@@ -12,7 +13,8 @@
 // =============================================================================
 
 import type { Spell } from './Spell';
-import type { ColorName } from '../core/Colors';
+import { WORD_COLOR, type ColorName } from '../core/Colors';
+import type { WordId } from '../core/Words';
 import type { MageClass } from '../core/Classes';
 import { DEFAULT_MAGE_CLASS } from '../core/Classes';
 import type { EffectContext } from '../effects/effects';
@@ -141,7 +143,7 @@ const wall: ColorAbility = {
   chargeCost: 4,
   manaCost: 3,
   description:
-    'Raise a thin wall blocking movement for 2d3 rounds. Place it anywhere within range 5 and press H while aiming to rotate it (longer with black potency).',
+    'Raise a solid wall for 2d3 rounds: nothing walks or dashes through it and no melee blow reaches across it (ranged attacks still do). Place it anywhere within range 5 and press H while aiming to rotate it (longer with black potency).',
   visual: { preset: 'beam', color: 0x6ad1ff, size: 6 },
   cast(ctx) {
     if (!ctx.targetPoint) return;
@@ -379,15 +381,23 @@ const ABILITIES_BY_COLOR: Record<ColorName, ColorAbilitySet> = {
 };
 
 /**
- * The two colour abilities granted by a primary colour, for a given class. The
- * first is fixed; the second depends on the class (see {@link ABILITIES_BY_COLOR}).
- * A classless caster (null) has only the first.
+ * The primary colour grants its basic and class ability. Other loadout colours
+ * grant their basic ability only. A classless caster has only basic abilities.
  */
 export function getColorAbilitiesFor(
   color: ColorName | null,
-  mageClass: MageClass | null = DEFAULT_MAGE_CLASS
+  mageClass: MageClass | null = DEFAULT_MAGE_CLASS,
+  loadout: readonly WordId[] = [],
 ): ColorAbility[] {
-  if (!color) return [];
-  const set = ABILITIES_BY_COLOR[color];
-  return mageClass ? [set.first, set.second[mageClass]] : [set.first];
+  const abilities: ColorAbility[] = [];
+  if (color) {
+    const set = ABILITIES_BY_COLOR[color];
+    abilities.push(set.first);
+    if (mageClass) abilities.push(set.second[mageClass]);
+  }
+  const colors = new Set(loadout.map((word) => WORD_COLOR[word]));
+  for (const known of colors) {
+    if (known !== 'none' && known !== color) abilities.push(ABILITIES_BY_COLOR[known].first);
+  }
+  return abilities;
 }

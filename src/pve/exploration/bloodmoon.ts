@@ -61,9 +61,9 @@ export function cycleDayTitle(day: number): string {
 }
 
 export type BossId =
-  | 'goblins' | 'minion' | 'rock' | 'zargarg'
-  | 'dragon' | 'crusade' | 'baral'
-  | 'lillith' | 'planetar' | 'selga';
+  | 'goblins' | 'rock'
+  | 'crusade' | 'baral'
+  | 'lillith';
 
 export type BossColor = 'red' | 'black' | 'green' | 'blue' | 'white';
 
@@ -86,15 +86,10 @@ export interface BossDef {
 
 export const BOSSES: Record<BossId, BossDef> = {
   goblins: { id: 'goblins', name: 'The Feared "Hrrrk Snazzlegob"', color: 'red', tier: 1 },
-  minion: { id: 'minion', name: 'Evil Minion of Minor Villainy', color: 'black', tier: 1 },
-  rock: { id: 'rock', name: 'Angy Big Rock', color: 'green', tier: 1 },
-  zargarg: { id: 'zargarg', name: 'Zargarg der Ausgedachte', color: 'blue', tier: 1 },
-  dragon: { id: 'dragon', name: 'Big Angy Dragon', color: 'red', tier: 2 },
-  crusade: { id: 'crusade', name: 'Crusade', color: 'white', tier: 2 },
+  rock: { id: 'rock', name: 'G Moay, the hard-headed', color: 'green', tier: 1 },
+  crusade: { id: 'crusade', name: 'Crucade', color: 'white', tier: 2 },
   baral: { id: 'baral', name: 'Baral, Artificer of Nope', color: 'blue', tier: 2 },
   lillith: { id: 'lillith', name: 'Lillith Belvus, the Nice and Friendly', color: 'black', tier: 3 },
-  planetar: { id: 'planetar', name: 'Planetar', color: 'green', tier: 3 },
-  selga: { id: 'selga', name: 'Mini Selga', color: 'white', tier: 3 },
 };
 
 export const BOSS_IDS = Object.keys(BOSSES) as BossId[];
@@ -129,18 +124,24 @@ export function bossRoster(id: BossId, players: number): BossUnit[] {
     ];
   }
   if (id === 'baral') {
+    const n = Math.max(1, Math.floor(players));
     return [
       { kind: 'baral', art: 'baral', count: 1, leader: true },
-      { kind: 'denialArtifact', art: 'denial-artifact', count: Math.max(1, Math.floor(players)) },
+      { kind: 'denialArtifact', art: 'denial-artifact', count: n },
+      { kind: 'baralDrake', art: 'baral-drake', count: n },
     ];
   }
-  if (id === 'lillith') return [{ kind: 'lillith', art: 'lillith', count: 1, leader: true }];
+  if (id === 'lillith') return [
+    { kind: 'lillith', art: 'lillith', count: 1, leader: true },
+    { kind: 'skeleton', art: 'skeleton', count: Math.max(1, Math.floor(players)) },
+  ];
+  if (id === 'rock') return [{ kind: 'moay', art: 'rock', count: 1, leader: true }];
   return [{ kind: BOSS_STAND_IN, art: id, count: 1, leader: true }];
 }
 
 /** Whether a boss's damage grows with the party too; a band that grows in number does not, nor Baral or Lillith, whose damage was not written to. */
 export function bossDamageScales(id: BossId): boolean {
-  return id !== 'goblins' && id !== 'baral' && id !== 'lillith';
+  return id !== 'goblins' && id !== 'baral' && id !== 'lillith' && id !== 'rock';
 }
 
 export function bossPool(cycle: number): BossId[] {
@@ -153,11 +154,11 @@ export function bloodmoonBoss(seed: number, cycle: number): BossId {
   return new Dice((hashString(`bloodmoon:${cycle}`) ^ seed) >>> 0).pick(bossPool(cycle));
 }
 
-/** One player meets the boss as written; each extra player adds +30% damage and +75% health. */
-export function bossScaling(players: number): { damage: number; health: number } {
+/** Each extra player adds +30% damage and +75% health; Lillith's written health is for three players. */
+export function bossScaling(players: number, id?: BossId): { damage: number; health: number } {
   const extra = Math.max(0, Math.floor(players) - 1);
   const round = (value: number): number => Math.round(value * 100) / 100;
-  return { damage: round(1 + 0.3 * extra), health: round(1 + 0.75 * extra) };
+  return { damage: round(1 + 0.3 * extra), health: round((1 + 0.75 * extra) / (id === 'lillith' ? 2.5 : 1)) };
 }
 
 export interface BossFight {

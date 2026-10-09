@@ -1,8 +1,9 @@
 import { Dice } from '../core/Dice';
 import { MAGE_CLASSES, type MageClass } from '../core/Classes';
+import { WORD_COLOR } from './Colors';
 import { getItem } from '../core/Items';
 import { Mage } from '../core/Mage';
-import { WORD_ORDER } from '../core/Words';
+import { WORD_ORDER, type WordId } from '../core/Words';
 import {
   addRunXp,
   classesUnique,
@@ -75,6 +76,24 @@ const tests: [name: string, run: () => void][] = [
       const second = creationWordOffers(run, mageClass, 1, [first[0]]);
       assert(!second.includes(first[0]), `${mageClass} is not offered its first word again`);
     }
+  }],
+
+  ['keeps creation unrestricted but later offers within known colors and colorless words', () => {
+    const starts = new Set<WordId>();
+    const loadouts: WordId[][] = [['fire', 'subtle'], ['mind', 'shadow'], ['pierce', 'shatter'], ['heal', 'subtle']];
+    for (let seed = 1; seed <= 60; seed++) {
+      const run = partyRun(1, seed);
+      for (const word of creationWordOffers(run, 'objects', 0, [])) starts.add(word);
+      for (const word of creationWordOffers(run, 'objects', 1, ['fire'])) starts.add(word);
+      for (const loadout of loadouts) {
+        const colors = new Set(loadout.map((word) => WORD_COLOR[word]));
+        const offers = levelWordOffers(run, 'objects', 2, loadout);
+        assert(offers.every((word) => !loadout.includes(word)
+          && (WORD_COLOR[word] === 'none' || colors.has(WORD_COLOR[word]))), 'offers never introduce a color');
+        equal(offers, levelWordOffers(run, 'objects', 2, loadout), 'restricted offers remain seeded');
+      }
+    }
+    assert(WORD_ORDER.every((word) => starts.has(word)), 'every starting word remains available');
   }],
 
   ['sets the party out with its calling, two words and a modifier, still unarmed', () => {

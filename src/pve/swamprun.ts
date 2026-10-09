@@ -30,7 +30,8 @@ export type EnemyKind =
   | 'baralDrake'
   | 'lillith'
   | 'lillithCopy'
-  | 'lillithOrb';
+  | 'lillithOrb'
+  | 'moay';
 
 export type SwamprunCurse = 'madness' | 'decay' | 'sloth' | 'feeding';
 export const RAID_BOSS_KINDS = ['lich', 'reaper', 'deathknightSpear'] as const;
@@ -116,7 +117,7 @@ const MINDLESS_SANITY = 999;
 const ETHEREAL: DamageType[] = ['pierce', 'shatter', 'slashing', 'generic', 'shadow'];
 
 // The third bloodmoon's black boss. Her stride is rolled anew each turn (see
-// pve/lillith); her blow is 1d3 corrosive and 1 Reap at 2cm.
+// pve/lillith); her blow is 1d4 corrosive and 1d3 Reap at 2cm.
 const LILLITH: EnemyDef = {
   kind: 'lillith',
   name: 'Lillith Belvus',
@@ -125,7 +126,7 @@ const LILLITH: EnemyDef = {
   hpSpec: '130',
   sanity: 70,
   moveUnits: 10,
-  meleeSpec: '1d3',
+  meleeSpec: '1d4',
   meleeType: 'corrosive',
   meleeReach: MELEE_RANGE + 2 * RANGE_UNIT,
   weakTypes: ['light'],
@@ -435,10 +436,10 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     name: 'Baral',
     power: 20,
     unlockDepth: 100_000,
-    hpSpec: '20',
-    sanity: 20,
-    moveUnits: 15,
-    meleeSpec: '1d2',
+    hpSpec: '40',
+    sanity: 30,
+    moveUnits: 10,
+    meleeSpec: '1d3',
     meleeType: 'sanity',
     boss: true,
     tint: 0x4f88d4,
@@ -449,7 +450,7 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     plural: 'Artifacts of Denial',
     power: 4,
     unlockDepth: 100_000,
-    hpSpec: '6',
+    hpSpec: '8',
     sanity: MINDLESS_SANITY,
     moveUnits: 0,
     meleeSpec: '0',
@@ -469,11 +470,27 @@ export const ENEMY_DEFS: Record<EnemyKind, EnemyDef> = {
     hpSpec: '2',
     sanity: 2,
     moveUnits: 4,
-    meleeSpec: '1',
+    meleeSpec: '1d2',
     meleeType: 'sanity',
     weakTypes: ['slashing', 'shatter'],
     resistTypes: ['pierce'],
     tint: 0xcf9738,
+  },
+  moay: {
+    kind: 'moay',
+    name: 'G Moay, the hard-headed',
+    power: 20,
+    unlockDepth: 100_000,
+    hpSpec: '65',
+    sanity: 25,
+    moveUnits: 3,
+    meleeSpec: '1d10',
+    meleeType: 'shatter',
+    meleeReach: MELEE_RANGE + RANGE_UNIT,
+    weakTypes: ['shatter', 'water'],
+    resistTypes: ['slashing', 'heat', 'cold'],
+    boss: true,
+    tint: 0x827e5b,
   },
   lillith: LILLITH,
   // Her phase-two copies: her very likeness, gone at the first blow that lands.
@@ -517,7 +534,8 @@ export function applyEnemyTraits(m: Mage, kind: EnemyKind, rng: Dice): void {
   m.ghastKind = !!def.ghastKind;
   m.reaperKind = !!def.reaperKind;
   m.damageCapPerSource = def.damageCapPerSource ?? 0;
-  m.intrinsicArmorFlat = kind === 'soldierDemon' ? 2 : 0;
+  m.intrinsicArmorFlat = kind === 'soldierDemon' ? 2 : kind === 'moay' || kind === 'lillith' || kind === 'lillithCopy' ? 1 : 0;
+  m.intrinsicMagicArmorFlat = kind === 'moay' || kind === 'lillith' || kind === 'lillithCopy' ? 1 : 0;
   m.beastDemonKind = kind === 'beastDemon';
   m.beastDemonBlood = 0;
   m.oniKind = kind === 'oni';
@@ -529,7 +547,7 @@ export function applyEnemyTraits(m: Mage, kind: EnemyKind, rng: Dice): void {
   if (def.bodyRadius != null) m.intrinsicBodyRadius = def.bodyRadius;
   if (def.pacifist) m.cannotAttack = true;
   m.inert = !!def.inert;
-  m.initiativeLast = kind === 'lillith';
+  m.initiativeLast = kind === 'lillith' || kind === 'moay';
   if (kind === 'lillith' || kind === 'lillithCopy') {
     m.intrinsicMelee = {
       spec: def.meleeSpec,

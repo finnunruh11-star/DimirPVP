@@ -294,7 +294,7 @@ registerClassSpellVariants({
 // ===========================================================================
 //  CORRODE CURSE   (corrode + curse — all verbs)
 //    Objects  : an acid-etched strike that keeps eating at the wound.
-//    Life     : a slow, walking "rot totem" that corrodes and mires what it touches.
+//    Life     : Jürgen, a slow rot bat that corrodes and mires what it touches.
 //    Hexcraft : plant a corroding totem-field that gnaws and slows those inside it.
 // ===========================================================================
 registerClassSpell({
@@ -328,7 +328,7 @@ registerClassSpell({
       noCastSprite: true,
       manualCastVisual: true,
       description:
-        'Raise a Rot Sentry within range 5. It cannot attack, but at the start of each of ' +
+        'Raise J\u00fcrgen, a rot bat, within range 5. It cannot attack, but at the start of each of ' +
         'your turns its range-3 aura deals 1d3 corrosive damage to everyone except you ' +
         'and your summons, including other allies. HP 8, move 5; obeys Command.',
       visual: { preset: 'conjure', color: 0x9be870, size: 30, speed: 1 },

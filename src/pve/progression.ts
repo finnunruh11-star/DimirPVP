@@ -61,6 +61,7 @@ export const KILL_XP: Record<EnemyKind | MineEnemyKind, number> = {
   reaper: 33,
   deathknightSpear: 66,
   goblinChief: 0,
+  moay: 0,
   baral: 0,
   baralDrake: 0,
   denialArtifact: 0,

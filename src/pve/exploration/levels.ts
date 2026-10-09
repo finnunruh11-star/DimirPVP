@@ -40,7 +40,7 @@ export function godWordChoices(loadout: readonly WordId[]): WordId[] {
 /** The three words `member` is offered at `level`, never one it knows. */
 export function levelWordOffers(run: ExplorationRun, member: MageClass, level: number, loadout: readonly WordId[]): WordId[] {
   const dice = new Dice((hashString(`level-word:${member}:${level}`) ^ Math.imul(run.seed, 0x9e3779b1)) >>> 0);
-  const pool = WORD_ORDER.filter((word) => !loadout.includes(word));
+  const pool = levelWordPool(loadout);
   const offers: WordId[] = [];
   while (pool.length > 0 && offers.length < 3) {
     const word = dice.pick(pool);
@@ -48,6 +48,12 @@ export function levelWordOffers(run: ExplorationRun, member: MageClass, level: n
     pool.splice(pool.indexOf(word), 1);
   }
   return offers;
+}
+
+export function levelWordPool(loadout: readonly WordId[]): WordId[] {
+  const colors = new Set(loadout.map((word) => WORD_COLOR[word]));
+  return WORD_ORDER.filter((word) => !loadout.includes(word)
+    && (WORD_COLOR[word] === 'none' || colors.has(WORD_COLOR[word])));
 }
 
 /** The loadout once `word` is learned: added, or put in the place of `replace` on a full rack. */

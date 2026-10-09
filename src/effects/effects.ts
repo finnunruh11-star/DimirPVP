@@ -463,7 +463,7 @@ function dealOneHit(
 
   // Second Ring of Lareneg / phased into the dark: nothing hostile reaches them.
   if (ctx.game.isUnreachable(target)) {
-    ctx.vfx?.combatFeedback?.(target, { kind: 'immune', label: 'UNTOUCHABLE' });
+    if (!target.unseen) ctx.vfx?.combatFeedback?.(target, { kind: 'immune', label: 'UNTOUCHABLE' });
     return 0;
   }
 
@@ -633,6 +633,9 @@ function dealOneHit(
     target.hp = Math.max(floorVital, target.hp - amount);
     if (amount > 0) ctx.game.resolveHydraWound(target, beforeHp, damage.type);
   }
+  if (amount > 0 && targetWasAlive && ctx.game.checkBaralWound(target, beforeHp, beforeSanity)) {
+    amount = Math.max(0, beforeHp - target.hp) + Math.max(0, beforeSanity - target.sanity);
+  }
   if (amount > 0) {
     ctx.game.recordLillithOutput(ctx.caster, Math.max(0, beforeHp - target.hp) + Math.max(0, beforeSanity - target.sanity));
     lillithHit(ctx.game, ctx.caster, target, Math.max(0, beforeHp - target.hp), Math.max(0, beforeSanity - target.sanity));
@@ -712,7 +715,6 @@ function dealOneHit(
     ctx.game.tickDeathCurse(target, `${damage.type} damage`);
   }
   if (amount > 0) ctx.game.checkReapDeath(target, ctx.caster);
-  if (amount > 0) ctx.game.checkBaralWound(target);
   // God-word marks read the landed wound: a death mark feeds on it, shatter
   // hastens a doom, and a pact bills the one who dealt it.
   if (amount > 0) ctx.game.feedDeathMark(target, damage.type);
@@ -1064,7 +1066,7 @@ export function dash(
     y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y)),
   };
   // A reality-break barrier stops a dash at its edge (the dash/spell ends).
-  const bc = ctx.game.clampToBarriers(from, fieldDest);
+  const bc = ctx.game.clampToBarriers(from, fieldDest, mover.bodyRadius());
   const passage = ctx.game.clampDashToMages(mover, from, bc.dest);
   const candidate = ctx.game.nearestFreePosition(mover, passage, from);
   const landing = dist(from, candidate) <= dist(from, bc.dest) + 0.1 &&
@@ -1076,7 +1078,7 @@ export function dash(
   ctx.vfx?.dash?.(mover, from);
   ctx.game.triggerNeedlepointDomains(mover);
   if (bc.blocked) {
-    ctx.log(`${mover.name} is stopped by a reality break.`);
+    ctx.log(`${mover.name} is stopped by ${bc.roots ? 'a reality break' : 'a wall'}.`);
   } else {
     ctx.log(`${mover.name} dashes ${Math.round(opts.distance)} away.`);
   }

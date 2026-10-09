@@ -1,12 +1,20 @@
 // Baral, Artificer of Nope: the second bloodmoon's blue boss. He opens with an
-// Artifact of Denial per player and keeps building them and drakes while he
+// Artifact of Denial and a drake per player and keeps building them while he
 // hunts the weakest of the party. An artifact charges on every party action and,
 // armed, stifles the next one. Pure: no Phaser.
 
 import type { Mage } from '../core/Mage';
 
-/** Baral's hp and sanity mark: at or below it he builds two drakes, not one. Hp scales with the party. */
-export const BARAL_MARK = 10;
+/** Baral's hp mark (scales with the party): below it he runs faster, at or below it he builds two drakes. */
+export const BARAL_HP_MARK = 20;
+/** Baral's sanity mark, the same as his hp mark but for mill. */
+export const BARAL_SANITY_MARK = 15;
+/** His speed in cm once below either mark. */
+export const BARAL_FAST_MOVE_UNITS = 30;
+/** How far he dashes, unseen, at his first wound. */
+export const BARAL_WOUND_DASH_UNITS = 10;
+/** How far from Baral an artifact may be set down. */
+export const DENIAL_SPAWN_RADIUS_UNITS = 20;
 /** A drake falls apart after this many of its own turns. */
 export const DRAKE_LIFESPAN = 3;
 /** What an artifact takes for being moved. */
@@ -27,6 +35,11 @@ export function denialStartCharges(count: number): number[] {
 
 export function isBaralUnit(m: Mage): boolean {
   return m.enemyKind === 'baral' || m.enemyKind === 'baralDrake' || m.enemyKind === 'denialArtifact';
+}
+
+/** Whether Baral is below either of his marks. */
+export function baralBelowMarks(m: Mage): boolean {
+  return !!m.baral && (m.hp < m.baral.hpMark || m.sanity < BARAL_SANITY_MARK);
 }
 
 export function denialArmed(m: Mage): boolean {

@@ -153,15 +153,10 @@ export const RAID_BOSS_COPY: Record<RaidBossKind, MenuEntryCopy> = {
 /** Short names that fit a chip. */
 const BLOODMOON_LABELS: Record<BossId, string> = {
   goblins: 'Snazzlegob',
-  minion: 'Evil Minion',
-  rock: 'Big Rock',
-  zargarg: 'Zargarg',
-  dragon: 'Dragon',
-  crusade: 'Crusade',
+  rock: 'G Moay',
+  crusade: 'Crucade',
   baral: 'Baral',
   lillith: 'Lillith',
-  planetar: 'Planetar',
-  selga: 'Mini Selga',
 };
 
 export function raidTargetCopy(target: RaidTarget): MenuEntryCopy {

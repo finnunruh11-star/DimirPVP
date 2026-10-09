@@ -27,6 +27,19 @@ export interface ActionMenuOptions {
   onSelect: (index: number) => void;
   onActivate: (entry: CabinetActionEntry, pointer: boolean) => void;
   onDismiss: (pointer: boolean) => void;
+  isPinned?: (id: string) => boolean;
+  /** Toggle an entry's pin; returns whether it is now pinned. */
+  onTogglePin?: (id: string) => boolean;
+}
+
+/** The region rows may occupy; anything beyond it scrolls. */
+const LIST_VIEW = { top: 146, bottom: 566 };
+const ROW_STEP = 39;
+
+interface ListItem {
+  objects: (Phaser.GameObjects.Components.Visible & Phaser.GameObjects.Components.Transform)[];
+  baseY: number;
+  height: number;
 }
 
 export class ActionMenuView extends Phaser.GameObjects.Container {
@@ -36,6 +49,14 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
   private readonly inspectorTitle: Phaser.GameObjects.Text;
   private readonly inspectorBody: Phaser.GameObjects.Text;
   private readonly entries: CabinetActionEntry[];
+  private readonly items: ListItem[] = [];
+  private readonly rowItems: ListItem[] = [];
+  private readonly scrollBar: Phaser.GameObjects.Graphics;
+  private scroll = 0;
+  private maxScroll = 0;
+  private readonly onWheel = (_p: Phaser.Input.Pointer, _over: unknown, _dx: number, dy: number): void => {
+    if (dy !== 0) this.scrollTo(this.scroll + Math.sign(dy) * ROW_STEP);
+  };
 
   constructor(scene: Phaser.Scene, private readonly options: ActionMenuOptions) {
     super(scene, 0, 0);
@@ -60,7 +81,7 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.bone,
     });
-    const subtitle = scene.add.text(128, 118, 'Choose a command. Disabled actions remain listed for context.', {
+    const subtitle = scene.add.text(128, 118, 'Choose a command. Click \u2606 to pin an action to the side of the screen.', {
       fontFamily: MENU_FONT.body,
       fontSize: '13px',
       color: MENU_HEX.boneDim,
@@ -92,16 +113,20 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
           color: MENU_HEX.brass,
         });
         this.add(heading);
+        this.items.push({ objects: [heading], baseY: y, height: 14 });
         y += 20;
         for (const entry of section.entries) {
           const index = entryIndex++;
+          const pinnable = !!options.onTogglePin;
           const row = new CabinetChip(scene, x, y, {
-            width,
+            width: pinnable ? width - 40 : width,
             height: 34,
             label: `[${entry.hotkey}]  ${entry.label}`,
             tone: entry.id === 'end' || entry.id === 'pass' ? 'primary' : 'normal',
             enabled: entry.enabled,
-            onActivate: () => options.onActivate(entry, true),
+            onActivate: () => {
+              if (this.pointerInList()) options.onActivate(entry, true);
+            },
             onFocus: () => {
               options.onSelect(index);
               this.showEntry(entry);
@@ -109,11 +134,22 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
           });
           this.add(row);
           this.focus.add(row);
-          y += 39;
+          const item: ListItem = { objects: [row], baseY: y, height: 34 };
+          if (pinnable) item.objects.push(this.pinStar(x + width - 17, y + 17, entry.id));
+          this.items.push(item);
+          this.rowItems.push(item);
+          y += ROW_STEP;
         }
         y += 7;
       }
     });
+
+    const contentBottom = Math.max(...this.items.map((item) => item.baseY + item.height));
+    this.maxScroll = Math.max(0, contentBottom - LIST_VIEW.bottom);
+    this.scrollBar = scene.add.graphics();
+    this.add(this.scrollBar);
+    if (this.maxScroll > 0) scene.input.on('wheel', this.onWheel);
+    this.layoutList();
 
     addRecess(scene, this, 128, 574, 1024, 62, MENU_COLOR.woodDeep);
     this.inspectorTitle = scene.add.text(144, 586, '', {
@@ -135,8 +171,64 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
 
   setSelection(index: number): void {
     if (index < 0 || index >= this.entries.length) return;
+    const row = this.rowItems[index];
+    if (row.baseY - this.scroll < LIST_VIEW.top) this.scrollTo(row.baseY - LIST_VIEW.top - 20);
+    else if (row.baseY + row.height - this.scroll > LIST_VIEW.bottom) this.scrollTo(row.baseY + row.height - LIST_VIEW.bottom);
     this.focus.focus(index);
     this.showEntry(this.entries[index]);
+  }
+
+  override destroy(fromScene?: boolean): void {
+    this.scene?.input.off('wheel', this.onWheel);
+    super.destroy(fromScene);
+  }
+
+  private pinStar(x: number, y: number, id: string): Phaser.GameObjects.Text {
+    const paint = (pinned: boolean): void => {
+      star.setText(pinned ? '\u2605' : '\u2606').setColor(pinned ? MENU_HEX.brassLight : MENU_HEX.boneDim);
+    };
+    const star = this.scene.add.text(x, y, '', {
+      fontFamily: MENU_FONT.control,
+      fontSize: '22px',
+      fixedWidth: 34,
+      align: 'center',
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true });
+    paint(this.options.isPinned?.(id) ?? false);
+    star.on('pointerdown', () => {
+      if (!this.pointerInList()) return;
+      paint(this.options.onTogglePin?.(id) ?? false);
+    });
+    this.add(star);
+    return star;
+  }
+
+  private pointerInList(): boolean {
+    const y = this.scene.input.activePointer.y;
+    return y >= LIST_VIEW.top && y <= LIST_VIEW.bottom;
+  }
+
+  private scrollTo(value: number): void {
+    const next = Phaser.Math.Clamp(Math.round(value), 0, this.maxScroll);
+    if (next === this.scroll) return;
+    this.scroll = next;
+    this.layoutList();
+  }
+
+  /** Shift every row by the scroll offset; rows not wholly inside the view are hidden (and so unclickable). */
+  private layoutList(): void {
+    for (const item of this.items) {
+      const y = item.baseY - this.scroll;
+      const inside = y >= LIST_VIEW.top && y + item.height <= LIST_VIEW.bottom;
+      const shift = y - item.objects[0].y;
+      for (const object of item.objects) object.setY(object.y + shift).setVisible(inside);
+    }
+    this.scrollBar.clear();
+    if (this.maxScroll <= 0) return;
+    const trackH = LIST_VIEW.bottom - LIST_VIEW.top;
+    const thumbH = Math.max(30, (trackH * trackH) / (trackH + this.maxScroll));
+    const thumbY = LIST_VIEW.top + ((trackH - thumbH) * this.scroll) / this.maxScroll;
+    this.scrollBar.fillStyle(MENU_COLOR.pitch, 0.9).fillRect(1166, LIST_VIEW.top, 6, trackH);
+    this.scrollBar.fillStyle(MENU_COLOR.brass, 1).fillRect(1166, thumbY, 6, thumbH);
   }
 
   private showEntry(entry: CabinetActionEntry): void {

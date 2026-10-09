@@ -7,7 +7,7 @@ import type { StackItem, NeedleBan } from './Stack';
 import type { Spell } from '../spells/Spell';
 import { applyMindLightningStack, mindLightningBoltTarget, mindLightningDamage } from '../spells/mindLightning';
 import type { EffectContext, VfxSink, SubTargeter, DealDamageOptions } from '../effects/effects';
-import { dealDamage, drainDamage, heal, applyDot, applyStackingDot, applyDebuff, applyForget, applyInvisibility, applyStun, dash, rollDice, teleport } from '../effects/effects';
+import { dealDamage, drainDamage, heal, applyDot, applyStackingDot, applyDebuff, applyForget, applyInvisibility, applyStun, cleanse, dash, rollDice, teleport } from '../effects/effects';
 import { dmg } from './Damage';
 import type { DamageType, DamageInstance } from './Damage';
 import type { ItemId, ItemDef, StaffBolt } from './Items';
@@ -86,9 +86,10 @@ import {
 } from '../effects/classKit';
 import { cheatDeath, deathLawEnds, deathRites, echoFetch } from '../effects/deathKit';
 import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_TURNS } from '../pve/goblins';
-import { BARAL_MARK, DENIAL_RELOCATION_DAMAGE, DENIAL_STIFLE_MILL, denialArmed } from '../pve/baral';
+import { BARAL_SANITY_MARK, BARAL_WOUND_DASH_UNITS, DENIAL_RELOCATION_DAMAGE, DENIAL_STIFLE_MILL, denialArmed } from '../pve/baral';
 import { applyMineEnemyTraits, type MineEnemyKind } from '../pve/minerun';
 import { illusoryReap, isLillithUnit, lillithOnDeath, lillithReap, lillithStride } from '../pve/lillith';
+import { clampToMoayArena, moayTargets, moayTurnStart, type MoayArena } from '../pve/moay';
 import { splitModifiers } from './Words';
 import { stormWordsCompatible } from './Colors';
 import { makeSandCadett, makeRemnant } from './sandSummons';
@@ -520,6 +521,7 @@ export class GameState {
   /** What the intrinsic strike that is calling its rider just dealt. */
   lastIntrinsicDamage = 0;
   lillithOutput = new Map<Mage, number>();
+  moayArena?: MoayArena;
   /** Guard so a soul pact's repayment can never demand repayment of its own. */
   private soulPactEchoing = false;
   /** Corpses already walked upright, so no body rises twice. */
@@ -1287,6 +1289,10 @@ export class GameState {
   beginTurn(): void {
     const m = this.current;
     if (isLillithUnit(m)) lillithStride(this, m);
+    if (m.baral?.vanished) {
+      m.baral.vanished = false;
+      this.log(`${m.name} steps back into sight.`);
+    }
     this.turnSeq += 1;
     m.turnStartState = { x: m.x, y: m.y, hp: m.hp, sanity: m.sanity };
     this.releaseOrphanedTimeStops();
@@ -1371,6 +1377,7 @@ export class GameState {
       m.actions.main = m.mine.heads ?? 3;
     }
     this.applyDesecrationActionTax(m);
+    if (!this.isPhasedOut(m)) moayTurnStart(this, m);
   }
 
   /**
@@ -5178,6 +5185,12 @@ export class GameState {
     physicalTravel: boolean,
     path?: readonly Vec2[]
   ): void {
+    if (this.moayArena) {
+      const bounded = clampToMoayArena(this.moayArena, mover.pos, mover.bodyRadius());
+      mover.x = bounded.x;
+      mover.y = bounded.y;
+      destination = bounded;
+    }
     if (mover.lillithBound) {
       mover.x = mover.lillithBound.x;
       mover.y = mover.lillithBound.y;
@@ -5347,8 +5360,7 @@ export class GameState {
     if (this.defeatPftlhbByIllumination(m, light)) return;
     if (!m.isLightWeak()) return;
     const ctx = this.effectContext(m, m, null);
-    const amount = this.rng.roll('1d3').total;
-    const dealt = dealDamage(ctx, m, dmg(amount, 'light'), {
+    const dealt = dealDamage(ctx, m, dmg(2, 'typeless'), {
       canMiss: false,
       noImpactFx: true,
     });
@@ -6341,7 +6353,7 @@ export class GameState {
       y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, wanted.y)),
     };
     const hitBorder = dist(fieldDest, wanted) > 0.5;
-    const barrier = this.clampToBarriers(origin, fieldDest);
+    const barrier = this.clampToBarriers(origin, fieldDest, target.bodyRadius());
     const mut = this.clampToMutivargZones(target, origin, barrier.dest);
     const dest = this.nearestFreePosition(target, this.clampToMages(target, origin, mut.dest), origin, true);
     target.x = dest.x;
@@ -6405,7 +6417,7 @@ export class GameState {
       x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, picked.x)),
       y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, picked.y)),
     };
-    const clamp = this.clampToBarriers(source.pos, fieldDest);
+    const clamp = this.clampToBarriers(source.pos, fieldDest, source.bodyRadius());
     const mut = this.clampToMutivargZones(source, source.pos, clamp.dest);
     const dest = this.clampToMages(source, source.pos, mut.dest);
     const step = Math.hypot(dest.x - source.x, dest.y - source.y);
@@ -6502,6 +6514,8 @@ export class GameState {
    */
   isUntargetable(m: Mage, from?: Mage, opts: { ignoreStealth?: boolean } = {}): boolean {
     if (m.summonShoulder != null) return true;
+    // Baral's vanish after his first wound: nothing finds him until his next turn.
+    if (m.baral?.vanished) return true;
     // Phased into the dark: it does not exist for anyone, friend or foe.
     if (this.isPhasedOut(m) || this.isInSanctuary(m)) return true;
     // Riding a host: only area effects can pick it out.
@@ -6546,7 +6560,7 @@ export class GameState {
 
   /** Nothing hostile may reach this mage right now, whatever the source. */
   isUnreachable(m: Mage): boolean {
-    return this.isPhasedOut(m) || this.isLaranegUntouchable(m) || this.isInSanctuary(m);
+    return !!m.baral?.vanished || this.isPhasedOut(m) || this.isLaranegUntouchable(m) || this.isInSanctuary(m);
   }
 
   /**
@@ -7022,15 +7036,29 @@ export class GameState {
     );
   }
 
-  /** Baral's first fall below his marks: two drakes come, and he is unseen until his next turn. */
-  checkBaralWound(target: Mage): void {
+  /**
+   * Baral's first fall below a mark: the blow is turned aside, leaving him at one
+   * under it; two drakes come, and, unseen until his next turn, he dashes 10cm
+   * and is cleansed. True when it struck.
+   */
+  checkBaralWound(target: Mage, beforeHp: number, beforeSanity: number): boolean {
     const b = target.baral;
-    if (!b || b.wounded || !target.alive) return;
-    if (target.hp >= b.hpMark && target.sanity >= BARAL_MARK) return;
+    if (!b || b.wounded || target.withdrawn) return false;
+    const hpBroke = target.hp < b.hpMark && target.hp < beforeHp;
+    const sanityBroke = target.sanity < BARAL_SANITY_MARK && target.sanity < beforeSanity;
+    if (!hpBroke && !sanityBroke) return false;
     b.wounded = true;
+    b.vanished = true;
+    if (hpBroke) target.hp = Math.min(beforeHp, b.hpMark - 1);
+    if (sanityBroke) target.sanity = Math.min(beforeSanity, BARAL_SANITY_MARK - 1);
     this.log(`${target.name}: "Nope." Two drakes clatter out and he is gone from sight.`);
     this.pendingDrakes.push({ baral: target, count: 2 });
-    applyInvisibility({ ...this.effectContext(target, target, null), crit: false }, target, { duration: 1, mode: 'full' });
+    const ctx = { ...this.effectContext(target, target, null), crit: false };
+    applyInvisibility(ctx, target, { duration: 1, mode: 'full' });
+    const a = this.rng.float() * Math.PI * 2;
+    dash(ctx, target, { direction: { x: Math.cos(a), y: Math.sin(a) }, distance: BARAL_WOUND_DASH_UNITS * RANGE_UNIT });
+    cleanse(ctx, target);
+    return true;
   }
 
   /** The end of Baral's turn: every second one builds an artifact, the others drakes, two once he is at his marks. */
@@ -7039,7 +7067,7 @@ export class GameState {
     if (!b || !baral.alive) return { artifacts: 0, drakes: 0 };
     b.turns += 1;
     if (b.turns % 2 === 0) return { artifacts: 1, drakes: 0 };
-    return { artifacts: 0, drakes: baral.hp <= b.hpMark || baral.sanity <= BARAL_MARK ? 2 : 1 };
+    return { artifacts: 0, drakes: baral.hp <= b.hpMark || baral.sanity <= BARAL_SANITY_MARK ? 2 : 1 };
   }
 
   /** A drake's turn ended: one fewer left, and at none it falls apart. True when it did. */
@@ -7234,6 +7262,8 @@ export class GameState {
     // A crossbow that has just fired cannot shoot again until it reloads.
     if (weapon?.toHit && source.reloadTurns > 0) return false;
     if (!this.canStrikeAirborne(source, target)) return false;
+    // A solid wall stops a blow, though shots still fly over it.
+    if (!isRangedWeapon(weapon) && this.wallBetween(source.pos, target.pos)) return false;
     const d = dist(source.pos, target.pos);
     const extraRadius = Math.max(0, target.bodyRadius() - MAGE_BODY_RADIUS);
     if (source.beastDemonKind && d > MELEE_RANGE + extraRadius && source.beastDemonBlood <= 0) return false;
@@ -7467,19 +7497,39 @@ export class GameState {
   /**
    * Clamp a movement from `from` to `to` so it stops just before entering any
    * barrier. Returns the allowed destination and whether the path was blocked.
+   * Walls ('rect') are solid: a body of `radius` stops against them, and only
+   * reality breaks (wedges) set `roots`. A mover already inside a wall may leave it.
    */
-  clampToBarriers(from: Vec2, to: Vec2): { dest: Vec2; blocked: boolean } {
-    if (this.barriers.length === 0) return { dest: to, blocked: false };
+  clampToBarriers(from: Vec2, to: Vec2, radius = 0): { dest: Vec2; blocked: boolean; roots: boolean } {
+    const bounded = clampToMoayArena(this.moayArena, to, radius);
+    const arenaBlocked = dist(bounded, to) > 0.01;
+    to = bounded;
+    if (this.barriers.length === 0) return { dest: to, blocked: arenaBlocked, roots: false };
     const total = dist(from, to);
-    if (total < 1) return { dest: to, blocked: false };
+    if (total < 1) return { dest: to, blocked: false, roots: false };
+    const walls = this.barriers.filter((b) => b.shape === 'rect' && !barrierContains(b, from));
+    const wallGap = new Map(walls.map((b) => [b, barrierDistance(b, from) <= radius ? 0 : radius]));
     const steps = Math.max(2, Math.ceil(total / 8));
     let last: Vec2 = { ...from };
     for (let i = 1; i <= steps; i++) {
       const p = stepTowards(from, to, (total * i) / steps);
-      if (this.isInBarrier(p)) return { dest: last, blocked: true };
+      for (const wall of walls) {
+        const gap = wallGap.get(wall)!;
+        if (gap > 0 ? barrierDistance(wall, p) < gap : barrierContains(wall, p)) {
+          return { dest: last, blocked: true, roots: false };
+        }
+      }
+      if (this.barriers.some((b) => b.shape !== 'rect' && barrierContains(b, p))) {
+        return { dest: last, blocked: true, roots: true };
+      }
       last = p;
     }
-    return { dest: to, blocked: false };
+    return { dest: to, blocked: arenaBlocked, roots: false };
+  }
+
+  /** Whether a solid wall stands between two points (melee cannot reach across it). */
+  wallBetween(from: Vec2, to: Vec2): boolean {
+    return this.barriers.some((b) => b.shape === 'rect' && this.sightBlockedBy(b, from, to));
   }
 
   /**
@@ -7538,9 +7588,11 @@ export class GameState {
 
   /** Find the closest vacant endpoint; allies remain passable during travel. */
   nearestFreePosition(source: Mage, desired: Vec2, from: Vec2 = source.pos, walking = false, vacating?: Mage): Vec2 {
+    desired = clampToMoayArena(this.moayArena, desired, source.bodyRadius());
     const fits = (point: Vec2): boolean =>
       point.x >= FIELD.x && point.x <= FIELD.x + FIELD.w &&
       point.y >= FIELD.y && point.y <= FIELD.y + FIELD.h &&
+      dist(point, clampToMoayArena(this.moayArena, point, source.bodyRadius())) < 0.01 &&
       this.mages.every((other) => other === source || other === vacating || !other.alive || other.summonShoulder != null ||
         dist(point, other.pos) >= source.bodyRadius() + other.bodyRadius() + 0.1);
     const reachable = (point: Vec2): boolean =>
@@ -7863,6 +7915,7 @@ export class GameState {
     this.totems = [];
     this.scarabs = [];
     this.barriers = [];
+    this.moayArena = undefined;
     this.globalEscalations = [];
     this.needlepointDomains = [];
     this.hexcraftGlobals = [];
@@ -7890,7 +7943,7 @@ export class GameState {
       x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x)),
       y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y)),
     };
-    const clamp = this.clampToBarriers(source.pos, fieldDest);
+    const clamp = this.clampToBarriers(source.pos, fieldDest, source.bodyRadius());
     const mut = this.clampToMutivargZones(source, source.pos, clamp.dest);
     return this.clampToMages(source, source.pos, mut.dest);
   }
@@ -7926,7 +7979,7 @@ export class GameState {
     const perHit = (strengthDamage(roll, source.effectiveStr(), w?.multiplier ?? 1) + flat) * 2;
     const type: DamageType = w?.damageType ?? 'shatter';
     const targets = this.magesInCone(source.pos, aim, reach, CLEAVE_DEGREES, source).filter(
-      (m) => m.team !== source.team && this.canStrikeAirborne(source, m)
+      (m) => m.team !== source.team && this.canStrikeAirborne(source, m) && !this.wallBetween(source.pos, m.pos)
     );
     if (targets.length === 0) {
       this.log(`${source.name} cleaves. Nothing in range.`);
@@ -7966,7 +8019,9 @@ export class GameState {
     };
     // A reality-break barrier halts a runner at its edge and roots them.
     const phased = this.edgelordCanPhaseWalk(source) || this.isPhaseWalking(source);
-    const clamp = phased ? { dest: fieldDest, blocked: false } : this.clampToBarriers(source.pos, fieldDest);
+    const clamp = phased
+      ? { dest: fieldDest, blocked: false, roots: false }
+      : this.clampToBarriers(source.pos, fieldDest, source.bodyRadius());
     // A Mutivarg crushing field is a wall — you cannot dash through it.
     const mut = phased ? { dest: clamp.dest } : this.clampToMutivargZones(source, source.pos, clamp.dest);
     // A Reaper leashes its prey: you cannot flee further than allowed.
@@ -7997,7 +8052,7 @@ export class GameState {
         game.updateAttachedScarabs();
         game.log(step < 1 ? `${source.name} stays in place.` : `${source.name} repositions.`);
         game.burnPhaseWalkPath(source, origin, dest);
-        if (clamp.blocked) {
+        if (clamp.roots) {
           const ttl = Math.max(1, game.barrierTtlAt({ x: dest.x, y: dest.y }) + 1);
           addOrExtendStatus(
             source.statuses,
@@ -8090,6 +8145,16 @@ export class GameState {
           const distance = dist(source.pos, target.pos);
           if (source.deathknightKind) {
             game.resolveDeathknightBasicAttack(source, target);
+            return;
+          }
+          if (source.enemyKind === 'moay') {
+            const amount = game.rng.roll(im.spec).total;
+            const victims = moayTargets(game, source, target.pos);
+            source.lastAttackRound = game.round;
+            for (const victim of victims) {
+              dealDamage(game.effectContext(source, victim, null), victim, dmg(amount, im.type), { aoe: true, canMiss: false });
+            }
+            game.log(`${source.name} slams ${victims.length} foes for ${amount} blunt damage each.`);
             return;
           }
           if (source.acidZombieKind) {

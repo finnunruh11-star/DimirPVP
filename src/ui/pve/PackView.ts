@@ -12,11 +12,11 @@ import { isModifierWord, WORDS } from '../../core/Words';
 import { RANGE_UNIT } from '../../config/constants';
 import { SceneInput } from '../../engine/SceneInput';
 import { levelsOwed, partyXpScale } from '../../pve/exploration/coop';
-import { memberIn, moneyLabel, partyOf } from '../../pve/exploration/economy';
+import { memberIn, moneyLabel, MOONSHARD_WORDS, partyOf } from '../../pve/exploration/economy';
 import { fieldSpellMana } from '../../pve/exploration/fieldWords';
 import type { ExplorationActions, ExplorationIntent } from '../../pve/exploration/intents';
 import type { ExplorationRun } from '../../pve/exploration/run';
-import { xpToNext } from '../../pve/progression';
+import { rackIsFull, xpToNext } from '../../pve/progression';
 import { castOddsLabel } from '../../spells/castOdds';
 import { ALL_SPELL_SETS, allSpells, rackCoverage } from '../../spells/registry';
 import type { Spell } from '../../spells/Spell';
@@ -24,6 +24,7 @@ import { itemRarityColor } from '../../visuals/itemIcons';
 import { itemIconTexture } from '../../visuals/itemIconTextures';
 import { CabinetButton, CabinetChip, MenuFocusGroup } from '../cabinet/controls';
 import { addCabinetBackdrop, addRecess, addSectionRule, MENU_COLOR, MENU_FONT, MENU_HEX } from '../cabinet/theme';
+import { ChoiceMenuView } from '../combat/CombatMenus';
 import { addJourneyStrip } from './JourneyStrip';
 import { HexDrawView } from './HexDrawView';
 import { itemDetail } from './ShopView';
@@ -51,6 +52,7 @@ export class PackView extends Phaser.GameObjects.Container {
   private inspectorBody!: Phaser.GameObjects.Text;
   /** The Draw Hex table, open over the pack. */
   private table: HexDrawView | null = null;
+  private shardChoice: ChoiceMenuView<string> | null = null;
 
   constructor(
     scene: Phaser.Scene,
@@ -64,7 +66,7 @@ export class PackView extends Phaser.GameObjects.Container {
     this.setDepth(120);
     this.sceneInput = new SceneInput(scene);
     const pack = (run: (event: KeyboardEvent) => void) => (event: KeyboardEvent): void => {
-      if (!this.table) run(event);
+      if (!this.table && !this.shardChoice) run(event);
     };
     this.sceneInput.bindKeys([
       { key: 'LEFT', capture: true, run: pack(() => this.focus.move(-1)) },
@@ -85,6 +87,8 @@ export class PackView extends Phaser.GameObjects.Container {
     this.disposed = true;
     this.table?.destroy();
     this.table = null;
+    this.shardChoice?.destroy();
+    this.shardChoice = null;
     this.sceneInput.destroy();
     super.destroy(fromScene);
   }
@@ -342,16 +346,23 @@ export class PackView extends Phaser.GameObjects.Container {
       const def = getItem(id);
       const equippable = def.slot !== 'utility' && leader.canEquipFromBag(id);
       const drawable = this.mode === 'use' && !!def.paper && scribes;
+      const word = MOONSHARD_WORDS[id];
+      const learnable = this.mode === 'use' && leader.alive && !!word && !leader.loadout.includes(word);
       const action = this.mode === 'drop' ? '  /  drop one'
         : this.mode === 'give' ? `  /  give one to ${target?.name ?? 'nobody'}`
+        : learnable && word ? `  /  learn ${WORDS[word].label}`
         : equippable ? '  /  equip' : drawable ? '  /  draw a hex' : '';
       const slots = slotsForCount(id, count);
       entries.push({
         label: `${def.name}${count > 1 ? ` x${count}` : ''}${slots > 1 ? ` (${slots} slots)` : ''}${action}`,
         detail: itemDetail(def),
-        enabled: this.mode === 'drop' ? !def.permanentlyBinding && !def.keyItem : this.mode === 'give' ? !!target : equippable || drawable,
+        enabled: this.mode === 'drop' ? !def.permanentlyBinding && !def.keyItem : this.mode === 'give' ? !!target : equippable || drawable || learnable,
         icon: id,
         run: () => {
+          if (learnable) {
+            this.learnShard(leader, id);
+            return;
+          }
           if (drawable && def.paper) {
             this.openTable(def.paper);
             return;
@@ -368,6 +379,29 @@ export class PackView extends Phaser.GameObjects.Container {
       entries.push({ label: `Arrows x${leader.arrows}`, detail: 'Ammunition for bows.', enabled: false, icon: 'arrow', run: () => undefined });
     }
     return entries;
+  }
+
+  private learnShard(leader: Mage, item: ItemId): void {
+    const word = MOONSHARD_WORDS[item];
+    if (!word || this.working || this.shardChoice) return;
+    if (!rackIsFull(leader.loadout)) {
+      void this.apply({ op: 'learn-shard', item });
+      return;
+    }
+    this.setVisible(false);
+    const close = (): void => {
+      this.shardChoice?.destroy();
+      this.shardChoice = null;
+      if (!this.disposed) this.setVisible(true);
+    };
+    this.shardChoice = new ChoiceMenuView(this.scene, `LEARN ${WORDS[word].label.toUpperCase()}`, 'REPLACE A WORD',
+      leader.loadout.flatMap((known, index) => isModifierWord(known) ? [] : [{
+        id: String(index), label: WORDS[known].label, detail: WORDS[known].blurb,
+      }]), (index) => {
+        close();
+        void this.apply({ op: 'learn-shard', item, replace: Number(index) });
+      }, close);
+    this.shardChoice.setDepth(this.depth + 1);
   }
 
   private inspect(title: string, body: string): void {

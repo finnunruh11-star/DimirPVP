@@ -7,9 +7,10 @@
 import type Phaser from 'phaser';
 import { bufferTexture } from '../../world/localeRender';
 import { BOSS_ART } from './art';
-import { AUTHORED_BOSSES, type AuthoredBoss } from './authored';
+import { AUTHORED_BOSSES, authoredIdleSpecial, type AuthoredBoss } from './authored';
 import { BOSS_ANIMS, GROUND, renderStrip, type BossAnim } from './rig';
 import lillithIdleUrl from '../../Sprites/ShadeQueen/idle.png';
+import lillithInspectUrl from '../../Sprites/ShadeQueen/idle_inspect.png';
 import lillithWalkUrl from '../../Sprites/ShadeQueen/walk.png';
 import lillithAttackUrl from '../../Sprites/ShadeQueen/attack.png';
 import lillithStabUrl from '../../Sprites/ShadeQueen/stab.png';
@@ -25,6 +26,8 @@ export const BOSS_PIXEL = 2;
 export type BossSpriteKind = `boss-${string}`;
 
 export const bossSpriteKind = (id: string): BossSpriteKind => `boss-${id}`;
+/** Whether a boss has authored sheets; the rest are drawn as the tinted mage. */
+export const hasBossSprites = (id: string): boolean => !!AUTHORED_BOSSES[id] || id === 'rock';
 export const bossAnimKey = (id: string, anim: BossAnim): string => `enemy-boss-${id}-${anim}`;
 const stripKey = (id: string, strip: string): string => `enemy-boss-${id}-${strip}`;
 
@@ -32,6 +35,7 @@ const stripKey = (id: string, strip: string): string => `enemy-boss-${id}-${stri
 const AUTHORED_URLS: Record<string, Record<string, string>> = {
   lillith: {
     idle: lillithIdleUrl,
+    idle_inspect: lillithInspectUrl,
     walk: lillithWalkUrl,
     attack: lillithAttackUrl,
     stab: lillithStabUrl,
@@ -92,19 +96,39 @@ export function ensureBossSprites(scene: Phaser.Scene, id: string): BossSheet {
   return bossSheet(id);
 }
 
-/** An authored boss's animations, its special idle folded into the idle loop at its own pace. */
+/** An authored boss's animation strips; idle specials are chosen per sprite. */
 function ensureAuthoredSprites(scene: Phaser.Scene, id: string, boss: AuthoredBoss): void {
-  const strip = (name: string, duration?: number) =>
-    Array.from({ length: boss.strips[name].frames }, (_, frame) => ({ key: stripKey(id, name), frame, ...(duration ? { duration } : {}) }));
+  const strip = (name: string) =>
+    Array.from({ length: boss.strips[name].frames }, (_, frame) => ({ key: stripKey(id, name), frame }));
   for (const [name, { rate }] of Object.entries(boss.strips)) {
     const key = stripKey(id, name);
     if (scene.anims.exists(key) || !scene.textures.exists(key)) continue;
-    const special = boss.special;
-    const frames = name === 'idle' && special && scene.textures.exists(stripKey(id, special.strip))
-      ? [...Array.from({ length: special.every }, () => strip(name)).flat(), ...strip(special.strip, 1000 / boss.strips[special.strip].rate)]
-      : strip(name);
-    scene.anims.create({ key, frames, frameRate: rate, repeat: name === 'idle' || name === 'walk' ? -1 : 0 });
+    scene.anims.create({ key, frames: strip(name), frameRate: rate, repeat: name === 'idle' || name === 'walk' ? -1 : 0 });
   }
+}
+
+export function bossIsIdleSpecial(id: string, key: string | undefined): key is string {
+  const special = AUTHORED_BOSSES[id]?.special;
+  return !!special && (key === stripKey(id, special.strip) || (!!special.alternate && key === stripKey(id, special.alternate.strip)));
+}
+
+export function bindBossIdleSpecial(sprite: Phaser.GameObjects.Sprite, id: string): void {
+  const special = AUTHORED_BOSSES[id]?.special;
+  if (!special) return;
+  const idle = bossAnimKey(id, 'idle');
+  let loops = 0;
+  sprite.on('animationstart', (animation: Phaser.Animations.Animation) => {
+    if (animation.key !== idle) loops = 0;
+  });
+  sprite.on('animationrepeat', (animation: Phaser.Animations.Animation) => {
+    if (animation.key !== idle || ++loops < special.every) return;
+    loops = 0;
+    const strip = authoredIdleSpecial(id, Math.random());
+    if (strip && sprite.scene.anims.exists(stripKey(id, strip))) sprite.play(stripKey(id, strip));
+  });
+  sprite.on('animationcomplete', (animation: Phaser.Animations.Animation) => {
+    if (bossIsIdleSpecial(id, animation.key)) sprite.play(idle);
+  });
 }
 
 /** The animations a boss strikes with, taken in turn. */

@@ -18,6 +18,9 @@ export interface BossIntroModel {
   boss: BossDef;
   cycle: number;
   bossAnim: string;
+  /** The texture to start on, when it is not named after the idle animation (the tinted mage). */
+  bossTexture?: string;
+  bossTint?: number;
   bossRoar: string;
   bossSheet: BossSheet;
   /** The boss's leader in the arena: it roars as the screen opens on it. */
@@ -187,7 +190,7 @@ export function playBossIntro(scene: Phaser.Scene, model: BossIntroModel): Promi
   const bossScale = Math.max(1, Math.floor(Math.min(400 / model.bossSheet.frameH, 560 / model.bossSheet.frameW)));
   const bossX = W * 0.76;
   const bossY = H * 0.8;
-  const boss = scene.add.sprite(bossX + 220, bossY, model.bossAnim).setOrigin(0.5, model.bossSheet.originY).setScale(bossScale * 1.12);
+  const boss = scene.add.sprite(bossX + 220, bossY, model.bossTexture ?? model.bossAnim).setOrigin(0.5, model.bossSheet.originY).setScale(bossScale * 1.12);
   if (scene.anims.exists(model.bossAnim)) boss.play(model.bossAnim);
   boss.setTintFill(0x000000);
   bossPanel.add(boss);
@@ -336,6 +339,7 @@ export function playBossIntro(scene: Phaser.Scene, model: BossIntroModel): Promi
   });
   at(1540, () => {
     boss.clearTint();
+    if (model.bossTint != null) boss.setTint(model.bossTint);
     playSound('boss.roar');
     if (scene.anims.exists(model.bossRoar)) {
       boss.play(model.bossRoar);

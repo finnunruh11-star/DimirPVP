@@ -44,6 +44,20 @@ const tests: [name: string, run: () => Promise<void>][] = [
     assert(isStraightAttack(spell, 'objects') === isStraightAttack(spell, 'objects'), 'the verdict is worked out once');
   }],
 
+  ['keeps each known color basic spell available beyond the primary color', async () => {
+    const loadout: WordId[] = ['mind', 'bind', 'shadow', 'fire'];
+    for (const mageClass of [...MAGE_CLASSES, null]) {
+      const abilities = getColorAbilitiesFor('blue', mageClass, loadout);
+      for (const color of ['blue', 'black', 'red'] as const) {
+        const basic = getColorAbilitiesFor(color, null)[0];
+        assert(abilities.some((ability) => ability.id === basic.id), `${color} basic spell is always available`);
+        assert(abilities.filter((ability) => ability.id === basic.id).length === 1, 'no duplicate basic spells');
+      }
+      assert(!abilities.some((ability) => ability.color === 'white'), 'unknown colors stay locked');
+      assert(abilities.length === (mageClass ? 4 : 3), 'only the primary color grants its class spell');
+    }
+  }],
+
   ['gives a classless traveller only the ordinary spells', async () => {
     const ordinary = allSpells(null);
     assert(ordinary.length > 0, 'the classless still cast');

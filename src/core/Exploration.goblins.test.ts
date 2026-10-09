@@ -44,7 +44,7 @@ const tests: [name: string, run: () => void][] = [
       { shamans: 3, raiders: 5 }, { shamans: 4, raiders: 6 }, { shamans: 5, raiders: 7 },
     ], 'band sizes');
     equal(bossRoster('goblins', 3).map((unit) => [unit.kind, unit.count]), [['goblinChief', 1], ['goblinRaider', 4], ['goblinShaman', 2]], 'three players');
-    equal(bossRoster('dragon', 3).map((unit) => [unit.kind, unit.count]), [['zombie', 1]], 'unwritten bosses keep the stand-in');
+    equal(bossRoster('crusade', 3).map((unit) => [unit.kind, unit.count]), [['zombie', 1]], 'unwritten bosses keep the stand-in');
   }],
 
   ['gives each goblin the stats it was written with, and no resistances', () => {

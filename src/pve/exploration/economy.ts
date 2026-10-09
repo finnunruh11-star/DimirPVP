@@ -7,6 +7,8 @@ import { Dice } from '../../core/Dice';
 import { getItem, type ItemDef, type ItemId, type Rarity } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
 import { packCanStow, packFits } from '../../core/Pack';
+import { WORDS, type WordId } from '../../core/Words';
+import { learnedLoadout } from './levels';
 import { advanceHours, clockTime, spanLabel } from './clock';
 import { hoursBeforeBloodmoon } from './bloodmoon';
 import { leadMember, livingMembers, memberOf, partyXpScale, respawnFallen, syncPendingLevels } from './coop';
@@ -435,6 +437,29 @@ export function drawHex(run: ExplorationRun, paper: ItemId, grids: readonly numb
 // -----------------------------------------------------------------------------
 //  PACK
 // -----------------------------------------------------------------------------
+
+export const MOONSHARD_WORDS: Partial<Record<ItemId, WordId>> = {
+  moonshardRed: 'fire',
+  moonshardBlue: 'mind',
+  moonshardBlack: 'shadow',
+};
+
+export function learnMoonshard(run: ExplorationRun, id: ItemId, member?: MageClass | null, replace?: number): ShopResult {
+  const word = MOONSHARD_WORDS[id];
+  if (!word) return { ok: false, message: 'That shard teaches no word.' };
+  return withMember(run, member, (mage) => {
+    if (!mage.alive) return { ok: false, message: `${mage.name} has fallen.` };
+    if (mage.loadout.includes(word)) return { ok: false, message: `${mage.name} already knows ${WORDS[word].label}.` };
+    const carried = [mage.utility, mage.bag].find((items) => items.includes(id));
+    if (!carried) return { ok: false, message: 'No such shard in your pack.' };
+    if (replace != null && !Number.isInteger(replace)) return { ok: false, message: 'Choose a word to replace.' };
+    const next = learnedLoadout(mage.loadout, word, replace);
+    if (!next) return { ok: false, message: 'Choose a word to replace.' };
+    carried.splice(carried.indexOf(id), 1);
+    mage.setLoadout(next);
+    return { ok: true, message: `${mage.name} learned ${WORDS[word].label}.` };
+  });
+}
 
 export function equipItem(run: ExplorationRun, id: ItemId, member?: MageClass | null): ShopResult {
   return withMember(run, member, (leader) => {

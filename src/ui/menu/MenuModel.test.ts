@@ -5,6 +5,8 @@ import type { WordId } from '../../core/Words';
 import { Net } from '../../net/Net';
 import { ADVENTURE_PROTOCOL } from '../../net/AdventureSession';
 import { rollSwamprunEncounter } from '../../pve/swamprun';
+import { isBloodmoonRaid, RAID_TARGETS, type RaidTarget } from '../../pve/raidTargets';
+import { raidTargetCopy } from './content';
 import { MenuModel } from './MenuModel';
 import {
   OnlineCoordinator,
@@ -289,6 +291,18 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(config.seats?.every((seat) => seat.team === 1), true, 'Raid teams');
     equal(model.setRaidBoss('lillith'), true, 'Select a bloodmoon boss');
     equal(model.toLocalMatchConfig(() => 0.5).raidBoss, 'lillith', 'Bloodmoon raid target');
+  }],
+
+  ['offers only the retained Bloodmoon bosses in Raid', () => {
+    equal(RAID_TARGETS.filter(isBloodmoonRaid), ['goblins', 'rock', 'crusade', 'baral', 'lillith'], 'Bloodmoon raid roster');
+    equal(raidTargetCopy('crusade').label, 'Crucade', 'Crucade short label');
+    const model = new MenuModel();
+    model.setMode('raid');
+    equal(model.setRaidBoss('crusade'), true, 'Select Crucade');
+    for (const id of ['selga', 'zargarg', 'dragon', 'planetar', 'minion']) {
+      equal(model.setRaidBoss(id as RaidTarget), false, `${id} cannot be selected`);
+      equal(model.raidBoss, 'crusade', 'Rejected selection keeps Crucade');
+    }
   }],
 
   ['keeps Reaper Raid parties at two or more members', () => {

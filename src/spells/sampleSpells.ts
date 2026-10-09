@@ -2364,6 +2364,7 @@ registerSpell({
           entity !== ctx.caster &&
           entity.alive &&
           !visited.has(entity) &&
+          !ctx.game.isUnreachable(entity) &&
           Math.hypot(entity.x - ctx.caster.x, entity.y - ctx.caster.y) <= range
       );
       if (candidates.length === 0) break;
@@ -2703,6 +2704,7 @@ registerSpell({
           entity !== ctx.caster &&
           entity.team !== ctx.caster.team &&
           entity.alive &&
+          !ctx.game.isUnreachable(entity) &&
           Math.hypot(entity.x - ctx.caster.x, entity.y - ctx.caster.y) <= range
       );
       if (candidates.length === 0) break;

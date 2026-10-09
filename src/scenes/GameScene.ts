@@ -142,6 +142,7 @@ import {
 } from '../core/Words';
 import { MAGE_CLASSES, MAGE_CLASS_DEFS, type MageClass } from '../core/Classes';
 import { stormWordsCompatible, WORD_COLOR, wordSpellMana, type ColorName } from '../core/Colors';
+import { levelWordPool } from '../pve/exploration/levels';
 import {
   STAT_DEFS,
   STAT_ORDER,
@@ -176,7 +177,7 @@ import {
   type ItemId,
   type Rarity,
 } from '../core/Items';
-import type { StackItem } from '../core/Stack';
+import type { PendingCast, StackItem } from '../core/Stack';
 import type { DamageType } from '../core/Damage';
 import { barrierContains } from '../core/Barrier';
 import { FLEE_EDGE_LABEL, fleeEdgeAt, type FleeEdge } from '../core/Flee';
@@ -216,11 +217,13 @@ import { CombatFeedbackLayer } from '../visuals/CombatFeedbackLayer';
 import { ImpactFxDirector } from '../visuals/ImpactFxDirector';
 import { preloadImpactSheets } from '../visuals/ImpactSheets';
 import { ParticleFx } from '../visuals/ParticleFx';
-import { bossAnimKey, bossAttackKeys, bossCast, bossSheet, bossSpriteKind, ensureBossSprites, preloadBossSheets } from '../visuals/bosses';
+import { bindBossIdleSpecial, bossAnimKey, bossAttackKeys, bossCast, bossIsIdleSpecial, bossSheet, bossSpriteKind, ensureBossSprites, hasBossSprites, preloadBossSheets } from '../visuals/bosses';
+import { placeholderSpriteFor } from '../visuals/creatureLooks';
 import { playBossIntro } from '../ui/combat/BossIntro';
 import { BOSSES, BOSS_STAND_IN, MOONSHARD, bossDamageScales, bossRoster, bossScaling, nextBloodmoonDay, type BossFight, type BossUnit } from '../pve/exploration/bloodmoon';
 import { GOBLIN_HASTE, GOBLIN_HEX, GOBLIN_MEND_HP, GOBLIN_RITE_RANGE } from '../pve/goblins';
-import { BARAL_MARK, DRAKE_LIFESPAN, denialLabel, denialStartCharges, denialThreshold } from '../pve/baral';
+import { MOAY_AOE_RADIUS } from '../pve/moay';
+import { BARAL_HP_MARK, DENIAL_SPAWN_RADIUS_UNITS, DRAKE_LIFESPAN, denialLabel, denialStartCharges, denialThreshold } from '../pve/baral';
 import {
   LILLITH_CIRCLE_RADIUS,
   LILLITH_ORB_HP,
@@ -651,6 +654,7 @@ type TurnCommand =
   | { t: 'mantle-bind' }
   | { t: 'robe-cast' }
   | { t: 'cleanse' }
+  | { t: 'switch-weapon' }
   | { t: 'flee' }
   | { t: 'raid-begin' }
   | { t: 'raid-restore'; kind: RaidRestoreKind }
@@ -694,7 +698,9 @@ function bossSpawnPoint(unit: BossUnit, index: number): Vec2 {
 }
 
 const creatureSpriteKind = (mage: Mage): CreatureSpriteKind | null =>
-  mage.bossArt ? bossSpriteKind(mage.bossArt) : creatureSpriteFor(mage.summonKind ?? mage.mine?.kind ?? mage.enemyKind, mage.mine?.heads, mage.mine?.role);
+  mage.bossArt ? bossSpriteKind(mage.bossArt)
+  : mage.summonKind ? creatureSpriteFor(mage.summonKind) ?? placeholderSpriteFor(mage.summonKind)
+  : creatureSpriteFor(mage.mine?.kind ?? mage.enemyKind);
 
 /** How a loosed Hexzettel looks on the stack. */
 function hexVisual(hex: HexRecipe): StackItem['actionVisual'] {
@@ -703,14 +709,6 @@ function hexVisual(hex: HexRecipe): StackItem['actionVisual'] {
   if (effects.includes('corrosive') || effects.includes('siphon')) return 'corrosive';
   return hexHarmful(hex) ? 'shadow' : 'heal';
 }
-
-/** Creatures that wear painted art when a roadside scene brings them. */
-const SCENE_ART: Partial<Record<string, string>> = {
-  goblinRaider: 'goblin-raider',
-  goblinShaman: 'goblin-shaman',
-  lion: 'lion',
-  lioness: 'lioness',
-};
 
 /** The team each side of a scene fights on: the party is 1, the scene's foes 2. */
 const SCENE_TEAM: Record<SceneUnit['side'], number> = { escort: 1, foe: 2, rival: 3, prey: 4 };
@@ -757,7 +755,7 @@ const ACTION_GROUPS: { title: string; ids: string[] }[] = [
       'edgelord-throw',
     ],
   },
-  { title: 'ITEMS', ids: ['inventory', 'drop', 'pickup', 'throw', 'hex'] },
+  { title: 'ITEMS', ids: ['inventory', 'switch-weapon', 'drop', 'pickup', 'throw', 'hex'] },
   {
     title: 'RUN',
     ids: ['raid-begin', 'raid-restore-vitals', 'raid-restore-mana', 'raid-restore-words', 'pickaxe'],
@@ -766,6 +764,16 @@ const ACTION_GROUPS: { title: string; ids: string[] }[] = [
 ];
 /** Practice targets kept standing during raid preparation. */
 const RAID_PREP_EFFIGIES = 3;
+const PINNED_ACTIONS_KEY = 'dimir.pinnedActions';
+
+function loadPinnedActions(): Set<string> {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(PINNED_ACTIONS_KEY) ?? '[]');
+    return new Set(Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
 /** Standard loadout, SNIFF's extra Storm word, and the modifier slot. */
 const WORD_SLOTS = LOADOUT_SIZE + 2;
 
@@ -1147,6 +1155,10 @@ export class GameScene extends Phaser.Scene {
   private actionMenuRowsPerColumn = 1;
   /** The mode to restore when the action menu closes ('idle' or 'reaction'). */
   private actionMenuReturn: InputMode = 'idle';
+  /** Action ids starred in the action menu; shown down the side of the field. */
+  private readonly pinnedActions = loadPinnedActions();
+  private pinnedPanel?: Phaser.GameObjects.Container;
+  private pinnedSignature = '';
   /** The always-visible button that opens the action menu. */
   private actionMenuButton?: Phaser.GameObjects.Text;
   private castButton?: Phaser.GameObjects.Text;
@@ -1178,6 +1190,8 @@ export class GameScene extends Phaser.Scene {
    */
   private puppet: { summon: Mage; owner: Mage; savedIndex: number } | null = null;
   private reactionResolve: ((value: ReactionChoice | null) => void) | null = null;
+  /** The channelled spell being aimed as it is released, for its area preview. */
+  private channelAimSpell: Spell | null = null;
   // When on, the local player's reaction windows auto-pass (never prompt).
   // Can be toggled at any time (key [O] or the on-screen button).
   private autoPassReactions = false;
@@ -1414,6 +1428,8 @@ export class GameScene extends Phaser.Scene {
     // Lazily-built overlays cache their container, so stale handles must go.
     this.actionMenu = undefined;
     this.actionMenuEntries = [];
+    this.pinnedPanel = undefined;
+    this.pinnedSignature = '';
     this.pauseView = undefined;
     this.swamprunHudText = undefined;
     this.vignette = undefined;
@@ -2138,7 +2154,9 @@ export class GameScene extends Phaser.Scene {
     if (combat.boss) {
       this.spawnBloodmoonBoss(combat.boss);
       this.gs.log(`— The bloodmoon rises. ${BOSSES[combat.boss.id].name} attacks. There is no running from it. —`);
+      const rushing = this.gs.extraTurnQueue.splice(0);
       this.gs.startNewCombat({ preserveScarabs: true });
+      if (rushing.length) this.actFirst(rushing);
       this.updateWaveHud();
       this.redraw();
       return;
@@ -2180,9 +2198,9 @@ export class GameScene extends Phaser.Scene {
    */
   private spawnBloodmoonBoss(fight: BossFight): Mage {
     const def = BOSSES[fight.id];
-    ensureBossSprites(this, fight.id);
+    if (hasBossSprites(fight.id)) ensureBossSprites(this, fight.id);
     const fighters = this.gs.mages.filter((m) => m.team === 1 && !m.isSummon).length;
-    const scale = bossScaling(fighters);
+    const scale = bossScaling(fighters, fight.id);
     this.bossPlayers = fighters;
     this.bossScale = { health: scale.health, damage: bossDamageScales(fight.id) ? scale.damage : 1 };
     const roster = bossRoster(fight.id, fighters);
@@ -2191,13 +2209,21 @@ export class GameScene extends Phaser.Scene {
       const charges = denialStartCharges(unit.count);
       for (let index = 0; index < unit.count; index++) {
         const artifact = unit.kind === 'denialArtifact';
-        const m = this.spawnBossUnit(unit.kind, unit.art, artifact ? this.randomOpenSpot() : bossSpawnPoint(unit, index));
+        const drake = unit.kind === 'baralDrake';
+        const at = artifact && leader ? this.spotNear(leader, DENIAL_SPAWN_RADIUS_UNITS * RANGE_UNIT)
+          : drake && leader ? this.spotNear(leader, 3 * RANGE_UNIT)
+          : bossSpawnPoint(unit, index);
+        const m = this.spawnBossUnit(unit.kind, unit.art, at);
         if (unit.kind === BOSS_STAND_IN) m.name = def.name;
         m.isBoss = !!unit.leader;
-        if (unit.kind === 'baral') m.baral = { turns: 0, wounded: false, hpMark: Math.round(BARAL_MARK * scale.health) };
+        if (unit.kind === 'baral') m.baral = { turns: 0, wounded: false, hpMark: Math.round(BARAL_HP_MARK * scale.health) };
         if (artifact) {
           const threshold = denialThreshold(fighters);
           m.denial = { charges: Math.min(threshold, charges[index]), threshold };
+        }
+        if (drake) {
+          m.drakeTurns = DRAKE_LIFESPAN;
+          this.gs.grantExtraTurn(m);
         }
         if (unit.leader) leader = m;
       }
@@ -2247,11 +2273,6 @@ export class GameScene extends Phaser.Scene {
       } else {
         applyEnemyTraits(m, unit.kind, this.gs.rng);
       }
-      const art = SCENE_ART[unit.kind];
-      if (art) {
-        ensureBossSprites(this, art);
-        m.bossArt = art;
-      }
     }
     m.team = team;
     if (unit.side !== 'foe') m.sceneSide = unit.side;
@@ -2285,8 +2306,6 @@ export class GameScene extends Phaser.Scene {
       m.hands = ['warHammer'];
       m.head = 'ironCap';
       m.accessories = ['fightersGloves'];
-      ensureBossSprites(this, 'dwarf-guard');
-      m.bossArt = 'dwarf-guard';
     } else {
       m.assignFlatStats(2);
       m.maxHp = 12;
@@ -2297,10 +2316,11 @@ export class GameScene extends Phaser.Scene {
 
   /** One of a bloodmoon boss's units takes the field, scaled to the party. */
   private spawnBossUnit(kind: EnemyKind, art: string, at: Vec2): Mage {
-    ensureBossSprites(this, art);
+    const authored = hasBossSprites(art);
+    if (authored) ensureBossSprites(this, art);
     const m = new Mage({ name: ENEMY_DEFS[kind].name, isAI: true, team: 2, position: at, loadout: [] });
     applyEnemyTraits(m, kind, this.gs.rng);
-    m.bossArt = art;
+    if (authored) m.bossArt = art;
     m.maxHp = Math.max(1, Math.round(m.maxHp * this.bossScale.health));
     m.hp = m.maxHp;
     m.damageScale = this.bossScale.damage;
@@ -2311,33 +2331,34 @@ export class GameScene extends Phaser.Scene {
     this.ais.set(m, new SimpleAI(this.gs, m));
     this.swamprunWaveEnemies.push(m);
     this.syncMageSprites();
-    this.styleBossSprite(m);
+    if (m.bossArt) this.styleBossSprite(m);
+    else this.styleEnemySprite(m, kind);
     return m;
   }
 
-  /** A random spot anywhere on the field, clear of every body where one can be found. */
-  private randomOpenSpot(): Vec2 {
+  /** A random spot within `radius` of `center`, on the field and clear of every body where one can be found. */
+  private spotNear(center: Mage, radius: number): Vec2 {
     const rng = this.gs.rng;
-    let spot: Vec2 = { x: FIELD.x + FIELD.w / 2, y: FIELD.y + FIELD.h / 2 };
+    const clampX = (x: number): number => Math.min(FIELD.x + FIELD.w - 24, Math.max(FIELD.x + 24, x));
+    const clampY = (y: number): number => Math.min(FIELD.y + FIELD.h - 24, Math.max(FIELD.y + 24, y));
+    let spot: Vec2 = { x: clampX(center.x), y: clampY(center.y) };
     for (let tries = 0; tries < 24; tries++) {
-      spot = { x: FIELD.x + 60 + rng.float() * (FIELD.w - 120), y: FIELD.y + 40 + rng.float() * (FIELD.h - 80) };
+      const a = rng.float() * Math.PI * 2;
+      const r = Math.sqrt(rng.float()) * radius;
+      spot = { x: clampX(center.x + Math.cos(a) * r), y: clampY(center.y + Math.sin(a) * r) };
       if (this.gs.mages.every((m) => !m.alive || dist(m.pos, spot) >= m.bodyRadius() + MAGE_RADIUS * 2)) break;
     }
     return spot;
   }
 
-  /** Baral builds `count` drakes beside him; each lasts three of its own turns. */
+  /** Baral builds `count` drakes beside him; each acts at once and lasts three of its own turns. */
   private async raiseDrakes(baral: Mage, count: number): Promise<void> {
     const puffs: Promise<void>[] = [];
     for (let i = 0; i < count; i++) {
-      const a = this.gs.rng.float() * Math.PI * 2;
-      const r = (1.5 + this.gs.rng.float() * 1.5) * RANGE_UNIT;
-      const at = {
-        x: Math.min(FIELD.x + FIELD.w - 24, Math.max(FIELD.x + 24, baral.x + Math.cos(a) * r)),
-        y: Math.min(FIELD.y + FIELD.h - 24, Math.max(FIELD.y + 24, baral.y + Math.sin(a) * r)),
-      };
+      const at = this.spotNear(baral, 3 * RANGE_UNIT);
       const drake = this.spawnBossUnit('baralDrake', 'baral-drake', at);
       drake.drakeTurns = DRAKE_LIFESPAN;
+      this.gs.grantExtraTurn(drake);
       puffs.push(this.spellVfx.summonPuff(at, MAGE_RADIUS * 2.4));
     }
     this.gs.log(`${baral.name} builds ${count === 1 ? 'a drake' : `${count} drakes`}.`);
@@ -2359,7 +2380,7 @@ export class GameScene extends Phaser.Scene {
     if (this.gs.isOver || !baral.alive || !baral.baral) return;
     const plan = this.gs.baralEndStep(baral);
     for (let i = 0; i < plan.artifacts; i++) {
-      const at = this.randomOpenSpot();
+      const at = this.spotNear(baral, DENIAL_SPAWN_RADIUS_UNITS * RANGE_UNIT);
       const artifact = this.spawnBossUnit('denialArtifact', 'denial-artifact', at);
       artifact.denial = { charges: 0, threshold: denialThreshold(this.bossPlayers) };
       this.gs.log(`${baral.name} sets down another Artifact of Denial.`);
@@ -2439,24 +2460,31 @@ export class GameScene extends Phaser.Scene {
 
   /** Vs. the boss: the party on one side, the boss on the other, before anyone moves. */
   private async playBloodmoonIntro(fight: BossFight): Promise<void> {
-    const leader = this.gs.mages.find((m) => m.team === 2 && m.isBoss && !!m.bossArt);
+    const leader = this.gs.mages.find((m) => m.team === 2 && m.isBoss);
     const leaderRec = leader ? this.mageAnims.get(leader) : undefined;
+    const painted = hasBossSprites(fight.id);
+    const mageFrame = this.textures.getFrame('mage-idle-0');
+    const mageSheet = { frameW: mageFrame.width, frameH: mageFrame.height, originY: 1, pixel: 1 };
     const party = this.gs.mages
       .filter((m) => m.team === 1 && !m.isSummon && m.alive)
       .map((m) => ({ mage: m, rec: this.mageAnims.get(m) }))
       .filter((entry): entry is { mage: Mage; rec: MageAnim } => !!entry.rec);
     const fighters = party.length;
-    const scale = bossScaling(fighters);
+    const scale = bossScaling(fighters, fight.id);
     const band = bossRoster(fight.id, fighters);
     this.mode = 'busy';
     await playBossIntro(this, {
       boss: BOSSES[fight.id],
       cycle: fight.cycle,
-      bossAnim: bossAnimKey(fight.id, 'idle'),
-      bossRoar: bossAnimKey(fight.id, 'attack'),
-      bossSheet: bossSheet(fight.id),
-      arenaBoss: leaderRec && leader?.bossArt
-        ? { sprite: leaderRec.sprite, roar: bossAnimKey(leader.bossArt, 'attack'), idle: bossAnimKey(leader.bossArt, 'idle') }
+      bossAnim: painted ? bossAnimKey(fight.id, 'idle') : 'mage-idle',
+      bossTexture: painted ? undefined : 'mage-idle-0',
+      bossTint: !painted && leaderRec?.sprite.isTinted ? leaderRec.sprite.tintTopLeft : undefined,
+      bossRoar: painted ? bossAnimKey(fight.id, 'attack') : 'mage-attack',
+      bossSheet: painted ? bossSheet(fight.id) : mageSheet,
+      arenaBoss: leaderRec
+        ? leader?.bossArt
+          ? { sprite: leaderRec.sprite, roar: bossAnimKey(leader.bossArt, 'attack'), idle: bossAnimKey(leader.bossArt, 'idle') }
+          : { sprite: leaderRec.sprite, roar: 'mage-attack', idle: 'mage-idle' }
         : undefined,
       roster: band.length > 1 ? band.map((unit) => {
         const unitDef = ENEMY_DEFS[unit.kind];
@@ -2610,6 +2638,13 @@ export class GameScene extends Phaser.Scene {
       .sort((a, b) => Number(a.mage.team === 1) - Number(b.mage.team === 1))
       .map((entry) => entry.index);
     this.gs.restoreTurnOrder(order, order.map(() => 0), 0);
+  }
+
+  /** Put `first` at the head of a freshly rolled initiative, in their order. */
+  private actFirst(first: Mage[]): void {
+    const lead = first.map((m) => this.gs.mages.indexOf(m)).filter((i) => this.gs.initiativeOrder.includes(i));
+    const order = [...lead, ...this.gs.initiativeOrder.filter((i) => !lead.includes(i))];
+    this.gs.restoreTurnOrder(order, this.gs.initiativeRolls, order[0]);
   }
 
   /**
@@ -4159,7 +4194,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private levelWordOffers(player: Mage): WordId[] {
-    const pool = WORD_ORDER.filter((word) => !player.loadout.includes(word));
+    const pool = levelWordPool(player.loadout);
     const offers: WordId[] = [];
     while (pool.length > 0 && offers.length < 3) {
       const word = this.gs.rng.pick(pool);
@@ -5376,6 +5411,31 @@ export class GameScene extends Phaser.Scene {
       g.lineBetween(hovered.x + radius, hovered.y - radius, hovered.x - radius, hovered.y + radius);
       g.lineStyle(1, MENU_COLOR.blood, 0.6).strokeCircle(hovered.x, hovered.y, radius + 4);
     }
+    const area = this.aoeAim();
+    if (area) this.drawAoeHitboxes(g, area.caster, area.toward, area.aoe);
+  }
+
+  /** The area spell being aimed right now, with where it would land (null until a target is hovered). */
+  private aoeAim(): { caster: Mage; toward: Vec2 | null; aoe: NonNullable<Spell['aoe']> } | null {
+    if (this.mode === 'subtarget-point' || this.mode === 'subtarget-enemy') {
+      const aoe = this.channelAimSpell?.aoe;
+      const caster = this.subtargetSource;
+      if (!aoe || !caster) return null;
+      const origin = this.subtargetOrigin ?? caster.pos;
+      const toward = this.mode === 'subtarget-point'
+        ? stepTowards(origin, this.pointer, this.subtargetRange)
+        : this.clickedMage(this.pointer, null)?.pos ?? null;
+      return { caster, toward, aoe };
+    }
+    if (this.mode !== 'aiming-point' && this.mode !== 'aiming-spell') return null;
+    const spell = this.reactionAiming ? this.reactionPendingSpell : this.pendingSpell;
+    if (!spell?.aoe || spell.twoPointAim) return null;
+    const caster = this.aimingSource ?? this.gs.current;
+    if (this.mode === 'aiming-spell') {
+      return { caster, toward: this.clickedMage(this.pointer, null)?.pos ?? null, aoe: spell.aoe };
+    }
+    const reach = Number.isFinite(spell.range) ? this.gs.spellReach(spell, caster) : 99999;
+    return { caster, toward: stepTowards(caster.pos, this.pointer, reach), aoe: spell.aoe };
   }
 
   private isEnemyTargetingMode(): boolean {
@@ -5408,6 +5468,8 @@ export class GameScene extends Phaser.Scene {
     if (this.gameEnded) return;
     if (this.gs.isOver) return this.endGame();
     const turnOwner = this.gs.current;
+    // Locked until the turn start settles; the end of this method hands control out.
+    this.mode = 'busy';
     this.gs.beginTurn();
     if (!turnOwner.isAI) playSound('turn.start');
     this.showTurnBanner(turnOwner);
@@ -5605,6 +5667,7 @@ export class GameScene extends Phaser.Scene {
     if (!skipReactionWindow) {
       await this.offerReactionWindow(this.gs.current, 'End of Turn', {
         description: `${this.gs.current.name} moves to end their turn.`,
+        allies: true,
       });
     }
     if (this.gs.isOver) return this.endGame();
@@ -6076,7 +6139,9 @@ export class GameScene extends Phaser.Scene {
         else this.payForSpell(me, spell, freeBonus, mods);
         // Channel and Delay hold the spell instead of resolving it now.
         if (mods.includes('channel')) {
-          me.channeledCast = { spell, target: aimed, point, point2, modifiers: mods };
+          const aimOnRelease =
+            spell.targeting !== 'self' && spell.targeting !== 'none' && !aimed && !point;
+          me.channeledCast = { spell, target: aimed, point, point2, modifiers: mods, aimOnRelease };
           me.actions = { move: 0, main: 0, bonus: 0 };
           this.gs.log(
             `${me.name} begins channelling ${spell.name} — they can do nothing else until it breaks free.`
@@ -6612,6 +6677,13 @@ export class GameScene extends Phaser.Scene {
         );
         break;
       }
+      case 'switch-weapon': {
+        if (!me.switchWeapon()) break;
+        const now = me.activeWeaponId();
+        if (now) this.gs.log(`${me.name} now strikes with ${getItem(now).name}.`);
+        this.redraw();
+        break;
+      }
       case 'flee': {
         const edge = fleeEdgeAt(me.pos);
         if (!this.fleeAllowed || !edge || me.crocodileGrip?.alive) break;
@@ -7019,18 +7091,23 @@ export class GameScene extends Phaser.Scene {
     if (channeled && me.alive) {
       me.channeledCast = undefined;
       me.spend('main');
-      this.gs.log(`${me.name} releases the channelled ${channeled.spell.name} at full force.`);
-      await this.runStack(
-        this.gs.makeSpellItem(
-          me,
-          channeled.spell,
-          channeled.target,
-          channeled.point,
-          undefined,
-          channeled.point2,
-          channeled.modifiers
-        )
-      );
+      const aimed = channeled.aimOnRelease ? await this.aimChanneledCast(me, channeled) : channeled;
+      if (aimed) {
+        this.gs.log(`${me.name} releases the channelled ${channeled.spell.name} at full force.`);
+        await this.runStack(
+          this.gs.makeSpellItem(
+            me,
+            channeled.spell,
+            aimed.target,
+            aimed.point,
+            undefined,
+            aimed.point2,
+            channeled.modifiers
+          )
+        );
+      } else {
+        this.gs.log(`${me.name}'s channelled ${channeled.spell.name} finds no target and fizzles.`);
+      }
     }
     const delayed = me.delayedCast;
     if (delayed && me.alive && !this.gs.isOver) {
@@ -7057,6 +7134,54 @@ export class GameScene extends Phaser.Scene {
         await this.runStack(item);
       }
     }
+  }
+
+  /** Choose where a channelled spell lands as it is released (lockstep via the sub-target channel). */
+  private async aimChanneledCast(
+    me: Mage,
+    cast: PendingCast
+  ): Promise<Pick<PendingCast, 'target' | 'point' | 'point2'> | null> {
+    this.channelAimSpell = cast.spell;
+    try {
+      return await this.pickChannelAim(me, cast.spell);
+    } finally {
+      this.channelAimSpell = null;
+    }
+  }
+
+  private async pickChannelAim(
+    me: Mage,
+    spell: Spell
+  ): Promise<Pick<PendingCast, 'target' | 'point' | 'point2'> | null> {
+    this.redraw();
+    if (spell.targeting === 'point') {
+      const maxRange = this.gs.spellReach(spell, me);
+      const pick = (label: string): Promise<Vec2 | null> =>
+        this.requestSubtargetPoint(me, {
+          maxRange,
+          minRange: spell.minRange,
+          required: true,
+          prompt: `${me.name}: release ${spell.name} — ${label}.`,
+        });
+      const point = await pick(spell.twoPointAim ? "click the cone's first edge" : 'click a target point');
+      if (!point) return null;
+      const point2 = spell.twoPointAim ? await pick("click the cone's other edge") : null;
+      if (spell.twoPointAim && !point2) return null;
+      if (spell.rotatableWall) {
+        me.wallAngle = Math.atan2(point.y - me.y, point.x - me.x) + Math.PI / 2;
+      }
+      return { target: null, point, point2 };
+    }
+    const picked = await this.requestSubtargetCombatant(me, {
+      candidates: this.gs.validSpellTargets(spell, me),
+      range: Infinity,
+      prompt: `${me.name}: release ${spell.name} — choose a target.`,
+    });
+    if (!picked) return null;
+    const target = this.gs.isFoeBlind(me)
+      ? this.gs.randomFoeBlindTarget(me, this.gs.validSpellTargets(spell, me)) ?? picked
+      : picked;
+    return { target, point: null, point2: null };
   }
 
   /** Subtle casting: a DC 11 check decides whether the spell makes any sound. */
@@ -7105,7 +7230,7 @@ export class GameScene extends Phaser.Scene {
   private async offerReactionWindow(
     source: Mage,
     label: string,
-    opts: { at?: Vec2; description?: string } = {}
+    opts: { at?: Vec2; description?: string; allies?: boolean } = {}
   ): Promise<void> {
     if (this.gs.isOver || !source.alive) return;
     // These windows answer a synthetic no-op trigger. In the tutorial they are
@@ -7119,6 +7244,7 @@ export class GameScene extends Phaser.Scene {
     });
     trigger.noPhysicalReaction = true;
     trigger.windowTrigger = true;
+    trigger.openToAllies = opts.allies;
     if (opts.at) trigger.targetPoint = opts.at;
     // Skip the window entirely when nobody could answer it — keeps play snappy
     // and avoids exchanging empty reaction messages online. Deterministic on
@@ -7127,6 +7253,8 @@ export class GameScene extends Phaser.Scene {
     const prevMode = this.mode;
     const wasBusy = this.busy;
     this.busy = true;
+    // Nobody may act while others answer: a stray command would break lockstep online.
+    if (prevMode !== 'reaction') this.mode = 'busy';
     this.gs.pushStack(trigger);
     this.redraw();
     await this.resolveStackLoop();
@@ -7570,7 +7698,7 @@ export class GameScene extends Phaser.Scene {
   /** Color abilities the reactor could cast right now as a reaction. */
   private castableAbilities(reactor: Mage): ColorAbility[] {
     if (!this.canReactWithAbilities(reactor)) return [];
-    return getColorAbilitiesFor(reactor.profile.primary, reactor.spellClass).filter(
+    return getColorAbilitiesFor(reactor.profile.primary, reactor.spellClass, reactor.loadout).filter(
       (ab) =>
         !reactor.isAbilityBanned(ab.id) &&
         reactor.abilityCastsLeft(ab.id) > 0 &&
@@ -7599,7 +7727,7 @@ export class GameScene extends Phaser.Scene {
           m !== top.source &&
           m !== this.gs.current &&
           m !== turnOwner &&
-          m.team !== top.source.team
+          (m.team !== top.source.team || (!!top.openToAllies && !m.isSummon))
       );
   }
 
@@ -7930,6 +8058,7 @@ export class GameScene extends Phaser.Scene {
         key: 'W',
         run: actionHotkey('W', () => {
           if (this.mode === 'reaction') this.chooseWeaponReaction();
+          else this.onSwitchWeapon();
         }),
       },
       {
@@ -8126,6 +8255,7 @@ export class GameScene extends Phaser.Scene {
 
   private get humanActive(): boolean {
     return (
+      !this.reactionAiming &&
       !this.controllerIsAI(this.actor) &&
       (this.mode === 'idle' || this.mode === 'reaction' || this.mode.startsWith('aiming'))
     );
@@ -8248,7 +8378,8 @@ export class GameScene extends Phaser.Scene {
       return;
     }
 
-    if (spell.targeting === 'self' || spell.targeting === 'none') {
+    // A channelled spell is aimed when it is released, not now.
+    if (spell.targeting === 'self' || spell.targeting === 'none' || mods.includes('channel')) {
       this.resetSelection();
       this.mode = 'busy';
       this.submitTurn({
@@ -8775,7 +8906,7 @@ export class GameScene extends Phaser.Scene {
     });
 
     // Colour abilities (one entry each).
-    getColorAbilitiesFor(me.profile.primary, me.spellClass).forEach((ab, i) => {
+    getColorAbilitiesFor(me.profile.primary, me.spellClass, me.loadout).forEach((ab, i) => {
       const left = me.abilityCastsLeft(ab.id);
       entries.push({
         id: `ability-${ab.id}`,
@@ -9124,6 +9255,20 @@ export class GameScene extends Phaser.Scene {
       run: () => this.toggleInventory(),
     });
 
+    // Choose which held weapon the basic attack uses.
+    if (me.canSwitchWeapon()) {
+      const activeId = me.activeWeaponId();
+      entries.push({
+        id: 'switch-weapon',
+        label: 'Switch weapon',
+        hotkey: 'W',
+        desc: `Strike with your other held weapon instead (free). Now: ${activeId ? getItem(activeId).name : 'none'}.`,
+        enabled: !me.swordFormLocked(),
+        reason: 'Locked in sword form.',
+        run: () => this.onSwitchWeapon(),
+      });
+    }
+
     // Drop a held item.
     if (me.hands.length > 0) {
       entries.push({
@@ -9409,9 +9554,85 @@ export class GameScene extends Phaser.Scene {
         this.menuClickGuard = pointer;
         this.hideActionMenu();
       },
+      isPinned: (id) => this.pinnedActions.has(id),
+      onTogglePin: (id) => this.togglePinnedAction(id),
     });
     this.actionMenuRowsPerColumn = this.actionMenu.rowsPerColumn;
     this.refreshActionMenuSelection();
+  }
+
+  private togglePinnedAction(id: string): boolean {
+    if (this.pinnedActions.has(id)) this.pinnedActions.delete(id);
+    else this.pinnedActions.add(id);
+    try {
+      localStorage.setItem(PINNED_ACTIONS_KEY, JSON.stringify([...this.pinnedActions]));
+    } catch {
+      // Storage may be unavailable (private mode); pins then last for the session.
+    }
+    return this.pinnedActions.has(id);
+  }
+
+  /** Pinned actions down the left edge of the field, clickable whenever the local player can act. */
+  private refreshPinnedPanel(): void {
+    const reacting = this.mode === 'reaction' && !!this.reactor && !this.controllerIsAI(this.reactor);
+    const myTurn = this.mode === 'idle' && this.humanActive && !this.controllerIsAI(this.gs.current);
+    const entries = this.pinnedActions.size === 0 || this.gs.isOver || (!reacting && !myTurn)
+      ? []
+      : (reacting ? this.reactionActionEntries() : this.turnActionEntries())
+        .filter((entry) => this.pinnedActions.has(entry.id));
+    const signature = entries.map((e) => `${e.id}|${e.label}|${e.hotkey}|${e.enabled}`).join('\n');
+    if (signature === this.pinnedSignature && this.pinnedPanel?.active) {
+      this.pinnedPanel.setData('entries', entries);
+      return;
+    }
+    this.pinnedSignature = signature;
+    this.pinnedPanel?.destroy();
+    this.pinnedPanel = undefined;
+    if (entries.length === 0) return;
+
+    const width = 190;
+    const rowH = 26;
+    const panel = this.add.container(FIELD.x + SPACE.sm, FIELD.y + 48).setDepth(45);
+    panel.setData('entries', entries);
+    entries.forEach((entry, i) => {
+      const y = i * (rowH + 4);
+      const bg = this.add.rectangle(0, y, width, rowH, MENU_COLOR.charcoalRaised, entry.enabled ? 0.92 : 0.6)
+        .setOrigin(0)
+        .setStrokeStyle(1, MENU_COLOR.brassDark, 1);
+      const accent = this.add.rectangle(0, y, 3, rowH, MENU_COLOR.brass, entry.enabled ? 1 : 0.4).setOrigin(0);
+      const label = this.add.text(9, y + rowH / 2, `\u2605 ${entry.label}`, {
+        fontFamily: MENU_FONT.control,
+        fontSize: '11px',
+        fontStyle: 'bold',
+        color: entry.enabled ? MENU_HEX.bone : MENU_HEX.disabled,
+      }).setOrigin(0, 0.5);
+      const key = this.add.text(width - 6, y + rowH / 2, entry.hotkey, {
+        fontFamily: MENU_FONT.control,
+        fontSize: '10px',
+        color: MENU_HEX.brassLight,
+      }).setOrigin(1, 0.5);
+      const room = width - key.width - 20;
+      for (let n = entry.label.length - 1; label.width > room && n > 3; n--) {
+        label.setText(`\u2605 ${entry.label.slice(0, n)}\u2026`);
+      }
+      panel.add([bg, accent, label, key]);
+      bg.setInteractive({ useHandCursor: entry.enabled });
+      bg.on('pointerover', () => { if (entry.enabled) bg.setFillStyle(MENU_COLOR.woodRaised, 1); });
+      bg.on('pointerout', () => bg.setFillStyle(MENU_COLOR.charcoalRaised, entry.enabled ? 0.92 : 0.6));
+      bg.on('pointerdown', () => {
+        this.menuClickGuard = true;
+        // Use the newest entry: this closure may predate the latest redraw.
+        const live = (panel.getData('entries') as ActionEntry[]).find((e) => e.id === entry.id);
+        if (!live?.enabled) {
+          playSound('ui.deny');
+          if (live?.reason) this.flashHint(live.reason, true);
+          return;
+        }
+        playSound('ui.click');
+        live.run();
+      });
+    });
+    this.pinnedPanel = panel;
   }
 
   private moveActionMenuSelection(delta: number): void {
@@ -9507,12 +9728,21 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     this.resetSelection();
+    this.mode = 'busy';
     this.tutorialNotify({ k: 'command', cmd: 'end' });
     if (this.online) this.net?.send({ k: 'turn', cmd: { t: 'end' } satisfies TurnCommand });
     void this.nextTurn();
   }
 
   /** Drop a held item to the ground to free a hand slot (bonus action). */
+  private onSwitchWeapon(): void {
+    if (this.mode !== 'idle' || !this.humanActive) return;
+    const me = this.gs.current;
+    if (!me.canSwitchWeapon()) return this.flashHint('You need two different weapons in hand to switch.');
+    if (me.swordFormLocked()) return this.flashHint('Locked in sword form.');
+    this.submitTurn({ t: 'switch-weapon' });
+  }
+
   private onDropItem(): void {
     if (this.mode === 'reaction') return;
     if (!this.humanActive) return;
@@ -10371,7 +10601,7 @@ export class GameScene extends Phaser.Scene {
     }
     if (!this.humanActive) return;
     const me = this.gs.current;
-    const ability = getColorAbilitiesFor(me.profile.primary, me.spellClass)[idx];
+    const ability = getColorAbilitiesFor(me.profile.primary, me.spellClass, me.loadout)[idx];
     if (!ability) {
       this.flashHint('No color ability there.');
       return;
@@ -10506,7 +10736,7 @@ export class GameScene extends Phaser.Scene {
       this.flashHint('Only blue mages can react with color abilities.');
       return;
     }
-    const ability = getColorAbilitiesFor(this.reactor.profile.primary, this.reactor.spellClass)[idx];
+    const ability = getColorAbilitiesFor(this.reactor.profile.primary, this.reactor.spellClass, this.reactor.loadout)[idx];
     if (!ability) {
       this.flashHint('No color ability there.');
       return;
@@ -11002,7 +11232,7 @@ export class GameScene extends Phaser.Scene {
       x: Math.min(FIELD.x + FIELD.w, Math.max(FIELD.x, dest.x)),
       y: Math.min(FIELD.y + FIELD.h, Math.max(FIELD.y, dest.y)),
     };
-    const clamp = this.gs.clampToBarriers(reactor.pos, fieldDest);
+    const clamp = this.gs.clampToBarriers(reactor.pos, fieldDest, reactor.bodyRadius());
     const mut = this.gs.clampToMutivargZones(reactor, reactor.pos, clamp.dest);
     const final = this.gs.clampToMages(reactor, reactor.pos, mut.dest);
     const origin = reactor.pos;
@@ -11033,7 +11263,7 @@ export class GameScene extends Phaser.Scene {
 
     // Word spells never belong in this window, even when their metadata marks
     // them as bonus casts. Only colour abilities use the spell-shaped command.
-    for (const ability of getColorAbilitiesFor(source.profile.primary, source.spellClass)) {
+    for (const ability of getColorAbilitiesFor(source.profile.primary, source.spellClass, source.loadout)) {
       const targeted =
         ability.targeting === 'enemy' || ability.targeting === 'ally' || ability.targeting === 'any';
       if (
@@ -11423,13 +11653,19 @@ export class GameScene extends Phaser.Scene {
   }
 
   private resolveReaction(choice: ReactionChoice | null): void {
+    const r = this.reactionResolve;
+    if (!r) return;
+    this.reactionResolve = null;
     this.reactor = null;
+    this.reactionTop = null;
+    this.reactionAiming = false;
+    this.reactionPendingSpell = null;
+    this.mode = 'busy';
     this.clearReactionTelegraph();
     this.resetSelection();
-    const r = this.reactionResolve;
-    this.reactionResolve = null;
     this.tutorialNotify({ k: 'reaction-done' });
-    if (r) r(choice);
+    this.redraw();
+    r(choice);
   }
 
   /**
@@ -13483,7 +13719,7 @@ export class GameScene extends Phaser.Scene {
     // Torch / lantern light auras.
     this.drawLightAuras(g);
 
-    // Rot Sentry corrosion auras.
+    // Jürgen (Corrode Curse bat) corrosion auras.
     this.drawIntrinsicDamageAuras(g);
     this.drawShroudAuras(g);
 
@@ -13497,7 +13733,7 @@ export class GameScene extends Phaser.Scene {
 
     // Defeated bodies clear after their defeat seal so the field stays readable.
     for (const m of this.gs.mages) {
-      if (m.alive && !m.oniHidden) this.drawMage(g, m);
+      if (m.alive && !m.unseen) this.drawMage(g, m);
       else this.mageLabels.get(m)?.setVisible(false);
     }
 
@@ -13611,7 +13847,7 @@ export class GameScene extends Phaser.Scene {
       g.fillStyle(0x9fb4d8, 0.1).fillRect(FIELD.x, FIELD.y, FIELD.w, FIELD.h);
     }
     for (const mage of this.gs.mages) {
-      if (!mage.alive || mage.oniHidden) continue;
+      if (!mage.alive || mage.unseen) continue;
       this.drawGodMarks(g, mage);
       const partner = this.gs.rivetPartner(mage);
       if (partner && this.gs.mages.indexOf(mage) < this.gs.mages.indexOf(partner)) {
@@ -14088,6 +14324,26 @@ export class GameScene extends Phaser.Scene {
   }
 
   private drawBarriers(g: Phaser.GameObjects.Graphics): void {
+    const arena = this.gs.moayArena;
+    if (arena) {
+      const walls = [
+        { x: FIELD.x, y: FIELD.y, w: FIELD.w, h: arena.y - FIELD.y },
+        { x: FIELD.x, y: arena.y + arena.h, w: FIELD.w, h: FIELD.y + FIELD.h - arena.y - arena.h },
+        { x: FIELD.x, y: arena.y, w: arena.x - FIELD.x, h: arena.h },
+        { x: arena.x + arena.w, y: arena.y, w: FIELD.x + FIELD.w - arena.x - arena.w, h: arena.h },
+      ];
+      for (const wall of walls) {
+        g.fillStyle(0x353629, 1).fillRect(wall.x, wall.y, wall.w, wall.h);
+        for (let row = wall.y; row < wall.y + wall.h; row += 24) {
+          const height = Math.min(24, wall.y + wall.h - row);
+          for (let column = wall.x; column < wall.x + wall.w; column += 48) {
+            const width = Math.min(48, wall.x + wall.w - column);
+            g.lineStyle(1, 0x62624b, 0.65).strokeRect(column + 1, row + 1, Math.max(0, width - 2), Math.max(0, height - 2));
+          }
+        }
+      }
+      g.lineStyle(3, 0xa5a17d, 1).strokeRect(arena.x, arena.y, arena.w, arena.h);
+    }
     for (const b of this.gs.barriers) {
       const tint = b.owner === 1 ? COLORS.team1 : COLORS.team2;
       if (b.shape === 'rect') {
@@ -14200,6 +14456,32 @@ export class GameScene extends Phaser.Scene {
     for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
     g.closePath();
     g.strokePath();
+  }
+
+  /** Outline every enemy body while aiming an area spell, filled when the area would catch it. */
+  private drawAoeHitboxes(
+    g: Phaser.GameObjects.Graphics,
+    caster: Mage,
+    toward: Vec2 | null,
+    aoe: NonNullable<Spell['aoe']>
+  ): void {
+    const caught = new Set(
+      !toward
+        ? []
+        : aoe.kind === 'circle'
+        ? this.gs.magesInRadius(toward, aoe.radius)
+        : this.gs.magesInCone(caster.pos, toward, aoe.radius, aoe.degrees ?? 90)
+    );
+    for (const m of this.gs.mages) {
+      if (!m.alive || m.team === caster.team) continue;
+      const r = m.bodyRadius();
+      if (caught.has(m)) {
+        g.fillStyle(0xff4a3d, 0.32).fillCircle(m.x, m.y, r);
+        g.lineStyle(3, 0xff4a3d, 1).strokeCircle(m.x, m.y, r);
+      } else {
+        g.lineStyle(2, 0xffd166, 0.8).strokeCircle(m.x, m.y, r);
+      }
+    }
   }
 
   /**
@@ -14346,6 +14628,10 @@ export class GameScene extends Phaser.Scene {
         this.drawMeasuredRange(g, origin, this.subtargetMinRange, MENU_COLOR.blood, 0.55, false);
       }
       this.drawAimGuide(g, origin, this.pointer);
+      const releasing = this.channelAimSpell;
+      if (releasing?.aoe && this.mode === 'subtarget-point') {
+        this.drawAoePreview(g, origin, stepTowards(origin, this.pointer, this.subtargetRange), releasing.aoe);
+      }
       return;
     }
 
@@ -14435,6 +14721,11 @@ export class GameScene extends Phaser.Scene {
         const toward = stepTowards(me.pos, this.pointer, reach);
         this.drawAoePreview(g, me.pos, toward, spell.aoe);
       }
+    }
+    if (aiming && this.mode === 'aiming-spell') {
+      const spell = this.reactionAiming ? this.reactionPendingSpell : this.pendingSpell;
+      const hovered = spell?.aoe ? this.clickedMage(this.pointer, null) : null;
+      if (spell?.aoe && hovered) this.drawAoePreview(g, me.pos, hovered.pos, spell.aoe);
     }
     if (aiming && this.mode === 'aiming-edgelord-throw') {
       const toward = stepTowards(me.pos, this.pointer, range);
@@ -14815,6 +15106,7 @@ export class GameScene extends Phaser.Scene {
           .sprite(m.x, m.y, kind ? creatureTexture(kind) : 'mage-idle-0')
           .setOrigin(0.5, customCreature ? 0.9 : 1)
           .setDepth(5);
+        if (m.bossArt) bindBossIdleSpecial(sprite, m.bossArt);
         sprite.play(idleKey);
         const srcH = sprite.height || 1;
         sprite.setScale((customCreature ? CREATURE_SPRITE_HEIGHT : MAGE_RADIUS * 2.8) / srcH);
@@ -14840,7 +15132,7 @@ export class GameScene extends Phaser.Scene {
         rec.shoulderScale = undefined;
       }
       s.setDepth(shoulderOwner ? 5.2 : 5);
-      s.setOrigin(0.5, customCreature ? 0.9 : 1);
+      s.setOrigin(0.5, m.enemyKind === 'moay' && m.bossArt ? bossSheet(m.bossArt).originY : customCreature ? 0.9 : 1);
       if (m.alive && (rec.deathPending || rec.deathComplete || rec.lock === 'death')) {
         this.tweens.killTweensOf(s);
         rec.deathPending = false;
@@ -14872,7 +15164,7 @@ export class GameScene extends Phaser.Scene {
         rec.guard = undefined;
         continue;
       }
-      if (m.oniHidden) {
+      if (m.unseen) {
         s.setVisible(false);
         rec.held?.setVisible(false);
         rec.root?.setVisible(false);
@@ -14896,7 +15188,9 @@ export class GameScene extends Phaser.Scene {
       }
       // Resting animation: charge while a spell is pending, otherwise idle.
       if (rec.lock === null) {
-        const want = bodyAnimationKey(m, rec.charging ? 'charge' : 'idle');
+        const current = s.anims.currentAnim?.key;
+        const want = !rec.charging && m.bossArt && bossIsIdleSpecial(m.bossArt, current)
+          ? current : bodyAnimationKey(m, rec.charging ? 'charge' : 'idle');
         if (s.anims.currentAnim?.key !== want) s.play(want, true);
         // Roots hold the body fast, so its resting loop stops dead.
         if (this.isPhysicallyRooted(m) || this.gs.isTimeStopped(m)) s.anims.stop();
@@ -14914,7 +15208,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Keep binding roots wrapped around a mage for as long as the root holds. */
   private syncRootOverlay(m: Mage, rec: MageAnim, footY: number, alpha: number): void {
-    if (!m.alive || m.oniHidden || !this.isPhysicallyRooted(m)) {
+    if (!m.alive || m.unseen || !this.isPhysicallyRooted(m)) {
       rec.root?.destroy();
       rec.root = undefined;
       return;
@@ -14944,7 +15238,7 @@ export class GameScene extends Phaser.Scene {
   /** Spin a ring of stars over a fully stunned head until the stun wears off. */
   private syncStunOverlay(m: Mage, rec: MageAnim, alpha: number): void {
     const stunned = m.statuses.some((s) => s.kind === 'stun' && s.stunType === 'full');
-    if (!m.alive || m.oniHidden || !stunned) {
+    if (!m.alive || m.unseen || !stunned) {
       rec.stun?.destroy();
       rec.stun = undefined;
       return;
@@ -14971,7 +15265,7 @@ export class GameScene extends Phaser.Scene {
 
   /** A braced ward held over a mage for as long as its shield block is armed. */
   private syncGuardOverlay(m: Mage, rec: MageAnim, alpha: number): void {
-    if (!m.alive || m.oniHidden || !m.blockPending) {
+    if (!m.alive || m.unseen || !m.blockPending) {
       if (rec.guard) this.breakGuard(rec.guard);
       rec.guard = undefined;
       return;
@@ -15631,7 +15925,7 @@ export class GameScene extends Phaser.Scene {
   /** Turn a body toward what it is striking, honouring each sheet's own facing. */
   private faceStrike(rec: MageAnim, source: Mage, at: Vec2): void {
     const kind = creatureSpriteKind(source);
-    const nativeFacesRight = !kind || kind === 'wisp' || kind === 'defender';
+    const nativeFacesRight = !kind || creatureFacesRight(kind);
     const targetIsRight = at.x > source.x;
     rec.sprite.setFlipX(nativeFacesRight ? !targetIsRight : targetIsRight);
   }
@@ -15664,6 +15958,30 @@ export class GameScene extends Phaser.Scene {
    * target, drives through it, and the arc lands where the weapon meets flesh.
    * Resolves on contact so the damage that follows reads as this blow landing.
    */
+  private async playMoayStomp(source: Mage, at: Vec2): Promise<void> {
+    const rec = this.mageAnims.get(source);
+    if (rec) this.faceStrike(rec, source, at);
+    const foot = { x: source.x, y: source.y + MAGE_RADIUS * 1.4 };
+    await this.delay(120);
+    playSound('melee.contact');
+    void this.spellVfx.burst(foot, 0xb5b08a, source.bodyRadius() * 2, this.combatSpeed);
+    if (!this.reducedMotion) {
+      this.cameras.main.shake(140 / this.combatSpeed, 0.003);
+      this.particleFx?.burst(foot, {
+        color: 0x827e5b,
+        count: 14,
+        speed: 140,
+        lifespan: 320,
+        shape: 'spark',
+        size: 8,
+        drag: 0.9,
+        angle: { min: 0, max: 360 },
+        depth: 5.1,
+      });
+    }
+    await this.spellVfx.burst(at, 0xaaa481, MOAY_AOE_RADIUS, this.combatSpeed);
+  }
+
   private async playMeleeStrike(source: Mage, at: Vec2): Promise<void> {
     const rec = this.mageAnims.get(source);
     const from = { x: source.x, y: source.y };
@@ -16169,6 +16487,11 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  private mageBarY(m: Mage): number {
+    const sprite = m.enemyKind === 'moay' ? this.mageAnims.get(m)?.sprite : undefined;
+    return sprite ? sprite.getTopLeft().y - 20 : m.y - MAGE_RADIUS - 26;
+  }
+
   private drawMage(g: Phaser.GameObjects.Graphics, m: Mage): void {
     if (m.summonShoulder != null) {
       this.mageLabels.get(m)?.setVisible(false);
@@ -16199,7 +16522,7 @@ export class GameScene extends Phaser.Scene {
     g.lineStyle(active ? 3 : 2, active ? MENU_COLOR.brassLight : teamColor, active ? alpha : 0.72 * alpha)
       .strokeEllipse(m.x, bodyY, MAGE_RADIUS * 2.4, 17);
     if (active) {
-      const markerY = m.y - MAGE_RADIUS - 36;
+      const markerY = this.mageBarY(m) - 10;
       // The caret bobs so the eye finds the acting unit without reading the HUD.
       const bob = this.reducedMotion ? 0 : Math.sin(this.time.now / 260) * 3;
       const halo = 0.10 + (this.reducedMotion ? 0 : Math.sin(this.time.now / 340) * 0.05);
@@ -16216,7 +16539,7 @@ export class GameScene extends Phaser.Scene {
     // Bars.
     const bw = 56;
     const bx = m.x - bw / 2;
-    const by = m.y - MAGE_RADIUS - 26;
+    const by = this.mageBarY(m);
     const hpFrac = m.maxHp > 0 ? m.hp / m.maxHp : 0;
     const sanFrac = m.maxSanity > 0 ? m.sanity / m.maxSanity : 0;
     const bar = this.barState(m, hpFrac, sanFrac);
@@ -16692,6 +17015,7 @@ export class GameScene extends Phaser.Scene {
     if (combo && this.castButton) this.castButton.setText(`CAST ${combo.name.toUpperCase()}`);
     this.endTurnButton?.setVisible(myTurn || reacting);
     if (this.endTurnButton) this.endTurnButton.setText(reacting ? 'PASS' : 'END TURN');
+    this.refreshPinnedPanel();
 
     this.drawLog();
   }
@@ -17239,6 +17563,7 @@ export class GameScene extends Phaser.Scene {
 
     if (item.kind === 'melee') {
       const at = item.target?.pos ?? from;
+      if (item.source.enemyKind === 'moay') return this.playMoayStomp(item.source, at);
       if (creatureSpriteKind(item.source) === 'wisp') {
         this.startBodyAttack(item.source);
         return this.playWispAttackFx(at, item.source);

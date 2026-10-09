@@ -10,7 +10,7 @@ import { parseRun } from '../pve/exploration/save';
 import { parseFightWire, toFightWire } from '../net/fightWire';
 import {
   BOSS_IDS, BOSS_STAND_IN, BOSSES, bloodmoonBoss, bloodmoonCombat, bloodmoonCycle, bloodmoonDue, bloodmoonFight,
-  bloodmoonOmen, bossPool, bossRoster, bossScaling, cycleDay, cycleDayTitle, hoursToBloodmoon, nextBloodmoonDay, parseBossFight, roman,
+  bloodmoonOmen, bossDamageScales, bossPool, bossRoster, bossScaling, cycleDay, cycleDayTitle, hoursToBloodmoon, nextBloodmoonDay, parseBossFight, roman,
 } from '../pve/exploration/bloodmoon';
 import { BOSS_ART } from '../visuals/bosses/art';
 import { AUTHORED_BOSSES } from '../visuals/bosses/authored';
@@ -33,6 +33,19 @@ function freshRun(seed = 7) {
 }
 
 const tests: [name: string, run: () => void][] = [
+  ['G Moay takes the first green seat with authored stats and last initiative', () => {
+    equal(bossRoster('rock', 3), [{ kind: 'moay', art: 'rock', count: 1, leader: true }], 'Moay roster');
+    assert(!bossDamageScales('rock'), 'only health scales');
+    const boss = new Mage({ name: 'Boss', isAI: true, team: 2, position: { x: 800, y: 400 }, loadout: [] });
+    applyEnemyTraits(boss, 'moay', new Dice(1));
+    equal([boss.hp, boss.sanity, boss.intrinsicMoveUnits], [65, 25, 3], 'stats');
+    equal([boss.reduceIncoming(5, 'shatter'), boss.reduceIncoming(5, 'shadow')], [4, 4], 'physical and magic armour');
+    equal(['shatter', 'water', 'slashing', 'cold'].map((type) => boss.resistMultiplier(type as import('./Damage').DamageType)), [2, 2, 0.5, 0.5], 'weaknesses and resistances');
+    const player = new Mage({ name: 'Player', isAI: false, team: 1, position: { x: 200, y: 400 }, loadout: [] });
+    const game = new GameState([boss, player], 2);
+    assert(game.mages[game.initiativeOrder[game.initiativeOrder.length - 1]] === boss, 'last initiative');
+  }],
+
   ['rises on day 5 and every ten days after', () => {
     equal([1, 4, 5, 6, 14, 15, 24, 25, 35].map(bloodmoonCycle), [0, 0, 1, 1, 1, 2, 2, 3, 4], 'cycles');
     equal([1, 4, 5, 14, 15].map(nextBloodmoonDay), [5, 5, 15, 15, 25], 'next bloodmoon');
@@ -54,9 +67,9 @@ const tests: [name: string, run: () => void][] = [
   }],
 
   ['draws each bloodmoon from its own pool, the same boss for the same run', () => {
-    equal(bossPool(1), ['goblins', 'minion', 'rock', 'zargarg'], 'first pool');
-    equal(bossPool(2), ['dragon', 'crusade', 'baral'], 'second pool');
-    equal(bossPool(3), ['lillith', 'planetar', 'selga'], 'third pool');
+    equal(bossPool(1), ['goblins', 'rock'], 'first pool');
+    equal(bossPool(2), ['crusade', 'baral'], 'second pool');
+    equal(bossPool(3), ['lillith'], 'third pool');
     equal(bossPool(7), bossPool(3), 'later bloodmoons keep to the third pool');
     for (let seed = 1; seed < 40; seed++) {
       for (let cycle = 1; cycle <= 4; cycle++) {
@@ -66,12 +79,13 @@ const tests: [name: string, run: () => void][] = [
       }
     }
     const firsts = new Set(Array.from({ length: 60 }, (_, seed) => bloodmoonBoss(seed + 1, 1)));
-    equal(firsts.size, 4, 'every first-pool boss can come up');
+    equal(firsts.size, 2, 'every first-pool boss can come up');
     equal(Object.fromEntries(BOSS_IDS.map((id) => [id, BOSSES[id].color])), {
-      goblins: 'red', minion: 'black', rock: 'green', zargarg: 'blue',
-      dragon: 'red', crusade: 'white', baral: 'blue',
-      lillith: 'black', planetar: 'green', selga: 'white',
+      goblins: 'red', rock: 'green',
+      crusade: 'white', baral: 'blue',
+      lillith: 'black',
     }, 'colours as given');
+    equal(BOSSES.crusade.name, 'Crucade', 'Crucade display name');
   }],
 
   ['scales damage by 30% and health by 75% for each extra player', () => {
@@ -87,7 +101,7 @@ const tests: [name: string, run: () => void][] = [
     const fight = bloodmoonFight(run);
     assert(bloodmoonDue(run) && fight?.cycle === 1 && bossPool(1).includes(fight.id), 'the first boss is owed');
     const combat = bloodmoonCombat(run, fight, 'forest');
-    equal(bossRoster('zargarg', 1), [{ kind: BOSS_STAND_IN, art: 'zargarg', count: 1, leader: true }], 'a zombie stands in for an unwritten boss');
+    equal(bossRoster('crusade', 1), [{ kind: BOSS_STAND_IN, art: 'crusade', count: 1, leader: true }], 'a zombie stands in for an unwritten boss');
     equal(combat.boss, fight, 'the fight carries its boss');
     equal(parseFightWire(JSON.parse(JSON.stringify(toFightWire(combat))))?.boss, fight, 'guests are told the boss');
     run.bloodmoons = 1;
@@ -106,7 +120,11 @@ const tests: [name: string, run: () => void][] = [
     equal(parseRun(JSON.stringify(old))?.bloodmoons, 2, 'an old save starts square');
     const cheat = { ...old, bloodmoons: 99 };
     equal(parseRun(JSON.stringify(cheat))?.bloodmoons, 2, 'never more than have risen');
-    assert(parseBossFight({ id: 'dragon', cycle: 0 }) === undefined && parseBossFight({ id: 'nope', cycle: 1 }) === undefined, 'hostile input');
+    assert(parseBossFight({ id: 'crusade', cycle: 0 }) === undefined && parseBossFight({ id: 'nope', cycle: 1 }) === undefined, 'hostile input');
+    for (const id of ['selga', 'zargarg', 'dragon', 'planetar', 'minion']) {
+      assert(parseBossFight({ id, cycle: 1 }) === undefined, `${id} is no longer a bloodmoon boss`);
+    }
+    for (const id of BOSS_IDS) equal(parseBossFight({ id, cycle: BOSSES[id].tier }), { id, cycle: BOSSES[id].tier }, `${id} remains valid`);
     equal(roman(3), 'III', 'numerals');
   }],
 
