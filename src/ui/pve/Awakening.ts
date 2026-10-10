@@ -72,7 +72,7 @@ const WORD_REACTION: Record<WordId, string> = {
   desecrate: 'Desecrate? There goes my sacred vow to stop flirting. OOPS.',
   fire: 'Fire? Is it hot in your head or are you just thinking about ME?',
   lightning: 'Lightning? That spark between us needs its own safety inspector.',
-  storm: 'Storm? Sweep me off my feet! Metaphorically. I have no feet.',
+  storm: 'Storm? Sweep me off my feet! Metaphorically. I have no feet.',GIt
   subtle: 'Subtle? Of course. I shall whisper our wedding plans. VERY LOUDLY.',
   delay: 'Delay? Playing hard to get? Fine. I have already booked the venue.',
   channel: 'Channel? All that attention, straight into ME. Finally, good reception!',
