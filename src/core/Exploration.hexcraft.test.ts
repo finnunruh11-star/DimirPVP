@@ -188,13 +188,13 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const id = hex('aoe', 'dot', 'corrosive');
     assert(isItemId(id), 'a drawn id is an item id');
     const def = getItem(id);
-    equal([def.slot, def.name], ['utility', 'Hexzettel: Over Time + Corrosion (Area)'], 'a belt item named for its runes');
+    equal([def.slot, def.name], ['utility', 'Hex Sheet: Over Time + Corrosion (Area)'], 'a belt item named for its runes');
     equal(parseHexItemId(id)?.parts[0].effects, ['dot', 'corrosive'], 'read back');
     equal(itemIconKind(def), 'paper', 'it looks like a sheet');
     equal(itemIconKind(getItem('finePaper')), 'paper', 'and so does blank paper');
     const chained = hex(glyph('missile', 'bridge'), glyph('wind', 'seal'), 'aoe');
     assert(isItemId(chained), 'a sealed, chained sheet is an item id');
-    equal(getItem(chained).name, 'Hexzettel: Magic Missile \u00bb Cyclone (Area)', 'named part by part');
+    equal(getItem(chained).name, 'Hex Sheet: Magic Missile \u00bb Cyclone (Area)', 'named part by part');
     equal(parseHexItemId(chained)?.parts.map((part) => part.effects), [['missile'], ['cyclone']], 'and read back');
     for (const bad of [
       'hex:p:1',
@@ -470,16 +470,16 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     const id = hex('single', 'missile');
     try {
       setHexLore([]);
-      assert(/^Hexzettel [A-Z]{3}$/.test(getItem(id).name), `unread: ${getItem(id).name}`);
+      assert(/^Hex Sheet [A-Z]{3}$/.test(getItem(id).name), `unread: ${getItem(id).name}`);
       assert(!getItem(id).blurb.includes('dart'), 'and undescribed');
       equal(getItem(id).name, getItem(id).name, 'the same sheet keeps its mark');
       assert(getItem(hex('single', 'heal')).name !== getItem(id).name, 'another sheet bears another mark');
       setHexLore(['single']);
-      assert(getItem(id).name.startsWith('Hexzettel '), 'one rune of two is not enough');
+      assert(getItem(id).name.startsWith('Hex Sheet '), 'one rune of two is not enough');
       setHexLore(['single', 'missile']);
-      equal(getItem(id).name, 'Hexzettel: Magic Missile (Single Target)', 'named once both are known');
+      equal(getItem(id).name, 'Hex Sheet: Magic Missile (Single Target)', 'named once both are known');
       assert(getItem(id).blurb.includes('dart'), 'and described');
-      assert(getItem(hexItemId('plain', [glyph('single'), glyph('missile'), 1])).name.startsWith('Hexzettel '), 'stray lines keep it unread');
+      assert(getItem(hexItemId('plain', [glyph('single'), glyph('missile'), 1])).name.startsWith('Hex Sheet '), 'stray lines keep it unread');
     } finally {
       setHexLore(null);
     }
@@ -500,8 +500,8 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     try {
       setHexLore([]);
       equal([first.price, parseHexItemId(first.id)?.paper, isBoughtHex(first.id)], [2, 'plain', true], 'two gold, plain paper, bought');
-      assert(getItem(first.id).name.startsWith("Scribe's Hexzettel "), `unnamed: ${getItem(first.id).name}`);
-      assert(getItem(first.id).blurb.includes('mana') && !getItem(first.id).blurb.includes('Unread Hexzettel'), 'but described');
+      assert(getItem(first.id).name.startsWith("Scribe's Hex Sheet "), `unnamed: ${getItem(first.id).name}`);
+      assert(getItem(first.id).blurb.includes('mana') && !getItem(first.id).blurb.includes('Unread hex sheet'), 'but described');
       assert(buyItem(run, shop.id, first.key).ok, 'bought');
       equal(run.gold, 8, 'for two gold');
       assert(partyOf(run)[0].utility.includes(first.id), 'it goes on the belt, ready to loose');

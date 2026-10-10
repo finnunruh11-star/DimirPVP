@@ -26,7 +26,7 @@ npm test         # runs the menu/config/network checks
 npm run build    # type-check + production bundle into dist/
 ```
 
-Append `?ui=gallery` to the local URL to open the cabinet UI gallery with
+Append `?ui=gallery` to the local URL to open the UI gallery with
 representative menu, preparation, combat, inventory, PvE, Workshop, pause, and
 end-state surfaces without starting a match.
 
@@ -49,7 +49,7 @@ Run `npm run test:crusade` for the encounter's focused checks.
   connected setup screens. Only relevant decisions are shown: roster and teams,
   preparation, content packs, each human mage build, then a final review.
   Adventures contains **Swamprun**, **Expedition**, **Mine Run**, and **Raid**;
-  Workshop contains **Training Lab**, **Scenario Lab**, and **Memory**.
+  Workshop contains **Training Lab**, **Scenario Lab**, and **Load Scenario**.
 2. **Your turn** gives you **1 move, 1 main, 2 bonus** actions (and **1 reaction** per
    round if your loadout has Bind / Veil / Mind).
 3. **Keys**:

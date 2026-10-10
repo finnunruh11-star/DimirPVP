@@ -64,7 +64,7 @@ async function promptLevel(scene: Phaser.Scene, run: ExplorationRun, mage: Mage,
 
 function promptStat(scene: Phaser.Scene, level: number, gain: number): Promise<StatKey> {
   return new Promise((resolve) => {
-    const panel = new ChoiceMenuView<StatKey>(scene, `LEVEL ${level} / TRAINING`, `Raise one stat by ${gain}.`,
+    const panel = new ChoiceMenuView<StatKey>(scene, `LEVEL ${level} / STATS`, `Raise one stat by ${gain}.`,
       STAT_DEFS.map((definition) => ({ id: definition.key, label: definition.name, detail: definition.blurb })),
       (stat) => {
         panel.destroy();
@@ -75,11 +75,11 @@ function promptStat(scene: Phaser.Scene, level: number, gain: number): Promise<S
 
 function chooseColor(scene: Phaser.Scene, title: string, colors: ColorName[]): Promise<ColorName> {
   return new Promise((resolve) => {
-    const panel = new ChoiceMenuView<ColorName>(scene, title, 'Equal word counts let you decide the order.',
+    const panel = new ChoiceMenuView<ColorName>(scene, title, 'Tied colours: pick the order.',
       colors.map((color) => ({
         id: color,
         label: color.toUpperCase(),
-        detail: `${color.toUpperCase()} becomes the stronger color identity.`,
+        detail: `${color.toUpperCase()} comes first.`,
       })), (color) => {
         panel.destroy();
         resolve(color);

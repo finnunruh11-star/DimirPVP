@@ -26,7 +26,7 @@ function claimOptions(run: ExplorationRun): ClaimOption[] {
   return partyOf(run).map((mage) => ({
     id: mage.mageClass,
     label: mage.spellClass ? `${mage.name}, ${MAGE_CLASS_DEFS[mage.spellClass].label}` : mage.name,
-    detail: mage.alive ? `HP ${mage.hp}/${mage.maxHp}, mana ${mage.mana}/${mage.maxMana}` : 'Fallen: back after a night at an inn.',
+    detail: mage.alive ? `HP ${mage.hp}/${mage.maxHp}, mana ${mage.mana}/${mage.maxMana}` : 'Down: revived by a night at an inn.',
   }));
 }
 
@@ -39,7 +39,7 @@ function readClaims(message: NetMessage, size: number): (MageClass | null)[] {
 export async function claimTravellers(session: AdventureSession, run: ExplorationRun, choose: Chooser, prompt: Prompt): Promise<void> {
   const options = claimOptions(run);
   const ask = (taken: readonly (MageClass | null)[]): Promise<MageClass> =>
-    choose<MageClass>('CHOOSE YOUR TRAVELLER', 'Each traveller is played by one of you.',
+    choose<MageClass>('CHOOSE YOUR CHARACTER', 'Each player picks one.',
       options.map((option) => ({
         ...option,
         detail: taken.includes(option.id) ? 'Already taken.' : option.detail,
@@ -155,7 +155,7 @@ export async function awakenParty(session: AdventureSession, run: ExplorationRun
       session.send({ k: 'x-kit', pick });
     });
     if (ok) break;
-    prompt('The host could not use that pick. Once more.');
+    prompt('The host rejected that pick. Choose again.');
   }
   if (run.creating) {
     await new Promise<void>((resolve) => {

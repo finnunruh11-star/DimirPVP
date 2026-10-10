@@ -142,7 +142,7 @@ const LICH_DRAIN_VOID: Spell = {
   range: LICH_POWER_RANGE,
   targeting: 'enemy',
   description:
-    'Void-fed hunger: greater unstoppable damage that heals the Lich for everything it devours, and rends the mind besides.',
+    'Greater unstoppable damage that heals the Lich for all damage dealt, plus mill.',
   visual: { preset: 'beam', color: 0x2a0f4a, size: 12, speed: 1.1 },
   manualCastVisual: true,
   cast(ctx) {

@@ -165,7 +165,7 @@ export class TradeView extends Phaser.GameObjects.Container {
     addSectionRule(scene, this, 58, 116, 1164);
 
     if (!trade || !mineHere) {
-      this.add(scene.add.text(640, 330, 'Setting up the stall...', {
+      this.add(scene.add.text(640, 330, 'Opening trade...', {
         fontFamily: MENU_FONT.display, fontSize: '22px', color: MENU_HEX.boneDim,
       }).setOrigin(0.5));
       this.footer(null, false, false);
@@ -178,15 +178,15 @@ export class TradeView extends Phaser.GameObjects.Container {
     const theirs = other == null ? [] : trade.offers[other] ?? [];
     const theirsKey = JSON.stringify(theirs);
     if (this.lastTheirs != null && this.lastTheirs !== theirsKey && other != null) {
-      this.message = `${this.session.nameOf(other)} changed their offer. Look it over before accepting.`;
+      this.message = `${this.session.nameOf(other)} changed their offer.`;
       playSound('ui.hover');
     }
     this.lastTheirs = theirsKey;
     const owner = this.session.member ? memberIn(this.run, this.session.member) : undefined;
 
     this.add(scene.add.text(60, 78, other == null
-      ? 'Your stall is open. Waiting for a companion to walk over and join.'
-      : `Trading with ${this.session.nameOf(other)}. Nothing moves until both of you accept.`, {
+      ? 'Waiting for another player to join.'
+      : `Trading with ${this.session.nameOf(other)}. Both must accept.`, {
       fontFamily: MENU_FONT.body, fontSize: '14px', color: MENU_HEX.boneDim,
     }));
     if (owner) this.header(owner, mine, theirs);
@@ -216,12 +216,9 @@ export class TradeView extends Phaser.GameObjects.Container {
       `${kg(Math.max(0, after))} / ${finite ? kg(cap) : '\u221E'} kg${gain ? `  (${gain > 0 ? '+' : ''}${kg(gain)})` : ''}`,
       finite ? after / Math.max(1, cap) : 0, 0xb08d4a, { warn: over });
     const room = packFits(owner, theirs, mine);
-    this.add(this.scene.add.text(940, 44, room ? 'PACK ROOM  OK' : 'PACK ROOM  TOO FULL', {
+    this.add(this.scene.add.text(940, 44, room ? 'BAG OK' : 'BAG FULL', {
       fontFamily: MENU_FONT.control, fontSize: '11px', fontStyle: 'bold', color: room ? MENU_HEX.verdigris : '#e6866f',
     }).setLetterSpacing(2));
-    this.add(this.scene.add.text(940, 62, 'Bodies and bound gear never change hands.', {
-      fontFamily: MENU_FONT.body, fontSize: '12px', color: MENU_HEX.boneDim,
-    }));
   }
 
   private renderPack(owner: Mage | undefined, mine: readonly ItemId[]): void {
@@ -229,7 +226,7 @@ export class TradeView extends Phaser.GameObjects.Container {
     const stacks = owner ? carriedStacks(owner) : [];
     const offered = new Map<ItemId, number>();
     for (const id of mine) offered.set(id, (offered.get(id) ?? 0) + 1);
-    addPanel(scene, this, PACK.x, PACK.y, PACK.w, PACK.h, 'Your pack', { caption: 'worn gear: unequip it first' });
+    addPanel(scene, this, PACK.x, PACK.y, PACK.w, PACK.h, 'Your bag');
     const perPage = PACK_COLUMNS * PACK_ROWS;
     const pages = Math.max(1, Math.ceil(stacks.length / perPage));
     this.page = Math.min(this.page, pages - 1);
@@ -313,11 +310,11 @@ export class TradeView extends Phaser.GameObjects.Container {
       }).setOrigin(1, 0));
     }
     if (!stacks.length) {
-      this.add(scene.add.text(box.x + box.w / 2, gy + TILE_PITCH - 3, from === 'mine' ? 'Nothing offered: select from your pack.' : partner ? 'Nothing offered yet.' : '', {
+      this.add(scene.add.text(box.x + box.w / 2, gy + TILE_PITCH - 3, from === 'mine' ? 'Nothing offered.' : partner ? 'Nothing offered yet.' : '', {
         fontFamily: MENU_FONT.body, fontSize: '13px', color: MENU_HEX.boneDim, backgroundColor: '#0c0e0b', padding: { x: 8, y: 4 },
       }).setOrigin(0.5));
     }
-    this.add(scene.add.text(box.x + 14, box.y + box.h - 24, `${items.length} item${items.length === 1 ? '' : 's'}  /  ${kg(weight)} kg  /  worth about ${moneyLabel(worth)}`, {
+    this.add(scene.add.text(box.x + 14, box.y + box.h - 24, `${items.length} item${items.length === 1 ? '' : 's'}  /  ${kg(weight)} kg  /  worth ${moneyLabel(worth)}`, {
       fontFamily: MENU_FONT.control, fontSize: '12px', fontStyle: 'bold', color: MENU_HEX.brassLight,
     }));
   }
@@ -331,8 +328,7 @@ export class TradeView extends Phaser.GameObjects.Container {
     const offered = (id: ItemId): number => mine.filter((entry) => entry === id).length;
     const valid = picked && (picked.from === 'theirs' ? theirs.includes(picked.id) : have(picked.id) > 0);
     if (!picked || !valid) {
-      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'Nothing selected',
-        'Select something in your pack to offer it, or look over what is offered to you.');
+      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'Nothing selected', '');
       return;
     }
     const id = picked.id;
@@ -356,10 +352,10 @@ export class TradeView extends Phaser.GameObjects.Container {
     lines.push({ label: 'Carried', value: `${count}` });
     lines.push({ label: 'In your offer', value: `${out}`, color: out ? '#8fdfa0' : undefined });
     lines.push({ label: 'Worth', value: `${moneyLabel(itemWorth(def))}${count > 1 ? ' each' : ''}` });
-    if (!can) note = def.keyItem ? 'A key item. It stays with the party.' : `${def.name} cannot change hands.`;
-    else if (mine.length >= MAX_TRADE_ITEMS) note = 'Your offer is as large as a stall can take.';
+    if (!can) note = def.keyItem ? 'Key item. Cannot be traded.' : `${def.name} cannot be traded.`;
+    else if (mine.length >= MAX_TRADE_ITEMS) note = 'Your offer is full.';
     addItemCard(scene, this, x, CARD.y + 42, w, CARD.y + CARD.h - 150, {
-      id, eyebrow: picked.from === 'mine' ? 'In your offer' : 'In your pack', lines, note, noteColor: '#e6866f',
+      id, eyebrow: picked.from === 'mine' ? 'In your offer' : 'In your bag', lines, note, noteColor: '#e6866f',
     });
 
     const room = MAX_TRADE_ITEMS - mine.length;
@@ -403,7 +399,7 @@ export class TradeView extends Phaser.GameObjects.Container {
     const def = getItem(id);
     this.openDialog({
       title: `Offer ${def.name}`,
-      body: 'How many go into your offer? You can take them back until the trade goes through.',
+      body: 'How many?',
       icon: id,
       quantity: { max, start: max, describe: (n) => `Offer ${n}${def.weight > 0 ? `  /  ${kg(def.weight * n)} kg` : ''}` },
       choices: [{ label: 'Offer', tone: 'primary', run: (n) => add(n) }],
@@ -428,8 +424,8 @@ export class TradeView extends Phaser.GameObjects.Container {
       const names = stacksOf(mine).slice(0, 4).map((stack) => `${stack.count > 1 ? `${stack.count}x ` : ''}${getItem(stack.id).name}`).join(', ');
       this.openDialog({
         title: 'Give it away?',
-        body: `${this.session.nameOf(other)} offers nothing back. Accepting hands over ${names}${stacksOf(mine).length > 4 ? ', and more' : ''} as a gift.`,
-        choices: [{ label: 'Accept as a Gift', tone: 'primary', run: () => this.session.say({ op: 'trade-ready' }) }],
+        body: `${this.session.nameOf(other)} offers nothing back. Accepting gives away ${names}${stacksOf(mine).length > 4 ? ', and more' : ''}.`,
+        choices: [{ label: 'Give Away', tone: 'primary', run: () => this.session.say({ op: 'trade-ready' }) }],
         cancelLabel: 'Not Yet',
         onClose: () => this.render(),
       });
@@ -446,12 +442,12 @@ export class TradeView extends Phaser.GameObjects.Container {
     g.fillStyle(MENU_COLOR.woodDeep, 1).fillRect(58, 588, 1164, 80);
     g.lineStyle(1, MENU_COLOR.brassDark, 0.72).strokeRect(58.5, 588.5, 1163, 79);
     this.add(g);
-    const status = other == null ? 'Waiting for a companion. You can lay out your offer already.'
-      : !fits ? 'Their offer will not fit in your pack or on your back. Ask for less, or offer more.'
+    const status = other == null ? 'Waiting for another player.'
+      : !fits ? 'Their offer does not fit in your bag or weight limit.'
       : ready ? `You accepted. Waiting for ${this.session.nameOf(other)}.`
       : !mine.length && !theirs.length ? 'Both offers are empty.'
-      : 'Look both offers over, then accept. Any change asks both of you again.';
-    const title = this.message ? 'NOTE' : 'STALL';
+      : '';
+    const title = this.message ? 'NOTE' : 'TRADE';
     this.add([
       scene.add.text(76, 596, title, {
         fontFamily: MENU_FONT.control, fontSize: '11px', fontStyle: 'bold', color: this.message ? '#e6b55a' : MENU_HEX.brassLight,
@@ -461,7 +457,7 @@ export class TradeView extends Phaser.GameObjects.Container {
         fixedWidth: 760, wordWrap: { width: 760 }, maxLines: 2,
       }),
     ]);
-    addKeyHints(scene, this, 76, 648, [['Arrows', 'Move'], ['F', 'Offer / take back'], ['Enter', 'Press'], ['Esc', 'Close stall']]);
+    addKeyHints(scene, this, 76, 648, [['Arrows', 'Move'], ['F', 'Offer / take back'], ['Enter', 'Press'], ['Esc', 'Close trade']]);
     const canAccept = other != null && !ready && fits && (mine.length > 0 || theirs.length > 0);
     const accept = new CabinetChip(scene, 866, 604, {
       width: 196,
@@ -475,7 +471,7 @@ export class TradeView extends Phaser.GameObjects.Container {
     const close = new CabinetChip(scene, 1074, 604, {
       width: 132,
       height: 46,
-      label: 'Close Stall',
+      label: 'Close Trade',
       tone: 'danger',
       onActivate: () => this.leave(),
     });

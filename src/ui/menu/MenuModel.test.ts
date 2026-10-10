@@ -1,7 +1,8 @@
 import { MODE_CAPABILITIES } from '../../config/MatchConfig';
 import { Dice } from '../../core/Dice';
 import type { Scenario } from '../../core/Scenario';
-import type { WordId } from '../../core/Words';
+import { ALL_GRID_WORDS, type WordId } from '../../core/Words';
+import { WORD_COLOR, type WordColor } from '../../core/Colors';
 import { Net } from '../../net/Net';
 import { ADVENTURE_PROTOCOL } from '../../net/AdventureSession';
 import { MAGE_CLASSES } from '../../core/Classes';
@@ -175,6 +176,21 @@ const tests: [name: string, run: () => void | Promise<void>][] = [
     equal(model.toggleItemSet('finns'), true, 'Enable Finn pack');
     equal(model.toggleItemSet('original'), true, 'Disable Original pack');
     equal(model.itemSets, { original: false, finns: true, dlc: false }, 'Resulting packs');
+  }],
+
+  ['groups builder words by blue, black, red, colorless, then white', () => {
+    const model = new MenuModel();
+    const colorOrder: WordColor[] = ['blue', 'black', 'red', 'none', 'white'];
+    const originalOrder = [...ALL_GRID_WORDS];
+    const expected = colorOrder.flatMap((color) => originalOrder.filter((word) => WORD_COLOR[word] === color));
+    equal(model.visibleWords(), expected, 'Grouped builder order');
+    equal(ALL_GRID_WORDS, originalOrder, 'Source order remains unchanged');
+    model.applyPreset('SNIFF');
+    equal(
+      model.visibleWords(),
+      colorOrder.flatMap((color) => [...originalOrder, 'storm' as const].filter((word) => WORD_COLOR[word] === color)),
+      'Unlocked Storm joins the colorless group'
+    );
   }],
 
   ['accepts the four-word NAD exception and unlocks its hidden words', () => {

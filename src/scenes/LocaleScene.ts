@@ -96,7 +96,7 @@ export interface LocaleEntry {
 }
 
 const HOLD_VERB: Record<string, string> = { herb: 'Pick', cache: 'Search', stash: 'Take', trinket: 'Pick up' };
-const SITE_DONE = 'All done here. Head back to the travel map whenever you are ready.';
+const SITE_DONE = 'Area cleared.';
 
 interface PackState {
   pack: WildPack;
@@ -196,9 +196,9 @@ const HUNT_LOST_TILES = 24;
 
 const RULE_TEXT: Record<FieldEffect, string> = {
   veil: 'hide',
-  bind: 'slow packs',
-  mind: 'read packs',
-  heal: 'heal the party',
+  bind: 'slow enemies',
+  mind: 'show enemy sight',
+  heal: 'heal party',
 };
 
 export class LocaleScene extends Phaser.Scene implements HudOwner {
@@ -491,8 +491,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const words = this.words.length ? `1-${this.words.length}: pick words  R: cast     ` : '';
     const ambush = this.packs.length ? 'F: ambush     C: sneak     ' : '';
     const search = this.place.world ? 'G: search     T: wait     M: travel map     ' : '';
-    const lead = this.guest && !this.place.world ? 'The host leads the way     ' : '';
-    hud.setHint(`${lead}WASD / arrows or click: walk     E: act     ${words}${ambush}${search}Z: rest     I: pack     Esc: menu`);
+    const lead = this.guest && !this.place.world ? 'Host leads     ' : '';
+    hud.setHint(`${lead}WASD / arrows or click: walk     E: act     ${words}${ambush}${search}Z: rest     I: bag     Esc: menu`);
     hud.setMapExit(!!this.place.world);
     this.refreshWordBar();
     void (async () => {
@@ -786,8 +786,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
         : exit ? this.leavePrompt(exit.label)
         : target ? `[R] ${spellDisplayName(this.picked)}: ${target.pack.label}`
         : prey ? `[F] Ambush: ${prey.pack.label}`
-        : edge ? this.leavePrompt('Back to the travel map')
-        : home ? this.leavePrompt('Head back to the travel map')
+        : edge ? this.leavePrompt('Back to the map')
+        : home ? this.leavePrompt('Back to the map')
         : null,
     );
     if (pressed.act) {
@@ -987,20 +987,20 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const onFoot = !!this.run.area && !!this.place.world;
     const spent = this.run.area ? areaHours(this.run.area) : 0;
     const choice = await this.hud.choose('PAUSED', onFoot ? 'On foot' : this.place.def.name, [
-      { id: 'resume', label: 'Resume', detail: onFoot ? 'Back to the country.' : 'Back to the streets.' },
-      { id: 'pack', label: 'Pack', detail: 'Gear, words and stats.' },
+      { id: 'resume', label: 'Resume', detail: '' },
+      { id: 'pack', label: 'Bag', detail: '' },
       { id: 'rest', label: 'Short Rest', detail: this.restDetail() },
-      ...(session ? [{ id: 'trade', label: session.council.trade?.place === this.place.def.id ? 'Player Stall' : 'Set Up Shop', detail: 'Exchange items or give a gift.' }] : []),
+      ...(session ? [{ id: 'trade', label: session.council.trade?.place === this.place.def.id ? 'Trade' : 'Start Trade', detail: '' }] : []),
       ...(onFoot ? [{
         id: 'map',
         label: 'Back to the Travel Map',
-        detail: spent > 0 ? `The party has spent ${spanLabel(spent)} on foot. It stands where it set out.` : 'No time spent. The party stands where it set out.',
+        detail: spent > 0 ? `${spanLabel(spent)} spent on foot.` : 'No time spent.',
       }] : []),
-      { id: 'save', label: 'Save Now', detail: 'Keep the run in this browser right away.' },
-      { id: 'file', label: 'Save to File', detail: 'Download the run. Load it from the Adventure menu.' },
+      { id: 'save', label: 'Save Now', detail: '' },
+      { id: 'file', label: 'Save to File', detail: '' },
       session
-        ? { id: 'quit', label: 'Save and Quit', detail: 'Everyone returns to the main menu. Continue Co-op from the lobby later.' }
-        : { id: 'quit', label: 'Save and Quit', detail: 'Return to the main menu. The run waits here.' },
+        ? { id: 'quit', label: 'Save and Quit', detail: 'Everyone returns to the menu.' }
+        : { id: 'quit', label: 'Save and Quit', detail: '' },
     ], 'resume');
     this.busy = false;
     if (choice !== 'quit') session?.send({ k: 'x-pause', on: false });
@@ -1008,7 +1008,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     if (choice === 'rest') void this.shortRest();
     if (choice === 'trade' && session) void this.openTrade();
     if (choice === 'map') this.leaveOnFoot();
-    if (choice === 'save') this.hud.toast(saveRun(this.run) ? `Run saved. Day ${this.run.day}.` : 'This browser would not keep the save. Use Save to File.', 3200);
+    if (choice === 'save') this.hud.toast(saveRun(this.run) ? `Run saved. Day ${this.run.day}.` : 'Saving failed. Use Save to File.', 3200);
     if (choice === 'file') this.saveToFile();
     if (choice === 'quit') {
       this.leaving = true;
@@ -1027,12 +1027,12 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const hud = this.hud;
     if (!hud) return;
     this.walker?.stop();
-    const choice = await hud.choose('MENU', `${session.nameOf(HOST_SEAT)} leads the party.`, [
-      { id: 'resume', label: 'Resume', detail: 'Back to the party.' },
-      { id: 'pack', label: 'Pack', detail: 'Gear, words and stats.' },
+    const choice = await hud.choose('MENU', `${session.nameOf(HOST_SEAT)} is the host.`, [
+      { id: 'resume', label: 'Resume', detail: '' },
+      { id: 'pack', label: 'Bag', detail: '' },
       ...(this.place.world ? [{ id: 'rest', label: 'Short Rest', detail: this.restDetail() }] : []),
-      { id: 'trade', label: session.council.trade?.place === this.place.def.id ? 'Player Stall' : 'Set Up Shop', detail: 'Exchange items or give a gift.' },
-      { id: 'file', label: 'Save to File', detail: 'Download your copy of the run, in case the host loses theirs.' },
+      { id: 'trade', label: session.council.trade?.place === this.place.def.id ? 'Trade' : 'Start Trade', detail: '' },
+      { id: 'file', label: 'Save to File', detail: '' },
       { id: 'leave', label: 'Leave the session', detail: 'Everyone returns to the main menu. The host keeps the run.' },
     ], 'resume');
     if (choice === 'pack') void this.openPack();
@@ -1062,7 +1062,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       session.say({ op: 'trade', place: this.place.def.id, at: { ...this.walker.cell } });
     } else if (trade.by !== session.localSeat && trade.with == null) {
       if (this.distanceTo(trade.at.x, trade.at.y) > CAMP_REACH_TILES) {
-        hud.toast('Walk closer to the stall to join.', 3000);
+        hud.toast('Walk closer to the trading player to join.', 3000);
         return;
       }
       session.say({ op: 'trade-join' });
@@ -1554,7 +1554,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
         // An ambush runs the party down; only a veil or a long lead shakes it.
         state.lostMs = near.veiled && !sees ? state.lostMs + delta : 0;
         if (state.lostMs > HUNT_LOST_MS || distance > HUNT_LOST_TILES) {
-          this.notify('You shook them off.', 2000);
+          this.notify('You escaped.', 2000);
           this.removePack(state);
           continue;
         }
@@ -1825,7 +1825,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.strikeRanged = !!weapon && isRangedWeapon(weapon);
     this.strikeTiles = weapon && this.strikeRanged ? reachTiles(weapon.rangePx) : MELEE_AMBUSH_TILES;
     this.strikeBlocked = !leader ? 'Nobody can strike.'
-      : !leader.alive ? 'The fallen cannot strike.'
+      : !leader.alive ? 'Downed mages cannot strike.'
       : leader.outOfAmmo() ? 'Out of arrows.'
       : leader.cannotAttack ? 'You cannot attack right now.'
       : null;
@@ -1909,7 +1909,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     this.sneaking = !this.sneaking;
     this.applyPace();
     playSound('ui.click');
-    this.hud?.toast(this.sneaking ? 'Sneaking: packs notice you only up close. Half pace.' : 'Sneaking ended.', 2000);
+    this.hud?.toast(this.sneaking ? 'Sneaking (half speed).' : 'Sneaking ended.', 2000);
     this.refreshWordBar();
   }
 
@@ -1940,8 +1940,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     if (prey) return this.ambush(prey, { kind: 'weapon' });
     const seen = melee && this.packsWithin(this.strikeTiles).some((state) => state.chasing);
     refuse(seen
-      ? 'Melee ambush: they have seen you. Sneak (C) up on foes that have not.'
-      : 'Ambush: no pack in weapon reach with a clear line.');
+      ? 'Cannot ambush: they have seen you.'
+      : 'Ambush: no enemies in reach.');
   }
 
   /** 1-6: pick a word for the next spell, or put it back. */
@@ -1980,7 +1980,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       playSound('ui.deny');
       hud.toast(message, 2200);
     };
-    if (!leader.alive) return refuse('The fallen cannot speak words. Rest at an inn.');
+    if (!leader.alive) return refuse('Downed mages cannot cast. Rest at an inn.');
     if (!words.length) return refuse(`Pick a word first (1-${this.words.length}), then R.`);
     const name = spellDisplayName(words);
     if (!leader.hasCharges(words)) return refuse(words.includes('storm')
@@ -1993,10 +1993,10 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const spell = getSpell(words, leader.spellClass);
     if (!spell) return refuse(`${name}: no such spell.`);
     if (!(await isStraightAttack(spell, leader.spellClass))) {
-      return refuse(`${name}: no effect outside a fight. Only straight attacks work here.`);
+      return refuse(`${name}: only attack spells work outside a fight.`);
     }
     const prey = this.preyWithin(reachTiles(casterReach(spell)), false);
-    if (!prey) return refuse(`${name}: no pack in reach with a clear line.`);
+    if (!prey) return refuse(`${name}: no enemies in reach.`);
     // A guest's spell is paid by the host, which opens the fight.
     if (!this.guest) this.pay(words, mana);
     this.ambush(prey, { kind: 'spell', words });
@@ -2027,24 +2027,24 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
         settle();
         this.veilUntil = now + rule.ms;
         this.ring(walker.x, walker.y, 1.4, color);
-        hud.toast(`Veil: hidden for ${seconds}s. Packs notice you only up close.`, 2400);
+        hud.toast(`Veil: hidden for ${seconds}s.`, 2400);
         return;
       case 'bind': {
         const caught = this.packsWithin(rule.range);
-        if (!caught.length) return refuse(`Bind: no pack within ${rule.range} tiles.`);
+        if (!caught.length) return refuse(`Bind: no enemies within ${rule.range} tiles.`);
         settle();
         if (!remote) for (const state of caught) state.slowUntil = now + rule.ms;
         this.ring(walker.x, walker.y, rule.range, color);
-        const who = caught.length === 1 ? caught[0].pack.label : `${caught.length} packs`;
+        const who = caught.length === 1 ? caught[0].pack.label : `${caught.length} groups`;
         hud.toast(`Bind: ${who} slowed for ${seconds}s.`, 2400);
         return;
       }
       case 'mind':
-        if (!this.packsWithin(rule.range).length) return refuse(`Mind: no pack within ${rule.range} tiles.`);
+        if (!this.packsWithin(rule.range).length) return refuse(`Mind: no enemies within ${rule.range} tiles.`);
         settle();
         this.mindUntil = now + rule.ms;
         this.ring(walker.x, walker.y, rule.range, color);
-        hud.toast(`Mind: for ${seconds}s you see how far each pack sees and where it is headed.`, 2600);
+        hud.toast(`Mind: enemy sight and paths shown for ${seconds}s.`, 2600);
         return;
       case 'heal': {
         if (remote) {
@@ -2437,7 +2437,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     if (!hud || !walker || !me || this.busy || this.leaving || !this.place.world) return;
     if (!me.alive) {
       playSound('ui.deny');
-      hud.toast('The fallen cannot search. Only a night at an inn gets them up.', 2400);
+      hud.toast('Downed mages cannot search. Rest at an inn to revive.', 2400);
       return;
     }
     walker.stop();
@@ -2492,8 +2492,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
         pace: packPace(pack.spawns),
       }, cell, 8, 11);
       this.noteFor(seat, placed
-        ? `The trail ends ${this.bearing(cell, placed)}: ${pack.label}. They have not noticed you yet.`
-        : 'The trail runs out of the area.');
+        ? `Found ${pack.label}, ${this.bearing(cell, placed)}. They have not seen you.`
+        : 'The trail leaves the area.');
     }
     if (resolution.levels && seat == null) void this.settleLevels();
   }
@@ -2579,8 +2579,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
   /** The pause menu's line for a short rest here. */
   private restDetail(): string {
     const risk = shortRestRisk(this.run, this.restSite(this.walker?.cell ?? this.place.def.spawn));
-    const who = this.place.world ? 'You rest' : 'The party rests';
-    return `${who} ${SHORT_REST_HOURS.min}-${SHORT_REST_HOURS.max} h: a quarter of HP, mana, sanity and charges back. ${risk > 0 ? `${Math.round(risk * 100)}% chance of an ambush here.` : 'Safe here.'}`;
+    return `${SHORT_REST_HOURS.min}-${SHORT_REST_HOURS.max} h. ${risk > 0 ? `${Math.round(risk * 100)}% ambush risk.` : 'Safe.'}`;
   }
 
   /** Z: a short rest. Alone it happens at once; online this traveller sits down and the others are asked to join. */
@@ -2594,7 +2593,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const mine = session?.council.camp?.by === session?.localSeat;
     if (onFoot && me?.alive === false && !mine) {
       playSound('ui.deny');
-      hud.toast('The fallen cannot rest. Only a night at an inn gets them up.', 2400);
+      hud.toast('Downed mages need a night at an inn.', 2400);
       return;
     }
     walker.stop();
@@ -2641,7 +2640,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     playSound('ui.deny');
     this.hud?.toast(camp.resting
       ? 'A rest is already under way.'
-      : `${session.nameOf(camp.by)} is already resting: walk over and press E to join.`, 2600);
+      : `${session.nameOf(camp.by)} is already resting. Walk over to join.`, 2600);
   }
 
   /** Online: this traveller is sitting down, waiting for the others or resting. */
@@ -2665,7 +2664,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       return ahead > 0 ? `Resting. You get up once the others have spent another ${gapLabel(ahead)}.` : 'Getting up...';
     }
     const waiting = camp.answers.flatMap((answer, seat) => (answer ? [] : [session.nameOf(seat)]));
-    const wait = waiting.length ? `Waiting for ${waiting.join(', ')}...` : 'Settling in...';
+    const wait = waiting.length ? `Waiting for ${waiting.join(', ')}...` : 'Resting...';
     return camp.by === session.localSeat ? `Resting here. ${wait}   [Z] Get back up` : `Resting with ${session.nameOf(camp.by)}. ${wait}   [X] Get up`;
   }
 
@@ -2775,7 +2774,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     }
     const ambush = outcome.ambush;
     if (ambush) {
-      const who = seat != null ? `${this.session?.nameOf(seat) ?? 'A traveller'}'s camp` : 'The camp';
+      const who = seat != null ? `${this.session?.nameOf(seat) ?? 'A player'}'s camp` : 'The camp';
       this.notify(`${who}: ${outcome.message}`, 2600);
       this.startFight({
         id: `once:rest:${this.run.steps}`, x: cell.x, y: cell.y, sight: 0, depth: ambush.depth,
@@ -2888,8 +2887,8 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
     const lines: string[] = [];
     const trade = council.trade?.place === place ? council.trade : null;
     if (trade) lines.push(trade.with == null
-      ? `PLAYER STALL  ${trade.by === me ? 'Your stall is open.' : `${session.nameOf(trade.by)} is trading. Open the menu to join.`}`
-      : `PLAYER STALL  ${session.nameOf(trade.by)} and ${session.nameOf(trade.with)} are trading.`);
+      ? `TRADE  ${trade.by === me ? 'Waiting for another player.' : `${session.nameOf(trade.by)} opened a trade. Open the menu to join.`}`
+      : `TRADE  ${session.nameOf(trade.by)} and ${session.nameOf(trade.with)} are trading.`);
     const names = (seats: number[]): string => seats.map((seat) => (seat === me ? 'you' : session.nameOf(seat))).join(', ');
     const seatsWhere = <T>(list: readonly T[], test: (entry: T) => boolean): number[] => list.flatMap((entry, seat) => (test(entry) ? [seat] : []));
     const camp = council.camp?.place === place ? council.camp : null;
@@ -2897,11 +2896,11 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       const area = this.run.area;
       const others = this.othersThan(session, camp.resting);
       const left = area && others.length ? camp.until - Math.max(...others.map((member) => memberHours(area, member))) : 0;
-      lines.push(`RESTING  ${names(camp.resting)}${left > 0 ? `, up in ${gapLabel(left)} of the others' time` : ''}`);
+      lines.push(`RESTING  ${names(camp.resting)}${left > 0 ? `, ${gapLabel(left)} left` : ''}`);
     } else if (camp) {
       const waiting = seatsWhere(camp.answers, (answer) => !answer);
-      lines.push(`SHORT REST  ${camp.by === me ? 'You sat' : `${session.nameOf(camp.by)} sat`} down.`);
-      if (camp.by !== me && !camp.answers[me]) lines.push('Walk over and press E to join, or X to keep going.');
+      lines.push(`SHORT REST  ${camp.by === me ? 'You' : session.nameOf(camp.by)} started a rest.`);
+      if (camp.by !== me && !camp.answers[me]) lines.push('Join (E, nearby) or keep going (X).');
       if (waiting.length) lines.push(`Waiting for ${names(waiting)}.`);
     }
     const leave = council.leave?.place === place ? council.leave : null;
@@ -2911,17 +2910,17 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       lines.push(`MOVING ON  ${names(ready)} (${ready.length}/${session.size})`);
       lines.push(leave.wants[me]
         ? `Waiting for ${names(waiting)}.`
-        : this.place.world ? 'Walk to the edge and press E to go too.' : 'Walk to a way out and press E to go too.');
+        : this.place.world ? 'Go to the edge (E) to follow.' : 'Go to an exit (E) to follow.');
       const behind = this.laggards(session);
       if (behind.length) {
-        lines.push(`First everyone must catch up: ${behind.map(({ seat, hours }) => `${seat === me ? 'you are' : `${session.nameOf(seat)} is`} ${gapLabel(hours)} behind`).join(', ')}. [T] waits.`);
+        lines.push(`Behind: ${behind.map(({ seat, hours }) => `${seat === me ? 'you' : session.nameOf(seat)} ${gapLabel(hours)}`).join(', ')}. [T] wait.`);
       }
     }
     const inn = council.inn;
     if (inn) {
       const waiting = seatsWhere(inn.answers, (answer) => answer !== 'join');
-      lines.push(`A NIGHT AT ${(shopById(inn.shop)?.name ?? 'the inn').toUpperCase()}  (${session.nameOf(inn.by)} asked)`);
-      lines.push(inn.answers[me] === 'join' ? `Waiting for ${names(waiting)}.` : 'Talk to the keeper there to join for free, or turn it down.');
+      lines.push(`INN: ${(shopById(inn.shop)?.name ?? 'the inn').toUpperCase()}  (${session.nameOf(inn.by)} booked)`);
+      lines.push(inn.answers[me] === 'join' ? `Waiting for ${names(waiting)}.` : 'Join (free) at the innkeeper.');
     }
     return lines;
   }
@@ -2979,7 +2978,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       this.notify(result.message, 3200);
       return;
     }
-    session.news(`${payer} paid ${moneyLabel(price)} for the rooms. Purse: ${moneyLabel(this.run.gold)}.`);
+    session.news(`${payer} paid ${moneyLabel(price)} for the rooms. Gold left: ${moneyLabel(this.run.gold)}.`);
     const nap: RestNap = { from, to: { day: this.run.day, hour: this.run.hour }, bloodmoon: bloodmoonDue(this.run), message: result.message };
     session.send({ k: 'x-sleep', nap });
     this.hud?.closeWindow();
@@ -3183,7 +3182,7 @@ export class LocaleScene extends Phaser.Scene implements HudOwner {
       else companion.sprite.clearTint();
       const gap = area && member ? memberHours(area, member) - mine : 0;
       const time = Math.abs(gap) > 1e-6 ? `\n${gapLabel(gap)} ${gap > 0 ? 'ahead' : 'behind'}` : '';
-      const name = `${session.nameOf(companion.seat)}${down ? ' (fallen)' : ''}${time}`;
+      const name = `${session.nameOf(companion.seat)}${down ? ' (down)' : ''}${time}`;
       if (companion.label.text !== name) companion.label.setText(name);
     }
   }

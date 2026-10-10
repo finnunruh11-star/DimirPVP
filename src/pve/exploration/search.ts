@@ -291,27 +291,27 @@ function luckyTurn(run: ExplorationRun, member: MageClass | null, zone: RegionId
     const herb = dice.pick(herbs);
     const count = dice.die(2);
     const left = grantToParty(run, herb, count, member);
-    return { message: `Not what you were after, but a patch of ${getItem(herb).name}: ${haulLabel(herb, count, left)}.`, levels: 0 };
+    return { message: `Found ${getItem(herb).name} instead: ${haulLabel(herb, count, left)}.`, levels: 0 };
   }
   if (roll < 0.55) {
     const id = dice.pick(SUPPLY_FINDS);
     const count = id === 'arrow' ? 2 + dice.die(3) : 1;
     const left = grantToParty(run, id, count, member);
-    return { message: `A pack someone dropped: ${haulLabel(id, count, left)}.`, levels: 0 };
+    return { message: `Found a dropped bag: ${haulLabel(id, count, left)}.`, levels: 0 };
   }
   if (roll < 0.75) {
     const gold = money((2 + dice.die(6)) / 10);
     run.gold = money(run.gold + gold);
-    return { message: `A purse someone lost: ${moneyLabel(gold)}.`, levels: 0 };
+    return { message: `Found a lost purse: ${moneyLabel(gold)}.`, levels: 0 };
   }
   if (roll < 0.9) {
     const back = withMember(run, member, (mage) => (mage.alive ? mage.restoreShare(0.15) : null));
     const parts = back ? [back.hp ? `+${back.hp} HP` : '', back.mana ? `+${back.mana} mana` : ''].filter(Boolean) : [];
-    return { message: `A sheltered spot to catch your breath${parts.length ? `: ${parts.join(', ')}` : ''}.`, levels: 0 };
+    return { message: `Found a safe spot to rest${parts.length ? `: ${parts.join(', ')}` : ''}.`, levels: 0 };
   }
   const xp = Math.max(1, Math.round(2 * partyXpScale(run)));
   const levels = addRunXp(run, xp);
-  return { message: `Old marks on a stone teach you something: +${xp} XP.${levels ? ' Level up!' : ''}`, levels };
+  return { message: `Found old markings: +${xp} XP.${levels ? ' Level up!' : ''}`, levels };
 }
 
 export interface SearchResolution {
@@ -337,7 +337,7 @@ export function resolveSearch(run: ExplorationRun, tile: Cell, target: SearchTar
     if (target.category === 'creature') {
       const spawns = trackedPack(target.id, site.depth, dice);
       const label = describeSpawns(spawns);
-      return { roll, message: `Tracks lead to ${label}. They have not noticed you.`, levels: 0, pack: { spawns, label, zone: site.zone, depth: site.depth } };
+      return { roll, message: `Found tracks: ${label}. They have not seen you.`, levels: 0, pack: { spawns, label, zone: site.zone, depth: site.depth } };
     }
   }
   if (roll.outcome === 'near') return { roll, ...luckyTurn(run, member, site.zone, dice) };

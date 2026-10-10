@@ -21,35 +21,35 @@ export const runePrice = (known: number): number => Math.round(5 * (known + 1)) 
 
 /** How a scriptorium offers a rune it will not name before it is paid for. */
 export const RUNE_HINTS: Record<RuneId, string> = {
-  heal: 'A gentle rune',
-  regen: 'A patient rune',
-  dot: 'A lingering rune',
-  wind: 'A restless rune',
-  twist: 'A crooked rune',
-  barrier: 'A stubborn rune',
-  accelerate: 'A hasty rune',
-  corrosive: 'A biting rune',
-  light: 'A bright rune',
-  fire: 'A hot-tempered rune',
-  shatter: 'A brittle rune',
-  water: 'A flowing rune',
-  mind: 'A whispering rune',
-  edge: 'A sharp rune',
-  missile: 'A pointy rune',
-  explosion: 'A destructive rune',
-  lance: 'A straight rune',
-  blink: 'A fleeting rune',
-  infuse: 'A thirsty rune',
-  mark: 'A watchful rune',
-  might: 'A proud rune',
-  single: 'A lonely rune',
-  aoe: 'A wide rune',
-  multi: 'A crowded rune',
-  battlefield: 'A boundless rune',
-  environment: 'An earthy rune',
-  bigger: 'A greedy rune',
-  rangeUp: 'A far-reaching rune',
-  allies: 'A loyal rune',
+  heal: 'Gentle rune',
+  regen: 'Patient rune',
+  dot: 'Lingering rune',
+  wind: 'Restless rune',
+  twist: 'Crooked rune',
+  barrier: 'Stubborn rune',
+  accelerate: 'Hasty rune',
+  corrosive: 'Biting rune',
+  light: 'Bright rune',
+  fire: 'Hot rune',
+  shatter: 'Brittle rune',
+  water: 'Flowing rune',
+  mind: 'Whispering rune',
+  edge: 'Sharp rune',
+  missile: 'Pointy rune',
+  explosion: 'Destructive rune',
+  lance: 'Straight rune',
+  blink: 'Fleeting rune',
+  infuse: 'Thirsty rune',
+  mark: 'Watchful rune',
+  might: 'Proud rune',
+  single: 'Lonely rune',
+  aoe: 'Wide rune',
+  multi: 'Crowded rune',
+  battlefield: 'Boundless rune',
+  environment: 'Earthy rune',
+  bigger: 'Greedy rune',
+  rangeUp: 'Far-reaching rune',
+  allies: 'Loyal rune',
 };
 
 /** A plain sheet with one to three runes, at least one of them an effect, some sealed. */
@@ -119,7 +119,7 @@ export function sheetKnown(grids: readonly number[], known: ReadonlySet<RuneId> 
 
 const SIGIL = 'BDFGHKLMNPRSTVXZ';
 
-/** "Hexzettel KRV": an unread sheet, told apart from the others by a mark made of its lines. */
+/** "Hex Sheet KRV": an unread sheet, told apart from the others by a mark made of its lines. */
 export function unreadHexName(paper: PaperKind, grids: readonly number[]): string {
   let h = 2166136261;
   for (const mask of grids) h = Math.imul(h ^ mask, 16777619);
@@ -129,5 +129,5 @@ export function unreadHexName(paper: PaperKind, grids: readonly number[]): strin
     mark += SIGIL[h % SIGIL.length];
     h = Math.floor(h / SIGIL.length);
   }
-  return `${paper === 'fine' ? 'Fine ' : ''}Hexzettel ${mark}`;
+  return `${paper === 'fine' ? 'Fine ' : ''}Hex Sheet ${mark}`;
 }

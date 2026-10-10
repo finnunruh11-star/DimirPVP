@@ -49,8 +49,8 @@ export class StatAssignmentView extends Phaser.GameObjects.Container {
       fixedWidth: 910,
     });
     const subtitle = scene.add.text(60, 82, snapshot.locked
-      ? 'The other player is assigning the shared dice.'
-      : 'Choose a quick build, or select a die and then an attribute socket.', {
+      ? 'Another player is assigning the dice.'
+      : 'Pick a quick build, or a die and then a stat.', {
       fontFamily: MENU_FONT.body,
       fontSize: '14px',
       color: MENU_HEX.boneDim,
@@ -106,7 +106,7 @@ export class StatAssignmentView extends Phaser.GameObjects.Container {
       this.focus.add(chip);
     });
 
-    const attributesHeading = scene.add.text(76, 318, 'ARCANE ATTRIBUTES', {
+    const attributesHeading = scene.add.text(76, 318, 'STATS', {
       fontFamily: MENU_FONT.control,
       fontSize: '11px',
       fontStyle: 'bold',
@@ -134,12 +134,12 @@ export class StatAssignmentView extends Phaser.GameObjects.Container {
 
     const complete = snapshot.placement.length === 6 && snapshot.placement.every((value) => value != null);
     const status = scene.add.text(76, 612, snapshot.locked
-      ? 'Waiting for the remaining human assignments.'
+      ? 'Waiting for other players.'
       : complete
-        ? 'Every die is seated. The allocation is ready.'
+        ? 'All dice placed.'
         : snapshot.selectedDie == null
-          ? 'Select an available die or use a quick build.'
-          : `Holding ${snapshot.dice[snapshot.selectedDie]?.spec ?? 'die'}: ${snapshot.dice[snapshot.selectedDie]?.value ?? ''}. Choose an attribute.`, {
+          ? 'Pick a die or a quick build.'
+          : `Holding ${snapshot.dice[snapshot.selectedDie]?.spec ?? 'die'}: ${snapshot.dice[snapshot.selectedDie]?.value ?? ''}. Pick a stat.`, {
       fontFamily: MENU_FONT.body,
       fontSize: '13px',
       color: MENU_HEX.boneDim,
@@ -148,7 +148,7 @@ export class StatAssignmentView extends Phaser.GameObjects.Container {
     const confirm = new CabinetChip(scene, 970, 606, {
       width: 232,
       height: 44,
-      label: snapshot.locked ? 'Waiting...' : 'Confirm Allocation',
+      label: snapshot.locked ? 'Waiting...' : 'Confirm',
       tone: 'primary',
       enabled: complete && !snapshot.locked,
       onActivate: actions.confirm,

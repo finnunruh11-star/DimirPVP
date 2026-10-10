@@ -664,8 +664,8 @@ export class SearchView extends Phaser.GameObjects.Container {
     if (!result) {
       face.setText('?');
       drawD20(body, MENU_COLOR.boneDim);
-      stamp.setText('NO ANSWER').setBackgroundColor('#948d7e').setVisible(true);
-      message.setText('The search could not be made. Try again.').setAlpha(1);
+      stamp.setText('ERROR').setBackgroundColor('#948d7e').setVisible(true);
+      message.setText('Search failed. Try again.').setAlpha(1);
       playSound('ui.deny');
       this.offerButtons(stage, top + H - 64, choice, null);
       return;
@@ -695,7 +695,7 @@ export class SearchView extends Phaser.GameObjects.Container {
     await this.wait(this.reduced ? 60 : 380);
     if (this.disposed) return;
     if (crit || fumble) natural.setText(crit ? 'NATURAL 20' : 'NATURAL 1').setColor(cssColor(crit ? 0xf3dc8a : 0xd46a5c)).setVisible(true);
-    stamp.setText(roll.outcome === 'found' ? 'SUCCESS' : roll.outcome === 'near' ? 'SUCCESS · LUCKY TURN' : 'FAILED').setBackgroundColor(cssColor(look.color)).setVisible(true);
+    stamp.setText(roll.outcome === 'found' ? 'SUCCESS' : roll.outcome === 'near' ? 'CLOSE · BONUS FIND' : 'FAILED').setBackgroundColor(cssColor(look.color)).setVisible(true);
     if (!this.reduced) {
       stamp.setScale(1.6).setAlpha(0);
       scene.tweens.add({ targets: stamp, scale: 1, alpha: 1, duration: 260, ease: 'Back.Out' });

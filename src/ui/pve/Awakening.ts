@@ -1,6 +1,6 @@
-// The start of a run: a black screen, a chatty voice in your head, a question
-// about what you reach for, three glowing words to pick from, twice, then a way
-// of getting things done. It only asks; applying the picks is `applyCreation`'s job.
+// The start of a run: a voice in your head (brief, a little flirty) asks for a
+// class, two words, a modifier and a stat, one row of orbs at a time. It only
+// asks; applying the picks is `applyCreation`'s job.
 
 import Phaser from 'phaser';
 import { playSound } from '../../audio';
@@ -8,6 +8,7 @@ import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
 import { MAGE_CLASSES, type MageClass } from '../../core/Classes';
 import { STAT_DEFS, type StatKey } from '../../core/Stats';
 import { isModifierWord, MODIFIER_WORDS, WORDS, type WordId } from '../../core/Words';
+import { wordCardColor } from '../../core/Colors';
 import { CREATION_WORD_ROUNDS, type CreationPick } from '../../pve/exploration/creation';
 import { rackIsFull, START_STAT_BONUS } from '../../pve/progression';
 import { isReducedMotion } from '../cabinet/motion';
@@ -21,100 +22,73 @@ export interface AwakeningModel {
   reducedMotion: boolean;
 }
 
+const CLASS_FACE: Record<MageClass, { mark: string; color: number }> = {
+  objects: { mark: 'Sturdy', color: 0xd9b25a },
+  life: { mark: 'Loyal', color: 0x7fd18a },
+  hexcraft: { mark: 'Rules', color: 0xb98bff },
+};
+
+const STAT_COLOR: Record<StatKey, number> = {
+  strength: 0xd9523f,
+  dex: 0x6fd35a,
+  int: 0x4f8fe0,
+  mana: 0x8a6fe0,
+  hp: 0xe06f8a,
+  luck: 0xe0c24f,
+};
+
 const OPENING = [
-  'Hey. Hey, you. Yes, you, standing in the mud.',
-  "Don't panic. I'm the voice in your head. Everyone gets one. You got the chatty one.",
-  "Quick game: first word that comes to mind. Don't think about it. Thinking is how people end up as accountants.",
+  'Hey. Hey, you. Face-down in the mud. Cute.',
+  "I'm the voice in your head. You're welcome.",
 ];
 
-const FIRST_ASK = 'Go on. First word.';
-const SECOND_ASK = 'Another one. The first one looks lonely.';
+const CLASS_ASK = "Class first. So... what's your type? :D";
+const WORD_ASKS = ['Pick a word. Any word. Ideally a cute one.', 'Another one! Pick one that describes me :3'];
+const MODIFIER_ASK = 'Modifier. How do you like it: quietly, later, or all at once? ;)';
+const STAT_ASK = `Last one: a stat (+${START_STAT_BONUS}). What are you good at, besides looking like THAT?`;
+const CLOSING = "Now you COULD pick up a weapon at the Guild. OR you could just stay here with me. Choices, choices....";
 
-const CALLING_ASK = 'Before the words. Something needs doing. What do you reach for?';
-
-/** What each calling looks like from inside your head. Never the class's name. */
-const CALLING_FACE: Record<MageClass, { title: string; mark: string; line: string; detail: string; reaction: string; color: number }> = {
-  objects: {
-    title: 'Something Sturdy',
-    mark: 'Sturdy',
-    line: "A blade. A buckle. A boot. Things that don't argue back.",
-    detail: 'Your spells will want to live in what you carry.',
-    reaction: 'Practical. Your belongings are about to get very opinionated.',
-    color: 0xd9b25a,
-  },
-  life: {
-    title: 'Someone Loyal',
-    mark: 'Loyal',
-    line: 'A friend, a pet, a thing with teeth. Ideally all three.',
-    detail: 'Your spells will want to get up and walk around.',
-    reaction: 'Company. Good. I was running out of things to say to just you.',
-    color: 0x7fd18a,
-  },
-  hexcraft: {
-    title: 'The Rules',
-    mark: 'Rules',
-    line: 'Bend them until the whole place works for you.',
-    detail: 'Your spells will want to change how everything works.',
-    reaction: "A rule-bender. Fine. Don't bend me, I'm load-bearing.",
-    color: 0xb98bff,
-  },
+const CLASS_REACTION: Record<MageClass, string> = {
+  objects: 'Sturdy. I do love someone good with their hands.',
+  life: "Loyal? Good. I'm the clingy type.",
+  hexcraft: "A rule-bender. Well maybe you should bend ME.",
 };
 
-const WORD_REACTION: Partial<Record<WordId, string>> = {
-  bind: 'Bind. Tying things up. Very tidy of you.',
-  shadow: "Shadow. Moody. You'll want a darker coat.",
-  veil: 'Veil. Now you see me, now you owe me money.',
-  mind: "Mind. Poking around in other people's heads. Rude, but handy.",
-  shatter: 'Shatter. Things are going to break. Try to aim it.',
-  corrode: 'Corrode. Melting stuff. Hope you like the smell.',
-  curse: 'Curse. Petty, and it lasts. I respect that.',
-  pierce: 'Pierce. Pointy. Gets straight to the point.',
-  water: "Water. Pushing people around, wetly. They'll hate that.",
-  pain: 'Pain. No tricks, it just hurts. Their heads, ideally.',
+const WORD_REACTION: Record<WordId, string> = {
+  bind: 'Bind? I already feel so BOUND to you. Emotionally AND Legally. UwU.',
+  shadow: 'Shadow? Yours, permanently. Even in the bathroom. Too much? :3',
+  veil: 'Veil? A wedding veil?! YES. Wait, you have not asked yet...',
+  mind: 'Mind? Read mine. It is just YOU YOU YOU and a tiny shopping list.',
+  shatter: 'Shatter my composure, why dont you?! I was being SO normal about you.',
+  corrode: 'Corrode? Corrodeeznuts?? I dont even know what that means.',
+  curse: 'Curse? Well at least you\'re a BLESSING!!.',
+  pierce: 'Pierce? That LOOK pierced straight through my heart. Rude. Do it again >~<.',
+  twist: 'Twist? Got me wrapped round your little finger. I live here now ^^.',
+  reality: 'Reality? Make our imaginary wedding a reality, coward. :3',
+  drain: 'Drain? The joke writes itself, doesnt it? ;).',
+  heal: 'Heal? Kiss it better. What hurts? My tragic lack of your attention.',
+  sand: 'Sand? Coarse. Rough. Gets everywhere. Unlike you, who gets MY NUMBER.',
+  death: 'Death? Till death do us part?! maybe a bit soon. I accept.',
+  desecrate: 'Desecrate? There goes my sacred vow to stop flirting. OOPS.',
+  fire: 'Fire? Is it hot in your head or are you just thinking about ME?',
+  lightning: 'Lightning? That spark between us needs its own safety inspector.',
+  storm: 'Storm? Sweep me off my feet! Metaphorically. I have no feet.',
+  subtle: 'Subtle? Of course. I shall whisper our wedding plans. VERY LOUDLY.',
+  delay: 'Delay? Playing hard to get? Fine. I have already booked the venue.',
+  channel: 'Channel? All that attention, straight into ME. Finally, good reception!',
+  stop: 'Stop? Stop being so CUTE then. Neither of us is cooperating here.',
+  water: 'Water? Thirsty? ME? Absolutely. For your undivided attention. UwU.',
+  pain: 'Pain? Being apart from you is AGONY. Even just half a second.',
 };
 
-const PAIR_REACTION = [
-  "Good pair. They'll get along. Mostly.",
-  'Lovely. Those two have never met, but they will now.',
-  "Solid. I'd have picked the same. I didn't, but I would have.",
-];
-
-const MODIFIER_ASK = "Last one, and it's not really a word. How do you get things done?";
-
-const MODIFIER_FACE: Partial<Record<WordId, { label: string; line: string; reaction: string }>> = {
-  subtle: {
-    label: 'Quietly',
-    line: 'Nobody saw anything. Nobody can prove anything.',
-    reaction: "Sneaky. I'll keep my voice down. Starting... now. Okay, maybe next time.",
-  },
-  delay: {
-    label: 'Eventually',
-    line: 'When the moment is right. Or when you remember.',
-    reaction: 'Fashionably late. Noted. Eventually.',
-  },
-  channel: {
-    label: 'All at once',
-    line: 'Big wind-up, bigger bang, then a little sit-down.',
-    reaction: 'Loud. Good. I was getting bored in here.',
-  },
+const STAT_REACTION: Record<StatKey, string> = {
+  strength: 'Strong. You carry the bags. And me.',
+  dex: 'Speed. So youre a quick one, huh?.',
+  int: 'Clever. Finally, someone to talk to.',
+  mana: 'Mysterious. I like it.',
+  hp: "Tough. Good, that means you have more stamina.",
+  luck: 'Lucky. Well, you did meet me.',
 };
-
-const STAT_ASK = "One more, then I'll stop. Probably. What are you good at?";
-
-const STAT_FACE: Record<StatKey, { line: string; reaction: string; color: number }> = {
-  strength: { line: 'Hitting things. Hard.', reaction: 'Strong. Good. You carry the bags.', color: 0xd9523f },
-  dex: { line: 'Being somewhere else, quickly.', reaction: 'Quick on your feet. Try not to trip over them.', color: 0x6fd35a },
-  int: { line: 'Knowing things. Spells come easier.', reaction: 'Clever. Finally, someone to talk to.', color: 0x4f8fe0 },
-  mana: { line: 'Having more in the tank.', reaction: "Deep reserves. You'll need them.", color: 0x8a6fe0 },
-  hp: { line: 'Not dying. Very underrated.', reaction: "Tough. I like that. I'm in here too, you know.", color: 0xe06f8a },
-  luck: { line: 'Things just... working out.', reaction: "Lucky. Don't push it.", color: 0xe0c24f },
-};
-
-const CLOSING = [
-  "Right, that's you sorted. Something to reach for, two words, a way of doing things, and something you're good at. More than most people have.",
-  "One problem: you're not armed. Kerusai won't let you out the gate like that, I checked.",
-  'The Lodge hands out weapons to new folk. Go get something pointy. Or blunt. Your call.',
-];
 
 const W = GAME_WIDTH;
 const H = GAME_HEIGHT;
@@ -213,58 +187,52 @@ class Awakening {
     this.root.setAlpha(0);
     await this.tween({ targets: this.root, alpha: 1, duration: 900 });
     for (const line of OPENING) await this.say(line);
-    await this.say(CALLING_ASK, 0, true);
+    await this.say(CLASS_ASK, 0, true);
     const calling = (await this.choose(MAGE_CLASSES.map((id): Offer => ({
       id,
-      title: CALLING_FACE[id].mark,
-      sub: `${CALLING_FACE[id].title}. ${CALLING_FACE[id].line}`,
-      detail: CALLING_FACE[id].detail,
-      color: CALLING_FACE[id].color,
+      title: CLASS_FACE[id].mark,
+      sub: '',
+      detail: '',
+      color: CLASS_FACE[id].color,
     })))) as MageClass;
-    this.engrave(CALLING_FACE[calling].mark, CALLING_FACE[calling].color);
-    await this.say(CALLING_FACE[calling].reaction);
+    this.engrave(CLASS_FACE[calling].mark, CLASS_FACE[calling].color);
+    await this.say(CLASS_REACTION[calling]);
     const words: WordId[] = [];
     for (let round = 0; round < CREATION_WORD_ROUNDS; round++) {
-      await this.say(round === 0 ? FIRST_ASK : SECOND_ASK, 0, true);
+      await this.say(WORD_ASKS[Math.min(round, WORD_ASKS.length - 1)], 0, true);
       const offers = this.model.offers(round, words).map((id): Offer => ({
         id,
         title: WORDS[id].label,
         sub: '',
         detail: WORDS[id].blurb,
-        color: WORDS[id].color,
+        color: wordCardColor(id),
       }));
       const word = (await this.choose(offers)) as WordId;
       words.push(word);
-      this.engrave(WORDS[word].label, WORDS[word].color);
-      await this.say(WORD_REACTION[word] ?? `${WORDS[word].label}. Sure. Why not.`);
-      if (round === CREATION_WORD_ROUNDS - 1) {
-        await this.say(PAIR_REACTION[(words[0].length + words[1].length) % PAIR_REACTION.length]);
-      }
+      this.engrave(WORDS[word].label, wordCardColor(word));
+      await this.say(WORD_REACTION[word]);
     }
     await this.say(MODIFIER_ASK, 0, true);
-    const modifier = (await this.choose(MODIFIER_WORDS.map((id): Offer => {
-      const face = MODIFIER_FACE[id];
-      return {
-        id,
-        title: face?.label ?? WORDS[id].label,
-        sub: face ? `${face.line}` : '',
-        detail: `${WORDS[id].label}. ${WORDS[id].blurb.replace(/^Modifier: /, '')}`,
-        color: WORDS[id].color,
-      };
-    }))) as WordId;
-    this.engrave(WORDS[modifier].label, WORDS[modifier].color);
-    await this.say(MODIFIER_FACE[modifier]?.reaction ?? 'Noted.');
+    const modifier = (await this.choose(MODIFIER_WORDS.map((id): Offer => ({
+      id,
+      title: WORDS[id].label,
+      sub: '',
+      detail: WORDS[id].blurb.replace(/^Modifier: /, ''),
+      color: wordCardColor(id),
+    })))) as WordId;
+    this.engrave(WORDS[modifier].label, wordCardColor(modifier));
+    await this.say(WORD_REACTION[modifier]);
     await this.say(STAT_ASK, 0, true);
     const stat = (await this.choose(STAT_DEFS.map((def): Offer => ({
       id: def.key,
       title: def.name,
-      sub: STAT_FACE[def.key].line,
-      detail: `${def.blurb} Starts +${START_STAT_BONUS}.`,
-      color: STAT_FACE[def.key].color,
+      sub: '',
+      detail: def.blurb,
+      color: STAT_COLOR[def.key],
     })))) as StatKey;
-    this.engrave(STAT_DEFS.find((def) => def.key === stat)!.name, STAT_FACE[stat].color);
-    await this.say(STAT_FACE[stat].reaction);
-    for (const line of CLOSING) await this.say(line);
+    this.engrave(STAT_DEFS.find((def) => def.key === stat)!.name, STAT_COLOR[stat]);
+    await this.say(STAT_REACTION[stat]);
+    await this.say(CLOSING);
     await this.tween({ targets: this.root, alpha: 0, duration: 800 });
     this.destroy();
     return { calling, words, modifier, stat };
@@ -275,26 +243,26 @@ class Awakening {
   ): Promise<LevelWordPick> {
     this.root.setAlpha(0);
     await this.tween({ targets: this.root, alpha: 1, duration: 500 });
-    await this.say(`Level ${level}. A new word stirs.`, 0, true);
+    await this.say(`Level ${level}: new word`, 0, true);
     const options: Offer[] = offers.map((word) => ({
-      id: word, title: WORDS[word].label, sub: '', detail: WORDS[word].blurb, color: WORDS[word].color,
+      id: word, title: WORDS[word].label, sub: '', detail: WORDS[word].blurb, color: wordCardColor(word),
     }));
     if (godWords.length) options.push({
-      id: 'phyrexia', title: '', sub: '', detail: 'Surrender a word. Claim a god word in its place.',
+      id: 'phyrexia', title: '', sub: '', detail: 'Swap a word for a god word.',
       color: 0xc55365, sigil: true,
     });
     const picked = await this.choose(options);
     let choice: LevelWordPick;
     if (picked === 'phyrexia') {
-      await this.say('One of your words must be surrendered.', 0, true);
+      await this.say('Word to give up', 0, true);
       const replace = await this.choose(this.knownWords(loadout));
-      await this.say('What will take its place?', 0, true);
+      await this.say('God word', 0, true);
       const ascend = await this.choose(godWords.map((word): Offer => ({
-        id: word, title: WORDS[word].label, sub: '', detail: WORDS[word].blurb, color: WORDS[word].color,
+        id: word, title: WORDS[word].label, sub: '', detail: WORDS[word].blurb, color: wordCardColor(word),
       })));
       choice = { ascend: ascend as WordId, replace: Number(replace) };
     } else if (rackIsFull(loadout)) {
-      await this.say('A word for a word. Which one fades?', 0, true);
+      await this.say('Word to replace', 0, true);
       const replace = await this.choose(this.knownWords(loadout));
       choice = { word: picked as WordId, replace: Number(replace) };
     } else {
@@ -307,7 +275,7 @@ class Awakening {
 
   private knownWords(loadout: readonly WordId[]): Offer[] {
     return loadout.flatMap((word, index) => isModifierWord(word) ? [] : [{
-      id: String(index), title: WORDS[word].label, sub: '', detail: WORDS[word].blurb, color: WORDS[word].color,
+      id: String(index), title: WORDS[word].label, sub: '', detail: WORDS[word].blurb, color: wordCardColor(word),
     }]);
   }
 

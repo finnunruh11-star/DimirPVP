@@ -134,7 +134,7 @@ export function playRestCinematic(scene: Phaser.Scene, nap: RestNap, reduced: bo
   const clock = scene.add.text(W / 2, sy(ROOM_H) + 16, '', {
     fontFamily: MENU_FONT.display, fontSize: '24px', fontStyle: 'bold', color: '#e8dcc0', stroke: '#0a0604', strokeThickness: 5,
   }).setOrigin(0.5, 0).setLetterSpacing(6);
-  const title = scene.add.text(W / 2, sy(ROOM_H) + 54, blood ? 'THE BLOODMOON WAKES YOU' : 'RESTED', {
+  const title = scene.add.text(W / 2, sy(ROOM_H) + 54, blood ? 'REST INTERRUPTED' : 'RESTED', {
     fontFamily: MENU_FONT.display, fontSize: '32px', fontStyle: 'bold', color: blood ? '#ffd2c4' : '#fde79a',
     stroke: blood ? '#1a0000' : '#2c1806', strokeThickness: 7,
     shadow: { offsetX: 0, offsetY: 0, color: blood ? '#ff2a1a' : '#ff9630', blur: 18, stroke: true, fill: true },

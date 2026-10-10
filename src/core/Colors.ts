@@ -17,6 +17,18 @@ import { comboKey } from './Words';
 export type WordColor = 'black' | 'blue' | 'white' | 'red' | 'none';
 export type ColorName = 'black' | 'blue' | 'white' | 'red';
 
+export const WORD_CARD_COLORS: Record<WordColor, number> = {
+  black: 0x302438,
+  blue: 0x70d6ff,
+  white: 0xffffff,
+  red: 0xff5964,
+  none: 0x898d96,
+};
+
+export function wordCardColor(word: WordId): number {
+  return WORD_CARD_COLORS[WORD_COLOR[word]];
+}
+
 /** Which color each word belongs to. */
 export const WORD_COLOR: Record<WordId, WordColor> = {
   shadow: 'black',
@@ -37,7 +49,7 @@ export const WORD_COLOR: Record<WordId, WordColor> = {
   pain: 'black',
   pierce: 'none',
   shatter: 'none',
-  twist: 'none',
+  twist: 'blue',
   heal: 'white',
   sand: 'white',
   subtle: 'none',

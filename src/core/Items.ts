@@ -1580,7 +1580,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(10),
     weight: 3,
     blurb:
-      'Bag. Unlimited pack slots. What is inside weighs 25% less.',
+      'Bag. Unlimited bag slots. What is inside weighs 25% less.',
     pack: { slots: Infinity, weightMult: 0.75 },
   },
   // ---- Epic ---------------------------------------------------------------
@@ -2000,7 +2000,7 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(2),
     weight: 1,
     blurb:
-      'Light 3cm, 3 combats. Light-weak enemies in the aura: 2 typeless per turn. Unarmed strike, +5 true vs light-weak. 10% to break per swing. Once it has burned through a fight, stowing destroys it.',
+      'Light 3cm, 3 combats. Light-weak enemies in the aura: 2 typeless per turn. Unarmed strike, +5 true vs light-weak. 10% to break per swing. Destroyed if unequipped after its first fight.',
     lightSource: true,
     lightRadiusPx: 3 * U,
     torchCombats: 3,
@@ -2666,7 +2666,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'common',
     cost: 5,
     weight: 1,
-    blurb: 'Bag. 15 pack slots.',
+    blurb: 'Bag. 15 bag slots.',
     adventureOnly: true,
     pack: { slots: 15 },
   },
@@ -2687,7 +2687,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(2),
     weight: 1,
-    blurb: 'Bag. 30 pack slots.',
+    blurb: 'Bag. 30 bag slots.',
     adventureOnly: true,
     pack: { slots: 30 },
   },
@@ -2709,7 +2709,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'consumeable',
     cost: PAPER_COST.plain,
     weight: 0.1,
-    blurb: 'A sheet ruled with three peg grids. A Hexcraft mage draws a hex on it from the pack, 1 mana a line.',
+    blurb: 'Three peg grids. A Hexcraft mage draws a hex on it from the bag, 1 mana a line.',
     adventureOnly: true,
     paper: 'plain',
   },
@@ -2720,7 +2720,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: PAPER_COST.fine,
     weight: 0.1,
-    blurb: 'Heavy vellum ruled with five peg grids. A Hexcraft mage draws a hex on it from the pack, 1 mana a line.',
+    blurb: 'Five peg grids. A Hexcraft mage draws a hex on it from the bag, 1 mana a line.',
     adventureOnly: true,
     paper: 'fine',
   },
@@ -2731,7 +2731,7 @@ export const ITEM_DEFS: ItemDef[] = [
     rarity: 'rare',
     cost: g(1.5),
     weight: 0,
-    blurb: 'Key item. With it, a scriptorium will sell the party runes: three a day, offered by what they feel like, not by name.',
+    blurb: 'Key item. Lets the Scribe sell you runes: three a day, unnamed until bought.',
     adventureOnly: true,
     keyItem: true,
   },
@@ -2751,9 +2751,9 @@ export const ITEM_DEFS: ItemDef[] = [
     cost: g(8),
     weight: 0.3,
     blurb: 'Material. Left by a bloodmoon boss of its colour. The finest focus a crafting bench takes.'
-      + (id === 'moonshardRed' ? ' Consume from the pack to learn Fire.'
-        : id === 'moonshardBlue' ? ' Consume from the pack to learn Mind.'
-        : id === 'moonshardBlack' ? ' Consume from the pack to learn Shadow.' : ''),
+      + (id === 'moonshardRed' ? ' Use from the bag to learn Fire.'
+        : id === 'moonshardBlue' ? ' Use from the bag to learn Mind.'
+        : id === 'moonshardBlack' ? ' Use from the bag to learn Shadow.' : ''),
     material: true,
     adventureOnly: true,
   })),

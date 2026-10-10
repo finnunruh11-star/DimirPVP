@@ -1001,7 +1001,7 @@ export function partLabel(part: HexPart): string {
 }
 
 export function hexName(recipe: HexRecipe): string {
-  return `${recipe.paper === 'fine' ? 'Fine ' : ''}Hexzettel: ${recipe.parts.map(partLabel).join(' \u00bb ')}`;
+  return `${recipe.paper === 'fine' ? 'Fine ' : ''}Hex Sheet: ${recipe.parts.map(partLabel).join(' \u00bb ')}`;
 }
 
 /** Where a part lands, in words; a coupled part lands around what its carrier struck. */

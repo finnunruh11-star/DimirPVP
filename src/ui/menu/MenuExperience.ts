@@ -16,6 +16,7 @@ import type { ItemSet } from '../../core/Items';
 import type { Spell } from '../../spells/Spell';
 import type { Scenario } from '../../core/Scenario';
 import { MODIFIER_WORDS, WORDS, type WordId } from '../../core/Words';
+import { wordCardColor } from '../../core/Colors';
 import { SceneInput } from '../../engine/SceneInput';
 import { loadRun, storeRun } from '../../pve/exploration/save';
 import { BOSS_IDS } from '../../pve/exploration/bloodmoon';
@@ -73,19 +74,19 @@ const PACK_COPY: Record<keyof ItemSetSelection, MenuEntryCopy> = {
     label: 'Original Dimir',
     detail: 'Core items and spells',
     title: 'ORIGINAL DIMIR',
-    description: 'The base item and spell set. At least 1 pack must stay enabled.',
+    description: 'At least one set must stay on.',
   },
   finns: {
     label: "Finn's Additions",
     detail: 'Extra items and spells',
     title: "FINN'S ADDITIONS",
-    description: 'Adds custom items and spells to drafts, shops and the spell grid.',
+    description: '',
   },
   dlc: {
     label: 'Dimir Faithful DLC',
     detail: 'Optional items and spells',
     title: 'DIMIR FAITHFUL DLC',
-    description: 'Adds the optional catalogue to drafts, shops and the spell grid.',
+    description: '',
   },
 };
 
@@ -223,10 +224,7 @@ export class MenuExperience {
   }
 
   private buildMain(): MenuScreenView {
-    const view = this.createScreen(
-      'CHOOSE A TABLE',
-      'Pick a game type. Rules and builds are configured next.'
-    );
+    const view = this.createScreen('MAIN MENU', '');
     (Object.keys(CATEGORY_COPY) as MenuCategory[]).forEach((category, index) => {
       const copy = CATEGORY_COPY[category];
       view.focus.add(this.choice(view.root, 76, 246 + index * 88, copy, String(index + 1), () => {
@@ -268,13 +266,13 @@ export class MenuExperience {
     const capability = this.model.capability;
     const tutorial = this.model.mode === 'tutorial';
     const facts = tutorial
-      ? ['Solo', 'Build supplied', 'Nothing can kill you']
+      ? ['Solo', 'Build given', 'You cannot die']
       : [
         capability.seats[0] === capability.seats[1]
-          ? `${capability.seats[0]} ${capability.seats[0] === 1 ? 'seat' : 'seats'}`
-          : `${capability.seats[0]}-${capability.seats[1]} seats`,
-        capability.usesBuild ? `${capability.loadoutSize} words` : 'Words chosen in the world',
-        capability.allowAi ? 'AI supported' : 'No AI seats',
+          ? `${capability.seats[0]} ${capability.seats[0] === 1 ? 'player' : 'players'}`
+          : `${capability.seats[0]}-${capability.seats[1]} players`,
+        capability.usesBuild ? `${capability.loadoutSize} words` : 'Words picked in-game',
+        capability.allowAi ? 'AI allowed' : 'No AI',
       ];
     const plaque = this.scene.add.text(76, 282, facts.join('  /  ').toUpperCase(), {
       fontFamily: MENU_FONT.control,
@@ -289,14 +287,11 @@ export class MenuExperience {
     const proceed = new CabinetButton(this.scene, 76, 392, {
       width: 714,
       height: 64,
-      label: tutorial ? 'Begin The Tutorial' : 'Configure This Mode',
+      label: tutorial ? 'Start Tutorial' : 'Set Up',
       index: '>',
       primary: true,
       onActivate: () => this.advanceFromIntro(),
-      onFocus: () => this.stage.setCaption(
-        copy.title,
-        tutorial ? 'Start the guided fight.' : 'Continue to setup.'
-      ),
+      onFocus: () => this.stage.setCaption(copy.title, ''),
     });
     view.root.add([plaque, proceed]);
     view.focus.add(proceed);
@@ -306,14 +301,14 @@ export class MenuExperience {
 
   private buildSessionRole(): MenuScreenView {
     const copy = MODE_COPY[this.model.mode];
-    const view = this.createScreen(`ENTER ${copy.label.toUpperCase()}`, copy.description);
+    const view = this.createScreen(copy.title, copy.description);
     const roles = this.model.capability.roles.map((role): { role: SessionRole; copy: MenuEntryCopy } => {
       if (role === 'local') {
         return {
           role,
           copy: {
-            label: 'Local Run', detail: 'One device, optional AI allies', title: 'LOCAL RUN',
-            description: 'Build every human mage on this device. Remaining seats are filled with AI.',
+            label: 'Local', detail: 'One device', title: 'LOCAL',
+            description: '',
           },
         };
       }
@@ -323,22 +318,22 @@ export class MenuExperience {
           role,
           copy: {
             label: versus ? 'Host Match' : 'Host Co-op',
-            detail: 'Create a room and set the rules',
+            detail: 'Create a room',
             title: versus ? 'HOST ONLINE MATCH' : 'HOST CO-OP',
-            description: 'Set the table, packs and AI fill, then wait for other players to join.',
+            description: '',
           },
         }
         : {
           role,
           copy: {
             label: versus ? 'Join Match' : 'Join Co-op',
-            detail: 'Bring 1 mage into a hosted match',
+            detail: 'Join with a room code',
             title: versus ? 'JOIN ONLINE MATCH' : 'JOIN CO-OP',
-            description: 'Build your mage and join by room code. Rules come from the host.',
+            description: '',
           },
         };
     });
-    // A host with an online Adventure saved can pick it back up with the same travellers.
+    // A host with an online Adventure saved can pick it back up with the same players.
     const adventure = this.model.mode === 'exploration';
     const saved = adventure && this.model.capability.roles.includes('host') ? loadRun('online') : null;
     // More than three entries share the space above the back button.
@@ -361,18 +356,18 @@ export class MenuExperience {
       const travellers = saved.party.entities.length;
       view.focus.add(this.choice(view.root, 76, 246 + roles.length * step, {
         label: 'Continue Co-op',
-        detail: `Day ${saved.day}, level ${saved.level}, ${travellers} travellers`,
+        detail: `Day ${saved.day}, level ${saved.level}, ${travellers} players`,
         title: 'CONTINUE ONLINE RUN',
-        description: `Host the saved online run again. ${travellers} players must join; each claims a traveller.`,
+        description: `${travellers} players must join.`,
       }, String(roles.length + 1), () => this.resumeCoop(travellers), height));
     }
     if (adventure) {
       const index = roles.length + (saved ? 1 : 0);
       view.focus.add(this.choice(view.root, 76, 246 + index * step, {
         label: 'Load Save File',
-        detail: 'Open a run saved with "Save to File"',
+        detail: 'Open a saved run file',
         title: 'LOAD SAVE FILE',
-        description: 'A solo run opens at once. A co-op run is hosted again and replaces the co-op save on this computer.',
+        description: 'A co-op file replaces the co-op save on this computer.',
       }, String(index + 1), () => void this.loadRunFile(), height));
     }
     this.addBack(view, 574);
@@ -403,7 +398,7 @@ export class MenuExperience {
       return;
     }
     if (!storeRun(file.run, file.slot)) {
-      this.stage.setCaption('LOAD FAILED', 'This browser would not keep the run. Check that site storage is allowed.');
+      this.stage.setCaption('LOAD FAILED', 'Could not save the run. Allow site storage.');
       return;
     }
     if (file.slot === 'online') {
@@ -417,10 +412,7 @@ export class MenuExperience {
   }
 
   private buildRaidTarget(returnToReview: boolean): MenuScreenView {
-    const view = this.createScreen(
-      'SELECT RAID TARGET',
-      'The party prepares before the boss is summoned. Bloodmoon bosses arrive with everything they bring.'
-    );
+    const view = this.createScreen('RAID BOSS', '');
     const controls = new Map<RaidTarget, CabinetButton | CabinetChip>();
     const pick = (target: RaidTarget): void => {
       this.model.setRaidBoss(target);
@@ -458,7 +450,7 @@ export class MenuExperience {
     const proceed = new CabinetButton(this.scene, 76, 540, {
       width: 714,
       height: 60,
-      label: returnToReview ? 'Return to Review' : 'Choose Session',
+      label: returnToReview ? 'Return to Review' : 'Continue',
       index: '>',
       primary: true,
       onActivate: () => this.navigator.push(returnToReview ? { id: 'review' } : { id: 'session-role' }),
@@ -483,37 +475,31 @@ export class MenuExperience {
       ? 'AI Allies'
       : this.model.mode === 'ai'
         ? 'AI Opponents'
-        : 'AI Seats';
+        : 'AI Players';
     const view = this.createScreen(
-      pve ? 'ASSEMBLE THE PARTY' : 'SET THE TABLE',
-      this.model.role === 'host'
-        ? 'Requires 2+ human players. AI fills the remaining seats.'
-        : this.model.mode === 'ai'
-          ? 'Set the number of combatants and whether they fight in teams or free-for-all.'
-          : pve
-            ? 'Set the party size, then how many seats are AI.'
-            : 'Set the table size, then how many seats are AI.'
+      pve ? 'PARTY' : 'PLAYERS',
+      this.model.role === 'host' ? 'Needs 2+ human players.' : ''
     );
 
     const explorers = new CabinetButton(this.scene, 76, 262, {
       width: 714,
-      label: `${pve ? 'Explorers' : 'Combatants'}  ${this.model.seatCount}`,
-      detail: `Total seats, ${this.model.capability.seats[0]} to ${this.model.capability.seats[1]}`,
+      label: `Players  ${this.model.seatCount}`,
+      detail: `${this.model.capability.seats[0]} to ${this.model.capability.seats[1]}`,
       index: 'I',
       onActivate: () => updateExplorers(1),
       onAdjust: (direction) => updateExplorers(direction),
-      onFocus: () => this.stage.setCaption(pve ? 'PARTY SIZE' : 'TABLE SIZE', this.rosterSummary()),
+      onFocus: () => this.stage.setCaption('PLAYERS', this.rosterSummary()),
     });
     const allies = new CabinetButton(this.scene, 76, 354, {
       width: 714,
       label: `${aiLabel}  ${this.model.aiCount}`,
       detail: this.model.mode === 'ai'
-        ? 'Seat 1 is always yours'
-        : 'Human seats always come first',
+        ? 'Player 1 is you'
+        : 'Humans come first',
       index: 'II',
       onActivate: () => updateAllies(1),
       onAdjust: (direction) => updateAllies(direction),
-      onFocus: () => this.stage.setCaption('AI SEATS', this.rosterSummary()),
+      onFocus: () => this.stage.setCaption('AI PLAYERS', this.rosterSummary()),
     });
     const proceed = new CabinetButton(this.scene, 76, 478, {
       width: 714,
@@ -524,7 +510,7 @@ export class MenuExperience {
           ? 'Assign Teams'
           : usesSwampPrep(this.model.mode)
             ? 'Choose Preparation'
-            : 'Choose Content Packs',
+            : 'Choose Content',
       index: '>',
       primary: true,
       onActivate: () => {
@@ -533,7 +519,7 @@ export class MenuExperience {
         else if (usesSwampPrep(this.model.mode)) this.navigator.push({ id: 'preparation' });
         else this.navigator.push({ id: 'content-packs' });
       },
-      onFocus: () => this.stage.setCaption('ROSTER READY', this.rosterSummary()),
+      onFocus: () => this.stage.setCaption('PLAYERS', this.rosterSummary()),
     });
 
     const showAiAdjust = this.model.capability.allowAi && this.model.mode !== 'ai';
@@ -541,11 +527,11 @@ export class MenuExperience {
     let format: CabinetButton | null = null;
 
     const refresh = (): void => {
-      explorers.setCopy(`${pve ? 'Explorers' : 'Combatants'}  ${this.model.seatCount}`);
+      explorers.setCopy(`Players  ${this.model.seatCount}`);
       if (showAiAdjust) {
         allies.setCopy(`${aiLabel}  ${this.model.aiCount}`);
       }
-      format?.setCopy(`Formation: ${this.model.formatLabel()}`);
+      format?.setCopy(`Format: ${this.model.formatLabel()}`);
       const valid = this.model.role !== 'host' || this.model.humanCount() >= 2;
       proceed.setEnabled(valid);
       proceed.setCopy(valid
@@ -555,7 +541,7 @@ export class MenuExperience {
             ? 'Assign Teams'
             : usesSwampPrep(this.model.mode)
               ? 'Choose Preparation'
-              : 'Choose Content Packs'
+              : 'Choose Content'
         : 'Two Humans Required');
     };
     const updateExplorers = (direction: -1 | 1): void => {
@@ -563,14 +549,14 @@ export class MenuExperience {
       const next = this.model.seatCount + direction;
       this.model.setSeatCount(next > maximum ? minimum : next < minimum ? maximum : next);
       refresh();
-      this.stage.setCaption(pve ? 'PARTY SIZE' : 'TABLE SIZE', this.rosterSummary());
+      this.stage.setCaption('PLAYERS', this.rosterSummary());
     };
     const updateAllies = (direction: -1 | 1): void => {
       const maximum = Math.max(0, this.model.seatCount - 1);
       const next = this.model.aiCount + direction;
       this.model.setAiCount(next > maximum ? 0 : next < 0 ? maximum : next);
       refresh();
-      this.stage.setCaption('AI SEATS', this.rosterSummary());
+      this.stage.setCaption('AI PLAYERS', this.rosterSummary());
     };
     const updateFormat = (direction: -1 | 1): void => {
       const formats = this.model.capability.formats;
@@ -579,7 +565,7 @@ export class MenuExperience {
       const next = (current + direction + formats.length) % formats.length;
       this.model.setTeamFormat(formats[next]);
       refresh();
-      this.stage.setCaption('FORMATION', this.rosterSummary());
+      this.stage.setCaption('FORMAT', this.rosterSummary());
     };
 
     view.root.add(explorers);
@@ -593,12 +579,12 @@ export class MenuExperience {
     if (showFormat) {
       format = new CabinetButton(this.scene, 76, showAiAdjust ? 446 : 354, {
         width: 714,
-        label: `Formation: ${this.model.formatLabel()}`,
-        detail: this.model.teamFormat === 'teams' ? 'Combatants share two sides' : 'Every combatant has their own side',
+        label: `Format: ${this.model.formatLabel()}`,
+        detail: this.model.teamFormat === 'teams' ? 'Two sides' : 'Everyone for themselves',
         index: 'III',
         onActivate: () => updateFormat(1),
         onAdjust: (direction) => updateFormat(direction),
-        onFocus: () => this.stage.setCaption('FORMATION', this.rosterSummary()),
+        onFocus: () => this.stage.setCaption('FORMAT', this.rosterSummary()),
       });
       view.root.add(format);
       view.focus.add(format);
@@ -612,10 +598,7 @@ export class MenuExperience {
   }
 
   private buildTeamLayout(returnToReview: boolean): MenuScreenView {
-    const view = this.createScreen(
-      'ASSIGN TEAMS',
-      'Put every seat on 1 of 2 sides. Neither side may be empty.'
-    );
+    const view = this.createScreen('TEAMS', 'Neither side may be empty.');
     for (let seat = 0; seat < this.model.seatCount; seat++) {
       const human = seat < this.model.humanCount();
       const label = human ? `Player ${seat + 1}` : `AI ${seat + 1}`;
@@ -628,7 +611,7 @@ export class MenuExperience {
         onActivate: () => {
           const next = this.model.teamOf(seat) === 1 ? 2 : 1;
           if (this.model.setSeatTeam(seat, next)) this.navigator.refresh();
-          else this.stage.setCaption('BOTH SIDES REQUIRED', 'Move another seat first.');
+          else this.stage.setCaption('BOTH SIDES NEED A PLAYER', 'Move another player first.');
         },
         onFocus: () => this.stage.setCaption(label, `Team ${this.model.teamOf(seat)}.`),
       });
@@ -639,11 +622,11 @@ export class MenuExperience {
     const proceed = new CabinetButton(this.scene, 438, proceedY, {
       width: 352,
       height: 54,
-      label: returnToReview ? 'Return to Review' : 'Choose Content Packs',
+      label: returnToReview ? 'Return to Review' : 'Choose Content',
       index: '>',
       primary: true,
       onActivate: () => this.navigator.push(returnToReview ? { id: 'review' } : { id: 'content-packs' }),
-      onFocus: () => this.stage.setCaption('TEAMS READY', this.teamSummary()),
+      onFocus: () => this.stage.setCaption('TEAMS', this.teamSummary()),
     });
     view.root.add(proceed);
     view.focus.add(proceed);
@@ -652,10 +635,7 @@ export class MenuExperience {
   }
 
   private buildPreparation(returnToReview: boolean): MenuScreenView {
-    const view = this.createScreen(
-      'CHOOSE PREPARATION',
-      'Sets how the party is equipped before the run starts.'
-    );
+    const view = this.createScreen('PREPARATION', '');
     const buttons: Partial<Record<SwampPrepMode, CabinetButton>> = {};
     (Object.keys(PREP_COPY) as SwampPrepMode[]).forEach((prep, index) => {
       const copy = PREP_COPY[prep];
@@ -670,11 +650,11 @@ export class MenuExperience {
     const proceed = new CabinetButton(this.scene, 76, 492, {
       width: 714,
       height: 64,
-      label: returnToReview ? 'Return to Review' : 'Choose Content Packs',
+      label: returnToReview ? 'Return to Review' : 'Choose Content',
       index: '>',
       primary: true,
       onActivate: () => this.navigator.push(returnToReview ? { id: 'review' } : { id: 'content-packs' }),
-      onFocus: () => this.stage.setCaption('PREPARATION READY', `${this.rosterSummary()} Preparation: ${PREP_COPY[this.model.prepMode].label}.`),
+      onFocus: () => this.stage.setCaption('PREPARATION', `${this.rosterSummary()} Preparation: ${PREP_COPY[this.model.prepMode].label}.`),
     });
     view.root.add(proceed);
     view.focus.add(proceed);
@@ -683,10 +663,7 @@ export class MenuExperience {
   }
 
   private buildContentPacks(returnToReview: boolean): MenuScreenView {
-    const view = this.createScreen(
-      'CHOOSE CONTENT PACKS',
-      'Enabled packs decide which items and spells can appear.'
-    );
+    const view = this.createScreen('CONTENT', 'Item and spell sets in play.');
     const buttons = new Map<keyof ItemSetSelection, CabinetButton>();
     (Object.keys(PACK_COPY) as (keyof ItemSetSelection)[]).forEach((pack, index) => {
       const copy = PACK_COPY[pack];
@@ -708,7 +685,7 @@ export class MenuExperience {
         if (returnToReview || !builds) this.navigator.push({ id: 'review' });
         else this.navigator.push({ id: 'mage-build', seat: this.model.localDraftSeats()[0] ?? 0 });
       },
-      onFocus: () => this.stage.setCaption('CATALOGUES READY', this.packSummary()),
+      onFocus: () => this.stage.setCaption('CONTENT', this.packSummary()),
     });
     view.root.add(proceed);
     view.focus.add(proceed);
@@ -721,11 +698,8 @@ export class MenuExperience {
   }
 
   private buildPlayerHandoff(seat: number): MenuScreenView {
-    const view = this.createScreen(
-      `PLAYER ${seat + 1}`,
-      'Pass control before the next build is shown.'
-    );
-    const cover = this.scene.add.text(76, 278, 'BUILD CONCEALED', {
+    const view = this.createScreen(`PLAYER ${seat + 1}`, 'Pass the device.');
+    const cover = this.scene.add.text(76, 278, 'BUILD HIDDEN', {
       fontFamily: MENU_FONT.display,
       fontSize: '28px',
       fontStyle: 'bold',
@@ -742,7 +716,7 @@ export class MenuExperience {
       index: '>',
       primary: true,
       onActivate: () => this.navigator.push({ id: 'mage-build', seat }),
-      onFocus: () => this.stage.setCaption(`PLAYER ${seat + 1}`, 'Continue when the next player has control.'),
+      onFocus: () => this.stage.setCaption(`PLAYER ${seat + 1}`, ''),
     });
     view.root.add([cover, proceed]);
     view.focus.add(proceed);
@@ -757,10 +731,10 @@ export class MenuExperience {
     const nextSeat = draftSeats[draftIndex + 1];
     const view = this.createScreen(
       draftSeats.length > 1 ? `BUILD PLAYER ${seat + 1}` : 'BUILD YOUR MAGE',
-      `Choose 1 discipline, ${this.model.loadoutTarget(seat)} words and 1 method.`
+      `Choose a class, ${this.model.loadoutTarget(seat)} words and a modifier.`
     );
 
-    const disciplineLabel = this.scene.add.text(76, 230, 'DISCIPLINE', {
+    const disciplineLabel = this.scene.add.text(76, 230, 'CLASS', {
       fontFamily: MENU_FONT.control,
       fontSize: '12px',
       fontStyle: 'bold',
@@ -813,7 +787,7 @@ export class MenuExperience {
           width: plateWidth,
           height: plateHeight,
           label: definition.label,
-          accent: definition.color,
+          accent: wordCardColor(word),
           reaction: definition.grantsReaction,
           selectedOrder: draft.words.indexOf(word) + 1,
           onActivate: () => {
@@ -836,7 +810,7 @@ export class MenuExperience {
     const modifier = new CabinetButton(this.scene, 76, actionY, {
       width: 344,
       height: 58,
-      label: `Method: ${WORDS[draft.modifier].label}`,
+      label: `Modifier: ${WORDS[draft.modifier].label}`,
       index: 'M',
       onActivate: () => cycleModifier(1),
       onAdjust: (direction) => cycleModifier(direction),
@@ -855,12 +829,10 @@ export class MenuExperience {
         else this.navigator.push({ id: 'review' });
       },
       onFocus: () => this.stage.setCaption(
-        returnToReview ? 'RETURN TO REVIEW' : nextSeat != null ? 'NEXT MAGE' : 'REVIEW SETUP',
-        this.blankCombosNote(seat) ?? (returnToReview
-          ? 'Keep this build and return to the summary.'
-          : nextSeat != null
-            ? `Pass control to Player ${nextSeat + 1}.`
-            : this.rosterSummary())
+        returnToReview ? 'RETURN TO REVIEW' : nextSeat != null ? 'NEXT PLAYER' : 'REVIEW',
+        this.blankCombosNote(seat) ?? (nextSeat != null && !returnToReview
+          ? `Pass to Player ${nextSeat + 1}.`
+          : this.rosterSummary())
       ),
     });
     const status = this.scene.add.text(278, backY + 14, '', {
@@ -884,11 +856,11 @@ export class MenuExperience {
     const refresh = (): void => {
       for (const [mageClass, button] of classButtons) button.setSelected(draft.mageClass === mageClass);
       for (const [word, button] of wordButtons) button.setSelectedOrder(draft.words.indexOf(word) + 1);
-      modifier.setCopy(`Method: ${WORDS[draft.modifier].label}`);
+      modifier.setCopy(`Modifier: ${WORDS[draft.modifier].label}`);
       wordsLabel.setText(`WORDS  ${draft.words.length}/${this.model.loadoutTarget(seat)}`);
       const ready = this.model.loadoutReady(seat);
       const missing = this.model.missingWords(seat);
-      const finalLabel = returnToReview ? 'Return to Review' : nextSeat != null ? `Build Player ${nextSeat + 1}` : 'Review Setup';
+      const finalLabel = returnToReview ? 'Return to Review' : nextSeat != null ? `Build Player ${nextSeat + 1}` : 'Review';
       proceed.setCopy(ready ? finalLabel : `Choose ${missing} More`);
       proceed.setEnabled(ready);
       const reach = this.buildCoverage(seat);
@@ -917,7 +889,7 @@ export class MenuExperience {
   private buildReview(): MenuScreenView {
     const copy = MODE_COPY[this.model.mode];
     const rulesOwner = this.model.role !== 'guest';
-    const view = this.createScreen('REVIEW SETUP', 'Check the configuration before starting.');
+    const view = this.createScreen('REVIEW', '');
     const rows: { label: string; detail: string; edit: () => void }[] = [
       {
         label: `Mode: ${copy.label}`,
@@ -935,21 +907,21 @@ export class MenuExperience {
     if (rulesOwner && this.model.mode === 'raid') {
       rows.push({
         label: `Target: ${raidTargetCopy(this.model.raidBoss).label}`,
-        detail: raidTargetCopy(this.model.raidBoss).description,
+        detail: raidTargetCopy(this.model.raidBoss).detail,
         edit: () => this.navigator.push({ id: 'raid-target', returnToReview: true }),
       });
     }
     if (rulesOwner && !this.model.resumeAdventure && (this.model.capability.seats[0] !== this.model.capability.seats[1] || this.model.mode === 'ai')) {
       rows.push({
-        label: `${isPveRunMode(this.model.mode) ? 'Party' : 'Table'}: ${this.rosterSummary()}`,
-        detail: 'Edit seats, AI fill and formation.',
+        label: `${isPveRunMode(this.model.mode) ? 'Party' : 'Players'}: ${this.rosterSummary()}`,
+        detail: '',
         edit: () => this.navigator.push({ id: 'roster', returnToReview: true }),
       });
     }
     if (rulesOwner && this.shouldChooseTeams()) {
       rows.push({
         label: `Teams: ${this.teamSummary()}`,
-        detail: 'Edit which seats share a side.',
+        detail: '',
         edit: () => this.navigator.push({ id: 'team-layout', returnToReview: true }),
       });
     }
@@ -963,14 +935,14 @@ export class MenuExperience {
     if (rulesOwner) {
       rows.push({
         label: `Content: ${this.packSummary()}`,
-        detail: 'Edit the packs available to this match.',
+        detail: '',
         edit: () => this.navigator.push({ id: 'content-packs', returnToReview: true }),
       });
     }
     if (this.model.capability.usesBuild) {
       rows.push({
         label: `Mage Builds: ${this.buildSummary()}`,
-        detail: 'Rebuild every local mage from the start.',
+        detail: '',
         edit: () => this.navigator.push({ id: 'mage-build', seat: this.model.localDraftSeats()[0] ?? 0 }),
       });
     }
@@ -1003,7 +975,7 @@ export class MenuExperience {
       },
       onFocus: () => this.stage.setCaption(
         ready ? 'READY' : 'SETUP INCOMPLETE',
-        ready ? 'Start with this configuration.' : this.model.validationIssues().join(' ')
+        ready ? '' : this.model.validationIssues().join(' ')
       ),
     });
     view.root.add(launch);
@@ -1015,14 +987,12 @@ export class MenuExperience {
   private buildMemoryFile(): MenuScreenView {
     const scenario = this.memoryScenario;
     const view = this.createScreen(
-      scenario ? 'REVIEW MEMORY' : 'OPEN A MEMORY',
-      scenario
-        ? 'This scenario replaces the drafted roster and resumes at its recorded turn.'
-        : 'Choose a saved .dimir.json scenario. The file is validated before it is shown or launched.'
+      scenario ? 'SCENARIO' : 'LOAD SCENARIO',
+      scenario ? '' : 'Choose a .dimir.json file.'
     );
 
     if (!scenario) {
-      const slot = this.scene.add.text(76, 270, this.memoryState === 'loading' ? 'READING FILE...' : 'NO MEMORY LOADED', {
+      const slot = this.scene.add.text(76, 270, this.memoryState === 'loading' ? 'READING FILE...' : 'NO FILE LOADED', {
         fontFamily: MENU_FONT.display,
         fontSize: '26px',
         fontStyle: 'bold',
@@ -1043,12 +1013,12 @@ export class MenuExperience {
       const choose = new CabinetButton(this.scene, 76, 430, {
         width: 714,
         height: 64,
-        label: this.memoryState === 'loading' ? 'File Picker Open' : 'Choose Memory File',
+        label: this.memoryState === 'loading' ? 'File Picker Open' : 'Choose File',
         index: '>',
         primary: true,
         enabled: this.memoryState !== 'loading',
         onActivate: () => void this.chooseMemoryFile(),
-        onFocus: () => this.stage.setCaption('CHOOSE MEMORY', 'Open a scenario file from this device.'),
+        onFocus: () => this.stage.setCaption('CHOOSE FILE', ''),
       });
       view.root.add([slot, message, choose]);
       view.focus.add(choose);
@@ -1070,7 +1040,7 @@ export class MenuExperience {
       color: MENU_HEX.bone,
       fixedWidth: 470,
     });
-    const meta = this.scene.add.text(772, 253, `ROUND ${scenario.turn.round}\n${scenario.entities.length} ENTITIES / ${teams} SIDES`, {
+    const meta = this.scene.add.text(772, 253, `ROUND ${scenario.turn.round}\n${scenario.entities.length} UNITS / ${teams} SIDES`, {
       fontFamily: MENU_FONT.control,
       fontSize: '11px',
       fontStyle: 'bold',
@@ -1096,7 +1066,7 @@ export class MenuExperience {
       view.root.add([row, rowText]);
     });
     if (scenario.entities.length > shown.length) {
-      const remaining = this.scene.add.text(92, 515, `...and ${scenario.entities.length - shown.length} more entities`, {
+      const remaining = this.scene.add.text(92, 515, `...and ${scenario.entities.length - shown.length} more units`, {
         fontFamily: MENU_FONT.body,
         fontSize: '12px',
         color: MENU_HEX.boneDim,
@@ -1111,19 +1081,19 @@ export class MenuExperience {
       index: '<',
       enabled: this.memoryState !== 'loading',
       onActivate: () => void this.chooseMemoryFile(),
-      onFocus: () => this.stage.setCaption('CHOOSE ANOTHER', 'Replace this scenario with a different file.'),
+      onFocus: () => this.stage.setCaption('CHOOSE ANOTHER', ''),
     });
     const launch = new CabinetButton(this.scene, 438, 554, {
       width: 352,
       height: 54,
-      label: 'Enter This Memory',
+      label: 'Load Scenario',
       index: '>',
       primary: true,
       enabled: this.memoryState !== 'loading',
       onActivate: () => this.launchMemory(scenario),
       onFocus: () => this.stage.setCaption(
         scenario.name,
-        `${humans} human-controlled entities. Round ${scenario.turn.round}; ${activeName} acts next.`
+        `${humans} human-controlled units. Round ${scenario.turn.round}; ${activeName} acts next.`
       ),
     });
     view.root.add([chooseAgain, launch]);
@@ -1154,7 +1124,7 @@ export class MenuExperience {
       if (this.destroyed || request !== this.memoryRequest) return;
       this.memoryScenario = null;
       this.memoryState = 'error';
-      this.memoryMessage = error instanceof Error ? error.message : 'That memory could not be loaded.';
+      this.memoryMessage = error instanceof Error ? error.message : 'That file could not be loaded.';
     }
     this.navigator.refresh();
   }
@@ -1164,9 +1134,7 @@ export class MenuExperience {
     if (host && !this.lobbyRoom) this.lobbyRoom = String(1000 + Math.floor(Math.random() * 9000));
     const view = this.createScreen(
       host ? 'HOST ONLINE ROOM' : 'JOIN ONLINE ROOM',
-      host
-        ? 'Share the room code. The match begins when every human seat is filled.'
-        : 'Enter the room code supplied by the host. Host-owned rules arrive after connection.'
+      host ? 'Share the room code.' : "Enter the host's room code."
     );
 
     const fieldGraphics = this.scene.add.graphics();
@@ -1197,7 +1165,7 @@ export class MenuExperience {
       label: host ? 'Change Code' : 'Enter Code',
       enabled: !this.lobbyBusy,
       onActivate: () => this.beginLobbyEntry('room', roomValue),
-      onFocus: () => this.stage.setCaption('ROOM CODE', host ? 'Edit the code shared with other players.' : 'Enter the code from the host.'),
+      onFocus: () => this.stage.setCaption('ROOM CODE', ''),
     });
     view.root.add([fieldGraphics, roomLabel, roomValue, roomHit, roomEdit]);
     view.focus.add(roomEdit);
@@ -1206,7 +1174,7 @@ export class MenuExperience {
       width: 714,
       height: 50,
       label: this.lobbyAdvanced ? 'Connection Details: Shown' : 'Connection Details',
-      detail: 'The default relay works for local and hosted sessions',
+      detail: 'Usually not needed',
       index: 'A',
       selected: this.lobbyAdvanced,
       enabled: !this.lobbyBusy,
@@ -1214,7 +1182,7 @@ export class MenuExperience {
         this.lobbyAdvanced = !this.lobbyAdvanced;
         this.navigator.refresh();
       },
-      onFocus: () => this.stage.setCaption('CONNECTION DETAILS', 'Change the relay only for a custom server or tunnel.'),
+      onFocus: () => this.stage.setCaption('CONNECTION DETAILS', 'Only for a custom server.'),
     });
     view.root.add(advanced);
     view.focus.add(advanced);
@@ -1268,10 +1236,7 @@ export class MenuExperience {
       label: this.lobbyBusy ? 'Cancel Connection' : 'Back',
       index: '<',
       onActivate: () => this.cancelLobby(true),
-      onFocus: () => this.stage.setCaption(
-        this.lobbyBusy ? 'CANCEL CONNECTION' : 'BACK',
-        this.lobbyBusy ? 'Close the socket and return with your setup intact.' : 'Return to Review.'
-      ),
+      onFocus: () => this.stage.setCaption(this.lobbyBusy ? 'CANCEL CONNECTION' : 'BACK', ''),
     });
     const connect = new CabinetButton(this.scene, 438, actionY, {
       width: 352,
@@ -1363,11 +1328,11 @@ export class MenuExperience {
 
   private lobbyHelp(): string {
     return this.model.role === 'host'
-      ? `${this.model.humanCount()} human seats are required before the room starts.`
-      : 'Enter the exact room code shared by the host.';
+      ? `Needs ${this.model.humanCount()} human players.`
+      : "Enter the host's room code.";
   }
 
-  /** Every word that can head a spell; the three methods are modifiers. */
+  /** Every word that can head a spell; modifiers never do. */
   private codexWordList(): WordId[] {
     return this.model.visibleWords();
   }
@@ -1404,10 +1369,7 @@ export class MenuExperience {
   }
 
   private buildCodex(): MenuScreenView {
-    const view = this.createScreen(
-      'SPELLBOOK',
-      'Pick words to see what they cast. A spell needs every one of its words. Lists all catalogues.'
-    );
+    const view = this.createScreen('SPELLBOOK', '');
     const words = this.codexWordList();
     const columns = 6;
     const chipWidth = Math.floor((714 - 8 * (columns - 1)) / columns);
@@ -1421,7 +1383,7 @@ export class MenuExperience {
           width: chipWidth,
           height: 42,
           label: definition.label,
-          accent: definition.color,
+          accent: wordCardColor(word),
           selected: this.codexWords.has(word),
           onActivate: () => {
             if (!this.codexWords.delete(word)) this.codexWords.add(word);
@@ -1450,7 +1412,7 @@ export class MenuExperience {
       onAdjust: (direction) => this.cycleCodexClass(direction),
       onFocus: () => this.stage.setCaption(
         MAGE_CLASS_DEFS[this.codexClass].label,
-        'Class spells resolve differently per class. This picks which variant is listed.'
+        "Lists this class's version of class spells."
       ),
     });
     const clearButton = new CabinetButton(this.scene, 310, controlY, {
@@ -1464,7 +1426,7 @@ export class MenuExperience {
         this.codexPage = 0;
         this.navigator.refresh();
       },
-      onFocus: () => this.stage.setCaption('CLEAR', 'Deselect every word.'),
+      onFocus: () => this.stage.setCaption('CLEAR', ''),
     });
     const pageButton = new CabinetButton(this.scene, 468, controlY, {
       width: 150,
@@ -1485,7 +1447,7 @@ export class MenuExperience {
       label: 'Back',
       index: '<',
       onActivate: () => this.navigator.back(),
-      onFocus: () => this.stage.setCaption('BACK', 'Return to the main menu.'),
+      onFocus: () => this.stage.setCaption('BACK', ''),
     });
     view.root.add([classButton, clearButton, pageButton, back]);
     view.focus.add(classButton);
@@ -1497,7 +1459,7 @@ export class MenuExperience {
     if (matches.length === 0) {
       const hint = this.scene.add.text(76, listY + 10, this.codexWords.size === 0
         ? 'Select one or more words above.'
-        : 'No spell uses only these words. Add another word.', {
+        : 'No spell uses only these words.', {
         fontFamily: MENU_FONT.body,
         fontSize: '15px',
         color: MENU_HEX.boneDim,
@@ -1576,7 +1538,7 @@ export class MenuExperience {
       label: 'Back',
       index: '<',
       onActivate: () => this.navigator.back(),
-      onFocus: () => this.stage.setCaption('BACK', 'Return to the previous step. Choices are kept.'),
+      onFocus: () => this.stage.setCaption('BACK', ''),
     });
     view.root.add(back);
     view.focus.add(back);
@@ -1596,16 +1558,16 @@ export class MenuExperience {
       case 'main': return 'Main';
       case 'category': return CATEGORY_LABELS[route.category];
       case 'mode-intro': return MODE_COPY[this.model.mode].label;
-      case 'raid-target': return 'Raid Target';
+      case 'raid-target': return 'Raid Boss';
       case 'session-role': return 'Session';
-      case 'roster': return isPveRunMode(this.model.mode) ? 'Party' : 'Table';
+      case 'roster': return isPveRunMode(this.model.mode) ? 'Party' : 'Players';
       case 'team-layout': return 'Teams';
       case 'preparation': return 'Preparation';
       case 'content-packs': return 'Content';
       case 'player-handoff': return `Player ${route.seat + 1}`;
       case 'mage-build': return `Player ${route.seat + 1} Build`;
       case 'review': return 'Review';
-      case 'memory-file': return 'Memory File';
+      case 'memory-file': return 'Scenario File';
       case 'codex': return 'Spellbook';
       case 'online-lobby': return 'Online Lobby';
     }
@@ -1633,16 +1595,14 @@ export class MenuExperience {
 
   private rosterSummary(): string {
     const humans = this.model.humanCount();
-    if (this.model.mode === 'training') return 'Solo sandbox with one configurable training opponent.';
+    if (this.model.mode === 'training') return 'Solo, one training target.';
     if (this.model.mode === 'exploration') {
-      return this.model.role === 'local'
-        ? 'One traveller, setting out from Kerusai. Words are named there, weapons handed out at the Lodge.'
-        : `${humans} travellers online, setting out from Kerusai. Words are named there, weapons handed out at the Lodge.`;
+      return this.model.role === 'local' ? '1 player.' : `${humans} players online.`;
     }
     if (isPveRunMode(this.model.mode)) {
-      return `${this.model.seatCount} explorer${this.model.seatCount === 1 ? '' : 's'}: ${humans} human, ${this.model.aiCount} AI.`;
+      return `${this.model.seatCount} player${this.model.seatCount === 1 ? '' : 's'}: ${humans} human, ${this.model.aiCount} AI.`;
     }
-    return `${this.model.formatLabel()}: ${this.model.seatCount} seats, ${humans} human, ${this.model.aiCount} AI.`;
+    return `${this.model.formatLabel()}: ${this.model.seatCount} players, ${humans} human, ${this.model.aiCount} AI.`;
   }
 
   private shouldChooseTeams(): boolean {
@@ -1680,15 +1640,15 @@ export class MenuExperience {
 
   private launchLabel(): string {
     if (this.model.mode === 'training') return 'Start Training';
-    if (this.model.mode === 'exploration') return 'Set Out';
+    if (this.model.mode === 'exploration') return 'Start';
     if (this.model.mode === 'ai') return 'Start AI Duel';
     if (this.model.mode === 'hotseat') return 'Start Hotseat Match';
     if (this.model.mode === 'scenario') return 'Open Scenario Lab';
     if (this.model.role === 'host') return 'Create Co-op Room';
     if (this.model.role === 'guest') return 'Join Co-op Room';
-    if (this.model.mode === 'minerun') return 'Enter the Mine';
-    if (this.model.mode === 'raid') return `Begin ${raidTargetCopy(this.model.raidBoss).label} Raid`;
-    return 'Begin Swamprun';
+    if (this.model.mode === 'minerun') return 'Start Mine Run';
+    if (this.model.mode === 'raid') return `Start ${raidTargetCopy(this.model.raidBoss).label} Raid`;
+    return 'Start Swamprun';
   }
 
   private roman(value: number): string {

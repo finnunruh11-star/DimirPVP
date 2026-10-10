@@ -1,6 +1,6 @@
-// The Lodge's armoury on the first day: five pedestals, one starter weapon on
-// each, a guildmaster with opinions, and you walking between them. It only
-// shows and asks; taking a weapon is `takeStarterWeapon`'s job (via the hooks).
+// The Guild's armoury on the first day: five pedestals with one starter weapon
+// each, and you walking between them. It only shows and asks; taking a weapon
+// is `takeStarterWeapon`'s job (via the hooks).
 
 import Phaser from 'phaser';
 import { playSound } from '../../audio';
@@ -44,26 +44,24 @@ const PEDESTAL_Y = 470;
 const WALK_Y = 600;
 const BOX_TOP = 604;
 
+const ALL_ARMED = "Y'all finally decided. Good. Now go away.";
+const WAITING_OTHERS = 'Tell your teammates to hurry up, you cannot leave without them..';
+
 const PITCH: Partial<Record<ItemId, string>> = {
-  travellersDagger: 'The dagger. Small, sharp, fits in a boot. For people who like to get up close. Also good for cheese.',
-  quarterstaff: "The quarterstaff. It's a stick. A really good stick. Hits things from further away than your arms do.",
-  shortsword: 'The shortsword. Pointy end goes in the other fellow. Hits harder than anything else on this rack.',
-  huntingBow: 'The hunting bow. Shoot things before they reach you. Fifteen arrows included. Pick them back up afterwards, I am not made of arrows.',
-  apprenticeWand: "The apprentice wand. For people who think swinging things is beneath them. Please don't poke anyone's eye out.",
+  travellersDagger: 'Imagine all the places this could go...',
+  quarterstaff: "Imagine all the places THIS could go O_O.",
+  shortsword: 'This should go NOWHERE but your enemies you freak.',
+  huntingBow: 'Bow. Thats all, really. Oh and 3 arrows',
+  apprenticeWand: "This thing is NEEEDLESLY LARGE. ",
 };
 
 const TAKEN_LINE: Partial<Record<ItemId, string>> = {
-  travellersDagger: 'Good choice. Stab responsibly.',
-  quarterstaff: "A classic. Nobody's ever lost a fight with a stick. That's a lie, but off you go.",
-  shortsword: 'Keep it sharp and keep it in the scabbard indoors.',
-  huntingBow: 'Mind the string, it bites. Ask me how I know.',
-  apprenticeWand: 'Ooh, fancy. Give it a wave. There you go. Terrifying.',
+  travellersDagger: 'Stab responsibly.',
+  quarterstaff: 'Nobody ever lost a fight with a stick. Mostly.',
+  shortsword: 'Filthy Bruiser, I know what you are...',
+  huntingBow: 'Bro is a coward',
+  apprenticeWand: 'If you get another you can make a Hat! Wait wrong game...',
 };
-
-const GREETING = [
-  "Ah, fresh faces! Welcome to the Lodge. Town rule: nobody leaves Kerusai without a weapon. It's my rule, actually. I made it up.",
-  "One each. Walk up to the one you like and have a look. Take your time. Not too much, I've got lunch at noon.",
-];
 
 type Stage = 'browse' | 'confirm' | 'busy';
 
@@ -111,7 +109,7 @@ export class ArmoryHall {
     this.player.setScale(110 / Math.max(1, frame?.height ?? 16));
     if (scene.anims.exists(MAGE_IDLE)) this.player.play(MAGE_IDLE);
     this.root.add(this.player);
-    this.title = scene.add.text(W / 2, 26, 'THE KERUSAI LODGE  -  ARMS FOR THE ARMLESS', {
+    this.title = scene.add.text(W / 2, 26, 'KERUSAI GUILD  -  STARTER WEAPONS', {
       fontFamily: MENU_FONT.display,
       fontSize: '18px',
       fontStyle: 'bold',
@@ -147,7 +145,7 @@ export class ArmoryHall {
     scene.tweens.add({ targets: this.root, alpha: 1, duration: this.fast ? 1 : 500 });
     this.player.x = -60;
     this.walkTo(0, this.fast ? 1 : 1200);
-    void this.greet();
+    this.greet();
   }
 
   /** The run changed (someone took a weapon, someone came in): redraw the pedestals and the words. */
@@ -161,7 +159,7 @@ export class ArmoryHall {
     if (!this.greeted || this.stage !== 'browse') return;
     if (state.done && !this.wasDone) {
       this.wasDone = true;
-      this.say("That's everyone sorted. The gate guard will let you through now. Try not to lose those, I'm not doing this twice.");
+      this.say(ALL_ARMED);
       return;
     }
     this.describe();
@@ -179,47 +177,47 @@ export class ArmoryHall {
 
   // --- Talking ---
 
-  private async greet(): Promise<void> {
-    for (const text of GREETING) await this.sayAndWait(text);
+  private greet(): void {
     this.greeted = true;
     this.stage = 'browse';
     const state = this.hooks.state();
     this.seen = JSON.stringify(state);
     this.wasDone = state.done;
     this.paintTaken(state);
-    this.describe();
+    this.describe(true);
   }
 
-  /** What the guildmaster says about whatever you stand in front of. */
-  private describe(): void {
+  /** The weapon you stand in front of, what the keeper makes of it, and whether you may take it. */
+  private describe(immediate = false): void {
     const state = this.hooks.state();
     const pedestal = state.pedestals[this.focus];
     if (!pedestal) return;
-    const name = getItem(pedestal.id).name;
+    const def = getItem(pedestal.id);
     const takenHere = !state.shared && pedestal.takenBy.length > 0;
-    let text = PITCH[pedestal.id] ?? `The ${name}. It's a weapon. Point the dangerous end away from you.`;
-    let keys = 'Left / Right  look around      Esc  leave';
+    const stats = `${def.name}: ${def.blurb}`;
+    let text = `${PITCH[pedestal.id] ?? ''}\n${stats}`.trim();
+    let keys = 'Left / Right  browse      Esc  leave';
     if (state.done) {
-      text = `${text}\n...but you've all got one. Off you go, the gate's open.`;
+      text = `${ALL_ARMED}\n${stats}`;
     } else if (!state.picker) {
-      text = "You're sorted. Now we wait for the rest of your lot. The gate stays shut until everyone's got something.";
+      text = WAITING_OTHERS;
     } else if (state.waitingFor.length > 0) {
-      text = `${text}\nHold on though, we're still waiting for ${listNames(state.waitingFor)}. I'm only doing this speech once.`;
+      text = `Hold on, we're still waiting for ${listNames(state.waitingFor)}.\n${stats}`;
     } else if (takenHere) {
-      text = `Sorry, ${pedestal.takenBy.join(' and ')} already took the ${name}. No swapping. I've seen how that ends.`;
+      text = `Sorry, ${pedestal.takenBy.join(' and ')} already took the ${def.name}. No swapping.`;
     } else {
-      keys = `Enter  take the ${name}      Left / Right  look around      Esc  leave`;
+      keys = `Enter  take the ${def.name}      Left / Right  browse      Esc  leave`;
     }
     this.speaker.setText(this.hooks.keeperName.toUpperCase());
-    this.say(text);
+    this.say(text, immediate);
     this.keys.setText(state.picker && !state.done ? `${state.picker}:   ${keys}` : keys);
   }
 
-  private say(text: string): void {
+  private say(text: string, immediate = false): void {
     this.typer?.remove();
     let shown = 0;
     this.line.setText('');
-    if (this.fast) {
+    if (this.fast || immediate) {
       this.line.setText(text);
       return;
     }
@@ -233,36 +231,6 @@ export class ArmoryHall {
       },
     });
     this.scene.tweens.add({ targets: this.keeper, y: this.keeper.y - 6, duration: 90, yoyo: true, repeat: 1 });
-  }
-
-  /** Say `text` and wait for a key or click (or a while). */
-  private sayAndWait(text: string): Promise<void> {
-    return new Promise((resolve) => {
-      this.say(text);
-      this.keys.setText('Enter  go on');
-      const wait = this.fast ? 400 : 1600 + text.length * 40;
-      let done = false;
-      const finish = (): void => {
-        if (done) return;
-        done = true;
-        this.scene.input.keyboard?.off('keydown', onKey);
-        this.scene.input.off('pointerdown', finish);
-        timer.remove();
-        resolve();
-      };
-      const onKey = (event: KeyboardEvent): void => {
-        if (event.key === 'Enter' || event.key === ' ' || event.key === 'e' || event.key === 'E') {
-          if (this.typer && this.typer.getOverallProgress() < 1) {
-            this.typer.remove();
-            this.typer = null;
-            this.line.setText(text);
-          } else finish();
-        }
-      };
-      const timer = this.scene.time.delayedCall(wait, finish);
-      this.scene.input.keyboard?.on('keydown', onKey);
-      this.scene.input.on('pointerdown', finish);
-    });
   }
 
   // --- Input ---
@@ -313,8 +281,8 @@ export class ArmoryHall {
     playSound('ui.click');
     this.stage = 'confirm';
     const name = getItem(pedestal.id).name;
-    this.say(`The ${name}, then? Final answer? No returns. I don't do returns.`);
-    this.keys.setText(`Enter  take it      Esc  keep looking`);
+    this.say(`The ${name}, then? No returns.`);
+    this.keys.setText(`Enter  take it      Esc  back`);
   }
 
   private async takeFocused(): Promise<void> {
@@ -336,15 +304,14 @@ export class ArmoryHall {
     this.paintTaken(state);
     this.wasDone = state.done;
     const next = state.done
-      ? "That's everyone sorted. The gate guard will let you through now. Try not to lose those."
+      ? ALL_ARMED
       : state.picker
-        ? `Right. Next! ${state.picker}, your turn.`
-        : 'Now wait for the rest of your lot, or wander about town. The gate stays shut until everyone has something.';
-    await this.sayAndWait(`${TAKEN_LINE[pedestal.id] ?? 'Good choice.'}`);
-    if (this.closed) return;
+        ? `Next! ${state.picker}, your turn.`
+        : WAITING_OTHERS;
+    const quip = TAKEN_LINE[pedestal.id];
     this.stage = 'browse';
-    this.say(next);
-    this.keys.setText(state.done ? 'Enter / Esc  leave' : state.picker ? 'Left / Right  look around      Enter  take      Esc  leave' : 'Esc  leave');
+    this.say(quip ? `${quip} ${next}` : next);
+    this.keys.setText(state.done ? 'Enter / Esc  leave' : state.picker ? 'Left / Right  browse      Enter  take      Esc  leave' : 'Esc  leave');
   }
 
   private leave(): void {

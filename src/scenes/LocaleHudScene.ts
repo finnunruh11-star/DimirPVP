@@ -228,7 +228,7 @@ export class LocaleHudScene extends Phaser.Scene {
       wordWrap: { width: 460 },
     }).setOrigin(1, 0);
     this.legend = new KeyLegend(this, 24, GAME_HEIGHT - 30);
-    this.hint = 'WASD / arrows or click: walk     E: talk     I: pack     Esc: menu     F2: cheats';
+    this.hint = 'WASD / arrows or click: walk     E: talk     I: bag     Esc: menu     F2: cheats';
     this.legendOpen = !legendSeen;
     this.applyLegend();
     if (!legendSeen) {
@@ -361,7 +361,7 @@ export class LocaleHudScene extends Phaser.Scene {
       zone.on(Phaser.Input.Events.GAMEOBJECT_POINTER_OUT, release);
     };
     button(right - size, bottom - size, size, size, 'ACT', 'act');
-    const small = [['CAST', 'cast'], ['AMBUSH', 'strike'], ['SNEAK', 'sneak'], ['SEARCH', 'search'], ['REST', 'rest'], ['PACK', 'pack'], ['MENU', 'menu']];
+    const small = [['CAST', 'cast'], ['AMBUSH', 'strike'], ['SNEAK', 'sneak'], ['SEARCH', 'search'], ['REST', 'rest'], ['BAG', 'pack'], ['MENU', 'menu']];
     const w = 76;
     const h = 40;
     small.forEach(([label, id], index) => {
@@ -420,7 +420,7 @@ export class LocaleHudScene extends Phaser.Scene {
       this.minorBars[0]?.set(leader.mana, leader.maxMana);
       this.minorBars[1]?.set(leader.sanity, leader.maxSanity);
       this.drawVitals();
-      this.barText?.setText(leader.alive ? `${leader.hp} / ${leader.maxHp}` : 'FALLEN').setColor(leader.alive ? MENU_HEX.bone : '#e0806e');
+      this.barText?.setText(leader.alive ? `${leader.hp} / ${leader.maxHp}` : 'DOWN').setColor(leader.alive ? MENU_HEX.bone : '#e0806e');
       this.minorLabels[0]?.setText(`MANA  ${leader.mana}/${leader.maxMana}`);
       this.minorLabels[1]?.setText(`SANITY  ${leader.sanity}/${leader.maxSanity}`);
       const minor = `${leader.mageClass}:${leader.mana}/${leader.maxMana}:${leader.sanity}/${leader.maxSanity}`;

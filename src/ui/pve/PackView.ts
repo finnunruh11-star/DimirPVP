@@ -141,7 +141,7 @@ export class PackView extends Phaser.GameObjects.Container {
       { key: 'X', run: plain(() => this.runAction('drop')) },
     ]);
     if (pendingFind) {
-      this.message = `Make room for ${getItem(pendingFind).name} (${getItem(pendingFind).weight} kg): drop or hand over something, then close the pack.`;
+      this.message = `Make room for ${getItem(pendingFind).name} (${getItem(pendingFind).weight} kg), then close the bag.`;
       this.messageOk = false;
     }
     this.render();
@@ -205,27 +205,27 @@ export class PackView extends Phaser.GameObjects.Container {
       else this.refuse(note ?? 'That cannot come off now.');
       return;
     }
+    if (payload.from.startsWith('doll:')) {
+      if (payload.from !== target.key) void this.apply({ op: 'swap-hands' });
+      return;
+    }
     this.equipInto(leader, payload.id, target.key.slice('doll:'.length) as DollSlot);
   }
 
   /** Put a carried item on in `slot`, first taking off whatever is in the way. */
   private equipInto(leader: Mage, id: ItemId, slot: DollSlot): void {
     const def = getItem(id);
-    const equip = (): Promise<boolean> => this.apply({ op: 'equip', item: id }, (ok) => {
+    const hand = slot === 'main' || slot === 'off' ? slot : undefined;
+    const occupant = dollEntries(leader).find((entry) => entry.slot === slot)?.id ?? undefined;
+    const outgoing = leader.displacedBy(id, occupant, hand);
+    const equip = (): Promise<boolean> => this.apply({ op: 'equip', item: id, replace: occupant, hand }, (ok) => {
       if (ok) this.selection = { from: 'worn', id };
     });
-    if (leader.canEquipFromBag(id)) {
-      void equip();
-      return;
-    }
     if (leader.tooHeavyToWear(id)) {
-      this.refuse('Wearing that would put you over your carry limit. Lighten the load first.');
+      this.refuse('Too heavy to wear. Drop something first.');
       return;
     }
-    const occupant = dollEntries(leader).find((entry) => entry.slot === slot)?.id ?? null;
-    const outgoing = def.slot === 'hand' && def.twoHanded ? [...new Set(leader.hands)]
-      : occupant ? [occupant] : [];
-    if (!outgoing.length) {
+    if (!outgoing) {
       this.refuse(`Your ${def.slot} is bound and cannot be swapped.`);
       return;
     }
@@ -234,21 +234,18 @@ export class PackView extends Phaser.GameObjects.Container {
       this.refuse(`${getItem(bound).name} is bound to you and cannot come off.`);
       return;
     }
-    const swap = async (): Promise<void> => {
-      for (const other of outgoing) if (!(await this.apply({ op: 'unequip', item: other }))) return;
-      await equip();
-    };
+    const swap = async (): Promise<void> => { await equip(); };
     const torch = outgoing.find((other) => leader.torchSpentOnStow(other));
     if (!torch) {
       void swap();
       return;
     }
     this.openDialog({
-      title: 'Swap out the torch?',
-      body: `Making room puts out the ${getItem(torch).name}. It has burned through a fight, so it is spent and gone.`,
+      title: 'Put away the torch?',
+      body: `The ${getItem(torch).name} has been used in a fight. Putting it away destroys it.`,
       icon: torch,
-      choices: [{ label: 'Put It Out & Swap', tone: 'danger', run: () => void swap() }],
-      cancelLabel: 'Keep It Lit',
+      choices: [{ label: 'Destroy & Swap', tone: 'danger', run: () => void swap() }],
+      cancelLabel: 'Keep It',
       onClose: () => this.render(),
     });
   }
@@ -316,7 +313,7 @@ export class PackView extends Phaser.GameObjects.Container {
     const { scene, run } = this;
     const leader = memberIn(run, this.member);
     addCabinetBackdrop(scene, this);
-    this.add(scene.add.text(58, 34, 'PACK', {
+    this.add(scene.add.text(58, 34, 'BAG', {
       fontFamily: MENU_FONT.display, fontSize: '30px', fontStyle: 'bold', color: MENU_HEX.bone,
     }).setLetterSpacing(3));
     if (leader) {
@@ -373,12 +370,12 @@ export class PackView extends Phaser.GameObjects.Container {
   private renderDoll(leader: Mage): void {
     const { scene } = this;
     const bound = leader.hands.length + leader.accessories.length + WORN_SLOTS.filter((slot) => !!leader.worn(slot)).length;
-    addPanel(scene, this, DOLL.x, DOLL.y, DOLL.w, DOLL.h, 'Equipped', { caption: `${bound} worn  /  drag to equip` });
+    addPanel(scene, this, DOLL.x, DOLL.y, DOLL.w, DOLL.h, 'Equipped', { caption: `${bound} worn` });
     const cx = DOLL.x + DOLL.w / 2;
     addPaperDoll(scene, this, cx, DOLL.y + 36, dollEntries(leader), (entry, x, y) => {
       const id = entry.id;
       const selected = !!id && !entry.ghost && this.selection?.from === 'worn' && this.selection.id === id;
-      const movable = !!id && !entry.ghost && !getItem(id).permanentlyBinding;
+      const movable = !!id && !entry.ghost && !getItem(id).permanentlyBinding && !leader.sabotagedItems.has(id);
       const tile = new ItemTile(scene, x, y, {
         id,
         ghost: entry.ghost,
@@ -394,7 +391,8 @@ export class PackView extends Phaser.GameObjects.Container {
       this.focus.add(tile, `doll:${entry.slot}`, x, y, TILE, TILE);
       this.drag.addTarget({
         key: `doll:${entry.slot}`, x, y, w: TILE, h: TILE,
-        accepts: (payload) => payload.from === 'pack' && dollAccepts(entry.slot, payload.id),
+        accepts: (payload) => dollAccepts(entry.slot, payload.id) && (payload.from === 'pack'
+          || ((entry.slot === 'main' || entry.slot === 'off') && (payload.from === 'doll:main' || payload.from === 'doll:off') && !getItem(payload.id).twoHanded)),
       });
       return tile;
     });
@@ -404,7 +402,7 @@ export class PackView extends Phaser.GameObjects.Container {
     const w = DOLL.w - 32;
     let y = DOLL.y + 286;
     if (!leader.alive) {
-      this.add(scene.add.text(DOLL.x + DOLL.w / 2, y + 8, 'FALLEN\nBack on their feet after a night at an inn.', {
+      this.add(scene.add.text(DOLL.x + DOLL.w / 2, y + 8, 'DOWN\nRevived by a night at an inn.', {
         fontFamily: MENU_FONT.control, fontSize: '13px', fontStyle: 'bold', color: '#e0806e', align: 'center',
       }).setOrigin(0.5, 0));
       y += 60;
@@ -504,7 +502,7 @@ export class PackView extends Phaser.GameObjects.Container {
       accepts: (payload) => payload.from.startsWith('doll:'),
     });
     if (cells.length === 0) {
-      this.add(scene.add.text(PACK.x + PACK.w / 2, GRID.y + 140, this.filter === 'all' ? 'The pack is empty.' : 'Nothing of this kind.', {
+      this.add(scene.add.text(PACK.x + PACK.w / 2, GRID.y + 140, this.filter === 'all' ? 'The bag is empty.' : 'Nothing of this kind.', {
         fontFamily: MENU_FONT.body, fontSize: '15px', color: MENU_HEX.boneDim,
       }).setOrigin(0.5));
     }
@@ -522,7 +520,7 @@ export class PackView extends Phaser.GameObjects.Container {
         this.focus.add(chip, `page:${step}`, x, pagerY, 90, 28);
       }
     }
-    this.add(scene.add.text(PACK.x + PACK.w / 2, pagerY + 7, pages > 1 ? `PAGE ${this.page + 1} / ${pages}` : 'SORTED BY KIND, THEN RARITY', {
+    this.add(scene.add.text(PACK.x + PACK.w / 2, pagerY + 7, pages > 1 ? `PAGE ${this.page + 1} / ${pages}` : '', {
       fontFamily: MENU_FONT.control, fontSize: '10px', fontStyle: 'bold', color: MENU_HEX.brass,
     }).setOrigin(0.5, 0).setLetterSpacing(2));
   }
@@ -536,8 +534,7 @@ export class PackView extends Phaser.GameObjects.Container {
     const x = CARD.x + 16;
     const w = CARD.w - 32;
     if (!selection) {
-      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'Nothing selected',
-        'Choose something worn or carried to see what it does and what can be done with it.');
+      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'Nothing selected', '');
       return;
     }
     const def = getItem(selection.id);
@@ -557,11 +554,11 @@ export class PackView extends Phaser.GameObjects.Container {
     } else {
       const count = carriedCount(leader, selection.id);
       const pouched = leader.pouch.filter((id) => id === selection.id).length;
-      eyebrow = pouched ? `In your pack  /  ${pouched} in the pouch` : 'In your pack';
+      eyebrow = pouched ? `In your bag  /  ${pouched} in the pouch` : 'In your bag';
       const slots = slotsForCount(selection.id, count);
       lines.push({ label: 'Carried', value: `${count}` });
       lines.push({ label: 'Weight', value: count > 1 ? `${kg(def.weight)} kg each  /  ${kg(def.weight * count)} kg` : `${kg(def.weight)} kg` });
-      lines.push({ label: 'Pack room', value: slots ? `${slots} slot${slots === 1 ? '' : 's'}` : 'Takes no slot' });
+      lines.push({ label: 'Bag slots', value: slots ? `${slots}` : 'None' });
       lines.push({ label: 'Worth', value: count > 1 ? `${moneyLabel(itemWorth(def))} each` : moneyLabel(itemWorth(def)) });
       const found = this.packActions(leader, selection.id, count);
       this.actions = found.actions;
@@ -618,19 +615,18 @@ export class PackView extends Phaser.GameObjects.Container {
     if (leader.torchSpentOnStow(id)) {
       const total = def.torchCombats ?? 0;
       return {
-        action: { label: 'Put Out...', enabled: true, tone: 'danger', run: () => this.askPutOut(id) },
-        note: `Lit and burning: ${leader.torchCombatsLeft} of ${total} fights left. Putting it out spends it.`,
+        action: { label: 'Put Away...', enabled: true, tone: 'danger', run: () => this.askPutOut(id) },
+        note: `${leader.torchCombatsLeft} of ${total} fights left. Putting it away destroys it.`,
         noteColor: '#e6b55a',
       };
     }
     if (!packCanStow(leader, id)) {
       return {
         action: { label: 'Unequip', enabled: false, run: () => undefined },
-        note: 'No room in the pack to stow it. Make room first.',
+        note: 'No room in your bag.',
         noteColor: '#e6866f',
       };
     }
-    const fresh = def.torchCombats != null;
     return {
       action: {
         label: 'Unequip',
@@ -640,8 +636,6 @@ export class PackView extends Phaser.GameObjects.Container {
           if (ok) this.selection = { from: 'pack', id };
         }),
       },
-      note: fresh ? 'Not yet burned through a fight: it goes back into the pack whole.' : undefined,
-      noteColor: fresh ? MENU_HEX.verdigris : undefined,
     };
   }
 
@@ -666,7 +660,7 @@ export class PackView extends Phaser.GameObjects.Container {
     } else if (def.paper) {
       const scribe = leader.alive && leader.spellClass === 'hexcraft';
       actions.primary = { label: 'Draw a Hex', enabled: scribe, tone: 'positive', run: () => this.openTable(def.paper!) };
-      if (!scribe) note = 'Only a Hexcraft mage on their feet can draw on it.';
+      if (!scribe) note = 'Only a living Hexcraft mage can draw on it.';
     } else if (def.slot !== 'utility') {
       const can = leader.canEquipFromBag(id);
       const worn = isWornSlot(def.slot) ? leader.worn(def.slot) : null;
@@ -680,23 +674,16 @@ export class PackView extends Phaser.GameObjects.Container {
       };
       if (!can) {
         noteColor = '#e6866f';
-        note = leader.tooHeavyToWear(id) ? 'Wearing that would put you over your carry limit. Lighten the load first.'
-          : def.slot === 'hand' ? (def.twoHanded ? 'It takes both hands. Empty them first.' : 'Both hands are full. Unequip one first.')
-          : def.slot === 'accessory' ? 'Both accessory slots are taken. Take one off first.'
+        note = leader.tooHeavyToWear(id) ? 'Too heavy to wear. Drop something first.'
+          : def.slot === 'hand' ? (def.twoHanded ? 'Needs both hands free.' : 'Both hands are full.')
+          : def.slot === 'accessory' ? 'Both accessory slots are full.'
           : `Your ${def.slot} is bound and cannot be swapped.`;
       } else if (def.torchCombats != null) {
-        note = 'Equipping lights it. A torch that has burned through a fight is spent when put away.';
+        note = 'Destroyed if put away after a fight.';
         noteColor = '#e6b55a';
       }
-    } else if (def.potion || def.throwable) {
-      note = 'Used in a fight, as a bonus action.';
-      noteColor = MENU_HEX.verdigris;
-    } else if (def.ammo) {
-      const bow = leader.hands.some((held) => getItem(held).weapon?.usesArrows);
-      note = bow ? 'Fired by the bow in your hands.' : 'Needs a bow in hand to be of use.';
-      noteColor = MENU_HEX.verdigris;
-    } else if (def.keyItem) {
-      note = 'A key item. It stays with the party.';
+    } else if (def.ammo && !leader.hands.some((held) => getItem(held).weapon?.usesArrows)) {
+      note = 'Needs a bow.';
       noteColor = MENU_HEX.verdigris;
     }
 
@@ -717,11 +704,11 @@ export class PackView extends Phaser.GameObjects.Container {
       run: () => this.askDrop(id, count),
     };
     if (bagInUse && !note) {
-      note = 'This bag holds what you carry. Empty it before letting it go.';
+      note = 'Empty this bag first.';
       noteColor = '#e6b55a';
     }
     if (pouchInUse && !note) {
-      note = 'Empty the pouch before letting it go.';
+      note = 'Empty the pouch first.';
       noteColor = '#e6b55a';
     }
     return { actions, note, noteColor };
@@ -745,7 +732,7 @@ export class PackView extends Phaser.GameObjects.Container {
     const worth = itemWorth(def);
     this.openDialog({
       title: count > 1 ? `Drop ${def.name}?` : `Drop the ${def.name}?`,
-      body: `Whatever is dropped stays behind for good.${worth >= 2 ? ` It is worth about ${moneyLabel(worth)} ${count > 1 ? 'each ' : ''}at a shop.` : ''}`,
+      body: `Dropped items are gone for good.${worth >= 2 ? ` Worth ${moneyLabel(worth)}${count > 1 ? ' each' : ''} at a shop.` : ''}`,
       icon: id,
       quantity: count > 1 ? {
         max: count,
@@ -762,9 +749,9 @@ export class PackView extends Phaser.GameObjects.Container {
     const others = partyOf(this.run).filter((mage) => mage.mageClass !== leader.mageClass);
     this.openDialog({
       title: `Give ${def.name}`,
-      body: 'Hand it to a companion. It goes into their pack, or straight into an empty hand or slot.',
+      body: 'Goes into their bag or an empty slot.',
       icon: id,
-      quantity: count > 1 ? { max: count, start: count, describe: (n) => `Hand over ${n}${def.weight > 0 ? `  /  ${kg(def.weight * n)} kg` : ''}` } : undefined,
+      quantity: count > 1 ? { max: count, start: count, describe: (n) => `Give ${n}${def.weight > 0 ? `  /  ${kg(def.weight * n)} kg` : ''}` } : undefined,
       choices: others.map((mage) => {
         const room = mage.canCarry(def.weight) && packFits(mage, [id]);
         return {
@@ -782,11 +769,11 @@ export class PackView extends Phaser.GameObjects.Container {
     const leader = memberIn(this.run, this.member);
     const total = getItem(id).torchCombats ?? 0;
     this.openDialog({
-      title: 'Put out the torch?',
-      body: `It has already burned through a fight. Once put out it is spent and gone, with ${leader?.torchCombatsLeft ?? 0} of its ${total} fights of light unused.`,
+      title: 'Put away the torch?',
+      body: `Used torch: putting it away destroys it (${leader?.torchCombatsLeft ?? 0} of ${total} fights left).`,
       icon: id,
-      choices: [{ label: 'Put It Out', tone: 'danger', run: () => void this.apply({ op: 'unequip', item: id }) }],
-      cancelLabel: 'Keep It Lit',
+      choices: [{ label: 'Destroy It', tone: 'danger', run: () => void this.apply({ op: 'unequip', item: id }) }],
+      cancelLabel: 'Keep It',
       onClose: () => this.render(),
     });
   }
@@ -843,8 +830,8 @@ export class PackView extends Phaser.GameObjects.Container {
     const modifier = leader.loadout.find(isModifierWord);
     const x = PACK.x;
     const w = CARD.x + CARD.w - PACK.x;
-    addPanel(scene, this, x, PACK.y, w, PACK.h, 'Spell rack', {
-      caption: `Words: ${words.join(', ') || 'none'}${modifier ? `  /  Method: ${WORDS[modifier].label}` : ''}`,
+    addPanel(scene, this, x, PACK.y, w, PACK.h, 'Spells', {
+      caption: `Words: ${words.join(', ') || 'none'}${modifier ? `  /  Modifier: ${WORDS[modifier].label}` : ''}`,
     });
     const entries = this.spellEntries(leader);
     const pages = Math.max(1, Math.ceil(entries.length / SPELLS_PER_PAGE));
@@ -929,10 +916,8 @@ export class PackView extends Phaser.GameObjects.Container {
     g.lineStyle(1, MENU_COLOR.brassDark, 0.72).strokeRect(58.5, 588.5, 1163, 79);
     this.add(g);
     const spellNote = this.showSpells ? this.spellNote : null;
-    const title = spellNote?.title ?? (this.message ? (this.messageOk ? 'DONE' : 'NOTE') : this.showSpells ? 'SPELL RACK' : 'PACK');
-    const body = spellNote?.body ?? (this.message || (this.showSpells
-      ? 'Every spell your words can cast, with its cost and odds.'
-      : 'Select something to see it. Dropping and giving always ask first.'));
+    const title = spellNote?.title ?? (this.message ? (this.messageOk ? 'DONE' : 'NOTE') : this.showSpells ? 'SPELLS' : 'BAG');
+    const body = spellNote?.body ?? this.message;
     this.footerTitle = scene.add.text(76, 596, title.toUpperCase(), {
       fontFamily: MENU_FONT.control, fontSize: '11px', fontStyle: 'bold',
       color: this.message && !spellNote ? (this.messageOk ? MENU_HEX.verdigris : '#e6b55a') : MENU_HEX.brassLight,

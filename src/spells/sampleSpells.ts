@@ -1326,7 +1326,7 @@ registerSpell({
           pools.some((pool) => Math.hypot(pool.x - mage.x, pool.y - mage.y) <= pool.radius))
     );
     if (foes.length === 0) {
-      ctx.log('The dark finds nothing to reap.');
+      ctx.log('Nothing to reap.');
       return;
     }
     for (const foe of foes) {
@@ -1643,7 +1643,7 @@ registerSpell({
 
       ctx.log(`The shard tears free of ${foe.name} and returns to ${ctx.caster.name}.`);
       if (!ctx.caster.hasMana(5)) {
-        ctx.log(`${ctx.caster.name} lacks the 5 mana to hurl the shard again.`);
+        ctx.log(`${ctx.caster.name} needs 5 mana to throw the shard again.`);
         return;
       }
       const next = ctx.requestEnemy
@@ -4877,7 +4877,7 @@ registerSpell({
       });
     }
     if (mill >= 6) applyStun(ctx, ctx.target, { duration: 1, type: 'movement' });
-    ctx.log(`The rot divides ${rot} into the body and ${mill} into the mind.`);
+    ctx.log(`Divided Rot: ${rot} corrosive and ${mill} mill.`);
   },
 });
 
@@ -4982,7 +4982,7 @@ registerSpell({
       });
       if (!chosen) return;
       if (!ctx.game.shadowAt(chosen)) {
-        ctx.log(`${ctx.caster.name} reaches for dark that is not there.`);
+        ctx.log(`No shadow there: ${ctx.caster.name} cannot teleport.`);
         return;
       }
       teleport(ctx, ctx.caster, chosen);
@@ -5697,7 +5697,7 @@ registerSpell({
     // Taken once: a stolen Stolen Thought must find nothing left to steal.
     ctx.game.counteredItem = null;
     if (!answered || answered.windowTrigger) {
-      ctx.log(`${ctx.caster.name} finds nothing to take.`);
+      ctx.log(`${ctx.caster.name} has nothing to take.`);
       return;
     }
     const stolen = answered.kind === 'spell' ? answered.spell : undefined;
@@ -6486,7 +6486,7 @@ registerSpell({
     const carrier = ctx.target;
     if (!carrier) return;
     if (!ctx.game.isDesecrationAffected(carrier)) {
-      ctx.log(`${carrier.name} is not unhallowed. The harpoon finds nothing to foul.`);
+      ctx.log(`${carrier.name} is not unhallowed. No effect.`);
       return;
     }
     dealDamage(ctx, carrier, dmg(rollDice(ctx, '2d6', 'Plague Bearer'), 'pierce'));

@@ -332,13 +332,13 @@ export class CraftingView extends Phaser.GameObjects.Container {
     this.renderParts(template.parts, size);
     this.renderOutlook();
 
-    this.text(76, 600, this.message || 'Q / E switch templates. Esc leaves the bench.', 12, this.message ? MENU_HEX.bone : MENU_HEX.boneDim, {
+    this.text(76, 600, this.message || 'Q / E: template   Esc: close', 12, this.message ? MENU_HEX.bone : MENU_HEX.boneDim, {
       fontFamily: MENU_FONT.body,
       fixedWidth: 660,
       wordWrap: { width: 660 },
       maxLines: 3,
     });
-    this.chip(770, 618, 200, 42, 'Leave the bench', () => this.hooks.close());
+    this.chip(770, 618, 200, 42, 'Close', () => this.hooks.close());
     const design = this.design();
     const problem = !mage ? 'Nobody here can craft.' : !design ? 'Every part needs a material.' : designProblem(design);
     this.chip(990, 618, 212, 42, 'Craft', () => void this.craft(), { tone: 'primary', enabled: !problem && !this.working });
@@ -408,7 +408,7 @@ export class CraftingView extends Phaser.GameObjects.Container {
     const chosen = { parts: this.parts.filter((id): id is ItemId => !!id), sockets: this.sockets.filter((id): id is ItemId => !!id) };
     const materials = materialsValue(chosen);
     const base = materials + this.mana;
-    this.text(76, 496, `SCORE   materials ${materials}  +  mana ${this.mana}  +  two d20, keep the higher (a 20 counts 22, a pair 26)  =  ${base} + roll`, 12, MENU_HEX.bone, { fontStyle: 'bold' });
+    this.text(76, 496, `SCORE   ${materials} materials  +  ${this.mana} mana  +  best of 2d20  =  ${base} + roll`, 12, MENU_HEX.bone, { fontStyle: 'bold' });
     const ladder = POWER_LEVELS.slice(1).map((level) => {
       const need = rollNeeded(base, level);
       if (need == null) return `${level.name} out of reach`;
@@ -421,7 +421,7 @@ export class CraftingView extends Phaser.GameObjects.Container {
       .sort((a, b) => b.rank - a.rank || a.label.localeCompare(b.label));
     const can = pool.length
       ? pool.map((effect) => `${effect.label} ${pips(effect.rank)}`).join('   ')
-      : 'Nothing yet: effects come from the materials, as this form can carry them.';
+      : 'No effects yet.';
     this.text(76, 540, `CAN DRAW   ${can}`, 12, pool.length ? MENU_HEX.bone : MENU_HEX.boneDim, {
       fontFamily: MENU_FONT.body,
       fixedWidth: 1128,
@@ -514,7 +514,7 @@ export class CraftingView extends Phaser.GameObjects.Container {
       stage.add([glow, rays, die]);
       return { glow, rays, die, body, face };
     });
-    const rule = label('Two d20, the higher counts', cx, top + 256, 14, MENU_HEX.boneDim);
+    const rule = label('Best of 2d20', cx, top + 256, 14, MENU_HEX.boneDim);
 
     stage.setAlpha(0);
     scene.tweens.add({ targets: stage, alpha: 1, duration: reduced ? 90 : 180 });
@@ -549,10 +549,10 @@ export class CraftingView extends Phaser.GameObjects.Container {
         d.face.setText('?');
         drawD20(d.body, MENU_COLOR.boneDim, 48);
       }
-      rule.setText(result.message || 'The bench would not take it.').setColor(MENU_HEX.bone);
+      rule.setText(result.message || 'Crafting failed.').setColor(MENU_HEX.bone);
       playSound('ui.deny');
       this.working = false;
-      this.stageButtons(top + H - 58, [{ label: 'Back to the bench', primary: true, run: () => this.backToBench() }]);
+      this.stageButtons(top + H - 58, [{ label: 'Back', primary: true, run: () => this.backToBench() }]);
       return;
     }
     this.hooks.changed();
@@ -580,8 +580,8 @@ export class CraftingView extends Phaser.GameObjects.Container {
     });
     playSound(pair || twenty ? 'dice.crit' : 'ui.confirm');
     rule.setText(pair
-      ? `A pair of ${a}s: the dice count 26`
-      : twenty ? 'A natural 20: the dice count 22' : `${a} and ${b}: the higher counts, ${Math.max(a, b)}`)
+      ? `Pair of ${a}s: 26`
+      : twenty ? 'Natural 20: 22' : `${a} and ${b}: ${Math.max(a, b)}`)
       .setColor(pair || twenty ? cssColor(GOLD) : MENU_HEX.bone);
     await this.wait(reduced ? 60 : 420);
     if (this.disposed) return;
@@ -634,7 +634,7 @@ export class CraftingView extends Phaser.GameObjects.Container {
 
     // What it drew.
     const ctx = { mode: info.mode, form: info.form, element: info.element, level: info.level.level };
-    if (info.effects.length === 0) label('No effect took hold.', cx, top + 432, 14, MENU_HEX.boneDim);
+    if (info.effects.length === 0) label('No effects.', cx, top + 432, 14, MENU_HEX.boneDim);
     for (const [index, id] of info.effects.entries()) {
       const effect = craftEffect(id);
       const line = scene.add.text(left + 60, top + 424 + index * 19, `${pips(effect.rank)}  ${effect.label}  \u2014  ${effect.describe(ctx)}`, {
@@ -662,7 +662,7 @@ export class CraftingView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: cssColor(color),
     });
-    const where = scene.add.text(left + 112, top + 554, `Into ${mage.name}'s pack.`, {
+    const where = scene.add.text(left + 112, top + 554, `Into ${mage.name}'s bag.`, {
       fontFamily: MENU_FONT.body,
       fontSize: '12px',
       color: MENU_HEX.boneDim,
@@ -671,7 +671,7 @@ export class CraftingView extends Phaser.GameObjects.Container {
     this.working = false;
     this.stageButtons(top + H - 58, [
       { label: 'Craft another', primary: true, run: () => this.backToBench() },
-      { label: 'Leave the bench', primary: false, run: () => this.hooks.close() },
+      { label: 'Close', primary: false, run: () => this.hooks.close() },
     ]);
   }
 

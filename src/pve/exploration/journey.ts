@@ -163,15 +163,15 @@ export function findSighting(world: WorldMap, step: TripStep, ahead: readonly Ce
   const kind = pickKind(zone, terrainAt(world, cell.x, cell.y), nearTown(cell.x, cell.y), step.night, dice);
   if (kind === 'pack') {
     const spawns = rollEncounter(zone, 'monsters', depth, dice);
-    return { ...base, kind, spawns, title: describeSpawns(spawns).toUpperCase(), text: 'Resting where they stand. Sneak up while they sleep and strike first.' };
+    return { ...base, kind, spawns, title: describeSpawns(spawns).toUpperCase(), text: 'Asleep.' };
   }
   if (kind === 'cache') {
     const site = dice.pick(CACHE_SITES[zone]);
-    return { ...base, kind, site, title: site.toUpperCase(), text: 'Unsearched. It may hold supplies, stones or lost kit.' };
+    return { ...base, kind, site, title: site.toUpperCase(), text: 'Not searched yet.' };
   }
   const herb = dice.pick(HERBS[zone]);
   const name = getItem(herb).name;
-  return { ...base, kind: 'herbs', herb, title: name.toUpperCase(), text: `A field of ${name} grows there, ripe for picking.` };
+  return { ...base, kind: 'herbs', herb, title: name.toUpperCase(), text: `${name} grows there.` };
 }
 
 function pickKind(zone: RegionId, terrain: Terrain, safe: boolean, night: boolean, dice: Dice): SightingKind {

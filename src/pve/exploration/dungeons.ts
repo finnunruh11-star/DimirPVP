@@ -22,19 +22,19 @@ export const DUNGEONS: Record<DungeonId, DungeonDef> = {
     id: 'swamps',
     name: 'The Swamps',
     zone: 'black',
-    warning: 'The drowned dead, stronger at every depth. No rest or shop until you come back out.',
+    warning: 'Undead get stronger with depth. No rest or shop inside.',
   },
   forest: {
     id: 'forest',
     name: 'The Small Forest',
     zone: 'forest',
-    warning: 'Beasts, fiercer at every depth. No rest or shop until you come back out.',
+    warning: 'Beasts get stronger with depth. No rest or shop inside.',
   },
   mines: {
     id: 'mines',
     name: 'The Mines',
     zone: 'red',
-    warning: 'A maze of tunnels, ore and chests. No shops inside: bring pickaxes from a forge. The way out is the entrance.',
+    warning: 'Tunnels with ore and chests. No shops inside: bring pickaxes. The only exit is the entrance.',
   },
 };
 

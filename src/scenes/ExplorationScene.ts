@@ -21,7 +21,6 @@ import { rollExploreFindLoot, type ExploreFindLoot } from '../pve/exploration/fi
 import { localActions, type ExplorationActions } from '../pve/exploration/intents';
 import {
   emptyRoad,
-  LEG_TILES,
   rollBeat,
   rollFastSighting,
   stopsAlong,
@@ -182,8 +181,8 @@ type FxCall =
   | { what: 'frame'; cell: Cell };
 
 const SIGHTING_GO: Record<SightingKind, string> = {
-  herbs: 'Go and pick it',
-  pack: 'Sneak up on them',
+  herbs: 'Pick it',
+  pack: 'Sneak up',
   cache: 'Search it',
 };
 
@@ -361,7 +360,6 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         run: this.run,
         locale: OPEN_WORLD_ID,
         at: openWorldCell(this.run.pos),
-        notice: 'On foot. Walking takes no time here; fights, finds, searches and rests do.',
       } satisfies LocaleEntry);
     });
   }
@@ -393,7 +391,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       const saved = loadRun('online');
       if (!saved || saved.party.entities.length !== session.size) {
         session.end(saved
-          ? `The saved online run has ${saved.party.entities.length} travellers, but ${session.size} players joined.`
+          ? `The saved online run has ${saved.party.entities.length} players, but ${session.size} joined.`
           : 'There is no online run saved on this computer.');
         return;
       }
@@ -410,7 +408,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.scene.start('Locale', {
       run: this.run,
       locale: town.locale ?? town.id,
-      notice: `Day 1 in ${town.name}. ${moneyLabel(this.run.gold)} between you, a torch and three potions each, and no weapons. The Lodge hands those out.`,
+      notice: `Day 1 in ${town.name}. Get a weapon at the Guild.`,
     } satisfies LocaleEntry);
   }
 
@@ -613,7 +611,6 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const leave = new CabinetButton(this, GAME_WIDTH / 2 - 170, 410, {
       width: 340,
       label: 'Leave',
-      detail: 'Back to the main menu',
       index: '1',
       onActivate: () => AdventureSession.current?.end('You left the session.'),
     });
@@ -642,7 +639,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.scene.start('Locale', {
       run: this.run,
       locale: town.locale ?? town.id,
-      notice: `Day 1 in ${town.name}. ${moneyLabel(this.run.gold)} to your name, a torch and three potions, and no weapon. The Lodge hands those out.`,
+      notice: `Day 1 in ${town.name}. Get a weapon at the Guild.`,
     } satisfies LocaleEntry);
   }
 
@@ -655,7 +652,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const inside = saved.locale ? resolveLocale(saved, saved.locale.id)?.def.name : null;
     const where = inside ?? describeTile(this.world, saved.pos.x, saved.pos.y);
     root.add(
-      this.add.text(GAME_WIDTH / 2, 220, 'A RUN IS ALREADY ON THE ROAD', {
+      this.add.text(GAME_WIDTH / 2, 220, 'SAVED RUN FOUND', {
         fontFamily: MENU_FONT.display,
         fontSize: '30px',
         color: MENU_HEX.brassLight,
@@ -670,17 +667,17 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       ).setOrigin(0.5)
     );
     const options: [string, string, () => void][] = [
-      ['Continue', `Pick up at ${where}`, () => {
+      ['Continue', '', () => {
         root.destroy();
         this.focus.clear();
-        this.resumeRun(saved, 'Where you left off.');
+        this.resumeRun(saved, 'Run resumed.');
       }],
-      ['Start Over', 'Abandon that run and set out fresh', () => {
+      ['Start Over', 'Deletes this run.', () => {
         root.destroy();
         this.focus.clear();
         this.beginFreshRun();
       }],
-      ['Back', 'Return to the main menu', () => this.scene.start('Menu')],
+      ['Back', '', () => this.scene.start('Menu')],
     ];
     options.forEach(([label, detail, run], index) => {
       const button = new CabinetButton(this, GAME_WIDTH / 2 - 170, 330 + index * 74, {
@@ -701,7 +698,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const count = Math.max(1, seats.length);
     const party = Array.from({ length: count }, (_, index) => {
       const mage = new Mage({
-        name: count > 1 ? seats[index]?.name ?? `Player ${index + 1}` : 'Traveller',
+        name: count > 1 ? seats[index]?.name ?? `Player ${index + 1}` : 'Player',
         isAI: false,
         team: 1,
         position: { x: 200, y: 240 },
@@ -727,7 +724,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     playSound('ui.deny');
     const root = this.add.container(0, 0);
     this.layer = root;
-    root.add(this.add.text(GAME_WIDTH / 2, 220, crushed ? 'CRUSHED IN THE MINES' : 'THE PARTY HAS FALLEN', {
+    root.add(this.add.text(GAME_WIDTH / 2, 220, crushed ? 'DIED IN THE MINES' : 'PARTY DEFEATED', {
       fontFamily: MENU_FONT.display,
       fontSize: '30px',
       color: MENU_HEX.brassLight,
@@ -739,10 +736,9 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const button = new CabinetButton(this, GAME_WIDTH / 2 - 170, 330, {
       width: 340,
       label: 'Main Menu',
-      detail: 'Set out again from the menu',
       index: '1',
       onActivate: () => {
-        if (session) session.end('The party has fallen. The run is over.');
+        if (session) session.end('The party is dead. The run is over.');
         else this.scene.start('Menu');
       },
     });
@@ -778,7 +774,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     }
     if (result.outcome === 'won' && result.tag) run.groupsBeaten[result.tag] = run.day;
     if (result.outcome === 'won' && result.boss) run.bloodmoons = Math.max(run.bloodmoons, result.boss.cycle);
-    const felled = result.outcome === 'won' && result.boss ? `${BOSSES[result.boss.id].name} is defeated. The bloodmoon sets.` : null;
+    const felled = result.outcome === 'won' && result.boss ? `${BOSSES[result.boss.id].name} is defeated. The bloodmoon is over.` : null;
     if (result.outcome === 'won' && result.wares) this.pendingWares = result.wares;
 
     const back = result.outcome === 'fled' ? result.fleeTo ?? result.returnTo : result.returnTo;
@@ -787,8 +783,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (onFoot) spendAreaTime(run, run.party.entities.map((entity) => entity.mageClass), AREA_HOURS.fight);
     const took = onFoot ? ` (${spanLabel(AREA_HOURS.fight)})` : '';
     const dungeon = result.dungeon ? DUNGEONS[result.dungeon].name : null;
-    const won = dungeon ? `Out of ${dungeon}.${bountyNote}` : `${felled ?? 'The way is clear.'}${took}${bountyNote}`;
-    const fled = dungeon ? `You fled ${dungeon}.${note}` : `You broke away.${took}${note}`;
+    const won = dungeon ? `Out of ${dungeon}.${bountyNote}` : `${felled ?? 'Fight won.'}${took}${bountyNote}`;
+    const fled = dungeon ? `You fled ${dungeon}.${note}` : `You fled.${took}${note}`;
     if (back) {
       saveRun(run);
       const line = result.outcome === 'won' ? won : fled;
@@ -804,7 +800,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
 
     this.notice = dungeon
       ? result.outcome === 'fled' ? fled : won
-      : result.outcome === 'fled' ? `You broke away and caught your breath.${note}` : `${felled ?? 'The road is clear again.'}${bountyNote}`;
+      : result.outcome === 'fled' ? `You fled.${note}` : `${felled ?? 'Fight won.'}${bountyNote}`;
     saveRun(run);
     return false;
   }
@@ -862,8 +858,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const def = DUNGEONS[dungeon];
     this.busy = true;
     const choice = (await this.askParty(def.name.toUpperCase(), def.warning, [
-      { label: 'Go in', detail: dungeon === 'mines' ? 'Into the tunnels.' : 'Depth 1.', enabled: true },
-      { label: 'Not yet', detail: 'Stay outside.', enabled: true },
+      { label: 'Go in', detail: '', enabled: true },
+      { label: 'Not yet', detail: '', enabled: true },
     ])) === 0 ? 'enter' : 'stay';
     if (choice !== 'enter') {
       this.busy = false;
@@ -916,8 +912,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.hud = hud;
     hud.setMember(AdventureSession.current?.member ?? null);
     hud.setHint(this.spectating
-      ? 'Click the map: plan a trip, or click a route to join it     Drag: look around     Wheel: zoom     M: map     C: centre     I: pack     Esc: menu'
-      : 'Click the map: plan a trip     Drag: look around     Wheel: zoom     M: map     C: centre     I: pack     Esc: menu');
+      ? 'Click the map: plan a trip, or click a route to join it     Drag: look around     Wheel: zoom     M: map     C: centre     I: bag     Esc: menu'
+      : 'Click the map: plan a trip     Drag: look around     Wheel: zoom     M: map     C: centre     I: bag     Esc: menu');
     this.refresh();
     if (this.notice) hud.toast(this.notice, 4200);
     void (async () => {
@@ -1259,7 +1255,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (!mine?.dest) {
       const planned = others.filter(({ vote }) => vote.dest);
       return planned.length
-        ? `${planned.map(({ name }) => name).join(' and ')} planned a trip: click a route on the map to go that way.`
+        ? `${planned.map(({ name }) => name).join(' and ')} planned a trip.`
         : 'Nobody has planned a trip yet.';
     }
     const same = (vote: TravelVote): boolean => !!vote.dest && vote.dest.x === mine.dest!.x && vote.dest.y === mine.dest!.y;
@@ -1270,7 +1266,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       if (mine.mode && vote.mode !== mine.mode) return [`${name} chose ${TRAVEL_MODES[vote.mode].label}`];
       return [];
     });
-    if (!mine.mode) return notes.length ? `Choose a pace. ${notes.join('; ')}.` : 'Choose a pace to set out.';
+    if (!mine.mode) return notes.length ? `Choose a pace. ${notes.join('; ')}.` : 'Choose a pace.';
     return notes.length ? `Waiting: ${notes.join('; ')}.` : 'Everyone agrees. Setting out...';
   }
 
@@ -1352,7 +1348,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       looks: {},
       mine: poll.votes[me] != null ? String(poll.votes[me]) : null,
       mySeat: me,
-      status: waiting.length ? `Waiting for ${waiting.join(', ')}. The most votes win; a tie is drawn by lot.` : 'Everyone has voted.',
+      status: waiting.length ? `Waiting for ${waiting.join(', ')}. Most votes wins; ties are random.` : 'Everyone has voted.',
       buttons: [],
       reveal: poll.result ? { key: `${poll.id}`, among: poll.result.tied.map(String), final: String(poll.result.choice) } : null,
     }, { pick: (id) => session.say({ op: 'vote', poll: poll.id, choice: Number(id) }) });
@@ -1399,17 +1395,17 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const me = session.localSeat;
     const free = !this.busy;
     const who = (seat: number): VoteSeat => ({ seat, name: session.nameOf(seat) });
-    const pack = { id: 'pack', label: 'Pack', enabled: true };
+    const pack = { id: 'pack', label: 'Bag', enabled: true };
     const camp = council.camp?.place === 'map' && !council.camp.resting ? council.camp : null;
     const trade = council.trade?.place === 'map' ? council.trade : null;
     if (trade) return {
-      title: 'PLAYER STALL',
-      text: trade.with == null ? `${session.nameOf(trade.by)} has set up a stall.` : `${session.nameOf(trade.by)} and ${session.nameOf(trade.with)} are trading.`,
+      title: 'TRADE',
+      text: trade.with == null ? `${session.nameOf(trade.by)} opened a trade.` : `${session.nameOf(trade.by)} and ${session.nameOf(trade.with)} are trading.`,
       rows: [], picks: {}, looks: {}, mine: null, mySeat: me,
-      status: trade.with == null ? 'Waiting for a visitor.' : 'The traders are reviewing their offers.',
+      status: trade.with == null ? 'Waiting for another player.' : 'Reviewing offers.',
       buttons: trade.by === me || trade.with === me
-        ? [{ id: 'trade-view', label: 'View trade', enabled: true }, { id: 'trade-cancel', label: 'Close stall', enabled: true }, pack]
-        : trade.with == null ? [{ id: 'trade-join', label: 'Join stall', enabled: true }, pack] : [pack],
+        ? [{ id: 'trade-view', label: 'View trade', enabled: true }, { id: 'trade-cancel', label: 'Close trade', enabled: true }, pack]
+        : trade.with == null ? [{ id: 'trade-join', label: 'Join trade', enabled: true }, pack] : [pack],
     };
     if (camp) {
       const picks: Record<string, VoteSeat[]> = {};
@@ -1419,7 +1415,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       const waiting = camp.answers.flatMap((answer, seat) => (answer ? [] : [seat === me ? 'you' : session.nameOf(seat)]));
       return {
         title: 'SHORT REST',
-        text: camp.by === me ? 'You sit down for a short rest. The others rest too, or keep watch.' : `${session.nameOf(camp.by)} wants a short rest here.`,
+        text: camp.by === me ? 'You start a short rest. The others can join or keep watch.' : `${session.nameOf(camp.by)} wants a short rest here.`,
         rows: [
           { id: 'camp-join', label: 'Rest too', detail: '', enabled: camp.by !== me },
           { id: 'camp-refuse', label: 'Keep watch', detail: '', enabled: camp.by !== me },
@@ -1437,7 +1433,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const place = this.placeHere();
     const buttons: VoteRow[] = [];
     let rows: VoteRow[] = [];
-    let text = 'Click the map to plan a trip, or click a route someone else planned to go their way.';
+    let text = '';
     let title = this.hereTitle();
     const picks: Record<string, VoteSeat[]> = {};
     const looks: Record<string, VoteSeat[]> = {};
@@ -1445,7 +1441,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       const plans = TRAVEL_ORDER.map((mode) => planTrip(world, run, route, mode));
       const stops = stopsAlong(run, route.length).length;
       title = `To ${describeTile(world, vote.dest.x, vote.dest.y)}`;
-      text = `${route.length} tiles, ${stops} stop${stops === 1 ? '' : 's'} on the way, ${Math.round(plans[0].known * 100)}% explored.`;
+      text = `${route.length} tiles  \u00b7  ${stops} stop${stops === 1 ? '' : 's'}  \u00b7  ${Math.round(plans[0].known * 100)}% explored`;
       rows = plans.map((plan) => ({
         id: `mode:${plan.mode}`,
         label: TRAVEL_MODES[plan.mode].label,
@@ -1550,8 +1546,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (session) {
       return {
         title: 'ON THE ROAD',
-        lines: ['The party is on its way.'],
-        actions: [{ id: 'pack', label: 'Pack', enabled: true }],
+        lines: ['Travelling.'],
+        actions: [{ id: 'pack', label: 'Bag', enabled: true }],
         onAction: (id) => this.onPanelAction(id),
       };
     }
@@ -1573,9 +1569,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       const plans = TRAVEL_ORDER.map((mode) => planTrip(world, run, route, mode));
       const stops = stopsAlong(run, route.length).length;
       title = `To ${describeTile(world, end.x, end.y)}`;
-      lines.push(`From ${this.hereTitle()}`);
-      lines.push(`${route.length} tiles, ${stops} stop${stops === 1 ? '' : 's'} on the way, ${Math.round(plans[0].known * 100)}% explored`);
-      if (plans[0].storm) lines.push('A sandstorm hides the desert: the way counts as unknown.');
+      lines.push(`${route.length} tiles  \u00b7  ${stops} stop${stops === 1 ? '' : 's'}  \u00b7  ${Math.round(plans[0].known * 100)}% explored`);
       plans.forEach((plan) => actions.push({ id: `mode:${plan.mode}`, label: this.modeLabel(plan), enabled: !this.busy && plan.allowed }));
       actions.push({ id: 'clear', label: 'Clear route', enabled: !this.busy });
     } else {
@@ -1591,7 +1585,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         enabled: !this.busy,
       });
     }
-    actions.push({ id: 'pack', label: 'Pack', enabled: !this.busy });
+    actions.push({ id: 'pack', label: 'Bag', enabled: !this.busy });
     return {
       title,
       titleColor: route ? DEST_HEX : undefined,
@@ -1607,20 +1601,10 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     return rule.label;
   }
 
-  /** The panel on the road: where to, when the next stop falls and when the party gets in. */
+  /** The panel on the road: where to, how, and when the party gets in. */
   private tripPanel(trip: Trip): WorldPanel {
-    const { run, world } = this;
-    const lines = [`${TRAVEL_MODES[trip.mode].label}`];
-    if (trip.mode === 'fast') {
-      lines.push('A road you know: no stops on the way.');
-    } else {
-      const next = Math.max(1, LEG_TILES - run.road.tiles);
-      lines.push(next >= trip.tiles
-        ? 'No more stops before you arrive.'
-        : `Next stop in ${next} tile${next === 1 ? '' : 's'}, then one every ${LEG_TILES}.`);
-    }
-    lines.push(`About ${spanLabel(trip.left)} to go, in by ${this.arrivalLabel(trip.left)}.`);
-    return { title: `To ${describeTile(world, trip.dest.x, trip.dest.y)}`, titleColor: DEST_HEX, lines, actions: [], onAction: () => undefined };
+    const lines = [TRAVEL_MODES[trip.mode].label, `Arrive ${this.arrivalLabel(trip.left)} (${spanLabel(trip.left)})`];
+    return { title: `To ${describeTile(this.world, trip.dest.x, trip.dest.y)}`, titleColor: DEST_HEX, lines, actions: [], onAction: () => undefined };
   }
 
   /** "18:45", or "day 4, 02:15" when the trip runs past midnight. */
@@ -1700,7 +1684,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.clearTripLine();
     this.refresh();
     this.planAgain(dest);
-    this.notify(`The way on to ${describeTile(this.world, dest.x, dest.y)} is planned again. Choose how to travel, or pick somewhere else.`, 4200);
+    this.notify(`Trip to ${describeTile(this.world, dest.x, dest.y)} paused. Pick a pace to continue.`, 4200);
   }
 
   /** Real time a tile takes: slow enough to watch the day go by, brisker on a road you know. */
@@ -1802,7 +1786,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     return new Promise((resolve) => this.time.delayedCall(ms, () => resolve()));
   }
 
-  /** A thought over the party on a quiet stop, fitted to the ground, the hour and how the party is faring. */
+  /** A joke over the party on a quiet stop, fitted to the ground, the hour and how the party is faring. */
   private think(): void {
     const { x, y } = this.run.pos;
     const standing = livingMembers(partyOf(this.run));
@@ -1852,10 +1836,10 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (this.run.pendingLevels > 0 && (await hud.levelUps(this.run, this.actions()))) saveRun(this.run);
     await this.pause(650);
     while (loot.left > 0 && this.hud === hud && this.scene.isActive()) {
-      const choice = await hud.choose('MAKE ROOM FOR YOUR FIND',
-        `${getItem(loot.item).name}  /  ${getItem(loot.item).weight} kg. Drop carried gear to take it with you.`, [
-          { id: 'pack', label: 'Open pack to drop something', detail: 'Choose what to leave behind, then return to this find.' },
-          { id: 'leave', label: 'Leave it behind', detail: 'Continue without this item.' },
+      const choice = await hud.choose('BAG FULL',
+        `${getItem(loot.item).name}  /  ${getItem(loot.item).weight} kg. Drop something to take it.`, [
+          { id: 'pack', label: 'Open bag', detail: '' },
+          { id: 'leave', label: 'Leave it', detail: '' },
         ], 'leave');
       if (choice === 'leave') break;
       await hud.openPack(this.run, () => { saveRun(this.run); this.refresh(); }, this.actions(), loot.item);
@@ -1917,8 +1901,8 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     await this.fxAll({ what: 'frame', cell: sighting.cell });
     const go = AdventureSession.current
       ? (await this.askParty(`SPOTTED: ${sighting.title.toUpperCase()}`, `${sighting.bearing}. ${sighting.text}`, [
-        { label: SIGHTING_GO[sighting.kind], detail: 'Leave the road and see to it.', enabled: true },
-        { label: 'Keep going', detail: 'Stay on the road.', enabled: true },
+        { label: SIGHTING_GO[sighting.kind], detail: '', enabled: true },
+        { label: 'Keep going', detail: '', enabled: true },
       ])) === 0
       : await hud.sighting({
         kind: sighting.kind,
@@ -2013,7 +1997,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const site = searchSite(this.run, tile);
     const party = partyOf(this.run);
     const made: { resolution: SearchResolution | null } = { resolution: null };
-    this.notify('The party searches the area. The host is choosing what for.', 2600);
+    if (AdventureSession.current) this.notify('The host is choosing what to search for.', 2600);
     const done = await hud.search({
       place: this.hereTitle(),
       searcher: party.length > 1 ? 'The party' : party[0]?.name ?? 'You',
@@ -2046,7 +2030,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const pack = resolution.pack;
     if (pack && done.go) {
       await this.fxAll({ what: 'cue', symbol: '!', color: '#ffd070' });
-      this.startCombat('monsters', pack.zone, pack.depth, pack.spawns, `${pack.label}. You fall on them first.`, { kind: 'weapon' });
+      this.startCombat('monsters', pack.zone, pack.depth, pack.spawns, `${pack.label}. You attack first.`, { kind: 'weapon' });
       return;
     }
     if (resolution.roll.outcome !== 'nothing') {
@@ -2067,7 +2051,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.refresh();
     this.run.steps += 1;
     const outcome = takeShortRest(this.run, members, { safe: false, tile: this.run.pos }, stepDice(this.run, this.run.steps * 7 + 2));
-    this.notify(members && names ? `${names.join(' and ')} rest${names.length === 1 ? 's' : ''}; the others keep watch.` : 'The party makes camp for a short rest.', 1800);
+    this.notify(members && names ? `${names.join(' and ')} rest${names.length === 1 ? 's' : ''}; the others keep watch.` : 'Short rest.', 1800);
     await this.fxAll({ what: 'rest' });
     advanceHours(this.run, outcome.hours);
     saveRun(this.run);
@@ -2107,7 +2091,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       return;
     }
     if (shikigamiRides(this.run)) {
-      this.hud?.toast(`${place.name} keeps its gates shut to the Shikigami on your shoulder.`, 2400);
+      this.hud?.toast(`${place.name} does not let the Shikigami in.`, 2400);
       return;
     }
     this.busy = true;
@@ -2135,10 +2119,10 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     if (!this.hud || this.busy || this.hud.modalOpen) return;
     const session = AdventureSession.current;
     if (session && !session.isHost) {
-      const choice = await this.hud.choose('MENU', 'The host leads the way and keeps the save.', [
-        { id: 'resume', label: 'Resume', detail: 'Back to the map.' },
-        { id: 'pack', label: 'Pack', detail: 'Gear, words and stats.' },
-        { id: 'file', label: 'Save to File', detail: 'Download your copy of the run, in case the host loses theirs.' },
+      const choice = await this.hud.choose('MENU', 'The host keeps the save.', [
+        { id: 'resume', label: 'Resume', detail: '' },
+        { id: 'pack', label: 'Bag', detail: '' },
+        { id: 'file', label: 'Save to File', detail: '' },
         { id: 'leave', label: 'Leave the Session', detail: 'Everyone returns to the menu. The host keeps the run.' },
       ], 'resume');
       if (choice === 'pack') void this.openPack();
@@ -2146,21 +2130,21 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       if (choice === 'leave') session.end('You left the session.');
       return;
     }
-    const choice = await this.hud.choose('PAUSED', 'The run is saved after every step.', [
-      { id: 'resume', label: 'Resume', detail: 'Back to the map.' },
-      { id: 'pack', label: 'Pack', detail: 'Gear, words and stats.' },
-      { id: 'save', label: 'Save Now', detail: 'Keep the run in this browser right away.' },
-      { id: 'file', label: 'Save to File', detail: 'Download the run. Load it from the Adventure menu.' },
-      { id: 'quit', label: 'Save and Quit', detail: session ? 'Everyone returns to the menu; the run waits in your save.' : 'Return to the main menu.' },
+    const choice = await this.hud.choose('PAUSED', '', [
+      { id: 'resume', label: 'Resume', detail: '' },
+      { id: 'pack', label: 'Bag', detail: '' },
+      { id: 'save', label: 'Save Now', detail: '' },
+      { id: 'file', label: 'Save to File', detail: '' },
+      { id: 'quit', label: 'Save and Quit', detail: session ? 'Everyone returns to the menu.' : '' },
     ], 'resume');
     if (choice === 'pack') void this.openPack();
-    if (choice === 'save') this.hud?.toast(saveRun(this.run) ? `Run saved. Day ${this.run.day}.` : 'This browser would not keep the save. Use Save to File.', 3200);
+    if (choice === 'save') this.hud?.toast(saveRun(this.run) ? `Run saved. Day ${this.run.day}.` : 'Saving failed. Use Save to File.', 3200);
     if (choice === 'file') this.saveToFile();
     if (choice === 'quit') {
       saveRun(this.run);
       playSound('ui.back');
       if (session) {
-        session.end('The host saved and left. Continue Co-op picks the run back up.');
+        session.end('The host saved and left. Use Continue Co-op to resume.');
         return;
       }
       this.scene.stop('LocaleHud');

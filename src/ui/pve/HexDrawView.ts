@@ -190,10 +190,9 @@ const BURST_SOUND: Record<BurstKind, Parameters<typeof playSound>[0]> = {
   glimmer: 'ui.confirm',
 };
 
-const HINT = 'Drag from peg to peg, or click two pegs, to draw; each stroke costs 1 mana. Z undoes, Esc leaves.';
-const BLANK = 'Draw lines between the pegs. Which lines make runes, and what the runes do, is yours to find out.';
-const UNREAD = 'Some lines on this sheet are strange to you. Scribe it and loose it in a fight to see what it does, '
-  + 'study sheets bought at a scriptorium, or buy runes there.';
+const HINT = 'Drag or click between pegs to draw (1 mana per line).   Z: undo   Esc: close';
+const BLANK = '';
+const UNREAD = 'Unknown runes.';
 
 const css = (color: number): string => `#${color.toString(16).padStart(6, '0')}`;
 
@@ -220,12 +219,12 @@ const partTone = (part: HexPart): number => {
   return facet ? FACETS[facet].color : PALE;
 };
 const hexTone = (recipe: HexRecipe): number => partTone(recipe.parts[0]);
-const shortName = (recipe: HexRecipe): string => hexName(recipe).replace(/^(Fine )?Hexzettel: /, '');
+const shortName = (recipe: HexRecipe): string => hexName(recipe).replace(/^(Fine )?Hex Sheet: /, '');
 
 function costText(def: FacetDef): string {
   if (def.kind === 'modifier') return def.cost === 0 ? 'free' : `${def.cost > 0 ? '+' : ''}${def.cost} mana`;
   if (def.modCost != null) return `${def.cost} mana, ${def.modCost} as a modifier`;
-  return def.cost ? `${def.cost} mana to loose` : 'free to loose';
+  return def.cost ? `${def.cost} mana to cast` : 'free to cast';
 }
 
 export class HexDrawView extends Phaser.GameObjects.Container {
@@ -756,9 +755,6 @@ export class HexDrawView extends Phaser.GameObjects.Container {
         enabled: this.sheets(kind) > 0 || kind === this.paper,
       });
     });
-    this.text(886, 72, `${PAPERS.plain.name} holds ${PAPERS.plain.grids} grids, ${PAPERS.fine.name} ${PAPERS.fine.grids}.`, 11, TXT.ash, {
-      fontFamily: MENU_FONT.body,
-    });
   }
 
   private renderSheet(): void {
@@ -864,7 +860,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
   private renderRunes(g: Phaser.GameObjects.Graphics, glow: Phaser.GameObjects.Graphics, glyphs: Phaser.GameObjects.Graphics, known: ReadonlySet<RuneId>): void {
     const runes = RUNE_ORDER.filter((id) => known.has(id));
     if (runes.length === 0) {
-      this.text(CODEX.x + CODEX.w / 2, LIST_TOP + 90, 'No rune is known yet.\n\nDraw, scribe and loose sheets to find out what your lines do, study sheets bought at a scriptorium, or buy runes there with a Hex Codex.', 12, TXT.ash, {
+      this.text(CODEX.x + CODEX.w / 2, LIST_TOP + 90, 'No runes known yet.', 12, TXT.ash, {
         fontFamily: MENU_FONT.body,
         align: 'center',
         wordWrap: { width: CODEX.w - 60 },
@@ -903,7 +899,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     const x = CODEX.x + 8;
     const width = CODEX.w - 16;
     if (this.boughtList.length === 0) {
-      this.text(CODEX.x + CODEX.w / 2, LIST_TOP + 90, 'No bought sheet is carried.\n\nA scriptorium sells ready-drawn Hexzettel. Lay one beside your own lines to tell what its runes do.', 12, TXT.ash, {
+      this.text(CODEX.x + CODEX.w / 2, LIST_TOP + 90, 'No bought hex sheets.', 12, TXT.ash, {
         fontFamily: MENU_FONT.body,
         align: 'center',
         wordWrap: { width: CODEX.w - 60 },
@@ -965,7 +961,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     this.chip(576, 618, 92, 42, 'Undo', () => this.undo());
     this.chip(676, 618, 108, 42, 'Clear all', () => this.clearGrid(null));
     this.chip(792, 618, 112, 42, 'Leave', () => { if (!this.working) this.hooks.close(); });
-    this.scribeChip = this.chip(912, 618, 332, 42, 'Scribe the hex', () => void this.scribeHex(), { tone: 'primary' });
+    this.scribeChip = this.chip(912, 618, 332, 42, 'Draw hex', () => void this.scribeHex(), { tone: 'primary' });
   }
 
   // ---------------------------------------------------------------------------
@@ -1411,10 +1407,10 @@ export class HexDrawView extends Phaser.GameObjects.Container {
     const recipe = reading.recipe;
     this.paintMana(mage, lines);
     this.paintWeave(reading, lines);
-    this.scribeChip.setLabel(recipe ? `Scribe the hex  \u00b7  ${recipe.lines} mana` : 'Scribe the hex');
+    this.scribeChip.setLabel(recipe ? `Draw hex  \u00b7  ${recipe.lines} mana` : 'Draw hex');
     this.scribeChip.setEnabled(!problem && !this.working);
     const warning = problem && lines ? problem : '';
-    const tracing = this.guide ? `Tracing ${FACETS[this.guide].label}: follow the dotted lines. Click it in the grimoire again to put it away.` : '';
+    const tracing = this.guide ? `Tracing ${FACETS[this.guide].label}. Click it again to stop.` : '';
     this.infoText.setText(this.message || warning || tracing || HINT).setColor(this.message ? TXT.bone : warning ? TXT.ember : TXT.ash);
   }
 
@@ -1490,7 +1486,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
 
     if (this.hover && !this.hover.startsWith('sheet:')) {
       const rune = this.hover as RuneId;
-      put(left, WEAVE.y + 10, 'GRIMOIRE', 11, TXT.gold, { fontStyle: 'bold' });
+      put(left, WEAVE.y + 10, 'RUNE', 11, TXT.gold, { fontStyle: 'bold' });
       const base = FACETS[rune];
       const inverse = FACETS[RUNES[rune].inverse];
       put(right, WEAVE.y + 10, `${KIND_LABEL[base.kind]}  \u00b7  ${costText(base).toUpperCase()}`, 11, TXT.gold, { fontStyle: 'bold' }).setOrigin(1, 0);
@@ -1500,10 +1496,10 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       return;
     }
 
-    put(left, WEAVE.y + 10, 'THE WEAVE', 11, TXT.gold, { fontStyle: 'bold' });
+    put(left, WEAVE.y + 10, 'THIS SHEET', 11, TXT.gold, { fontStyle: 'bold' });
     const recipe = reading.recipe;
     if (!recipe || !lines) {
-      body(below(heading('An unwritten sheet', TXT.ash, null)), BLANK, TXT.ash);
+      body(below(heading('Empty sheet', TXT.ash, null)), BLANK, TXT.ash);
       return;
     }
     if (!this.sheetIsKnown()) {
@@ -1511,7 +1507,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       body(below(heading('Unread runes', TXT.ash, VIOLET)), UNREAD, TXT.ash);
       return;
     }
-    put(right, WEAVE.y + 10, `DRAW ${recipe.lines}  \u00b7  LOOSE ${hexManaCost(recipe)} MANA  \u00b7  ${ACTION_LABEL[hexAction(recipe)]}`, 11, TXT.gold, {
+    put(right, WEAVE.y + 10, `DRAW ${recipe.lines}  \u00b7  CAST ${hexManaCost(recipe)} MANA  \u00b7  ${ACTION_LABEL[hexAction(recipe)]}`, 11, TXT.gold, {
       fontStyle: 'bold',
     }).setOrigin(1, 0);
     const title = heading(shortName(recipe), TXT.bone, hexTone(recipe));
@@ -1727,7 +1723,7 @@ export class HexDrawView extends Phaser.GameObjects.Container {
         glyphs.lineStyle(1.5, GOLD, 1).lineBetween(x + 11, y, x + step - 11, y);
       }
     });
-    const label = scene.add.text(0, -height / 2 + 14, `${recipe.paper === 'fine' ? 'FINE ' : ''}HEXZETTEL SCRIBED`, {
+    const label = scene.add.text(0, -height / 2 + 14, `${recipe.paper === 'fine' ? 'FINE ' : ''}HEX SHEET DRAWN`, {
       fontFamily: MENU_FONT.control,
       fontSize: '11px',
       fontStyle: 'bold',
@@ -1744,8 +1740,8 @@ export class HexDrawView extends Phaser.GameObjects.Container {
       maxLines: 2,
     }).setOrigin(0.5, 0).setShadow(0, 0, css(tone), 12, false, true);
     const stats = scene.add.text(0, height / 2 - 28, read
-      ? `Loose for ${hexManaCost(recipe)} mana  \u00b7  ${ACTION_LABEL[hexAction(recipe)].toLowerCase()}`
-      : 'What it does, only loosing it will tell.', {
+      ? `Cast for ${hexManaCost(recipe)} mana  \u00b7  ${ACTION_LABEL[hexAction(recipe)].toLowerCase()}`
+      : 'Unknown effect.', {
       fontFamily: MENU_FONT.control,
       fontSize: '12px',
       color: TXT.ash,

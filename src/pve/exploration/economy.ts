@@ -6,7 +6,7 @@ import type { MageClass } from '../../core/Classes';
 import { Dice } from '../../core/Dice';
 import { getItem, isWornSlot, type ItemDef, type ItemId, type Rarity } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
-import { packCanStow, packFits } from '../../core/Pack';
+import { packCanStow, packCapacity, packFits, packSlotsUsed } from '../../core/Pack';
 import { WORDS, type WordId } from '../../core/Words';
 import { learnedLoadout } from './levels';
 import { advanceHours, clockTime, spanLabel } from './clock';
@@ -27,7 +27,7 @@ export interface ShopResult {
   message: string;
 }
 
-const PACK_OVERFLOW = 'Without that bag the pack would overflow. Empty it first.';
+const PACK_OVERFLOW = 'Empty that bag first.';
 
 const RARITY_GOLD: Record<Rarity, number> = {
   consumeable: 1,
@@ -268,7 +268,7 @@ export function buyItem(run: ExplorationRun, shopId: string, key: string, member
   return withMember(run, member, (buyer, party) => {
     if (def.keyItem && party.some((mage) => carries(mage, slot.id))) return { ok: false, message: 'The party already has one.' };
     if (!buyer.canCarry(def.weight * slot.qty)) return { ok: false, message: 'Too heavy to carry.' };
-    if (!packFits(buyer, Array.from({ length: slot.qty }, () => slot.id))) return { ok: false, message: 'No room in the pack.' };
+    if (!packFits(buyer, Array.from({ length: slot.qty }, () => slot.id))) return { ok: false, message: 'No room in your bag.' };
     for (let i = 0; i < slot.qty; i++) grantToMage(buyer, slot.id);
     run.gold = money(run.gold - slot.price);
     if (!slot.fixed) run.purchases.push(slot.key);
@@ -366,7 +366,7 @@ export function sellItem(run: ExplorationRun, shopId: string, id: ItemId, quanti
   const shop = shopById(shopId);
   if (!shop) return { ok: false, message: 'No such shop.' };
   const def = getItem(id);
-  if (def.keyItem) return { ok: false, message: 'A key item. It stays with the party.' };
+  if (def.keyItem) return { ok: false, message: 'Key items cannot be sold.' };
   if (def.permanentlyBinding) return { ok: false, message: `${def.name} is bound to you.` };
   const unit = sellPrice(shop, def);
   if (unit <= 0) return { ok: false, message: 'Not bought here.' };
@@ -407,7 +407,7 @@ export function rest(run: ExplorationRun, shopId: string): ShopResult {
   const price = roomPrice(run, shop);
   if (!shop || price == null) return { ok: false, message: 'No beds here.' };
   const hours = hoursBeforeBloodmoon(run, LONG_REST_HOURS);
-  if (hours <= 0) return { ok: false, message: 'The bloodmoon is up. Nobody sleeps through it.' };
+  if (hours <= 0) return { ok: false, message: 'No sleeping during the bloodmoon.' };
   if (run.gold < price) return { ok: false, message: `Rooms cost ${moneyLabel(price)}.` };
   run.gold = money(run.gold - price);
   const whole = hours >= LONG_REST_HOURS;
@@ -435,9 +435,9 @@ export function rest(run: ExplorationRun, shopId: string): ShopResult {
   const levels = whole ? claimXpLevels(run, partyXpScale(run)) : 0;
   if (levels) syncPendingLevels(run);
   const days = advanceHours(run, hours);
-  const slept = whole ? `Slept ${LONG_REST_HOURS} hours` : `The bloodmoon wakes the party after ${spanLabel(hours)}`;
-  const restock = days > 0 ? ' A new day: the shops have restocked.' : '';
-  const back = risen.length ? ` ${risen.join(' and ')} ${risen.length > 1 ? 'are' : 'is'} back on their feet.` : '';
+  const slept = whole ? `Slept ${LONG_REST_HOURS} hours` : `The bloodmoon interrupts the rest after ${spanLabel(hours)}`;
+  const restock = days > 0 ? ' New day: shops restocked.' : '';
+  const back = risen.length ? ` ${risen.join(' and ')} ${risen.length > 1 ? 'are' : 'is'} revived.` : '';
   return { ok: true, message: `${slept}. Day ${run.day}, ${clockTime(run.hour)}.${restock}${back}${levels ? ` ${levels} level${levels === 1 ? '' : 's'} earned!` : ''}` };
 }
 
@@ -485,7 +485,7 @@ export function craftItem(run: ExplorationRun, shopId: string, design: CraftDesi
     const made = getItem(id);
     const freed = smithUsed.reduce((sum, part) => sum + getItem(part).weight, 0);
     if (!smith.canCarry(made.weight - freed)) return { ok: false, message: 'Too heavy to carry.' };
-    if (!packFits(smith, [id], smithUsed)) return { ok: false, message: 'No room in the pack.' };
+    if (!packFits(smith, [id], smithUsed)) return { ok: false, message: 'No room in your bag.' };
     for (const { store, part } of sources) store.items.splice(store.items.indexOf(part), 1);
     smith.spendMana(design.mana);
     run.crafts += 1;
@@ -501,9 +501,9 @@ export function craftItem(run: ExplorationRun, shopId: string, design: CraftDesi
  */
 export function drawHex(run: ExplorationRun, paper: ItemId, grids: readonly number[], member?: MageClass | null): CraftResult {
   const kind = (getItem(paper) as ItemDef | undefined)?.paper;
-  if (!kind) return { ok: false, message: 'That is nothing to draw on.' };
+  if (!kind) return { ok: false, message: 'Cannot draw on that.' };
   const reading = readHex(kind, grids);
-  if (!reading.recipe) return { ok: false, message: reading.problem ?? 'That is no hex.' };
+  if (!reading.recipe) return { ok: false, message: reading.problem ?? 'Not a valid hex.' };
   const lines = reading.recipe.lines;
   if (lines === 0) return { ok: false, message: 'Nothing is drawn.' };
   return withMember(run, member, (scribe): CraftResult => {
@@ -513,7 +513,7 @@ export function drawHex(run: ExplorationRun, paper: ItemId, grids: readonly numb
     if (at < 0) return { ok: false, message: `No ${getItem(paper).name} to draw on.` };
     if (scribe.mana < lines) return { ok: false, message: `Needs ${lines} mana.` };
     const id = hexItemId(kind, grids);
-    if (!packFits(scribe, [id], [paper])) return { ok: false, message: 'No room in the pack.' };
+    if (!packFits(scribe, [id], [paper])) return { ok: false, message: 'No room in your bag.' };
     scribe.utility.splice(at, 1);
     scribe.spendMana(lines);
     grantToMage(scribe, id);
@@ -568,7 +568,7 @@ export function learnRune(run: ExplorationRun, shopId: string, rune: RuneId): Sh
   setHexLore(run.hexLore.runes);
   return {
     ok: true,
-    message: `${offer.hint} turns out to be ${FACETS[rune].label}; sealed, it is ${FACETS[RUNES[rune].inverse].label}. Learned for ${moneyLabel(offer.price)}.`,
+    message: `Learned ${FACETS[rune].label} (sealed: ${FACETS[RUNES[rune].inverse].label}) for ${moneyLabel(offer.price)}.`,
   };
 }
 
@@ -584,12 +584,12 @@ export const MOONSHARD_WORDS: Partial<Record<ItemId, WordId>> = {
 
 export function learnMoonshard(run: ExplorationRun, id: ItemId, member?: MageClass | null, replace?: number): ShopResult {
   const word = MOONSHARD_WORDS[id];
-  if (!word) return { ok: false, message: 'That shard teaches no word.' };
+  if (!word) return { ok: false, message: 'Not a word shard.' };
   return withMember(run, member, (mage) => {
     if (!mage.alive) return { ok: false, message: `${mage.name} has fallen.` };
     if (mage.loadout.includes(word)) return { ok: false, message: `${mage.name} already knows ${WORDS[word].label}.` };
     const carried = [mage.utility, mage.bag].find((items) => items.includes(id));
-    if (!carried) return { ok: false, message: 'No such shard in your pack.' };
+    if (!carried) return { ok: false, message: 'No such shard in your bag.' };
     if (replace != null && !Number.isInteger(replace)) return { ok: false, message: 'Choose a word to replace.' };
     const next = learnedLoadout(mage.loadout, word, replace);
     if (!next) return { ok: false, message: 'Choose a word to replace.' };
@@ -599,13 +599,22 @@ export function learnMoonshard(run: ExplorationRun, id: ItemId, member?: MageCla
   });
 }
 
-export function equipItem(run: ExplorationRun, id: ItemId, member?: MageClass | null): ShopResult {
+export function equipItem(run: ExplorationRun, id: ItemId, member?: MageClass | null, replace?: ItemId, hand?: 'main' | 'off'): ShopResult {
   return withMember(run, member, (leader) => {
-    if (!leader.canEquipFromBag(id) || !leader.equipFromBag(id)) {
+    const [preview] = restoreParty(capturePartySnapshot([leader]));
+    if (!preview.equipAt(id, replace, hand)) {
       return { ok: false, message: 'Cannot equip that now.' };
     }
+    if (packSlotsUsed(preview) > packCapacity(preview) && packSlotsUsed(preview) > packSlotsUsed(leader)) return { ok: false, message: 'No room in your bag.' };
+    if (!leader.equipAt(id, replace, hand)) return { ok: false, message: 'Cannot equip that now.' };
     return { ok: true, message: `Equipped ${getItem(id).name}.` };
   });
+}
+
+export function swapHands(run: ExplorationRun, member?: MageClass | null): ShopResult {
+  return withMember(run, member, (leader) => leader.swapHands()
+    ? { ok: true, message: 'Switched hands.' }
+    : { ok: false, message: 'Those items cannot switch hands.' });
 }
 
 export function unequipItem(run: ExplorationRun, id: ItemId, member?: MageClass | null): ShopResult {
@@ -614,24 +623,24 @@ export function unequipItem(run: ExplorationRun, id: ItemId, member?: MageClass 
     if (def.permanentlyBinding) return { ok: false, message: `${def.name} is bound to you.` };
     const worn = leader.hands.includes(id) || leader.accessories.includes(id) || !!leader.wornSlotOf(id);
     const snuffed = leader.hands.includes(id) && leader.torchSpentOnStow(id);
-    if (worn && !snuffed && !packCanStow(leader, id)) return { ok: false, message: 'No room in the pack.' };
+    if (worn && !snuffed && !packCanStow(leader, id)) return { ok: false, message: 'No room in your bag.' };
     if (snuffed) {
-      if (!leader.unequipHand(id)) return { ok: false, message: 'Cannot put that out now.' };
-      return { ok: true, message: `Put out the ${def.name}. It is spent.` };
+      if (!leader.unequipHand(id)) return { ok: false, message: 'Cannot put that away now.' };
+      return { ok: true, message: `Put away the ${def.name}; it is destroyed.` };
     }
     return worn && leader.stow(id)
-      ? { ok: true, message: `Stowed ${def.name}.` }
-      : { ok: false, message: 'Cannot stow that now.' };
+      ? { ok: true, message: `Unequipped ${def.name}.` }
+      : { ok: false, message: 'Cannot unequip that now.' };
   });
 }
 
 /** Leave `count` of a carried item behind for good. Key items stay; a bag stays while its room is in use. */
 export function dropItem(run: ExplorationRun, id: ItemId, member?: MageClass | null, count = 1): ShopResult {
   const def = getItem(id);
-  if (def.keyItem) return { ok: false, message: 'A key item. It stays with the party.' };
+  if (def.keyItem) return { ok: false, message: 'Key items cannot be dropped.' };
   return withMember(run, member, (leader) => {
     const owned = carriedCount(leader, id);
-    if (owned === 0) return { ok: false, message: 'Not in your pack.' };
+    if (owned === 0) return { ok: false, message: 'Not in your bag.' };
     const n = amount(count, owned);
     if (!packFits(leader, [], copies(id, n))) return { ok: false, message: PACK_OVERFLOW };
     const dropped = takeFromPack(leader, id, n);
@@ -643,17 +652,17 @@ export function dropItem(run: ExplorationRun, id: ItemId, member?: MageClass | n
 export function giveItem(run: ExplorationRun, id: ItemId, from: MageClass, to: MageClass, count = 1): ShopResult {
   const def = getItem(id);
   if (from === to) return { ok: false, message: 'Already yours.' };
-  if (!changesHands(def)) return { ok: false, message: `${def.name} cannot change hands.` };
+  if (!changesHands(def)) return { ok: false, message: `${def.name} cannot be given away.` };
   return withParty(run, (_leader, party) => {
     const giver = memberOf(party, from);
     const taker = memberOf(party, to);
     if (!giver || !taker) return { ok: false, message: 'No such party member.' };
     const owned = carriedCount(giver, id);
-    if (owned === 0) return { ok: false, message: 'Not in your pack.' };
+    if (owned === 0) return { ok: false, message: 'Not in your bag.' };
     const n = amount(count, owned);
     const moved = copies(id, n);
     if (!taker.canCarry(def.weight * n)) return { ok: false, message: `${taker.name} cannot carry ${n > 1 ? 'that many' : 'it'}.` };
-    if (!packFits(taker, moved)) return { ok: false, message: `${taker.name} has no room in the pack.` };
+    if (!packFits(taker, moved)) return { ok: false, message: `${taker.name}'s bag is full.` };
     if (!packFits(giver, [], moved)) return { ok: false, message: PACK_OVERFLOW };
     const given = takeFromPack(giver, id, n);
     for (let i = 0; i < given; i++) grantToMage(taker, id);
@@ -677,7 +686,7 @@ export function exchangeItems(run: ExplorationRun, first: MageClass, second: Mag
       return true;
     };
     if (!transferable(firstItems, left) || !transferable(secondItems, right)) return { ok: false, message: 'An offered item is no longer available.' };
-    if (!packFits(left, secondItems, firstItems) || !packFits(right, firstItems, secondItems)) return { ok: false, message: 'Not enough room in a pack.' };
+    if (!packFits(left, secondItems, firstItems) || !packFits(right, firstItems, secondItems)) return { ok: false, message: 'Not enough room in a bag.' };
     const weightLeft = firstItems.reduce((total, id) => total + getItem(id).weight, 0);
     const weightRight = secondItems.reduce((total, id) => total + getItem(id).weight, 0);
     if (!left.canCarry(weightRight - weightLeft) || !right.canCarry(weightLeft - weightRight)) return { ok: false, message: 'Too heavy to carry.' };

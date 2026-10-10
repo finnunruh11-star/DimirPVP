@@ -24,6 +24,7 @@ import {
   partyOf,
   rest,
   sellItem,
+  swapHands,
   unequipItem,
   type ShopResult,
 } from './economy';
@@ -39,7 +40,8 @@ export type ExplorationIntent =
   | { op: 'hex-rune'; shop: string; rune: RuneId }
   | { op: 'learn-shard'; item: ItemId; replace?: number }
   | { op: 'rest'; shop: string }
-  | { op: 'equip'; item: ItemId }
+  | { op: 'equip'; item: ItemId; replace?: ItemId; hand?: 'main' | 'off' }
+  | { op: 'swap-hands' }
   | { op: 'unequip'; item: ItemId }
   | { op: 'drop'; item: ItemId; count?: number }
   | { op: 'give'; item: ItemId; to: MageClass; count?: number }
@@ -75,7 +77,8 @@ export function applyIntent(run: ExplorationRun, member: MageClass | null, inten
       case 'hex-rune': return learnRune(run, intent.shop, intent.rune);
       case 'learn-shard': return learnMoonshard(run, intent.item, member, intent.replace);
       case 'rest': return rest(run, intent.shop);
-      case 'equip': return equipItem(run, intent.item, member);
+      case 'equip': return equipItem(run, intent.item, member, intent.replace, intent.hand);
+      case 'swap-hands': return swapHands(run, member);
       case 'unequip': return unequipItem(run, intent.item, member);
       case 'drop': return dropItem(run, intent.item, member, intent.count ?? 1);
       case 'give': return member ? giveItem(run, intent.item, member, intent.to, intent.count ?? 1) : { ok: false, message: 'Nobody to give it to.' };
@@ -188,7 +191,14 @@ export function parseIntent(value: unknown): ExplorationIntent | null {
       const shop = text(raw.shop);
       return shop ? { op: 'rest', shop } : null;
     }
-    case 'equip':
+    case 'swap-hands': return { op: 'swap-hands' };
+    case 'equip': {
+      const item = itemId(raw.item);
+      const replace = raw.replace == null ? undefined : itemId(raw.replace);
+      const hand = raw.hand;
+      if (!item || replace === null || (hand != null && hand !== 'main' && hand !== 'off')) return null;
+      return { op: 'equip', item, ...(replace ? { replace } : {}), ...(hand ? { hand: hand as 'main' | 'off' } : {}) };
+    }
     case 'unequip': {
       const item = itemId(raw.item);
       return item ? { op: raw.op, item } : null;

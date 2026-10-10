@@ -861,7 +861,7 @@ function paint(px: PixelBuffer, look: Look): void {
       line(px, 3, 1, 12, 1, sheet.light);
       line(px, 12, 1, 13, 14, sheet.dark);
       line(px, 4, 14, 13, 14, sheet.dark);
-      if (has(label, /hexzettel/)) {
+      if (has(label, /^hex:/)) {
         const ink = 0x6a3fb0;
         line(px, 6, 4, 10, 4, ink);
         line(px, 8, 4, 8, 11, ink);

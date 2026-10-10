@@ -143,7 +143,7 @@ export class ItemDraftView extends Phaser.GameObjects.Container {
       color: MENU_HEX.bone,
       fixedWidth: 900,
     });
-    const subtitle = scene.add.text(60, 82, snapshot.locked ? 'Waiting for the remaining human drafts.' : snapshot.subtitle, {
+    const subtitle = scene.add.text(60, 82, snapshot.locked ? 'Waiting for other players.' : snapshot.subtitle, {
       fontFamily: MENU_FONT.body,
       fontSize: '14px',
       color: MENU_HEX.boneDim,
@@ -159,7 +159,7 @@ export class ItemDraftView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.brassLight,
     });
-    this.inspectorBody = scene.add.text(76, 540, snapshot.locked ? 'Another player is choosing equipment.' : 'Select one item to continue.', {
+    this.inspectorBody = scene.add.text(76, 540, snapshot.locked ? 'Another player is choosing.' : 'Pick one item.', {
       fontFamily: MENU_FONT.body,
       fontSize: '13px',
       color: MENU_HEX.boneDim,
@@ -200,7 +200,7 @@ export class ItemDraftView extends Phaser.GameObjects.Container {
     const hint = new CabinetChip(scene, 970, 598, {
       width: 232,
       height: 42,
-      label: snapshot.locked ? 'Waiting...' : 'Choose a Card',
+      label: snapshot.locked ? 'Waiting...' : 'Pick an Item',
       enabled: false,
       onActivate: () => undefined,
     });

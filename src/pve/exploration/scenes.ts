@@ -94,7 +94,7 @@ export const SCENES: readonly SceneDef[] = [
     encounter: 'monsters',
     replaces: ['wolf'],
     build: (_depth, dice) => ({
-      label: 'Wolves are circling a wounded rabbit. The pack turns on you.',
+      label: 'Wolves hunting a wounded rabbit attack you.',
       units: [unit('rabbit', 'prey', 0.7, 0.5, { hp: 0.35 }), ...around('wolf', 'foe', between(dice, 2, 4), 0.7, 0.5, 0.3)],
     }),
   },
@@ -107,15 +107,15 @@ export const SCENES: readonly SceneDef[] = [
     build: (_depth, dice) => {
       if (dice.chance(0.5)) {
         return {
-          label: 'A boar stands its ground against a wolf pack. Both turn on you.',
+          label: 'A boar fights a wolf pack. Both attack you.',
           units: [unit('boar', 'rival', 0.8, 0.5, { hp: 0.7 }), ...around('wolf', 'foe', between(dice, 2, 3), 0.8, 0.5, 0.3, { hp: 0.85 })],
         };
       }
       if (dice.chance(0.5)) {
-        return { label: 'A boar has just scattered a wolf pack. Bleeding, it charges you.', units: [unit('boar', 'foe', 0.72, 0.5, { hp: worn(dice, 0.35, 0.6) })] };
+        return { label: 'A wounded boar attacks you.', units: [unit('boar', 'foe', 0.72, 0.5, { hp: worn(dice, 0.35, 0.6) })] };
       }
       return {
-        label: 'Wolves have just dragged down a boar. Limping, they come for you.',
+        label: 'Wounded wolves attack you.',
         units: around('wolf', 'foe', between(dice, 1, 2), 0.72, 0.5, 0.18, { hp: 0.55 }),
       };
     },
@@ -126,7 +126,7 @@ export const SCENES: readonly SceneDef[] = [
     encounter: 'monsters',
     replaces: ['slime', 'rabbit'],
     build: (depth, dice) => ({
-      label: 'Goblins at a cookfire drop their spoons and grab their spears.',
+      label: 'Goblins at a cookfire attack you.',
       units: [
         unit('slime', 'prey', 0.72, 0.44, { hp: 0.5, tied: true }),
         ...around('goblinRaider', 'foe', depth >= 3 ? 3 : 2, 0.72, 0.5, 0.3),
@@ -141,7 +141,7 @@ export const SCENES: readonly SceneDef[] = [
     encounter: 'monsters',
     replaces: ['kobold', 'slime-red'],
     build: (_depth, dice) => ({
-      label: 'Red slimes quiver round a burnt berry bush, and turn on you.',
+      label: 'Red slimes by a burnt bush attack you.',
       units: around('slime-red', 'foe', between(dice, 3, 4), 0.74, 0.5, 0.22),
       props: [prop('burnt-bush', 0.74, 0.5)],
     }),
@@ -155,14 +155,14 @@ export const SCENES: readonly SceneDef[] = [
     build: (_depth, dice) => {
       if (dice.chance(0.5)) {
         return {
-          label: 'Kobolds have woken a sentinel in the scree. It fights them, and you.',
+          label: 'Kobolds fight a sentinel. Both attack you.',
           units: [unit('sentinel', 'rival', 0.76, 0.5, { hp: 0.6 }), ...around('kobold', 'foe', 3, 0.76, 0.5, 0.3)],
         };
       }
       if (dice.chance(0.5)) {
-        return { label: 'A cracked sentinel stands over dead kobolds, and turns its eye on you.', units: [unit('sentinel', 'foe', 0.76, 0.5, { hp: 0.5 })] };
+        return { label: 'A damaged sentinel attacks you.', units: [unit('sentinel', 'foe', 0.76, 0.5, { hp: 0.5 })] };
       }
-      return { label: 'Kobolds cheer over a broken sentinel, then see you.', units: around('kobold', 'foe', 2, 0.76, 0.5, 0.15, { hp: 0.6 }) };
+      return { label: 'Wounded kobolds attack you.', units: around('kobold', 'foe', 2, 0.76, 0.5, 0.15, { hp: 0.6 }) };
     },
   },
   {
@@ -172,7 +172,7 @@ export const SCENES: readonly SceneDef[] = [
     minDepth: 4,
     road: true,
     build: (depth, dice) => ({
-      label: "Two dragonborn are tearing into a merchant's carriage. A lone dwarf guard still stands.",
+      label: "Two dragonborn are raiding a merchant's carriage, defended by a dwarf guard.",
       units: [
         unit('dwarf-guard', 'escort', 0.6, 0.5, { hp: 0.45, name: 'Dwarven Guard' }),
         unit(dragonborn(depth, dice), 'foe', 0.78, 0.32, { hp: 0.75 }),
@@ -190,12 +190,12 @@ export const SCENES: readonly SceneDef[] = [
     build: (_depth, dice) => {
       if (dice.chance(0.5)) {
         return {
-          label: 'Two lion prides are fighting over their ground. You are in the middle.',
+          label: 'Two lion prides fight each other and you.',
           units: [...pride('foe', 0.64, 0.3, between(dice, 1, 2)), ...pride('rival', 0.84, 0.7, 1)],
         };
       }
       return {
-        label: 'One lion pride has driven off another. The winners notice you.',
+        label: 'Wounded lions attack you.',
         units: pride('foe', 0.76, 0.5, between(dice, 0, 1), worn(dice, 0.4, 0.7)),
       };
     },
@@ -206,7 +206,7 @@ export const SCENES: readonly SceneDef[] = [
     encounter: 'monsters',
     minDepth: 4,
     build: () => ({
-      label: 'Lionesses have a boar at bay. They turn from it to you.',
+      label: 'Lionesses fight a boar. Both attack you.',
       units: [unit('boar', 'rival', 0.8, 0.5, { hp: 0.6 }), ...around('lioness', 'foe', 2, 0.8, 0.5, 0.26)],
     }),
   },
@@ -215,7 +215,7 @@ export const SCENES: readonly SceneDef[] = [
     zones: ['capitol'],
     encounter: 'robbery',
     build: (depth) => ({
-      label: 'Bandits shaking down a farmer by his cart let go of him and draw on you.',
+      label: 'Bandits robbing a farmer attack you.',
       units: [
         unit('villager', 'prey', 0.72, 0.5, { hp: 0.5, name: 'Farmer' }),
         unit('bandit', 'foe', 0.8, 0.36),

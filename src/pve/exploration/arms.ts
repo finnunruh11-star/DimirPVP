@@ -12,7 +12,7 @@ import type { ExplorationRun } from './run';
 
 /** The Kerusai Lodge, whose pedestals arm a new party. */
 export const ARMS_LODGE = 'kerusai-guild';
-const BOW_ARROWS = 15;
+const BOW_ARROWS = 3;
 const PICK = /^arms:([a-z]+):([A-Za-z]+)$/;
 
 export const armsPending = (run: ExplorationRun): boolean => run.flags.includes(ARMS_PENDING);
@@ -35,11 +35,11 @@ export const weaponsShared = (run: ExplorationRun): boolean => run.party.entitie
 
 /** Why `member` cannot take `weapon` right now, or null when it may. */
 export function starterRefusal(run: ExplorationRun, member: MageClass, weapon: string): string | null {
-  if (!armsPending(run)) return 'The pedestals are empty. Everyone is armed.';
-  if (!isStarter(weapon)) return 'That is not on a pedestal.';
+  if (!armsPending(run)) return 'Everyone has a weapon.';
+  if (!isStarter(weapon)) return 'Not a starter weapon.';
   const picks = starterPicks(run);
-  if (picks[member]) return 'One each. The Lodge is generous, not stupid.';
-  if (!weaponsShared(run) && Object.values(picks).includes(weapon)) return 'Somebody already took that one.';
+  if (picks[member]) return 'One each. We are generous, not stupid.';
+  if (!weaponsShared(run) && Object.values(picks).includes(weapon)) return 'Already taken.';
   return null;
 }
 
@@ -81,9 +81,9 @@ export function lodgeWaiting(run: ExplorationRun): MageClass[] {
 }
 
 const GATE_LINES = [
-  'The gate guard looks at your empty hands and shakes his head. "Lodge first. They hand out pointy things."',
-  '"Unarmed? Out there? No. Go to the Lodge, get a weapon, then go and die properly."',
-  'The guard sighs. "Last week a lad went out with a spoon. We found the spoon." Get a weapon at the Lodge.',
+  'Get a weapon at the Guild first.',
+  '"Unarmed? Out there? Guild first. Then go and die properly."',
+  'The guard sighs. "Last one went out with a spoon. We found the spoon. Guild first."',
 ];
 
 /** What stops the party at the gate of `placeId` (the `attempt`th try), or null when it may leave. */
@@ -95,5 +95,5 @@ export function gateRefusal(run: ExplorationRun, placeId: string, town: string, 
 /** The journal's lines while someone still has no weapon; empty once everyone is armed. */
 export function armsLines(run: ExplorationRun): string[] {
   if (!armsPending(run)) return [];
-  return ['GET SOMETHING POINTY', 'Pick a weapon in the Kerusai Lodge.', 'Walk to the Lodge door and press E.'];
+  return ['GET A WEAPON', 'Kerusai Guild: walk to the door and press E.'];
 }

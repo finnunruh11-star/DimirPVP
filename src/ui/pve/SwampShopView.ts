@@ -190,7 +190,7 @@ export class SwampShopView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.brassLight,
     });
-    this.inspectorBody = scene.add.text(76, 614, snapshot.message || 'Choose one upgrade, rest the party, manage weight, or leave.', {
+    this.inspectorBody = scene.add.text(76, 614, snapshot.message || '', {
       fontFamily: MENU_FONT.body,
       fontSize: '12px',
       color: MENU_HEX.boneDim,
@@ -289,7 +289,7 @@ export class SwampShopView extends Phaser.GameObjects.Container {
       width: 380,
       height: 66,
       label: 'Buy Anyway',
-      detail: 'You must sell or discard enough weight before leaving.',
+      detail: 'Sell or drop weight before leaving.',
       index: '1',
       primary: true,
       onActivate: this.actions.confirmBuy,
@@ -298,7 +298,6 @@ export class SwampShopView extends Phaser.GameObjects.Container {
       width: 380,
       height: 66,
       label: 'Cancel',
-      detail: 'Return to the available offers.',
       index: '2',
       onActivate: this.actions.cancelSubstate,
     });
@@ -308,7 +307,7 @@ export class SwampShopView extends Phaser.GameObjects.Container {
   }
 
   private renderStats(): void {
-    const heading = this.scene.add.text(640, 170, 'CHOOSE A PERMANENT +1D3 ATTRIBUTE', {
+    const heading = this.scene.add.text(640, 170, '+1D3 TO ONE STAT (PERMANENT)', {
       fontFamily: MENU_FONT.control,
       fontSize: '14px',
       fontStyle: 'bold',

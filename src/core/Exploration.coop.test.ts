@@ -134,8 +134,10 @@ const tests: [name: string, run: () => void][] = [
     equal(lodgeWaiting(run), [first], 'and is no longer waited for');
     assert(!weaponsShared(run), 'fewer travellers than pedestals');
     assert(!takeStarterWeapon(run, first, 'torch').ok, 'only what is on the pedestals');
+    const arrowsBefore = memberIn(run, first)!.arrows;
     assert(takeStarterWeapon(run, first, 'huntingBow').ok, 'the bow is taken');
-    assert(memberIn(run, first)!.hands.includes('huntingBow') && memberIn(run, first)!.arrows >= 15, 'the bow comes with arrows');
+    assert(memberIn(run, first)!.hands.includes('huntingBow'), 'the bow is equipped');
+    equal(memberIn(run, first)!.arrows, arrowsBefore + 3, 'the bow comes with exactly three arrows');
     assert(!takeStarterWeapon(run, first, 'quarterstaff').ok, 'one each');
     assert(!takeStarterWeapon(run, second, 'huntingBow').ok, 'a taken weapon is gone');
     assert(armsPending(run) && gateRefusal(run, START_PLACE, START_PLACE), 'still one unarmed');

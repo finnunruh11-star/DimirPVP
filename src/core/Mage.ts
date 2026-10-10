@@ -154,7 +154,15 @@ export class Mage {
 
   // ---- Equipment (bought in the shop phase) ---------------------------------
   /** Items held in hand (max 2). Wands don't block casting; other pairs do. */
-  hands: ItemId[] = [];
+  private heldHands: ItemId[] = [];
+  get hands(): ItemId[] {
+    return this.heldHands;
+  }
+  set hands(items: ItemId[]) {
+    this.heldHands = items;
+    this.offhandOnly = false;
+  }
+  offhandOnly = false;
   /**
    * Hand-slot items carried but not currently held. Everything bought for the
    * hands starts here; equipping/unequipping (a bonus action) moves items
@@ -1817,7 +1825,9 @@ export class Mage {
     ) return false;
     if (this.tooHeavyToWear(id)) return false;
     this.bag.splice(i, 1);
-    this.hands.push(id);
+    if (this.hands.length === 1 && this.offhandOnly) this.hands.unshift(id);
+    else this.hands.push(id);
+    this.offhandOnly = false;
     // Lighting a torch starts its burn timer (measured in combats).
     const combats = getItem(id).torchCombats;
     if (combats != null && this.torchCombatsLeft <= 0) this.torchCombatsLeft = combats;
@@ -1873,11 +1883,17 @@ export class Mage {
    * What has to come off for bag item `id` to go on: [] when there is room,
    * null when nothing can make room. `replace` picks which hand or accessory gives way.
    */
-  displacedBy(id: ItemId, replace?: ItemId | null): ItemId[] | null {
+  displacedBy(id: ItemId, replace?: ItemId | null, hand?: 'main' | 'off'): ItemId[] | null {
     const def = getItem(id);
     if (!this.bag.includes(id) || this.tooHeavyToWear(id)) return null;
-    if (this.canEquipFromBag(id)) return [];
+    if (hand && def.slot !== 'hand') return null;
+    if (hand) replace = this.handAt(hand);
     const movable = (other: ItemId): boolean => !this.sabotagedItems.has(other) && !getItem(other).permanentlyBinding;
+    if (replace && !def.twoHanded) {
+      const list = def.slot === 'hand' ? this.hands : def.slot === 'accessory' ? this.accessories : [];
+      if (list.includes(replace) && !getItem(replace).twoHanded) return movable(replace) ? [replace] : null;
+    }
+    if (this.canEquipFromBag(id)) return [];
     const pick = (list: readonly ItemId[]): ItemId[] | null => {
       if (replace && list.includes(replace)) return movable(replace) ? [replace] : null;
       const other = [...list].reverse().find(movable);
@@ -1895,10 +1911,47 @@ export class Mage {
 
   /** Put on bag item `id`, first stowing whatever is in its way. Returns success. */
   swapIn(id: ItemId, replace?: ItemId | null): boolean {
-    const out = this.displacedBy(id, replace);
+    return this.equipAt(id, replace);
+  }
+
+  handAt(hand: 'main' | 'off'): ItemId | null {
+    if (this.hands.length === 1) {
+      const id = this.hands[0];
+      if (getItem(id).twoHanded) return id;
+      return (hand === 'off') === this.offhandOnly ? id : null;
+    }
+    return this.hands[hand === 'main' ? 0 : 1] ?? null;
+  }
+
+  equipAt(id: ItemId, replace?: ItemId | null, hand?: 'main' | 'off'): boolean {
+    const out = this.displacedBy(id, replace, hand);
     if (!out) return false;
+    if (hand) replace = this.handAt(hand);
+    const list = getItem(id).slot === 'hand' ? this.hands : this.accessories;
+    const index = replace ? list.indexOf(replace) : -1;
+    const wasOffhandOnly = this.hands.length === 1 && this.offhandOnly;
     for (const other of out) if (!this.stow(other)) return false;
-    return this.equipFromBag(id);
+    if (!this.equipFromBag(id)) return false;
+    if (getItem(id).slot === 'hand') {
+      const target = hand ?? (index >= 0 ? (index === 1 || wasOffhandOnly ? 'off' : 'main') : undefined);
+      if (target && !getItem(id).twoHanded) {
+        if (this.handAt(target) !== id) this.hands.reverse();
+        this.offhandOnly = this.hands.length === 1 && target === 'off';
+      }
+    } else if (index >= 0 && getItem(id).slot === 'accessory') {
+      list.splice(index, 0, list.pop()!);
+    }
+    return true;
+  }
+
+  swapHands(): boolean {
+    if (!this.hands.length || this.swordFormLocked() || this.hands.some((id) => getItem(id).twoHanded || getItem(id).permanentlyBinding || this.sabotagedItems.has(id))) return false;
+    if (this.hands.length === 1) this.offhandOnly = !this.offhandOnly;
+    else {
+      this.hands.reverse();
+      this.offhandOnly = false;
+    }
+    return true;
   }
 
   /**
@@ -1911,7 +1964,9 @@ export class Mage {
     // Cursed or sabotaged items are bound in place and cannot be removed.
     if (this.sabotagedItems.has(id) || getItem(id).permanentlyBinding) return false;
     const spent = this.torchSpentOnStow(id);
+    const remainingOffhand = this.hands.length === 2 && i === 0;
     this.hands.splice(i, 1);
+    this.offhandOnly = this.hands.length === 1 && remainingOffhand;
     // A conjured bow (Veil Corrode Pierce, Objects) dissipates when unequipped.
     if (getItem(id).conjuredVeilBow) {
       this.conjuredBowCombatsLeft = 0;

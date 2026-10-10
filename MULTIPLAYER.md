@@ -70,7 +70,7 @@ The tunnel address changes whenever `cloudflared` restarts. Do not expose port `
 3. The first player selects **Host** and sets the roster to the required number
     of human players, with any remaining seats assigned to AI.
 4. Other players select **Join** and build their own mage.
-5. Everyone enters the exact same room code in the cabinet lobby. The default
+5. Everyone enters the exact same room code in the online lobby. The default
     relay URL is hidden under **Connection Details** and normally needs no change.
 6. Keep every browser tab open until the match ends.
 

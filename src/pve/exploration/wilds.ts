@@ -4,7 +4,7 @@
 // packs roam near them and secrets reward whoever looks closely.
 
 import { Dice } from '../../core/Dice';
-import type { ItemId } from '../../core/Items';
+import { getItem, type ItemId } from '../../core/Items';
 import { cellHash } from '../../world/kenney';
 import type { ExitDef, LocaleDef, PropPlacement } from '../../world/locale';
 import { MapBuilder } from '../../world/mapBuilder';
@@ -81,16 +81,16 @@ interface PackPlan {
 
 const PACKS: readonly PackPlan[] = [
   { id: 'wilds-scouts', x: 14, y: 44, sight: 4, depth: 2, where: 'by the road' },
-  { id: 'wilds-looters', x: 10, y: 34, sight: 4, depth: 3, kind: 'robbery', where: 'picking over the caravan' },
+  { id: 'wilds-looters', x: 10, y: 34, sight: 4, depth: 3, kind: 'robbery', where: 'at the caravan' },
   { id: 'wilds-springs', x: 18, y: 13, sight: 4, depth: 3, where: 'at the springs' },
   { id: 'wilds-tower', x: 27, y: 23, sight: 4, depth: 4, where: 'in the ruins' },
-  { id: 'wilds-obsidian', x: 21, y: 47, sight: 4, depth: 4, where: 'among the glass' },
-  { id: 'wilds-warden', x: 41, y: 41, sight: 4, depth: 5, fixed: ['magma-sentinel', 'sentinel'], elite: true, where: 'holding the bridge' },
+  { id: 'wilds-obsidian', x: 21, y: 47, sight: 4, depth: 4, where: 'in the obsidian field' },
+  { id: 'wilds-warden', x: 41, y: 41, sight: 4, depth: 5, fixed: ['magma-sentinel', 'sentinel'], elite: true, where: 'at the bridge' },
   { id: 'wilds-foot', x: 46, y: 21, sight: 4, depth: 5, where: 'under the mountain' },
-  { id: 'wilds-rest', x: 36, y: 12, sight: 5, depth: 7, fixed: ['red-dragonborn', 'kobold', 'kobold'], elite: true, where: 'guarding the rest' },
-  { id: 'wilds-warren', x: 55, y: 43, sight: 4, depth: 5, where: 'about the fire' },
+  { id: 'wilds-rest', x: 36, y: 12, sight: 5, depth: 7, fixed: ['red-dragonborn', 'kobold', 'kobold'], elite: true, where: "at the Dragon's Rest" },
+  { id: 'wilds-warren', x: 55, y: 43, sight: 4, depth: 5, where: 'by the fire' },
   { id: 'wilds-chief', x: 62, y: 47, sight: 3, depth: 6, fixed: ['elite-kobold', 'elite-kobold', 'kobold'], elite: true, where: 'by the chief\'s tent' },
-  { id: 'wilds-shrine', x: 60, y: 27, sight: 4, depth: 6, where: 'before the shrine' },
+  { id: 'wilds-shrine', x: 60, y: 27, sight: 4, depth: 6, where: 'at the shrine' },
 ];
 
 interface SecretPlan extends Secret {
@@ -98,30 +98,29 @@ interface SecretPlan extends Secret {
   guard?: { fixed: MineEnemyKind[]; depth: number; label: string };
   items?: ItemId[];
   revealAll?: boolean;
-  text: string;
 }
 
+const GUARDED = 'Guards attack!';
+
 const SECRETS: readonly SecretPlan[] = [
-  { id: 'wilds-strongbox', x: 10, y: 30, reveal: 2, label: 'Scorched strongbox', items: ['healthPotion', 'throwingDagger'], text: 'The lock melted shut, but the hinges did not.' },
-  { id: 'wilds-emberroot', x: 19, y: 10, reveal: 2, label: 'Blossoms by the spring', items: ['herbFireblossom', 'herbFireblossom'], text: 'Fireblossom, thriving in the steam.' },
-  { id: 'wilds-mine-cache', x: 9, y: 5, reveal: 2, label: "Miner's cache", items: ['lantern', 'gemRuby'], text: 'Someone meant to come back for this.' },
+  { id: 'wilds-strongbox', x: 10, y: 30, reveal: 2, label: 'Scorched strongbox', items: ['healthPotion', 'throwingDagger'] },
+  { id: 'wilds-emberroot', x: 19, y: 10, reveal: 2, label: 'Blossoms by the spring', items: ['herbFireblossom', 'herbFireblossom'] },
+  { id: 'wilds-mine-cache', x: 9, y: 5, reveal: 2, label: "Miner's cache", items: ['lantern', 'gemRuby'] },
   {
     id: 'wilds-cellar', x: 24, y: 21, reveal: 2, label: 'Collapsed cellar', items: ['chainShirt'],
-    guard: { fixed: ['sentinel', 'sentinel'], depth: 5, label: 'Stone wakes in the cellar.' },
-    text: 'Behind the fallen stones: an old soldier\'s kit.',
+    guard: { fixed: ['sentinel', 'sentinel'], depth: 5, label: GUARDED },
   },
-  { id: 'wilds-obsidian', x: 26, y: 47, reveal: 2, label: 'Obsidian vein', items: ['gemOnyx', 'gemOnyx'], text: 'Black glass, cracked loose by the heat.' },
-  { id: 'wilds-grave', x: 28, y: 32, reveal: 2, label: "Wanderer's grave", items: ['ironShortsword'], text: 'A blade left with its owner. They would want it used.' },
-  { id: 'wilds-lookout', x: 31, y: 38, reveal: 3, label: 'Lookout crag', revealAll: true, text: 'From the top of the crag the whole basin lies open.' },
+  { id: 'wilds-obsidian', x: 26, y: 47, reveal: 2, label: 'Obsidian vein', items: ['gemOnyx', 'gemOnyx'] },
+  { id: 'wilds-grave', x: 28, y: 32, reveal: 2, label: "Wanderer's grave", items: ['ironShortsword'] },
+  { id: 'wilds-lookout', x: 31, y: 38, reveal: 3, label: 'Lookout crag', revealAll: true },
   {
     id: 'wilds-hoard', x: 41, y: 9, reveal: 2, label: 'Dragon hoard', items: ['gemDiamond', 'drakescaleHelm', 'redDrakeScale'],
-    guard: { fixed: ['black-dragonborn', 'kobold', 'kobold'], depth: 8, label: 'The hoard has a keeper.' },
-    text: 'Coins melted into one useless hill, and a helm worth more than all of them.',
+    guard: { fixed: ['black-dragonborn', 'kobold', 'kobold'], depth: 8, label: GUARDED },
   },
-  { id: 'wilds-warren-hoard', x: 64, y: 47, reveal: 2, label: 'Kobold hoard', items: ['gemRuby', 'gemSapphire'], text: 'Shiny things, sorted by how shiny.' },
-  { id: 'wilds-shrine', x: 60, y: 23, reveal: 3, label: 'Ember shrine', items: ['manaPotion'], text: 'The flame leans toward you, then settles.' },
-  { id: 'wilds-hollow', x: 66, y: 34, reveal: 2, label: 'Sunlit hollow', items: ['herbMoonglow', 'herbMoonglow', 'herbFireblossom'], text: 'Green, somehow, in the middle of all this ash.' },
-  { id: 'wilds-glass', x: 47, y: 17, reveal: 2, label: 'Glassy bubble', items: ['gemAmethyst', 'magmaCore'], text: 'A blister of cooled lava, hollow and glittering.' },
+  { id: 'wilds-warren-hoard', x: 64, y: 47, reveal: 2, label: 'Kobold hoard', items: ['gemRuby', 'gemSapphire'] },
+  { id: 'wilds-shrine', x: 60, y: 23, reveal: 3, label: 'Ember shrine', items: ['manaPotion'] },
+  { id: 'wilds-hollow', x: 66, y: 34, reveal: 2, label: 'Sunlit hollow', items: ['herbMoonglow', 'herbMoonglow', 'herbFireblossom'] },
+  { id: 'wilds-glass', x: 47, y: 17, reveal: 2, label: 'Glassy bubble', items: ['gemAmethyst', 'magmaCore'] },
 ];
 
 const LANDMARKS: readonly Landmark[] = [
@@ -388,13 +387,13 @@ function searchWilds(run: ExplorationRun, secret: Secret): SecretResult {
       },
     };
   }
-  const found: string[] = [];
+  const items = plan.items ?? [];
   let left = 0;
-  for (const item of plan.items ?? []) left += grantToParty(run, item);
-  if (plan.items?.length) found.push(plan.items.length === 1 ? 'a find' : `${plan.items.length} finds`);
-  if (left) found.push(`${left === plan.items?.length ? 'all' : left} too heavy to carry, left behind`);
-  const tail = found.length ? ` (${found.join(', ')})` : '';
-  return { message: `${plan.text}${tail}`, revealAll: plan.revealAll };
+  for (const item of items) left += grantToParty(run, item);
+  const found = items.length ? `Found ${items.map((item) => getItem(item).name).join(', ')}.` : '';
+  const heavy = left ? ` (${left === items.length ? 'all' : left} too heavy to carry, left behind)` : '';
+  const message = [found + heavy, plan.revealAll ? 'The whole area is revealed.' : ''].filter(Boolean).join(' ');
+  return { message, revealAll: plan.revealAll };
 }
 
 export function resolveWilds(run: ExplorationRun, id: string): ResolvedLocale | null {
@@ -406,7 +405,6 @@ export function resolveWilds(run: ExplorationRun, id: string): ResolvedLocale | 
     depth: 4,
     packs: wildsPacks(run),
     secrets: SECRETS.map(({ id: sid, x, y, reveal, label }) => ({ id: sid, x, y, reveal, label })),
-    subtitle: 'Cinderpeak smoulders',
     search: searchWilds,
     fogChunk: 6,
     landmarks: [...LANDMARKS],

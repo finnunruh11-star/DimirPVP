@@ -561,7 +561,7 @@ stopVariants(
           .sort((a, b) => dist(a.pos, ballista.pos) - dist(b.pos, ballista.pos))[0];
         if (!foe) return;
         const ctx = game.quietContext(ballista, foe);
-        game.log(`${ballista.name} looses a bolt through time at ${foe.name}.`);
+        game.log(`${ballista.name} fires a bolt through time at ${foe.name}.`);
         game.vfxSink?.godFx?.('rift', foe.pos, { size: foe.bodyRadius() * 6 });
         dealDamage(ctx, foe, dmg(game.showRoll('3d6', 'Clockwork Ballista', foe).total, 'pierce'), { canMiss: false });
         if (foe.alive) dealDamage(ctx, foe, dmg(game.showRoll('3d6', 'Clockwork Ballista', foe).total, 'shatter'), { canMiss: false });
@@ -570,7 +570,7 @@ stopVariants(
     }],
   }, {
     dc: 14, color: GLASS,
-    text: 'It cannot attack. It winds up over 2 of your turns; at the start of the third it looses a bolt through time ' +
+    text: 'It cannot attack. It winds up over 2 of your turns; at the start of the third it fires a bolt through time ' +
       'at the nearest enemy anywhere on the field: 3d6 pierce and 3d6 shatter, and the target is frozen in time for its ' +
       'next turn. Then it winds up again.',
   }),

@@ -56,7 +56,7 @@ export function packCapacity(mage: Mage): number {
 /** "Pack 7/10", "Pack 12/∞". */
 export function packLabel(mage: Mage): string {
   const capacity = packCapacity(mage);
-  return `Pack ${packSlotsUsed(mage)}/${Number.isFinite(capacity) ? capacity : '∞'}`;
+  return `Bag ${packSlotsUsed(mage)}/${Number.isFinite(capacity) ? capacity : '∞'}`;
 }
 
 /**

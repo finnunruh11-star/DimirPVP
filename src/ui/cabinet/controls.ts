@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import { playSound, unlockAudio } from '../../audio';
+import { WORD_CARD_COLORS } from '../../core/Colors';
 import { MENU_COLOR, MENU_FONT, MENU_HEX } from './theme';
 
 export interface CabinetButtonOptions {
@@ -449,7 +450,8 @@ export class WordPlate extends Phaser.GameObjects.Container implements MenuContr
     this.face.fillStyle(MENU_COLOR.pitch, 1).fillRect(2, 3, width, height);
     this.face.fillStyle(selected ? MENU_COLOR.bone : MENU_COLOR.charcoalRaised, 1)
       .fillRect(0, 0, width, height);
-    this.face.fillStyle(this.accent, selected || this.focused ? 1 : 0.68).fillRect(0, 0, width, 5);
+    const blackStripe = this.accent === WORD_CARD_COLORS.black;
+    this.face.fillStyle(this.accent, blackStripe || selected || this.focused ? 1 : 0.68).fillRect(0, 0, width, 6);
     this.face.lineStyle(this.focused ? 2 : 1, this.focused ? MENU_COLOR.brassLight : MENU_COLOR.brassDark, 1)
       .strokeRect(0.5, 0.5, width - 1, height - 1);
     if (selected) {

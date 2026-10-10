@@ -169,7 +169,7 @@ export function applyCouncil(council: Council, seat: number, op: CouncilOp, name
       const answers: (Answer | null)[] = Array.from({ length: council.size }, () => null);
       answers[seat] = 'join';
       council.camp = { by: seat, place: op.place, at: { ...op.at }, answers, resting: null, until: 0 };
-      return { changed: true, note: `${who} sits down for a short rest. Join in, or keep going.` };
+      return { changed: true, note: `${who} starts a short rest. Join, or keep going.` };
     }
     case 'camp-answer': {
       const camp = council.camp;
@@ -181,7 +181,7 @@ export function applyCouncil(council: Council, seat: number, op: CouncilOp, name
       const camp = council.camp;
       if (!camp || camp.resting || camp.by !== seat) return { changed: false };
       council.camp = null;
-      return { changed: true, note: `${who} gets back up. No rest after all.` };
+      return { changed: true, note: `${who} cancels the rest.` };
     }
     case 'leave': {
       let call = council.leave;
@@ -201,35 +201,35 @@ export function applyCouncil(council: Council, seat: number, op: CouncilOp, name
       call.wants[seat] = null;
       if (call.wants.every((entry) => !entry)) council.leave = null;
       else if (call.first === seat) call.first = call.wants.findIndex((entry) => !!entry);
-      return { changed: true, note: `${who} wants to stay a while longer.` };
+      return { changed: true, note: `${who} wants to stay.` };
     }
     case 'inn': {
       if (council.inn) return { changed: false };
       const answers: (Answer | null)[] = Array.from({ length: council.size }, () => null);
       answers[seat] = 'join';
       council.inn = { by: seat, shop: op.shop, answers };
-      return { changed: true, note: `${who} wants to take rooms for the night. Everyone has to come to the keeper and join.` };
+      return { changed: true, note: `${who} wants to rest at the inn. Everyone must talk to the innkeeper to join.` };
     }
     case 'inn-answer': {
       const inn = council.inn;
       if (!inn || inn.answers[seat] === op.answer) return { changed: false };
       if (op.answer === 'refuse') {
         council.inn = null;
-        return { changed: true, note: `${who} doesn't want to sleep yet. Nobody rests.` };
+        return { changed: true, note: `${who} declined. Nobody rests.` };
       }
       inn.answers[seat] = 'join';
       const joined = count(inn.answers, (answer) => answer === 'join');
-      return { changed: true, note: `${who} is in for the night (${joined}/${council.size}).` };
+      return { changed: true, note: `${who} joined the inn rest (${joined}/${council.size}).` };
     }
     case 'trade':
       if (council.trade || council.size < 2) return { changed: false };
       council.trade = { by: seat, place: op.place, at: { ...op.at }, with: null, offers: Array.from({ length: council.size }, () => []), ready: Array.from({ length: council.size }, () => false) };
-      return { changed: true, note: `${who} sets up a stall. Come join to trade.` };
+      return { changed: true, note: `${who} opened a trade.` };
     case 'trade-join': {
       const trade = council.trade;
       if (!trade || trade.by === seat || trade.with != null) return { changed: false };
       trade.with = seat;
-      return { changed: true, note: `${who} joins ${name(trade.by)}'s stall.` };
+      return { changed: true, note: `${who} joins ${name(trade.by)}'s trade.` };
     }
     case 'trade-cancel': {
       const trade = council.trade;
@@ -243,7 +243,7 @@ export function applyCouncil(council: Council, seat: number, op: CouncilOp, name
       if (JSON.stringify(trade.offers[seat]) === JSON.stringify(op.items)) return { changed: false };
       trade.offers[seat] = [...op.items];
       trade.ready.fill(false);
-      return { changed: true, note: `${who} changes their offer. Both players must confirm again.` };
+      return { changed: true, note: `${who} changes their offer. Both must accept again.` };
     }
     case 'trade-ready': {
       const trade = council.trade;

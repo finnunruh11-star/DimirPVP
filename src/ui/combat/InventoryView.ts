@@ -1,6 +1,6 @@
 // The inventory in a fight, opened with [I]: a paper doll of what is worn and
 // held, the bag as a grid, and a card for the selected item with its actions.
-// Every action here costs a bonus action, so anything that loses an item asks
+// Equipping and stowing cost a bonus action, so anything that loses an item asks
 // first. The Status Effects tab lists what is riding on the mage.
 
 import Phaser from 'phaser';
@@ -36,7 +36,7 @@ import {
 import { compareItems } from '../inventory/itemInfo';
 import { addJourneyStrip, type JourneyView } from '../pve/JourneyStrip';
 
-export type InventoryActionKind = 'consume' | 'throw' | 'hex' | 'equip' | 'unequip' | 'drop-hand' | 'drop-accessory' | 'pouch-store' | 'pouch-remove';
+export type InventoryActionKind = 'consume' | 'throw' | 'hex' | 'equip' | 'swap-hands' | 'unequip' | 'drop-hand' | 'drop-accessory' | 'pouch-store' | 'pouch-remove';
 
 export interface InventoryActionView {
   kind: InventoryActionKind;
@@ -68,6 +68,7 @@ export interface InventorySnapshot {
   mageName: string;
   carry: string;
   readOnly: boolean;
+  offhandOnly?: boolean;
   equipment: InventoryItemView[];
   supplies: InventoryItemView[];
   statuses: InventoryStatusView[];
@@ -76,7 +77,7 @@ export interface InventorySnapshot {
 }
 
 export interface InventoryActions {
-  perform(kind: InventoryActionKind, id: ItemId, replace?: ItemId): void;
+  perform(kind: InventoryActionKind, id: ItemId, replace?: ItemId, hand?: 'main' | 'off'): void;
   close(): void;
   tabChanged?(tab: string): void;
 }
@@ -168,25 +169,31 @@ export class InventoryView extends Phaser.GameObjects.Container {
       this.askBonus(item, action, confirm.title, confirm.body, confirm.label);
       return;
     }
+    const slot = target.key.slice('doll:'.length) as DollSlot;
+    if (payload.from.startsWith('equipment:')) {
+      const held = this.snapshot.equipment[index];
+      const source = this.doll.find((entry) => !entry.ghost && entry.id === held?.id)?.slot;
+      if (held && source !== slot && (slot === 'main' || slot === 'off')) this.actions.perform('swap-hands', held.id);
+      return;
+    }
     const item = this.supplies[index];
     const action = item?.actions.find((entry) => entry.kind === 'equip');
     if (!item || !action) return;
-    const slot = target.key.slice('doll:'.length) as DollSlot;
     const occupant = this.doll.find((entry) => entry.slot === slot)?.id ?? null;
-    const kind = getItem(item.id).slot;
-    const pair: DollSlot[] = kind === 'hand' ? ['main', 'off'] : kind === 'accessory' ? ['ring1', 'ring2'] : [slot];
-    const roomy = pair.length > 1 && !getItem(item.id).twoHanded && pair.some((other) => !this.doll.find((entry) => entry.slot === other)?.id);
-    const replace = occupant && !roomy ? occupant : undefined;
-    const swap = replace ? ` ${getItem(replace).name} comes off and goes into your bag.` : '';
-    this.askBonus(item, action, `Equip ${item.name}?`, `It goes on in your ${DOLL_LABEL[slot].toLowerCase()} slot.${swap}`, 'Equip', replace);
+    const replace = occupant ?? undefined;
+    const outgoing = getItem(item.id).twoHanded
+      ? this.doll.filter((entry) => (entry.slot === 'main' || entry.slot === 'off') && entry.id && !entry.ghost).map((entry) => entry.id!)
+      : replace ? [replace] : [];
+    const swap = outgoing.map((id) => ` ${getItem(id).name}${getItem(id).torchCombats != null ? ' is put away (a used torch is destroyed).' : ' goes into your bag.'}`).join('');
+    this.askBonus(item, action, `Equip ${item.name}?`, `It goes on in your ${DOLL_LABEL[slot].toLowerCase()} slot.${swap}`, 'Equip', replace, slot === 'main' || slot === 'off' ? slot : undefined);
   }
 
-  private askBonus(item: InventoryItemView, action: InventoryActionView, title: string, body: string, label: string, replace?: ItemId): void {
+  private askBonus(item: InventoryItemView, action: InventoryActionView, title: string, body: string, label: string, replace?: ItemId, hand?: 'main' | 'off'): void {
     this.dialog = new ConfirmDialog(this.scene, this.depth + 5, {
       title,
       body: `${body}\n\nThis costs a bonus action.`,
       icon: item.id,
-      choices: [{ label: `${label} (Bonus Action)`, tone: action.tone === 'danger' ? 'danger' : 'primary', run: () => this.actions.perform(action.kind, item.id, replace) }],
+      choices: [{ label: `${label} (Bonus Action)`, tone: action.tone === 'danger' ? 'danger' : 'primary', run: () => this.actions.perform(action.kind, item.id, replace, hand) }],
       onClose: () => {
         this.dialog = null;
         if (!this.disposed) this.render();
@@ -247,7 +254,7 @@ export class InventoryView extends Phaser.GameObjects.Container {
       scene.add.text(58, 34, `${snapshot.mageName.toUpperCase()}`, {
         fontFamily: MENU_FONT.display, fontSize: '29px', fontStyle: 'bold', color: MENU_HEX.bone,
       }).setLetterSpacing(2),
-      scene.add.text(60, 76, `INVENTORY  /  ${snapshot.carry}${snapshot.readOnly ? '  /  INSPECTION ONLY' : ''}`, {
+      scene.add.text(60, 76, `INVENTORY  /  ${snapshot.carry}${snapshot.readOnly ? '  /  VIEW ONLY' : ''}`, {
         fontFamily: MENU_FONT.control, fontSize: '13px', fontStyle: 'bold',
         color: /OVERLOADED|Heavy/.test(snapshot.carry) ? '#e6b55a' : MENU_HEX.boneDim,
       }).setLetterSpacing(1),
@@ -272,7 +279,7 @@ export class InventoryView extends Phaser.GameObjects.Container {
       this.focus.add(chip, `tab:${id}`, x, 124, 190, 34);
     });
     if (!snapshot.readOnly) {
-      this.add(scene.add.text(1222, 134, 'Each item action takes a bonus action.', {
+      this.add(scene.add.text(1222, 134, 'Equipping and stowing cost a bonus action.', {
         fontFamily: MENU_FONT.control, fontSize: '12px', color: MENU_HEX.brass,
       }).setOrigin(1, 0));
     }
@@ -308,7 +315,7 @@ export class InventoryView extends Phaser.GameObjects.Container {
     }
     const hands = [take('hand'), take('hand')].filter((row): row is NonNullable<typeof row> => !!row);
     const rings = [take('accessory'), take('accessory')].filter((row): row is NonNullable<typeof row> => !!row);
-    if (hands[0]) bySlot.set('main', hands[0]);
+    if (hands[0]) bySlot.set(hands.length === 1 && snapshot.offhandOnly ? 'off' : 'main', hands[0]);
     if (hands[1]) bySlot.set('off', hands[1]);
     if (rings[0]) bySlot.set('ring1', rings[0]);
     if (rings[1]) bySlot.set('ring2', rings[1]);
@@ -320,6 +327,7 @@ export class InventoryView extends Phaser.GameObjects.Container {
       gloves: wornId('gloves'),
       boots: wornId('boots'),
       hands: hands.map((row) => row.item.id),
+      offhandOnly: snapshot.offhandOnly,
       accessories: rings.map((row) => row.item.id),
     });
     this.doll = entries;
@@ -344,7 +352,8 @@ export class InventoryView extends Phaser.GameObjects.Container {
       if (live) {
         this.drag.addTarget({
           key: `doll:${entry.slot}`, x, y, w: TILE, h: TILE,
-          accepts: (payload) => payload.from.startsWith('supplies:') && dollAccepts(entry.slot, payload.id),
+          accepts: (payload) => dollAccepts(entry.slot, payload.id) && (payload.from.startsWith('supplies:')
+            || ((entry.slot === 'main' || entry.slot === 'off') && payload.from.startsWith('equipment:') && !getItem(payload.id).twoHanded)),
         });
       }
       return tile;
@@ -352,7 +361,7 @@ export class InventoryView extends Phaser.GameObjects.Container {
     const extra = rows.length ? `Also worn: ${rows.map((row) => row.item.name).join(', ')}` : '';
     this.add(scene.add.text(DOLL.x + 16, DOLL.y + DOLL.h - 104, [
       extra,
-      snapshot.readOnly ? 'Looking only: nothing can be changed from the map.' : 'Drag gear onto a slot to put it on, or into the bag to take it off.',
+      snapshot.readOnly ? 'View only.' : '',
     ].filter(Boolean).join('\n\n'), {
       fontFamily: MENU_FONT.body, fontSize: '12px', color: MENU_HEX.boneDim, wordWrap: { width: DOLL.w - 32 }, lineSpacing: 2,
     }));
@@ -422,8 +431,7 @@ export class InventoryView extends Phaser.GameObjects.Container {
     addPanel(scene, this, CARD.x, CARD.y, CARD.w, CARD.h, 'Details', { fill: MENU_COLOR.woodDeep });
     const item = this.viewOf(this.selection);
     if (!item) {
-      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'Nothing selected',
-        'Choose something worn or carried to see it and what you can do with it.');
+      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'Nothing selected', '');
       return;
     }
     const actions = this.snapshot.readOnly ? [] : item.actions.slice(0, 4);
@@ -539,9 +547,7 @@ export class InventoryView extends Phaser.GameObjects.Container {
     this.footerTitle = scene.add.text(76, 596, this.tab === 'statuses' ? 'STATUS EFFECTS' : 'INVENTORY', {
       fontFamily: MENU_FONT.control, fontSize: '11px', fontStyle: 'bold', color: MENU_HEX.brassLight,
     }).setLetterSpacing(2);
-    this.footerBody = scene.add.text(76, 613, this.tab === 'statuses'
-      ? 'Select an effect to read what it does and how long it lasts.'
-      : 'Opening the inventory is free. Anything that loses an item asks first.', {
+    this.footerBody = scene.add.text(76, 613, '', {
       fontFamily: MENU_FONT.body, fontSize: '13px', color: MENU_HEX.boneDim,
       fixedWidth: 860, wordWrap: { width: 860 }, maxLines: 2,
     });

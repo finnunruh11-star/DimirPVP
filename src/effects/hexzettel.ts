@@ -196,11 +196,11 @@ export function hexAimProblem(game: GameState, user: Mage, recipe: HexRecipe, ai
     case 'unit': {
       const target = aim.target;
       const side = partSide(part);
-      if (!target?.alive || game.isUnreachable(target)) return 'There is no one there.';
+      if (!target?.alive || game.isUnreachable(target)) return 'No target there.';
       if (!isGround(part.target) && !onSide(user, side, target)) {
-        return side === 'allies' ? 'It only touches your side.' : 'It only touches the other side.';
+        return side === 'allies' ? 'Allies only.' : 'Enemies only.';
       }
-      if (target !== user && game.isUntargetable(target, user)) return `${target.name} cannot be singled out.`;
+      if (target !== user && game.isUntargetable(target, user)) return `${target.name} cannot be targeted.`;
       return dist(user.pos, target.pos) > range + target.bodyRadius() ? 'Out of reach.' : null;
     }
     case 'point':
@@ -223,17 +223,17 @@ export function activateHexzettel(game: GameState, user: Mage, itemId: ItemId, a
   const name = getItem(itemId).name;
   const cost = hexManaCost(recipe);
   if (user.mana < cost) {
-    game.log(`${user.name} lacks the ${cost} mana to wake ${name}.`);
+    game.log(`${user.name} needs ${cost} mana for ${name}.`);
     return false;
   }
   const problem = hexAimProblem(game, user, recipe, aim);
   if (problem) {
-    game.log(`${name} finds nothing. ${problem}`);
+    game.log(`${name} has no target. ${problem}`);
     return false;
   }
   user.utility.splice(at, 1);
   user.spendMana(cost);
-  game.log(`${user.name} looses ${name} (${cost} mana).`);
+  game.log(`${user.name} casts ${name} (${cost} mana).`);
   game.vfxSink?.sigil?.(user.pos, hexColor(recipe), 96);
   runPart(newCast(game, user, itemId, recipe), 0, { aim });
   return true;
@@ -244,7 +244,7 @@ export function hexEcho(game: GameState, bearer: Mage, echo: HexEcho): void {
   const recipe = parseHexItemId(echo.hex);
   const user = game.mages[echo.ownerIndex];
   if (!recipe || !user || !recipe.parts[echo.part]) return;
-  game.log(`The coupled hex stirs on ${bearer.name}.`);
+  game.log(`Coupled hex triggers on ${bearer.name}.`);
   runPart(newCast(game, user, echo.hex as ItemId, recipe), echo.part, { impact: { unit: bearer, point: { ...bearer.pos } } });
 }
 
@@ -262,7 +262,7 @@ function runPart(cast: Cast, index: number, origin: Origin): void {
   const units = partUnits(game, user, part, origin);
   flourish(cast, part, origin, units);
   if (units.length === 0) {
-    game.log(index === 0 ? 'The hex finds no one.' : 'The coupled hex finds no one.');
+    game.log(index === 0 ? 'The hex hits no one.' : 'The coupled hex hits no one.');
     return;
   }
   const landing: Landing = {
@@ -406,7 +406,7 @@ function purify(game: GameState, unit: Mage): void {
   const before = unit.statuses.length;
   unit.statuses = unit.statuses.filter((status) => !afflicts(status));
   const lifted = before - unit.statuses.length;
-  if (lifted) game.log(`${lifted} affliction${lifted === 1 ? '' : 's'} lift from ${unit.name}.`);
+  if (lifted) game.log(`${lifted} affliction${lifted === 1 ? '' : 's'} removed from ${unit.name}.`);
 }
 
 function applyStep(cast: Cast, landing: Landing, unit: Mage, step: HexStep): void {
@@ -775,7 +775,7 @@ function layGround(cast: Cast, index: number, origin: Origin): void {
         break;
     }
   }
-  if (plan.clears.length) game.log(gone.length ? `The hex clears away ${gone.join(', ')}.` : 'The hex finds nothing there to clear.');
+  if (plan.clears.length) game.log(gone.length ? `The hex clears away ${gone.join(', ')}.` : 'Nothing to clear.');
   if (plan.wall) {
     const facing = Math.atan2(at.y - user.y, at.x - user.x);
     game.addBarrier(at, facing + Math.PI / 2, { shape: 'rect', range: radius * 2, thickness: 12, owner: user.team, ttl: turns });
@@ -802,7 +802,7 @@ function layGround(cast: Cast, index: number, origin: Origin): void {
         hexEcho: coupled ? { hex: cast.hex, part: index + 1, ownerIndex: game.mages.indexOf(user) } : undefined,
       },
     });
-    game.log(rider?.alive ? `The hex settles on ${rider.name} for ${turns} rounds.` : `The ground takes the hex for ${turns} rounds.`);
+    game.log(rider?.alive ? `Hex attached to ${rider.name} for ${turns} rounds.` : `Hex lies on the ground for ${turns} rounds.`);
   } else if (coupled) {
     fireCoupling(cast, index, null, at);
   }

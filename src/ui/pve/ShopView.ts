@@ -300,7 +300,7 @@ export class ShopView extends Phaser.GameObjects.Container {
       this.add(face);
     }
     const leader = memberIn(run, this.member);
-    const who = leader && partyOf(run).length > 1 ? `  /  ${leader.name} at the counter` : '';
+    const who = leader && partyOf(run).length > 1 ? `  /  ${leader.name}` : '';
     this.add([
       scene.add.text(150, 36, shop.name.toUpperCase(), {
         fontFamily: MENU_FONT.display, fontSize: '29px', fontStyle: 'bold', color: MENU_HEX.bone,
@@ -345,7 +345,7 @@ export class ShopView extends Phaser.GameObjects.Container {
       fontFamily: MENU_FONT.control, fontSize: '11px', fontStyle: 'bold',
       color: this.message ? (this.messageOk ? MENU_HEX.verdigris : '#e6b55a') : MENU_HEX.brassLight,
     }).setLetterSpacing(2);
-    this.inspectorBody = scene.add.text(76, 613, this.message || 'Select a ware or one of your goods to see it. Selling always asks how many first.', {
+    this.inspectorBody = scene.add.text(76, 613, this.message || '', {
       fontFamily: MENU_FONT.body, fontSize: '13px', color: this.message ? MENU_HEX.bone : MENU_HEX.boneDim,
       fixedWidth: 860, wordWrap: { width: 860 }, maxLines: 2,
     });
@@ -353,7 +353,7 @@ export class ShopView extends Phaser.GameObjects.Container {
     const close = new CabinetChip(scene, 990, 606, {
       width: 212,
       height: 44,
-      label: 'Leave Counter',
+      label: 'Leave',
       tone: 'primary',
       onActivate: () => this.hooks.close(),
     });
@@ -387,15 +387,15 @@ export class ShopView extends Phaser.GameObjects.Container {
     if (!leader) return 'Nobody at the counter.';
     if (this.run.gold < slot.price) return `Not enough money: ${moneyLabel(slot.price - this.run.gold)} short.`;
     if (def.keyItem && partyOf(this.run).some((mage) => mage.bag.includes(slot.id) || mage.utility.includes(slot.id))) return 'The party already has one.';
-    if (!leader.canCarry(def.weight * slot.qty)) return 'Too heavy to carry on top of your load.';
-    if (!packFits(leader, Array.from({ length: slot.qty }, () => slot.id))) return 'No room in the pack.';
+    if (!leader.canCarry(def.weight * slot.qty)) return 'Too heavy to carry.';
+    if (!packFits(leader, Array.from({ length: slot.qty }, () => slot.id))) return 'No room in your bag.';
     return null;
   }
 
   private renderBuy(leader: Mage | undefined): void {
     const { scene } = this;
     const stock = shopStock(this.run, this.shop);
-    addPanel(scene, this, LIST.x, LIST.y, LIST.w, LIST.h, 'Wares', { caption: `${stock.filter((slot) => !slot.sold).length} on the shelf today` });
+    addPanel(scene, this, LIST.x, LIST.y, LIST.w, LIST.h, 'For Sale', { caption: `${stock.filter((slot) => !slot.sold).length} in stock` });
     const perPage = COLUMNS * WARE_ROWS;
     const pages = Math.max(1, Math.ceil(stock.length / perPage));
     this.page = Math.min(this.page, pages - 1);
@@ -427,13 +427,13 @@ export class ShopView extends Phaser.GameObjects.Container {
       this.add(tile);
       this.focus.add(tile, `ware:${index}`, at.x, at.y, TILE, TILE);
     });
-    if (stock.length === 0) this.emptyNote('The shelves are bare today.');
+    if (stock.length === 0) this.emptyNote('Nothing for sale today.');
     this.pager(pages);
 
     addPanel(scene, this, CARD.x, CARD.y, CARD.w, CARD.h, 'Details', { fill: MENU_COLOR.woodDeep });
     const slot = stock.find((entry) => this.picked === `ware:${entry.key}`);
     if (!slot) {
-      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'Browse the shelf', 'Select a ware to see what it does and what it costs.');
+      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'Nothing selected', '');
       return;
     }
     const def = getItem(slot.id);
@@ -486,8 +486,8 @@ export class ShopView extends Phaser.GameObjects.Container {
     });
     const shown = priced.filter((entry) => matchesFilter(entry.id, this.filter));
     const sellable = shown.filter((entry) => entry.unit > 0);
-    addPanel(scene, this, LIST.x, LIST.y, LIST.w, LIST.h, 'Your goods', {
-      caption: `${priced.filter((entry) => entry.unit > 0).length} kinds this counter will buy  /  worn gear must be stowed first`,
+    addPanel(scene, this, LIST.x, LIST.y, LIST.w, LIST.h, 'Your Items', {
+      caption: `${priced.filter((entry) => entry.unit > 0).length} sellable here`,
     });
 
     const chipW = 96;
@@ -549,13 +549,13 @@ export class ShopView extends Phaser.GameObjects.Container {
       this.add(tile);
       this.focus.add(tile, `own:${index}`, at.x, at.y, TILE, TILE);
     });
-    if (shown.length === 0) this.emptyNote(stacks.length ? 'Nothing of this kind in your pack.' : 'Your pack is empty.');
+    if (shown.length === 0) this.emptyNote(stacks.length ? 'Nothing of this kind.' : 'Your bag is empty.');
     this.pager(pages);
 
     addPanel(scene, this, CARD.x, CARD.y, CARD.w, CARD.h, 'Details', { fill: MENU_COLOR.woodDeep });
     const entry = priced.find((stack) => this.picked === `own:${stack.id}`);
     if (!entry) {
-      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'What will you part with?', 'Select one of your goods to see what the keeper offers for it.');
+      addEmptyCard(scene, this, CARD.x, CARD.y + 28, CARD.w, CARD.h - 28, 'Nothing selected', '');
       return;
     }
     const def = getItem(entry.id);
@@ -566,13 +566,13 @@ export class ShopView extends Phaser.GameObjects.Container {
       { label: 'Worth', value: `${moneyLabel(worth)}${entry.count > 1 ? ' each' : ''}` },
     ];
     if (entry.count > 1 && entry.unit > 0) lines.push({ label: 'For all', value: moneyLabel(entry.unit * entry.count), color: '#f0d27a' });
-    const reason = def.keyItem ? 'A key item. It stays with the party.'
-      : def.permanentlyBinding ? 'Bound to you. It cannot be sold.'
-      : entry.unit <= 0 ? 'This counter does not buy it. Another trade might.' : undefined;
+    const reason = def.keyItem ? 'Key item. Cannot be sold.'
+      : def.permanentlyBinding ? 'Bound. Cannot be sold.'
+      : entry.unit <= 0 ? 'Not bought here.' : undefined;
     const x = CARD.x + 16;
     const w = CARD.w - 32;
     addItemCard(scene, this, x, CARD.y + 42, w, CARD.y + CARD.h - 62, {
-      id: entry.id, eyebrow: 'In your pack', lines, note: reason, noteColor: '#e6866f',
+      id: entry.id, eyebrow: 'In your bag', lines, note: reason, noteColor: '#e6866f',
     });
     const sell = (): void => {
       if (entry.unit <= 0 || this.working) {
@@ -610,7 +610,7 @@ export class ShopView extends Phaser.GameObjects.Container {
     const total = (n: number): string => moneyLabel(unit * n);
     this.openDialog({
       title: `Sell ${def.name}?`,
-      body: `${this.shop.name} pays ${moneyLabel(unit)}${count > 1 ? ' each' : ''}. A sale is final.`,
+      body: `${this.shop.name} pays ${moneyLabel(unit)}${count > 1 ? ' each' : ''}. Sales are final.`,
       icon: id,
       quantity: count > 1 ? { max: count, start: 1, describe: (n) => `Sell ${n} for ${total(n)}` } : undefined,
       choices: [{ label: count > 1 ? 'Sell' : `Sell for ${total(1)}`, tone: 'danger', run: (n) => void this.apply({ op: 'sell', shop: this.shop.id, item: id, count: n }) }],
@@ -624,7 +624,7 @@ export class ShopView extends Phaser.GameObjects.Container {
     const names = entries.slice(0, 5).map((entry) => `${entry.count > 1 ? `${entry.count}x ` : ''}${getItem(entry.id).name}`).join(', ');
     this.openDialog({
       title: 'Sell everything shown?',
-      body: `${items} item${items === 1 ? '' : 's'} for ${moneyLabel(total)}: ${names}${entries.length > 5 ? `, and ${entries.length - 5} more kinds` : ''}. Worn gear is never included. A sale is final.`,
+      body: `${items} item${items === 1 ? '' : 's'} for ${moneyLabel(total)}: ${names}${entries.length > 5 ? `, and ${entries.length - 5} more kinds` : ''}. Worn gear is not included. Sales are final.`,
       choices: [{ label: `Sell All for ${moneyLabel(total)}`, tone: 'danger', run: () => void this.apply({ op: 'sell-all', shop: this.shop.id, items: entries.map((entry) => entry.id) }) }],
       onClose: () => this.render(),
     });
@@ -734,14 +734,14 @@ export class ShopView extends Phaser.GameObjects.Container {
     const vitals = leader
       ? leader.alive
         ? `Health ${leader.hp}/${leader.maxHp}  /  Mana ${leader.mana}/${leader.maxMana}  /  Sanity ${leader.sanity}/${leader.maxSanity}`
-        : `${leader.name} has fallen and gets up after a night here.`
+        : `${leader.name} is down. A night here revives them.`
       : '';
     const leads = this.hooks.actions.leads;
     const rooms = party.length > 1 ? `Rooms for the party (${party.length})` : 'A room for the night';
     const due = bloodmoonDue(this.run);
     this.service('rest', 204, 104, {
       label: `${rooms}  /  ${moneyLabel(price)}`,
-      detail: due ? 'The bloodmoon is up. Nobody sleeps through it.' : leads ? '' : 'The host books the rooms for the party.',
+      detail: due ? 'No sleeping during the bloodmoon.' : leads ? '' : 'Only the host can book rooms.',
       index: '1',
       enabled: leads && !due && this.run.gold >= price,
       onActivate: () => void this.sleep(),
@@ -751,17 +751,16 @@ export class ShopView extends Phaser.GameObjects.Container {
       fontSize: '15px',
       color: MENU_HEX.bone,
     }).setOrigin(0.5, 0));
-    this.addShortRest(322, '2', leads ? null : 'The host decides when the party rests.');
+    this.addShortRest(322, '2', leads ? null : 'Only the host can start a rest.');
   }
 
   /** The free short rest, under the rooms: `blocked` says why it cannot be had from here. */
   private addShortRest(y: number, index: string, blocked: string | null): void {
     const rest = this.hooks.shortRest;
     if (!rest) return;
-    const online = !!this.hooks.inn;
     this.service('short-rest', y, 76, {
-      label: 'Short rest at a table  /  free',
-      detail: blocked ?? (online ? 'The others are asked to join.' : ''),
+      label: 'Short rest  /  free',
+      detail: blocked ?? '',
       index,
       enabled: !blocked && !this.working,
       onActivate: () => {
@@ -787,10 +786,10 @@ export class ShopView extends Phaser.GameObjects.Container {
     let buttons = 0;
     let note: string;
     if (!call) {
-      note = 'A night needs everyone. Whoever calls for it pays from the purse; the rest join for free.';
+      note = 'The caller pays.';
       this.service('inn:1', 230, 96, {
-        label: `Call the party in: ${rooms}`,
-        detail: due ? 'The bloodmoon is up. Nobody sleeps through it.' : 'Everyone is told. The night starts once all of you have joined here.',
+        label: `Book: ${rooms}`,
+        detail: due ? 'No sleeping during the bloodmoon.' : '',
         index: '1',
         enabled: !due && this.run.gold >= price,
         onActivate: () => {
@@ -801,25 +800,25 @@ export class ShopView extends Phaser.GameObjects.Container {
       });
       buttons = 1;
     } else if (!call.here) {
-      note = `${call.by} has asked for rooms at another inn. Go there to join, or turn it down.`;
-      this.service('inn:1', 230, 72, { label: 'Not tonight', detail: 'Turn the night down: nobody rests.', index: '1', onActivate: () => inn.answer(false) });
+      note = `${call.by} booked rooms at another inn. Go there to join, or decline.`;
+      this.service('inn:1', 230, 72, { label: 'Decline', detail: 'Nobody rests.', index: '1', onActivate: () => inn.answer(false) });
       buttons = 1;
     } else if (call.joined) {
       note = call.waitingFor.length
-        ? `You're in. Waiting for ${call.waitingFor.join(' and ')} to come to the keeper.`
-        : 'Everyone is in. Lights out.';
-      this.service('inn:1', 230, 72, { label: 'Changed my mind', detail: 'Call the night off for everyone.', index: '1', onActivate: () => inn.answer(false) });
+        ? `Joined. Waiting for ${call.waitingFor.join(' and ')}.`
+        : 'Everyone has joined.';
+      this.service('inn:1', 230, 72, { label: 'Cancel', detail: 'Cancels the rest for everyone.', index: '1', onActivate: () => inn.answer(false) });
       buttons = 1;
     } else {
-      note = `${call.by} wants to stay the night. ${call.waitingFor.length ? `Still to join: ${call.waitingFor.join(', ')}.` : ''}`;
+      note = `${call.by} wants to rest for the night. ${call.waitingFor.length ? `Still to join: ${call.waitingFor.join(', ')}.` : ''}`;
       this.service('inn:1', 210, 72, {
-        label: 'Join the night (free)', detail: rooms, index: '1',
+        label: 'Join (free)', detail: rooms, index: '1',
         onActivate: () => {
           playSound('ui.confirm');
           inn.answer(true);
         },
       });
-      this.service('inn:2', 294, 72, { label: 'Not tonight', detail: 'Nobody rests unless everyone does.', index: '2', onActivate: () => inn.answer(false) });
+      this.service('inn:2', 294, 72, { label: 'Decline', detail: 'Nobody rests.', index: '2', onActivate: () => inn.answer(false) });
       buttons = 2;
     }
     this.add(this.scene.add.text(640, 470, note, {
@@ -862,7 +861,7 @@ export class ShopView extends Phaser.GameObjects.Container {
     for (const offer of bountyBoard(this.run, town)) {
       entries.push({
         label: `Notice: ${offer.label}`,
-        detail: `Reward ${moneyLabel(offer.rewardGold)}, ${this.xp(offer.rewardXp)} XP${offer.kind === 'deliver' ? '  /  the parcel is handed over now' : ''}`,
+        detail: `Reward ${moneyLabel(offer.rewardGold)}, ${this.xp(offer.rewardXp)} XP${offer.kind === 'deliver' ? '  /  you get the parcel now' : ''}`,
         enabled: this.run.bounties.length < MAX_ACTIVE_BOUNTIES,
         run: () => void this.apply({ op: 'bounty-accept', town, id: offer.id }),
       });
@@ -875,7 +874,7 @@ export class ShopView extends Phaser.GameObjects.Container {
     if (!partyHasCodex(this.run)) {
       this.rows([{
         label: 'No Hex Codex',
-        detail: 'The scribe sells runes only to a party that owns a Hex Codex. It is on the Buy tab.',
+        detail: 'Runes need a Hex Codex (on the Buy tab).',
         enabled: false,
         run: () => undefined,
       }]);
@@ -883,8 +882,7 @@ export class ShopView extends Phaser.GameObjects.Container {
     }
     this.rows(runeOffers(this.run, this.shop).map((offer) => ({
       label: offer.sold ? `${offer.hint}  /  learned` : `${offer.hint}  /  ${moneyLabel(offer.price)}`,
-      detail: 'The scribe will not say more until it is paid for. Once learned, it lights up on the table with its name and what it becomes sealed.\n'
-        + 'Each rune costs five silver more than the last. New runes are offered each day.',
+      detail: '',
       enabled: !offer.sold && this.run.gold >= offer.price,
       run: () => void this.apply({ op: 'hex-rune', shop: this.shop.id, rune: offer.rune }),
     })));
@@ -895,25 +893,14 @@ export class ShopView extends Phaser.GameObjects.Container {
     const crafters = craftersIn(this.run, this.member);
     const objects = partyOf(this.run).some((mage) => mage.spellClass === 'objects');
     this.service('forge', 214, 104, {
-      label: 'Crafting bench',
+      label: 'Crafting',
       detail: crafters.length
-        ? 'Design a sword, staff, bow or armour from your materials, pour in mana and roll for it.'
+        ? ''
         : objects ? 'Only an Objects mage can craft, and only for themselves.' : 'Only an Objects mage can craft.',
       index: '1',
       enabled: crafters.length > 0,
       onActivate: () => this.openBench(),
     });
-    this.add(this.scene.add.text(640, 350, [
-      'Parts take materials (ores, hides, scales); sockets take focus pieces (gems, cores, fangs).',
-      'Score = materials + mana (up to 10) + two d20, keep the higher. A 20 counts 22, a pair 26.',
-      'The higher the score, the more effects the item draws from what its materials can lend.',
-    ].join('\n'), {
-      fontFamily: MENU_FONT.body,
-      fontSize: '14px',
-      color: MENU_HEX.boneDim,
-      align: 'center',
-      lineSpacing: 6,
-    }).setOrigin(0.5, 0));
   }
 
   private openBench(): void {

@@ -43,7 +43,7 @@ function buildHexItem(id: ItemId, recipe: HexRecipe): ItemDef {
   const bought = isBoughtHex(id);
   const blurb = known ? hexLines(recipe)
     : bought ? hexLines(recipe, false)
-    : ['Unread Hexzettel.'];
+    : ['Unread hex sheet.'];
   return {
     id,
     name: known ? hexName(recipe) : `${bought ? "Scribe's " : ''}${unreadHexName(recipe.paper, recipe.grids)}`,

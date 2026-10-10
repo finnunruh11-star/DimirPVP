@@ -472,7 +472,7 @@ export class MineMapView extends Phaser.GameObjects.Container implements MineVot
     await this.introDone;
     if (this.disposed) return;
     const { from, direction, to, trap } = plan;
-    this.quiet(`The party follows the ${MINE_DIRECTION_LABEL[direction].toLowerCase()} tunnel.`);
+    this.quiet(`Taking the ${MINE_DIRECTION_LABEL[direction].toLowerCase()} tunnel.`);
     this.setParty(plan.party);
     this.floorFx.removeAll(true);
     this.airFx.removeAll(true);
@@ -537,7 +537,7 @@ export class MineMapView extends Phaser.GameObjects.Container implements MineVot
     if (this.disposed) return;
     await this.introDone;
     if (this.disposed) return;
-    this.quiet('The party steps up to the doorway.');
+    this.quiet('Entering the room.');
     const room = this.nodePx(this.currentNode());
     if (this.reduced) {
       await this.tweenTo(this.fade, { alpha: 1 }, 140, 'Linear');
@@ -1111,7 +1111,7 @@ export class MineMapView extends Phaser.GameObjects.Container implements MineVot
     const cx = left + w / 2;
     const roomName = kind === 'ore' && room.oreKind ? `${MINE_ORE_DEFS[room.oreKind].name} deposit` : MINE_ROOM_VISUAL_LABEL[kind];
     const roomState = kind === 'shop'
-      ? 'SUPPLIES AVAILABLE'
+      ? 'SHOP'
       : kind === 'ore'
         ? room.resolved ? 'EXHAUSTED' : 'VEIN AVAILABLE'
         : kind === 'enemies'
@@ -1575,7 +1575,7 @@ export class MineMapView extends Phaser.GameObjects.Container implements MineVot
     this.rockFace(end, u);
     await this.sleep(this.reduced ? 140 : 640);
     if (this.disposed) return;
-    this.hintText.setText('Solid rock. The party turns back.');
+    this.hintText.setText('Dead end.');
     await this.walkFile(walkers, walkers.map((walker, index) => [{ ...walker.at }, a, starts[index]]), { reverse: true });
     if (this.disposed) return;
     this.follow = a;
@@ -1739,7 +1739,7 @@ export class MineMapView extends Phaser.GameObjects.Container implements MineVot
       fontStyle: 'bold',
       color: '#ff8a7a',
     });
-    const line = scene.add.text(-124, 6, trap.spotted ? `The light gave it away. ${who} braces.` : `${who} sets it off.`, {
+    const line = scene.add.text(-124, 6, trap.spotted ? `Spotted. ${who} braces.` : `${who} sets it off.`, {
       fontFamily: MENU_FONT.control,
       fontSize: '13px',
       fontStyle: 'bold',
@@ -1791,7 +1791,7 @@ export class MineMapView extends Phaser.GameObjects.Container implements MineVot
     };
     if (trap.dodged) {
       this.dodge(walker, u);
-      tell(`${who} leaps clear!`, '#9fe6a0');
+      tell(`${who} dodges!`, '#9fe6a0');
     }
     if (this.reduced) {
       strike();

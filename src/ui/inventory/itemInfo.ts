@@ -31,7 +31,7 @@ export const CATEGORY_LABEL: Record<ItemCategory, string> = {
   trinket: 'Trinket',
   consumable: 'Consumable',
   ammo: 'Ammunition',
-  arcana: 'Arcana',
+  arcana: 'Magic',
   tool: 'Tool',
   bag: 'Bag',
   key: 'Key Item',
@@ -108,7 +108,7 @@ const SLOT_WORD: Record<ItemDef['slot'], string> = {
   gloves: 'Gloves',
   boots: 'Feet',
   accessory: 'Accessory',
-  utility: 'Pack',
+  utility: 'Bag',
 };
 
 /** "Rare Weapon  /  Two hands", "Supply Material". */
@@ -149,9 +149,9 @@ export function itemFacts(def: ItemDef): string[] {
   if (def.resist?.weak?.length) facts.push(`Weak: ${def.resist.weak.map(cap).join(', ')}`);
   if (def.throwable) facts.push(`Thrown ${cm(def.throwable.rangePx)}${def.throwable.rollSpec ? `, ${def.throwable.rollSpec}` : ''}`);
   if (def.potion) facts.push('Drink: bonus action');
-  if (def.pack) facts.push(`${Number.isFinite(def.pack.slots) ? def.pack.slots : 'Endless'} pack slots`);
+  if (def.pack) facts.push(`${Number.isFinite(def.pack.slots) ? def.pack.slots : 'Unlimited'} bag slots`);
   if (def.lightRadiusPx) facts.push(`Light ${cm(def.lightRadiusPx)}`);
-  if (def.torchCombats != null) facts.push(`Burns ${def.torchCombats} fights`);
+  if (def.torchCombats != null) facts.push(`Lasts ${def.torchCombats} fights`);
   if (def.keyItem) facts.push('Never sold or dropped');
   if (def.permanentlyBinding) facts.push('Binds when worn');
   if (def.cursed) facts.push('Cursed');

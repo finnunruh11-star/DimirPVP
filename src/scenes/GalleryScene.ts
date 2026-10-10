@@ -53,13 +53,13 @@ export class GalleryScene extends Phaser.Scene {
   create(): void {
     const root = this.add.container(0, 0);
     addCabinetBackdrop(this, root);
-    const title = this.add.text(58, 42, 'CABINET UI GALLERY', {
+    const title = this.add.text(58, 42, 'UI GALLERY', {
       fontFamily: MENU_FONT.display,
       fontSize: '30px',
       fontStyle: 'bold',
       color: MENU_HEX.bone,
     });
-    const subtitle = this.add.text(60, 82, 'Representative production states. Select a surface to inspect.', {
+    const subtitle = this.add.text(60, 82, 'Pick a screen to open it.', {
       fontFamily: MENU_FONT.body,
       fontSize: '14px',
       color: MENU_HEX.boneDim,
@@ -95,19 +95,19 @@ export class GalleryScene extends Phaser.Scene {
       { key: 'ENTER', capture: true, run: () => { if (!this.active) this.focus.activate(); } },
       { key: 'ESC', capture: true, run: () => this.closeActive() },
     ]);
-    this.game.canvas.setAttribute('aria-label', 'Dimir cabinet UI gallery');
+    this.game.canvas.setAttribute('aria-label', 'Dimir UI gallery');
   }
 
   private open(factory: () => Phaser.GameObjects.Container): void {
     this.closeActive();
     this.active = factory();
-    this.game.canvas.setAttribute('aria-label', 'Dimir cabinet UI gallery window');
+    this.game.canvas.setAttribute('aria-label', 'Dimir UI gallery window');
   }
 
   private closeActive(): void {
     this.active?.destroy();
     this.active = null;
-    this.game.canvas.setAttribute('aria-label', 'Dimir cabinet UI gallery');
+    this.game.canvas.setAttribute('aria-label', 'Dimir UI gallery');
   }
 
   private entries(): GalleryEntry[] {
@@ -208,7 +208,7 @@ export class GalleryScene extends Phaser.Scene {
           carry: 'Carry 8/16 kg',
           readOnly: false,
           equipment: [
-            { id: firstItem, name: 'Cabinet Blade', location: 'Held', detail: 'Representative equipped item.', actions: [{ kind: 'unequip', label: 'Unequip' }, { kind: 'drop-hand', label: 'Drop', tone: 'danger', confirm: { title: 'Drop it?', body: 'It falls at your feet. Costs a bonus action.', label: 'Drop It' } }] },
+            { id: firstItem, name: 'Sample Blade', location: 'Held', detail: 'Sample equipped item.', actions: [{ kind: 'unequip', label: 'Unequip' }, { kind: 'drop-hand', label: 'Drop', tone: 'danger', confirm: { title: 'Drop it?', body: 'It falls at your feet. Costs a bonus action.', label: 'Drop It' } }] },
           ],
           supplies: [
             { id: secondItem, name: 'Restorative Flask', location: 'Utility', detail: 'Representative carried supply.', actions: [{ kind: 'consume', label: 'Use', tone: 'positive' }], count: 3 },
@@ -230,7 +230,7 @@ export class GalleryScene extends Phaser.Scene {
       },
       {
         label: 'PAUSE',
-        detail: 'Resume, motion, speed, and cabinet navigation.',
+        detail: 'Resume, motion, speed and menu navigation.',
         open: () => {
           let speed = 1;
           let view: PauseView;
@@ -263,9 +263,9 @@ export class GalleryScene extends Phaser.Scene {
       },
       {
         label: 'STAT ASSIGNMENT',
-        detail: 'Bone dice, quick builds, and attribute sockets.',
+        detail: 'Dice, quick builds and stat slots.',
         open: () => new StatAssignmentView(this, {
-          title: 'Vale / Assign Attributes',
+          title: 'Vale / Assign Stats',
           dice: ['d20', '2d6', '1d10', '1d8', '2d4', '1d6'].map((spec, index) => ({ spec, value: 12 - index })),
           placement: [0, 1, 2, 3, 4, 5],
           selectedDie: null,
@@ -349,8 +349,8 @@ export class GalleryScene extends Phaser.Scene {
         }, close),
       },
       {
-        label: 'PACK',
-        detail: 'Paper doll, sorted pack grid, item card, and guarded drops.',
+        label: 'BAG',
+        detail: 'Equipment, bag grid, item card and drop prompts.',
         open: () => {
           const run = this.sampleRun();
           return new PackView(this, run, { changed: () => undefined, close, actions: localActions(run) });
@@ -358,7 +358,7 @@ export class GalleryScene extends Phaser.Scene {
       },
       {
         label: 'SHOP COUNTER',
-        detail: 'Wares with prices, your goods, and counted sales.',
+        detail: 'Items for sale, your items and sales.',
         open: () => {
           const run = this.sampleRun();
           return new ShopView(this, run, shopById('capitol-apothecary') ?? Object.values(SHOPS)[0], {
@@ -395,8 +395,8 @@ export class GalleryScene extends Phaser.Scene {
     addCabinetWindow(this, panel, {
       width: 980,
       height: 570,
-      title: 'CORE CABINET KIT',
-      subtitle: 'Shared production primitives and state treatments.',
+      title: 'CORE CONTROLS',
+      subtitle: 'Shared buttons, chips and states.',
       accent: MENU_COLOR.brass,
       dismiss: () => this.closeActive(),
     });

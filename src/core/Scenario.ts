@@ -152,6 +152,7 @@ export interface ScenarioEntity {
   actions: { move: number; main: number; bonus: number };
   gear: {
     hands: ItemId[];
+    offhandOnly?: boolean;
     bag: ItemId[];
     head: ItemId | null;
     torso: ItemId | null;
@@ -311,6 +312,7 @@ function captureEntity(m: Mage, index: Map<Mage, number>): ScenarioEntity {
     actions: { ...m.actions },
     gear: {
       hands: [...m.hands],
+      offhandOnly: m.hands.length === 1 && m.offhandOnly,
       bag: [...m.bag],
       head: m.head,
       torso: m.torso,
@@ -597,6 +599,7 @@ function parseEntity(raw: unknown): ScenarioEntity {
     },
     gear: {
       hands: items(gear.hands).slice(0, 2),
+      offhandOnly: bool(gear.offhandOnly),
       bag: items(gear.bag),
       head: item(gear.head),
       torso: item(gear.torso),
@@ -804,6 +807,7 @@ function buildMage(e: ScenarioEntity, rng: Dice): Mage {
   m.actions = { ...e.actions };
 
   m.hands = [...e.gear.hands];
+  m.offhandOnly = m.hands.length === 1 && e.gear.offhandOnly === true;
   m.bag = [...e.gear.bag];
   m.head = e.gear.head;
   m.torso = e.gear.torso;

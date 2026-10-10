@@ -88,7 +88,7 @@ export function takeShortRest(run: ExplorationRun, members: readonly MageClass[]
         hours: cut,
         ambush: { kind, zone, depth, spawns },
         restored: [],
-        message: kind === 'robbery' ? 'Bandits fall on the camp before anyone has rested.' : 'Something finds the camp before anyone has rested.',
+        message: kind === 'robbery' ? 'Bandits attack the camp before anyone has rested.' : 'Enemies attack the camp before anyone has rested.',
       };
     }
   }
@@ -113,13 +113,13 @@ export function takeShortRest(run: ExplorationRun, members: readonly MageClass[]
       ambush: null,
       bloodmoon: true,
       restored,
-      message: `The bloodmoon rises ${took > 0 ? `${spanLabel(took)} in` : 'before anyone lies down'}.${gains.length ? ` ${gains.join('.  ')}.` : ''}`,
+      message: `The bloodmoon rises ${took > 0 ? `after ${spanLabel(took)}` : 'before anyone rests'}.${gains.length ? ` ${gains.join('.  ')}.` : ''}`,
     };
   }
   return {
     hours,
     ambush: null,
     restored,
-    message: restored.length ? `Rested. ${gains.join('.  ')}.` : 'Nobody standing can rest.',
+    message: restored.length ? `Rested. ${gains.join('.  ')}.` : 'Nobody alive can rest.',
   };
 }

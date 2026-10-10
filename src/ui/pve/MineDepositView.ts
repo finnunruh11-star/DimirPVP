@@ -33,7 +33,7 @@ const PICKS = { x: 784, y: 586, size: 36, gap: 8, shown: 6 } as const;
 const DANGER = 0xe0645a;
 /** How long the die tumbles before it lands. */
 const TUMBLE_MS = 480;
-const FINISH_FIRST = 'Finish this vein first: it comes free or gives way within a few strikes.';
+const FINISH_FIRST = 'Finish this vein first.';
 
 export interface MineDepositModel {
   title: string;
@@ -150,7 +150,7 @@ export class MineDepositView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.brassLight,
     });
-    const rules = scene.add.text(BAR.x + BAR.w, 581, `NEEDS ${model.ore.miningValue}  ·  ${model.ore.failCount} STRIKES  ·  D20 + STR  ·  1-2 CHIPS THE PICK`, {
+    const rules = scene.add.text(BAR.x + BAR.w, 581, `NEEDS ${model.ore.miningValue}  ·  ${model.ore.failCount} STRIKES`, {
       fontFamily: MENU_FONT.control,
       fontSize: '11px',
       fontStyle: 'bold',
@@ -237,10 +237,10 @@ export class MineDepositView extends Phaser.GameObjects.Container {
     }
 
     this.say(model.pickaxes.length === 0
-      ? 'No pickaxe: the ore stays in the rock until the party has one. Supply rooms sell them.'
+      ? 'No pickaxe. Mine shops sell them.'
       : model.interactive
-        ? 'Pick a vein on the rock face, then strike it: every swing throws a d20 plus the miner\'s Strength into the dig.'
-        : 'The party leader picks a vein and swings: every strike throws a d20 plus the miner\'s Strength into the dig.');
+        ? 'Pick a vein.'
+        : 'The party leader is mining.');
     this.refresh();
     if (!this.reduced) {
       scene.tweens.add({ targets: this.marks, alpha: { from: 1, to: 0.5 }, duration: 620, yoyo: true, repeat: -1, ease: 'Sine.InOut' });
@@ -251,8 +251,7 @@ export class MineDepositView extends Phaser.GameObjects.Container {
   select(slot: number): void {
     if (this.disposed) return;
     this.selected = slot;
-    const { miningValue, failCount } = this.model.ore;
-    this.say(`Vein ${slot + 1}: ${miningValue} frees the ore. After ${failCount} strikes without it, the seam gives way.`);
+    this.say(`Vein ${slot + 1}.`);
     this.refresh();
     const tag = this.tags[slot];
     if (tag && !this.reduced) {
@@ -362,23 +361,23 @@ export class MineDepositView extends Phaser.GameObjects.Container {
       this.burst(rect);
       this.stamp(rect, 'EXTRACTED', 0xe6c25a);
       playSound('ui.confirm');
-      text = strike.haul ?? `The ${ore.name.toLowerCase()} comes free.`;
+      text = strike.haul ?? `Mined the ${ore.name.toLowerCase()}.`;
     } else if (strike.outcome === 'collapsed') {
       this.picture.setVein(strike.vein, 'collapsed');
       this.dust(rect);
       this.stamp(rect, 'COLLAPSED', DANGER);
       playSound('shield.bash');
       if (!quick) scene.cameras.main.shake(240, 0.004);
-      text = 'The seam gives way and buries the ore. That vein is lost.';
+      text = 'The vein collapsed. The ore is lost.';
     } else {
       const short = ore.miningValue - strike.progress;
       const left = ore.failCount - strike.strike;
-      text = `${crit ? 'A clean strike! ' : chipped ? 'A glancing blow. ' : ''}${short} more frees the ore; ${left} strike${left === 1 ? '' : 's'} before the seam gives way.`;
+      text = `${crit ? 'Critical! ' : chipped ? 'Weak hit. ' : ''}${short} more needed; ${left} strike${left === 1 ? '' : 's'} left.`;
     }
     if (strike.miner) text = `${strike.miner}: ${strike.roll} + ${strike.bonus} STR. ${text}`;
     if (strike.broke) text += ' The pickaxe breaks.';
-    else if (strike.durabilityLost) text += ' The pick chips.';
-    if (!strike.outcome && this.model.pickaxes.length === 0) text += ' No pickaxe left to finish it.';
+    else if (strike.durabilityLost) text += ' The pickaxe is damaged.';
+    if (!strike.outcome && this.model.pickaxes.length === 0) text += ' No pickaxe left.';
     this.say(text);
 
     await this.wait(quick ? 120 : 480);
@@ -488,7 +487,7 @@ export class MineDepositView extends Phaser.GameObjects.Container {
 
     const vein = veins[this.selected];
     if (vein) {
-      const done = vein.outcome === 'extracted' ? '  ·  FREED' : vein.outcome === 'collapsed' ? '  ·  COLLAPSED' : '';
+      const done = vein.outcome === 'extracted' ? '  ·  MINED' : vein.outcome === 'collapsed' ? '  ·  COLLAPSED' : '';
       this.heading.setText(`VEIN ${this.selected + 1}${done}`).setColor(cssColor(vein.outcome === 'collapsed' ? DANGER : this.color));
       this.drawProgress(vein.progress, vein.strikes);
     } else {

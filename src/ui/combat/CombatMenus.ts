@@ -84,7 +84,7 @@ export class ActionMenuView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.bone,
     });
-    const subtitle = scene.add.text(128, 118, 'Choose a command. Click \u2606 to pin an action to the side of the screen.', {
+    const subtitle = scene.add.text(128, 118, '', {
       fontFamily: MENU_FONT.body,
       fontSize: '13px',
       color: MENU_HEX.boneDim,
@@ -562,7 +562,7 @@ export class OfferingMenuView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.brassLight,
     }).setOrigin(0.5, 0).setLetterSpacing(1);
-    const subtitle = scene.add.text(GAME_WIDTH / 2, top + 84, 'It settles on your shoulder. What will you give it for the day?', {
+    const subtitle = scene.add.text(GAME_WIDTH / 2, top + 84, 'Choose what to give it for the day.', {
       fontFamily: MENU_FONT.body,
       fontSize: '13px',
       color: MENU_HEX.boneDim,
@@ -592,7 +592,7 @@ export class OfferingMenuView extends Phaser.GameObjects.Container {
       this.setLife(Math.max(0, Math.min(options.lifeMax, this.life + d * 4)))
     );
     this.itemsButton = row(
-      'Your items, for the day',
+      'Your items (for the day)',
       options.items ? '+2 points. No potions or throws until the day is over.' : 'Already given today.',
       options.items,
       () => {
@@ -602,7 +602,7 @@ export class OfferingMenuView extends Phaser.GameObjects.Container {
       }
     );
     options.summons.forEach((name, index) => {
-      const button = row(name, '+1 point. The Shikigami devours it.', true, () => {
+      const button = row(name, '+1 point. The summon is destroyed.', true, () => {
         if (this.picked.has(index)) this.picked.delete(index);
         else this.picked.add(index);
         button.setSelected(this.picked.has(index));
@@ -646,7 +646,7 @@ export class OfferingMenuView extends Phaser.GameObjects.Container {
     this.lifeButton.setCopy(
       this.options.lifeMax > 0 ? `Maximum health: -${life}` : 'Maximum health',
       this.options.lifeMax > 0
-        ? `+${life / 4} points. Up to ${this.options.lifeMax}, in fours (left / right).`
+        ? `+${life / 4} points (max ${this.options.lifeMax}).`
         : 'Nothing more to give today.'
     );
     this.lifeButton.setSelected(life > 0);

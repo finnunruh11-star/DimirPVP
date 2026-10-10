@@ -4,6 +4,7 @@ import {
   type MageClass,
 } from '../../core/Classes';
 import type { Scenario } from '../../core/Scenario';
+import { WORD_COLOR, type WordColor } from '../../core/Colors';
 import {
   ALL_GRID_WORDS,
   MODIFIER_WORDS,
@@ -39,6 +40,14 @@ export interface MageDraft {
 }
 
 export type SecretPreset = 'NAD' | 'KAT' | 'GEN' | 'SNIFF';
+
+const BUILDER_COLOR_ORDER: Record<WordColor, number> = {
+  blue: 0,
+  black: 1,
+  red: 2,
+  none: 3,
+  white: 4,
+};
 
 const PRESET_LOADOUTS: Record<SecretPreset, readonly WordId[]> = {
   NAD: ['mind', 'shatter', 'twist', 'reality'],
@@ -231,7 +240,8 @@ export class MenuModel {
   }
 
   visibleWords(): WordId[] {
-    return this.unlockedWords.has('storm') ? [...ALL_GRID_WORDS, 'storm'] : ALL_GRID_WORDS;
+    const words: WordId[] = this.unlockedWords.has('storm') ? [...ALL_GRID_WORDS, 'storm'] : [...ALL_GRID_WORDS];
+    return words.sort((first, second) => BUILDER_COLOR_ORDER[WORD_COLOR[first]] - BUILDER_COLOR_ORDER[WORD_COLOR[second]]);
   }
 
   loadoutLimit(): number {
@@ -262,20 +272,20 @@ export class MenuModel {
   validationIssues(): string[] {
     const issues: string[] = [];
     if (!this.itemSets.original && !this.itemSets.finns && !this.itemSets.dlc) {
-      issues.push('Enable at least one content pack.');
+      issues.push('Turn on at least one content set.');
     }
     for (const seat of this.capability.usesBuild ? this.localDraftSeats() : []) {
       if (!this.loadoutReady(seat)) issues.push(`Player ${seat + 1}'s build is incomplete.`);
     }
     if (this.role === 'host' && this.humanCount() < 2) {
-      issues.push('Online rooms require at least two human seats.');
+      issues.push('Online rooms need at least two human players.');
     }
     if (this.mode === 'raid' && this.raidBoss === 'reaper' && !canSpawnReaper(this.seatCount)) {
-      issues.push(`The Reaper requires at least ${REAPER_MIN_PARTY_SIZE} party members.`);
+      issues.push(`The Reaper needs at least ${REAPER_MIN_PARTY_SIZE} players.`);
     }
     if (this.teamFormat === 'teams' && !isPveRunMode(this.mode) && this.seatCount > 1) {
       const teams = Array.from({ length: this.seatCount }, (_, seat) => this.teamOf(seat));
-      if (!teams.includes(1) || !teams.includes(2)) issues.push('Both teams need at least one combatant.');
+      if (!teams.includes(1) || !teams.includes(2)) issues.push('Each team needs at least one player.');
     }
     return issues;
   }
@@ -314,7 +324,7 @@ export class MenuModel {
     if (this.mode === 'online' || this.role !== 'local') {
       throw new Error('Online matches are assembled by the lobby coordinator.');
     }
-    if (this.mode === 'memory') throw new Error('Memory matches require a loaded scenario.');
+    if (this.mode === 'memory') throw new Error('Load a scenario file first.');
 
     // The tutorial teaches one scripted fight, so it supplies its own build and
     // skips the roster / build / pack screens entirely.
@@ -349,7 +359,7 @@ export class MenuModel {
       const draft = this.draftFor(seat);
       // Without a menu build the words and the class are chosen in the world.
       if (human && !builds) {
-        return { name: this.seatCount > 1 ? `Player ${seat + 1}` : 'Traveller', team: this.teamOf(seat), isAI: false, loadout: [] };
+        return { name: this.seatCount > 1 ? `Player ${seat + 1}` : 'Player', team: this.teamOf(seat), isAI: false, loadout: [] };
       }
       return {
         name: human ? `Player ${seat + 1}` : this.seatCount > 2 ? `AI ${seat + 1}` : 'AI',

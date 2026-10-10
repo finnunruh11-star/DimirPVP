@@ -101,23 +101,13 @@ export function rollExploreCraft(zone: RegionId, level: PowerLevel, dice: Dice):
   throw new Error(`No ${level.name} crafting design could be found for ${zone}`);
 }
 
-const WHERE: Record<RegionId, string[]> = {
-  capitol: ['In a hedgerow', 'Under a milestone', 'By an old well'],
-  forest: ['Under a fallen oak', 'In a hollow stump', 'Among the ferns'],
-  red: ['In a rock crevice', 'Beside a steaming vent', 'Under a cairn'],
-  black: ['Half-sunk in the mud', 'In a drowned cart', 'On a grave mound'],
-  lake: ['Washed up on the shore', 'In a beached rowboat', 'Among the reeds'],
-  white: ['Under a dune crest', 'In a sun-bleached skeleton', 'Beside a half-buried pillar'],
-};
-
 /** Hand the party one find and say what it was. Things, never coin, and nothing learned from it. */
 export function rollFind(run: ExplorationRun, zone: RegionId, depth: number, dice: Dice): string {
-  const where = dice.pick(WHERE[zone]);
   const roll = dice.float();
   const pool = roll < 0.55 ? HERBS[zone] : roll < 0.75 ? SUPPLIES : roll < 0.93 || depth < 3 ? GEMS[zone] : LOST_KIT;
   const id = dice.pick(pool);
   const count = pool === HERBS[zone] ? dice.die(2) : id === 'arrow' ? 3 + dice.die(4) : 1;
-  return `${where}: ${grant(run, id, count)}.`;
+  return `Found ${grant(run, id, count)}.`;
 }
 
 /** Explore's d20 find: 1-10 nothing, then increasingly powerful crafted gear. */
@@ -134,9 +124,8 @@ export function rollExploreFindLoot(run: ExplorationRun, zone: RegionId, roll: n
     : roll <= 18 ? POWER_LEVELS[2] : roll === 19 ? POWER_LEVELS[3]
       : (rare ?? dice.die(20)) <= 10 ? POWER_LEVELS[4] : POWER_LEVELS[5];
   const id = rollExploreCraft(zone, level, dice);
-  const where = dice.pick(WHERE[zone]);
   const left = grantToParty(run, id);
-  return { message: `${where}: ${haulLabel(id, 1, left)}.`, item: id, left };
+  return { message: `Found ${haulLabel(id, 1, left)}.`, item: id, left };
 }
 
 function grant(run: ExplorationRun, id: ItemId, count: number): string {

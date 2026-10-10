@@ -187,7 +187,7 @@ variants(
           const start = victim.turnStartState;
           if (victim.forgotten().length > 0 && start) {
             rift(ctx.game, drinker, victim, { x: start.x, y: start.y });
-            ctx.game.log(`${victim.name} wakes where its last turn began.`);
+            ctx.game.log(`${victim.name} returns to where its last turn began.`);
             return;
           }
           runHitEffects(strike, [{ k: 'forget', count: 1, turns: 2 }]);

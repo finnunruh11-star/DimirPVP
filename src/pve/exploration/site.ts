@@ -237,7 +237,7 @@ export function siteFind(run: ExplorationRun, site: EncounterSite, secret: Secre
       const snake = siteId(site, 'snake');
       if (site.twist === 'snake' && hasMonsters(site.zone) && index === snakeIndex(site, plan) && run.groupsBeaten[snake] == null) {
         const spawns = rollEncounter(site.zone, 'monsters', Math.max(1, site.depth - 1), new Dice((site.seed ^ 0x51a7) >>> 0)).slice(0, 2);
-        return { message: 'Something was coiled in the leaves!', fight: ambushPack(site, snake, spawns, secret, 'coiled in the herbs'), trap: true };
+        return { message: 'Ambush: something was hiding in the herbs!', fight: ambushPack(site, snake, spawns, secret, 'hiding in the herbs'), trap: true };
       }
       const herb = site.herb ?? HERBS[site.zone][0];
       return {
@@ -249,7 +249,7 @@ export function siteFind(run: ExplorationRun, site: EncounterSite, secret: Secre
       const trap = siteId(site, 'trap');
       if (site.twist === 'trap' && hasMonsters(site.zone) && run.groupsBeaten[trap] == null) {
         const spawns = rollEncounter(site.zone, 'monsters', site.depth, new Dice((site.seed ^ 0x7a9) >>> 0));
-        return { message: 'It was bait! They were lying in wait.', fight: ambushPack(site, trap, spawns, secret, 'lying in wait'), trap: true };
+        return { message: 'Ambush: it was a trap!', fight: ambushPack(site, trap, spawns, secret, 'lying in wait'), trap: true };
       }
       const found = rollCache(run, site.zone, site.depth, dice, thing.label);
       const coin = dice.chance(0.5) ? ` And ${purse(run, 2 + dice.die(6))}.` : '';
@@ -293,7 +293,7 @@ export function siteGoals(run: ExplorationRun, site: EncounterSite): SiteGoal[] 
   const trinkets = plan.things.filter((entry) => entry.role === 'trinket');
   if (trinkets.length) {
     const picked = trinkets.filter((entry) => found(entry.id)).length;
-    goals.push({ label: `Odds and ends  ${picked}/${trinkets.length}`, done: picked === trinkets.length, optional: true });
+    goals.push({ label: `Small finds  ${picked}/${trinkets.length}`, done: picked === trinkets.length, optional: true });
   }
   return goals;
 }
@@ -307,10 +307,10 @@ export function siteDone(run: ExplorationRun, site: EncounterSite): boolean {
 export function siteIntro(site: EncounterSite): string {
   if (site.kind === 'pack') {
     const spawns = site.spawns ?? [];
-    return `${describeSpawns(spawns)} asleep ahead. Sneak up (C) and strike first (F).`;
+    return `${describeSpawns(spawns)} asleep ahead.`;
   }
-  if (site.kind === 'herbs') return `${getItem(site.herb ?? HERBS[site.zone][0]).name} grows here. Hold E by a patch to pick it.`;
-  return `${site.place ?? 'The ruin'}. Hold E by it to search.`;
+  if (site.kind === 'herbs') return `${getItem(site.herb ?? HERBS[site.zone][0]).name} grows here.`;
+  return `${site.place ?? 'The ruin'} ahead.`;
 }
 
 // -----------------------------------------------------------------------------

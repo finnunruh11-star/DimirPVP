@@ -142,7 +142,7 @@ import {
   type WordId,
 } from '../core/Words';
 import { MAGE_CLASSES, MAGE_CLASS_DEFS, type MageClass } from '../core/Classes';
-import { stormWordsCompatible, WORD_COLOR, wordSpellMana, type ColorName } from '../core/Colors';
+import { stormWordsCompatible, WORD_COLOR, wordCardColor, wordSpellMana, type ColorName } from '../core/Colors';
 import { levelWordPool } from '../pve/exploration/levels';
 import {
   STAT_DEFS,
@@ -641,7 +641,8 @@ type TurnCommand =
   | { t: 'item-use'; itemId: string }
   | { t: 'item-ready'; itemId: string }
   | { t: 'pouch-store' | 'pouch-remove'; itemId: string }
-  | { t: 'item-equip'; itemId: string; replace?: string }
+  | { t: 'item-equip'; itemId: string; replace?: string; hand?: 'main' | 'off' }
+  | { t: 'item-swap-hands' }
   | { t: 'item-unequip'; itemId: string }
   | { t: 'item-throw'; itemId: string; target: number }
   | { t: 'hex'; itemId: string; target: number | null; x?: number; y?: number }
@@ -751,7 +752,7 @@ const bodyAnimationKey = (mage: Mage, state: BodyAnimState): string => {
   return `enemy-${kind}-${creatureState}`;
 };
 
-/** What the owner shouts for each standing order. */
+/** The standing order given to every summon at once. */
 const SHOUT_LABEL: Record<SummonOrderKind, string> = {
   return: 'RETURN',
   flee: 'FLEE',
@@ -760,10 +761,10 @@ const SHOUT_LABEL: Record<SummonOrderKind, string> = {
 };
 
 const SHOUT_DESC: Record<SummonOrderKind, string> = {
-  return: 'All summons run back to you, every turn, until given another command (bonus action).',
-  flee: 'All summons run as far from enemies as they can for 2 turns, or until given another command (bonus action).',
-  attack: 'Pick an enemy: all summons run at it and attack it until given another command (bonus action).',
-  anyone: 'All summons attack the enemy closest to them until given another command (bonus action).',
+  return: 'All summons return to you each turn until given another order. Bonus action.',
+  flee: 'All summons flee from enemies for 2 turns or until given another order. Bonus action.',
+  attack: 'Pick an enemy: all summons attack it until given another order. Bonus action.',
+  anyone: 'All summons attack the nearest enemy until given another order. Bonus action.',
 };
 
 /** How the action palette is grouped, so it reads as short lists. */
@@ -1354,7 +1355,7 @@ export class GameScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
     const note = this.add
-      .text(cx, cy + 34, 'Loading the cabinet\u2026', {
+      .text(cx, cy + 34, 'Loading\u2026', {
         fontFamily: MENU_FONT.control,
         fontSize: '12px',
         color: MENU_HEX.boneDim,
@@ -1372,7 +1373,7 @@ export class GameScene extends Phaser.Scene {
 
     this.load.on(Phaser.Loader.Events.PROGRESS, (progress: number) => {
       draw(progress);
-      note.setText(`Loading the cabinet\u2026 ${Math.round(progress * 100)}%`);
+      note.setText(`Loading\u2026 ${Math.round(progress * 100)}%`);
     });
     this.load.once(Phaser.Loader.Events.COMPLETE, () => {
       this.load.off(Phaser.Loader.Events.PROGRESS);
@@ -1624,7 +1625,7 @@ export class GameScene extends Phaser.Scene {
     this.spellVfx = new SpellVfx(this, () => this.reducedMotion, () => this.combatSpeed);
     if (this.raid && this.raidBoss === 'reaper' && !canSpawnReaper(this.swamprunPartySize())) {
       this.raidBoss = 'lich';
-      this.gs.log('The Reaper requires at least two party members. The Lich answers this solo Raid instead.');
+      this.gs.log('The Reaper needs at least two players. The Lich replaces it in a solo raid.');
     }
     if (scenario) {
       this.gs.restoreScarabs(scenarioToScarabs(scenario, mages));
@@ -1889,7 +1890,7 @@ export class GameScene extends Phaser.Scene {
         this.gs.log('Only one side is present — victory checks are off. Press [P] to edit the fight.');
       }
       this.gs.log(
-        `Memory loaded — "${this.memoryName}" (round ${this.gs.round}, ${this.gs.mages.length} entities).`
+        `Scenario loaded: "${this.memoryName}" (round ${this.gs.round}, ${this.gs.mages.length} units).`
       );
       this.startTurn();
       return;
@@ -1935,7 +1936,7 @@ export class GameScene extends Phaser.Scene {
         if (this.opponentLeft) return;
       } else {
         for (const mage of this.gs.mages) mage.assignFlatStats(4);
-        this.gs.log('Quick start — all stats are 4 and the party enters without starting gear.');
+        this.gs.log('Quick start: all stats are 4, no starting gear.');
       }
       if (this.mineRun) {
         await this.setupMineExploration();
@@ -2002,7 +2003,7 @@ export class GameScene extends Phaser.Scene {
     // Reactions are a chapter of their own; until then every window auto-passes
     // so the player is not prompted on turn boundaries they cannot use yet.
     this.autoPassReactions = true;
-    this.gs.log('Guided tutorial — follow the prompts. Nothing here can kill you.');
+    this.gs.log('Tutorial: you cannot die here.');
     this.tutorialView = new TutorialView(
       this,
       TUTORIAL_STEPS,
@@ -2102,7 +2103,7 @@ export class GameScene extends Phaser.Scene {
         dummy.trainingPassive = false;
         this.autoPassReactions = false;
         this.refreshAutoPassButton();
-        this.gs.log('The dummy stirs. It will attack on its turn.');
+        this.gs.log('The dummy will attack on its turn.');
         break;
       case 'calm-enemy':
         // Auto-pass again: the AI turn may still have actions left, and every one
@@ -2155,9 +2156,9 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'over';
     this.busy = false;
     this.showEndCard({
-      eyebrow: 'TUTORIAL COMPLETE',
-      title: 'YOU KNOW ENOUGH',
-      detail: 'Controls, spellcraft, the inventory, the stack, and summons. The Training Lab has the same field with no script.',
+      eyebrow: 'TUTORIAL',
+      title: 'COMPLETE',
+      detail: '',
       actionLabel: 'RETURN TO MAIN MENU',
       tone: 'victory',
       onActivate: () => this.returnToMenu(),
@@ -2174,8 +2175,7 @@ export class GameScene extends Phaser.Scene {
       m.resetDodges();
       m.resetCombatReactions();
     }
-    this.gs.log('Scenario Lab — press [P] to add entities, move them, kit them out, and save.');
-    this.gs.log('Victory checks are off while you build; switch them on in the lab to test the fight.');
+    this.gs.log('Scenario Lab — [P] opens the editor. Victory checks are off.');
   }
 
   /** Re-apply creature tints/scales after a roster arrives without spawn calls. */
@@ -2202,7 +2202,7 @@ export class GameScene extends Phaser.Scene {
     this.prepareExplorationParty(combat);
     if (combat.boss) {
       this.spawnBloodmoonBoss(combat.boss);
-      this.gs.log(`— The bloodmoon rises. ${BOSSES[combat.boss.id].name} attacks. There is no running from it. —`);
+      this.gs.log(`— Bloodmoon: ${BOSSES[combat.boss.id].name} attacks. No fleeing. —`);
       const rushing = this.gs.extraTurnQueue.splice(0);
       this.gs.startNewCombat({ preserveScarabs: true });
       if (rushing.length) this.actFirst(rushing);
@@ -2226,8 +2226,8 @@ export class GameScene extends Phaser.Scene {
     const spawns = [...rolled, ...rollReinforcements(zone, kind, this.swamprunWave, this.gs.rng, partyScale(fighters) - 1)];
     this.gs.log(
       combat.encounter === 'robbery'
-        ? `— Ambush! ${spawns.length} bandit${spawns.length === 1 ? '' : 's'}, and they moved first. —`
-        : `— ${combat.label ?? `${spawns.length} foe${spawns.length === 1 ? '' : 's'} bar the road.`} —`
+        ? `— Ambush! ${spawns.length} bandit${spawns.length === 1 ? '' : 's'} act first. —`
+        : `— ${combat.label ?? `${spawns.length} foe${spawns.length === 1 ? '' : 's'}.`} —`
     );
     for (const spawn of spawns) {
       if (spawn.family === 'swamp') this.spawnEnemy(spawn.kind);
@@ -2293,12 +2293,12 @@ export class GameScene extends Phaser.Scene {
   /** A handcrafted scene: everyone where the scene put them, on their own side, among its props. */
   private spawnScene(fight: SceneFight, label: string | undefined): void {
     const fighters = this.gs.mages.filter((m) => m.team === 1 && !m.isSummon).length;
-    this.gs.log(`— ${label ?? 'Trouble ahead.'} —`);
+    this.gs.log(`— ${label ?? 'Enemies ahead.'} —`);
     for (const unit of sceneRoster(fight, fighters)) {
       this.spawnSceneUnit(unit, { x: FIELD.x + FIELD.w * unit.x, y: FIELD.y + FIELD.h * unit.y });
     }
     drawSceneProps(this, FIELD, fight.props, this.reducedMotion);
-    if (this.gs.mages.some((m) => m.team === 3)) this.gs.log('Two sides fight here: both will turn on you, and on each other.');
+    if (this.gs.mages.some((m) => m.team === 3)) this.gs.log('Two enemy sides: both attack you and each other.');
     const escort = this.gs.mages.filter((m) => m.sceneSide === 'escort');
     if (escort.length) this.gs.log(`${escort.map((m) => m.name).join(' and ')} fights on your side.`);
   }
@@ -2567,7 +2567,7 @@ export class GameScene extends Phaser.Scene {
       if (hauled.taken.length) this.gs.log(`The boss leaves ${this.materialTally(hauled.taken)}.`);
       if (hauled.left.length) this.gs.log(`No room to carry, left behind: ${this.materialTally(hauled.left)}.`);
       this.addRunXp(this.xpToNextLevel() - this.runXp);
-      this.gs.log('The bloodmoon sets. The party can claim its earned levels at long rest.');
+      this.gs.log('Bloodmoon over. Claim earned levels at a long rest.');
     }
     this.explorationWon = true;
     this.endGame();
@@ -2613,7 +2613,7 @@ export class GameScene extends Phaser.Scene {
       await this.setupMineExploration();
       return;
     }
-    this.gs.log(`— ${DUNGEONS[this.dungeon!].name}. No rest or shop until you are out. —`);
+    this.gs.log(`— ${DUNGEONS[this.dungeon!].name}. No rest or shop inside. —`);
     this.spawnWave(1);
     this.startTurn();
   }
@@ -2653,9 +2653,9 @@ export class GameScene extends Phaser.Scene {
     const depth = this.swamprunWave;
     return new Promise<'deeper' | 'back'>((resolve) => {
       const panel = new ChoiceMenuView<'deeper' | 'back'>(this, `DEPTH ${depth} CLEARED`,
-        `${name}. No rest or shop until you are out. The way back crosses every cleared depth, with a ${Math.round(DUNGEON_REFIGHT * 100)}% chance of a fight at each.`, [
-          { id: 'deeper', label: 'Go deeper', detail: `Depth ${depth + 1}: harder foes, better drops.` },
-          { id: 'back', label: 'Turn back', detail: depth > 1 ? `Walk out through ${depth - 1} cleared depth${depth > 2 ? 's' : ''}.` : 'Walk straight out.' },
+        `${name}. Turning back: ${Math.round(DUNGEON_REFIGHT * 100)}% fight chance per cleared depth.`, [
+          { id: 'deeper', label: 'Go deeper', detail: `Depth ${depth + 1}` },
+          { id: 'back', label: 'Turn back', detail: '' },
         ], (selected) => {
           panel.destroy();
           this.mode = previousMode;
@@ -2755,10 +2755,10 @@ export class GameScene extends Phaser.Scene {
     for (const mage of this.gs.mages) mage.swamprunCurse = undefined;
     this.gs.log(
       this.mineRun
-        ? 'Mine Run — stone shifts in the dark. Survive as long as you can.'
+        ? 'Mine Run — survive as long as you can.'
         : this.raid
-          ? `Raid — prepare against the effigies, then summon ${raidTargetName(this.raidBoss)} when you are ready.`
-          : 'Swamprun — the swamp stirs. Survive as long as you can.'
+          ? `Raid — ${raidTargetName(this.raidBoss)}.`
+          : 'Swamprun — survive as long as you can.'
     );
     this.spawnWave(1);
   }
@@ -2789,16 +2789,16 @@ export class GameScene extends Phaser.Scene {
     this.mineChestCursor = 0;
     this.mode = 'shop';
     const mapNote = this.dungeon !== 'mines' ? ''
-      : this.mineRemembers ? ' The Minemap keeps the tunnels walked before.' : ' No Minemap: the party maps the tunnels afresh.';
+      : this.mineRemembers ? ' Minemap: on.' : ' No Minemap.';
     this.gs.log(this.dungeon
-      ? `The Mines. ${this.minePickaxes.length ? `Pickaxes: ${this.minePickaxes.length} (10 durability each).` : 'No pickaxe: ore cannot be mined.'} No shops inside; the way out is the entrance.${mapNote}`
-      : 'Mine Run — the party enters a branching tunnel with one worn pickaxe (2 durability).');
+      ? `The Mines. ${this.minePickaxes.length ? `Pickaxes: ${this.minePickaxes.length}.` : 'No pickaxe.'} No shops inside.${mapNote}`
+      : 'Mine Run — one pickaxe (2 durability).');
     this.updateWaveHud();
     this.redraw();
     if (this.dungeon === 'mines') {
       const choice = await this.promptMineChoice('MINE ENTRANCE',
-        'This is a way to the surface. Other exits are rare. Time passes in the tunnels.',
-        'The next bloodmoon reshapes the mine. Anyone still inside when it rises will be crushed.', [
+        '',
+        'Anyone still inside when the next bloodmoon rises dies.', [
           { id: 'explore', label: 'Explore the mine' },
           { id: 'leave', label: 'Leave through entrance' },
         ], undefined, true);
@@ -2832,7 +2832,7 @@ export class GameScene extends Phaser.Scene {
   /** Walk a passage on the map and handle the arrival before asking for another route. */
   private async travelMineTunnel(direction: MineDirection): Promise<void> {
     if (!this.mineMaze || this.mineRunEnded) return;
-    this.gs.log(`The party follows the ${MINE_DIRECTION_LABEL[direction].toLowerCase()} tunnel.`);
+    this.gs.log(`The party takes the ${MINE_DIRECTION_LABEL[direction].toLowerCase()} tunnel.`);
     const from = currentMineNode(this.mineMaze);
     // Tunnels run from a third of a standard tunnel to twice one, and take as long to walk.
     const hours = mineTunnelHours(this.mineMaze, from, direction);
@@ -2842,7 +2842,7 @@ export class GameScene extends Phaser.Scene {
     const result = travelMineMaze(this.mineMaze, direction, dice);
     const party = this.mineParty();
     if (result.blocked) {
-      this.gs.log('The passage ends in solid stone. The map has been corrected.');
+      this.gs.log('Dead end. Map updated.');
       await view.walk({ from, direction, party: this.mineWalkers(party) });
       return;
     }
@@ -2882,7 +2882,7 @@ export class GameScene extends Phaser.Scene {
     if (this.dungeon !== 'mines' || !this.explorationCombat || this.mineRunEnded) return false;
     if (!spendMineHours(this.explorationCombat.run, hours)) return false;
     this.mineCrushed = true;
-    this.gs.log('The bloodmoon rises. The mine shifts and crushes everyone inside.');
+    this.gs.log('The bloodmoon rises. Everyone in the mine dies.');
     for (const mage of this.gs.mages) {
       if (mage.team === 1 && !mage.isSummon) mage.hp = 0;
     }
@@ -2937,13 +2937,13 @@ export class GameScene extends Phaser.Scene {
       hidden: false,
     };
     const odds = `${spotted ? 'Spotted by the light  •  ' : ''}${Math.round(dodgeChance * 100)}% evade chance`;
-    if (spotted) this.gs.log(`The party's light reveals a ${name.toLowerCase()} (${spec}) before it springs.`);
+    if (spotted) this.gs.log(`The party's light reveals a ${name.toLowerCase()} (${spec}).`);
     if (dodged) {
-      this.gs.log(`${target.name} evades the ${name.toLowerCase()} (${spec}). The mechanism is spent.`);
+      this.gs.log(`${target.name} evades the ${name.toLowerCase()} (${spec}). The trap is used up.`);
       await this.promptMineChoice(
         spotted ? 'TRAP EVADED' : 'LAST-SECOND DODGE',
         `${odds} succeeded.`,
-        `${target.name} escapes unharmed. This passage's trap cannot trigger again.`,
+        `${target.name} is unharmed. The trap is used up.`,
         [{ id: 'continue', label: 'Keep moving', color: '#9fe6a0' }],
         picture
       );
@@ -2959,7 +2959,7 @@ export class GameScene extends Phaser.Scene {
     } else {
       target.hp -= dealt;
       this.gs.log(clung
-        ? `${target.name} triggers a ${name.toLowerCase()}: ${spec} rolls ${amount}, but full health keeps them alive at 1 HP.`
+        ? `${target.name} triggers a ${name.toLowerCase()}: ${spec} rolls ${amount}, but full health leaves them at 1 HP.`
         : `${target.name} triggers a ${name.toLowerCase()}: ${spec} rolls ${amount} damage.`);
       this.gs.vfxSink?.hit?.(target);
     }
@@ -2968,15 +2968,15 @@ export class GameScene extends Phaser.Scene {
     // Even a trap that ends the run is shown for what it was before the run is called.
     const over = this.gs.isOver;
     await this.promptMineChoice(
-      over ? 'KILLED BY A TRAP' : clung ? 'BARELY ALIVE' : spotted ? 'TRAP SPRINGS' : 'TUNNEL TRAP',
+      over ? 'KILLED BY A TRAP' : clung ? 'BARELY ALIVE' : spotted ? 'TRAP' : 'TUNNEL TRAP',
       `${odds} failed  •  ${spec} rolled ${amount} damage.`,
       fatal
         ? over
-          ? `${target.name} had ${hpBefore} HP left and is killed by the ${name.toLowerCase()}. No one in the party is left standing.`
-          : `${target.name} had ${hpBefore} HP left and is killed by the ${name.toLowerCase()}. The others go on without them.`
+          ? `${target.name} had ${hpBefore} HP left and is killed by the ${name.toLowerCase()}. The party is dead.`
+          : `${target.name} had ${hpBefore} HP left and is killed by the ${name.toLowerCase()}.`
         : clung
-          ? `The ${name.toLowerCase()} would have killed ${target.name}, but at full health they cling on at 1 HP. The next one will not be so kind.`
-          : `${target.name} has ${target.hp}/${target.maxHp} HP remaining. The spent mechanism cannot trigger again.`,
+          ? `The ${name.toLowerCase()} would have killed ${target.name}, but full health leaves them at 1 HP.`
+          : `${target.name} has ${target.hp}/${target.maxHp} HP. The trap is used up.`,
       [{ id: 'continue', label: over ? 'Continue' : 'Keep moving', color: '#ffcf7a' }],
       picture
     );
@@ -3027,7 +3027,7 @@ export class GameScene extends Phaser.Scene {
       await this.promptMineChoice(
         'SEARCHED ROOM',
         this.mineStatusLine(),
-        `${look.body} Nothing else here wants attention.`,
+        look.body,
         [{ id: 'continue', label: 'Choose a path' }],
         { room, node: node.id, lit: true, verdict: look.verdict, verdictColor: look.color }
       );
@@ -3035,7 +3035,7 @@ export class GameScene extends Phaser.Scene {
     }
     if (room.kind === 'empty') {
       room.resolved = true;
-      this.gs.log('The party searches the empty chamber and continues through it.');
+      this.gs.log('Empty room.');
       return;
     }
     if (room.kind === 'treasure') {
@@ -3056,7 +3056,7 @@ export class GameScene extends Phaser.Scene {
     const recipients = this.gs.mages.filter(
       (mage) => mage.team === 1 && mage.alive && !mage.isSummon
     );
-    let itemText = 'No usable item remained inside.';
+    let itemText = 'No item inside.';
     let found: ItemId | undefined;
     if (recipients.length > 0) {
       const recipient = recipients[this.mineChestCursor % recipients.length];
@@ -3073,7 +3073,7 @@ export class GameScene extends Phaser.Scene {
           this.gs.grantItem(carrier, item);
           itemText = `${carrier.name} receives ${getItem(item).name} (${rarity}).`;
         } else {
-          itemText = `${getItem(item).name} (${rarity}) does not fit in any pack and stays in the chest.`;
+          itemText = `${getItem(item).name} (${rarity}) does not fit in any bag and stays in the chest.`;
         }
       }
     }
@@ -3083,7 +3083,7 @@ export class GameScene extends Phaser.Scene {
     await this.promptMineChoice(
       'TREASURE CHEST',
       this.mineStatusLine(),
-      gold > 0 ? `The chest creaks open on ${gold}g for the party. ${itemText}` : `The chest creaks open. ${itemText}`,
+      gold > 0 ? `${gold}g for the party. ${itemText}` : itemText,
       [{ id: 'continue', label: 'Leave the chest' }],
       {
         room,
@@ -3143,7 +3143,7 @@ export class GameScene extends Phaser.Scene {
         const name = getItem(ore.item).name;
         const hauled = this.collectMaterials([ore.item]);
         haul = hauled.left.length
-          ? `The ${name} comes free, but nobody has room for ${getItem(ore.item).weight} kg more. It is left behind.`
+          ? `${name} extracted, but nobody can carry ${getItem(ore.item).weight} kg more. Left behind.`
           : this.explorationCombat ? `+1 ${name}` : `${hauled.text}.`;
       } else if (strike.outcome === 'collapsed') {
         collapsed += 1;
@@ -3239,30 +3239,30 @@ export class GameScene extends Phaser.Scene {
     switch (room.kind) {
       case 'enemies':
         return room.resolved
-          ? { verdict: 'CLEARED', color: MINE_VERDICT.quiet, body: 'Only the remains of the fight are left in there.' }
+          ? { verdict: 'CLEARED', color: MINE_VERDICT.quiet, body: 'Already cleared.' }
           : {
             verdict: 'ENEMIES INSIDE',
             color: MINE_VERDICT.danger,
-            body: 'Red eyes catch the lamplight. Whatever waits in there has seen you: going in means a fight.',
+            body: 'Going in starts a fight.',
           };
       case 'ore': {
         const veins = room.oreAmount ?? 0;
         const ore = room.oreKind ? MINE_ORE_DEFS[room.oreKind] : undefined;
-        if (!ore || veins === 0) return { verdict: 'WORKED OUT', color: MINE_VERDICT.quiet, body: 'The veins in there have been dug out.' };
+        if (!ore || veins === 0) return { verdict: 'WORKED OUT', color: MINE_VERDICT.quiet, body: 'No ore left.' };
         return {
           verdict: `${ore.name.toUpperCase()}  ·  ${veins} VEIN${veins === 1 ? '' : 'S'}`,
           color: MINE_VERDICT.ore,
-          body: `${ore.name} glints along the far wall, and nothing stirs. ${this.minePickaxes.length ? 'Working it takes a pickaxe and a steady arm.' : 'The party has no pickaxe to work it.'}`,
+          body: this.minePickaxes.length ? `${ore.name}. Mining needs a pickaxe.` : `${ore.name}. No pickaxe to mine it.`,
         };
       }
       case 'treasure':
         return room.resolved
-          ? { verdict: 'CHEST OPENED', color: MINE_VERDICT.quiet, body: 'The chest in there stands open and empty.' }
-          : { verdict: 'SOMETHING GLINTS', color: MINE_VERDICT.treasure, body: 'The edge of a chest, a lock catching the light. No eyes, no sound.' };
+          ? { verdict: 'CHEST OPENED', color: MINE_VERDICT.quiet, body: 'Empty chest.' }
+          : { verdict: 'CHEST', color: MINE_VERDICT.treasure, body: 'A chest. No enemies.' };
       case 'shop':
-        return { verdict: 'LAMPLIGHT', color: MINE_VERDICT.shop, body: 'A lamp burns on a counter in there. Someone sells pickaxes and supplies down here.' };
+        return { verdict: 'SHOP', color: MINE_VERDICT.shop, body: 'Sells pickaxes and supplies.' };
       default:
-        return { verdict: 'NOTHING STIRS', color: MINE_VERDICT.quiet, body: 'No eyes, no glint: rock, an old cart, and rails running off into the dark.' };
+        return { verdict: 'EMPTY', color: MINE_VERDICT.quiet, body: 'Nothing here.' };
     }
   }
 
@@ -3271,7 +3271,7 @@ export class GameScene extends Phaser.Scene {
       const choice = await this.promptMineChoice(
         'MINE SUPPLY ROOM',
         this.mineStatusLine(),
-        `Party gold: ${this.swamprunGold}g. A new pickaxe costs ${MINE_PICKAXE_COST}g and starts at 10 durability. The counter also carries the full Swamp Run stock.`,
+        `Party gold: ${this.swamprunGold}g. Pickaxe: ${MINE_PICKAXE_COST}g.`,
         [
           {
             id: 'pickaxe',
@@ -3281,7 +3281,7 @@ export class GameScene extends Phaser.Scene {
           { id: 'supplies', label: 'Browse supplies' },
           { id: 'leave', label: 'Leave shop' },
         ],
-        { room, node: node.id, lit: true, verdict: 'SUPPLY COUNTER', verdictColor: MINE_VERDICT.shop }
+        { room, node: node.id, lit: true, verdict: 'SHOP', verdictColor: MINE_VERDICT.shop }
       );
       if (choice === 'pickaxe' && this.swamprunGold >= MINE_PICKAXE_COST) {
         this.swamprunGold -= MINE_PICKAXE_COST;
@@ -3312,7 +3312,7 @@ export class GameScene extends Phaser.Scene {
     if (this.mineRunEnded || this.opponentLeft) return;
     this.mineExploring = true;
     this.mode = 'shop';
-    this.gs.log('The room falls quiet. The party can choose any passage leading away.');
+    this.gs.log('Room cleared. Pick a passage.');
     this.redraw();
   }
 
@@ -3470,7 +3470,7 @@ export class GameScene extends Phaser.Scene {
     const run = this.dungeon === 'mines' ? this.explorationCombat?.run : undefined;
     const purse = this.dungeon ? '' : `  •  Party gold: ${this.swamprunGold}g`;
     const time = run ? `  •  Day ${run.day}, ${clockTime(run.hour)}  •  Bloodmoon day ${nextBloodmoonDay(run.day)}` : '';
-    const map = run ? `  •  ${this.mineRemembers ? 'Minemap: the map is kept' : 'No Minemap: the map is lost on leaving'}` : '';
+    const map = run ? `  •  ${this.mineRemembers ? 'Minemap' : 'No Minemap'}` : '';
     const reveal = this.mineRevealNext ?? undefined;
     this.mineRevealNext = null;
     return {
@@ -3657,7 +3657,7 @@ export class GameScene extends Phaser.Scene {
       this.swamprunEncounterPower = raidTargetPower(this.raidBoss);
       if (this.raidPrepActive) {
         this.gs.log(
-          `— RAID PREPARATION — equip your gear and build your stacks on the effigies. They cannot fight back and always return. Health, mana, and word charges refill for free from the action menu; summon ${name} there when you are ready. —`
+          `— RAID PREP — Summon ${name} from the action menu when ready. —`
         );
         for (let i = 0; i < RAID_PREP_EFFIGIES; i++) this.spawnRaidEffigy();
       } else {
@@ -3680,7 +3680,7 @@ export class GameScene extends Phaser.Scene {
       this.swamprunEncounterPower = encounter.power;
       const region = encounter.deep ? 'Deep Swamps' : 'Standard Swamps';
       this.gs.log(
-        `— ${region}, ${encounter.depth}m — Power ${encounter.power}; ${encounter.kinds.length} foe${encounter.kinds.length === 1 ? '' : 's'} emerge! —`
+        `— ${region}, ${encounter.depth}m — Power ${encounter.power}, ${encounter.kinds.length} foe${encounter.kinds.length === 1 ? '' : 's'}. —`
       );
       for (const kind of encounter.kinds) this.spawnEnemy(kind);
     }
@@ -3744,6 +3744,8 @@ export class GameScene extends Phaser.Scene {
       if (this.explorationCombat) m.resetCombatReactions();
       this.swamprunArrowsOwned.set(m, m.arrows);
     }
+    const order = party.flatMap((mage, index) => mage.isSummon || mage.inert ? [] : [index]);
+    this.gs.restoreTurnOrder(order, party.map(() => 0), order[0] ?? 0);
   }
 
   /** Return the living party to the standard left-side starting formation. */
@@ -3801,7 +3803,7 @@ export class GameScene extends Phaser.Scene {
   private spawnRaidEffigy(): Mage {
     const pos = this.enemySpawnPoint();
     const effigy = new Mage({
-      name: 'Practice Effigy',
+      name: 'Training Dummy',
       isAI: true,
       team: 2,
       position: pos,
@@ -3845,7 +3847,7 @@ export class GameScene extends Phaser.Scene {
       effigy.x = pos.x;
       effigy.y = pos.y;
       this.gs.notifyMageRelocation(effigy, pos, pos, false);
-      this.gs.log(`${effigy.name} reforms out of the dust.`);
+      this.gs.log(`${effigy.name} is back.`);
     }
     this.syncMageSprites();
   }
@@ -3856,7 +3858,7 @@ export class GameScene extends Phaser.Scene {
     if (kind === 'vitals') {
       mage.hp = mage.maxHp;
       mage.sanity = mage.maxSanity;
-      this.gs.log(`${mage.name} restores health and mind in full.`);
+      this.gs.log(`${mage.name} restores health and sanity in full.`);
     } else if (kind === 'mana') {
       mage.mana = mage.maxMana;
       this.gs.log(`${mage.name} restores mana in full.`);
@@ -3879,7 +3881,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.swamprunEncounterPower = raidTargetPower(this.raidBoss);
     this.raidTarget = this.summonRaidBoss();
-    this.gs.log(`— Effigies removed. ${raidTargetName(this.raidBoss)} enters combat. —`);
+    this.gs.log(`— Training dummies removed. ${raidTargetName(this.raidBoss)} enters combat. —`);
     this.syncMageSprites();
     this.updateWaveHud();
     this.redraw();
@@ -4371,11 +4373,11 @@ export class GameScene extends Phaser.Scene {
 
   private promptColorChoice(title: string, colors: ColorName[]): Promise<ColorName> {
     return new Promise((resolve) => {
-      const panel = new ChoiceMenuView(this, title, 'Equal word counts let you decide the order.',
+      const panel = new ChoiceMenuView(this, title, 'Tied colours: pick the order.',
         colors.map((color) => ({
           id: color,
           label: color.toUpperCase(),
-          detail: `${color.toUpperCase()} becomes the stronger color identity.`,
+          detail: `${color.toUpperCase()} comes first.`,
         })), (color) => {
           panel.destroy();
           resolve(color);
@@ -4415,7 +4417,7 @@ export class GameScene extends Phaser.Scene {
           : `Mine Run  Maze step ${this.mineMaze?.steps ?? 0}  Encounters: ${this.swamprunWave}  Gold: ${this.swamprunGold}g  Pickaxes: ${this.minePickaxes.join(', ') || 'none'}`
         : this.raid
           ? this.raidPrepActive
-            ? `RAID PREP  Effigies: ${alive}  Action menu → free restores  •  Summon ${raidTargetName(this.raidBoss)} when ready`
+            ? `RAID PREP  Dummies: ${alive}`
             : `RAID  ${raidTargetName(this.raidBoss)}  ${(this.raidBoss === 'crusade' ? !this.raidVictory : this.raidTarget?.alive) ? 'ACTIVE' : 'DEFEATED'}  Foes: ${alive}`
           : `${swamprunDepth(this.swamprunWave)}m  Power ${this.swamprunEncounterPower}  Foes: ${alive}  Gold: ${this.swamprunGold}g${this.swamprunCurse ? `  Curse: ${this.swamprunCurse}` : ''}`;
     if (!this.swamprunHudText) {
@@ -4641,7 +4643,7 @@ export class GameScene extends Phaser.Scene {
     if (!mage) return;
     this.creativePrepPanel = new CreativePrepView(this, {
       mageName: mage.name,
-      confirmLabel: this.raid ? 'Begin Raid Prep' : this.mineRun ? 'Enter the Mine' : 'Enter the Swamp',
+      confirmLabel: this.raid ? 'Start Raid Prep' : this.mineRun ? 'Start Mine Run' : 'Start Swamprun',
       stats: { ...this.creativePrepStats },
       items: [...this.creativePrepItems],
       page: this.creativePrepPage,
@@ -4699,7 +4701,7 @@ export class GameScene extends Phaser.Scene {
       items: [...this.creativePrepItems],
     };
     if (!saveCreativePresets(this.creativePresets)) {
-      this.gs.log('Saved builds cannot be stored in this browser; it will last only this session.');
+      this.gs.log('Builds cannot be saved in this browser; they last only this session.');
     }
     this.redrawCreativePrep();
   }
@@ -4749,8 +4751,8 @@ export class GameScene extends Phaser.Scene {
     this.swampShopPanel?.destroy();
     this.swampShopPanel = new SwampShopView(this, {
       title: 'PARTY SHOP / WAITING',
-      subtitle: `${mage.name} is choosing the party's next upgrade.`,
-      message: 'The shop advances after this player finishes one action.',
+      subtitle: `${mage.name} is shopping.`,
+      message: '',
       mode: 'waiting',
       gold: this.swamprunGold,
       overCapacity: false,
@@ -4804,7 +4806,7 @@ export class GameScene extends Phaser.Scene {
         return {
           title: 'Stat Up',
           price,
-          detail: 'Raise one permanent attribute by +1d3.',
+          detail: 'Raise one stat by 1d3, permanently.',
           accent: MENU_COLOR.brass,
           enabled: this.swamprunGold >= price,
         };
@@ -4813,7 +4815,7 @@ export class GameScene extends Phaser.Scene {
         return {
           title: 'Sold',
           price: slot.price,
-          detail: 'This offer has already been taken.',
+          detail: 'Already bought.',
           accent: MENU_COLOR.brassDark,
           enabled: false,
         };
@@ -4849,7 +4851,7 @@ export class GameScene extends Phaser.Scene {
       overCapacity,
       offers,
       confirmText: confirmDefinition
-        ? `${confirmDefinition.name} weighs ${confirmDefinition.weight}kg and exceeds your carry limit. Buy it anyway? You must then sell or discard enough weight before leaving.`
+        ? `${confirmDefinition.name} weighs ${confirmDefinition.weight}kg, over your carry limit. Buy anyway? Drop weight before leaving.`
         : undefined,
       manageItems: manageRows.map(({ id, where }) => {
         const definition = getItem(id);
@@ -5428,7 +5430,7 @@ export class GameScene extends Phaser.Scene {
     this.shopPanel?.destroy();
     this.shopPanel = new ItemDraftView(this, {
       title,
-      subtitle: `A ${rarityName} set appears — choose one of ${count} (carry ${cap}kg).`,
+      subtitle: `${rarityName}: choose 1 of ${count} (carry ${cap}kg).`,
       options: this.shopLocked ? [] : this.shopOptions,
       picks: this.shopPicks,
       locked: this.shopLocked,
@@ -5869,7 +5871,7 @@ export class GameScene extends Phaser.Scene {
       case 'spell': return `casts ${decision.spell.name}`;
       case 'power': return `unleashes ${decision.spell.name}`;
       case 'color-ability': return `casts ${decision.ability.name}`;
-      case 'deaths-angel-wings': return 'unfurls its wings';
+      case 'deaths-angel-wings': return 'uses its wings';
       case 'ghast-mark': return 'marks the ground';
       case 'ghast-shove': return 'shoves';
       case 'reaper-mark': return 'marks';
@@ -5992,7 +5994,7 @@ export class GameScene extends Phaser.Scene {
       }
       await Promise.all(summonPuffs);
       this.gs.log(
-        `${knight.name} summons ${kinds.map((kind) => ENEMY_DEFS[kind].name).join(', ')} from the deep mire.`
+        `${knight.name} summons ${kinds.map((kind) => ENEMY_DEFS[kind].name).join(', ')}.`
       );
     }
     this.redraw();
@@ -6285,7 +6287,7 @@ export class GameScene extends Phaser.Scene {
         if (!spell) break;
         // A colour ability stifled by a Needle of Serenity can never be cast.
         if (cmd.ability && this.isColorAbility(spell) && me.isAbilityBanned(spell.id)) {
-          this.gs.log(`${me.name} reaches for ${spell.name}, but it has been stifled forever.`);
+          this.gs.log(`${me.name} cannot cast ${spell.name}: it is banned.`);
           break;
         }
         const target =
@@ -6312,7 +6314,7 @@ export class GameScene extends Phaser.Scene {
           me.channeledCast = { spell, target: aimed, point, point2, modifiers: mods, aimOnRelease };
           me.actions = { move: 0, main: 0, bonus: 0 };
           this.gs.log(
-            `${me.name} begins channelling ${spell.name} — they can do nothing else until it breaks free.`
+            `${me.name} channels ${spell.name}.`
           );
           break;
         }
@@ -6405,7 +6407,7 @@ export class GameScene extends Phaser.Scene {
         if (!me.pouch.includes(itemId) && me.readyConsumable !== itemId) break;
         if (me.isItemBanned(itemId)) {
           this.gs.log(
-            `${me.name} reaches for ${getItem(itemId).name}, but ${me.itemsSacrificed() ? 'the Shikigami holds it until the day is over' : 'it has been stifled forever'}.`
+            `${me.name} cannot use ${getItem(itemId).name}: ${me.itemsSacrificed() ? 'held by the Shikigami until the day ends' : 'it is banned'}.`
           );
           break;
         }
@@ -6454,10 +6456,15 @@ export class GameScene extends Phaser.Scene {
         }));
         break;
       }
+      case 'item-swap-hands': {
+        if (me.swapHands()) this.gs.log(`${me.name} switches hands.`);
+        this.redraw();
+        break;
+      }
       case 'item-equip': {
         const itemId = cmd.itemId as ItemId;
         const replace = cmd.replace ? cmd.replace as ItemId : null;
-        if (!me.displacedBy(itemId, replace)) break;
+        if (!me.displacedBy(itemId, replace, cmd.hand)) break;
         spend('bonus');
         await runAction(
           this.gs.makeActionItem({
@@ -6465,8 +6472,8 @@ export class GameScene extends Phaser.Scene {
             label: 'Equip',
             description: `${me.name} equips ${getItem(itemId).name}.`,
             resolve: () => {
-              const off = me.displacedBy(itemId, replace) ?? [];
-              if (me.swapIn(itemId, replace)) {
+              const off = me.displacedBy(itemId, replace, cmd.hand) ?? [];
+              if (me.equipAt(itemId, replace, cmd.hand)) {
                 this.gs.notifyLightActivation(me);
                 const swapped = off.length ? `, stowing ${off.map((other) => getItem(other).name).join(' and ')}` : '';
                 this.gs.log(`${me.name} equips ${getItem(itemId).name}${swapped}.`);
@@ -6501,7 +6508,7 @@ export class GameScene extends Phaser.Scene {
         if (!me.pouch.includes(itemId) && me.readyConsumable !== itemId) break;
         if (me.isItemBanned(itemId)) {
           this.gs.log(
-            `${me.name} reaches for ${getItem(itemId).name}, but ${me.itemsSacrificed() ? 'the Shikigami holds it until the day is over' : 'it has been stifled forever'}.`
+            `${me.name} cannot use ${getItem(itemId).name}: ${me.itemsSacrificed() ? 'held by the Shikigami until the day ends' : 'it is banned'}.`
           );
           break;
         }
@@ -6526,7 +6533,7 @@ export class GameScene extends Phaser.Scene {
         if (!hex) break;
         if (me.isItemBanned(itemId)) {
           this.gs.log(
-            `${me.name} reaches for ${getItem(itemId).name}, but ${me.itemsSacrificed() ? 'the Shikigami holds it until the day is over' : 'it has been stifled forever'}.`
+            `${me.name} cannot use ${getItem(itemId).name}: ${me.itemsSacrificed() ? 'held by the Shikigami until the day ends' : 'it is banned'}.`
           );
           break;
         }
@@ -6547,7 +6554,7 @@ export class GameScene extends Phaser.Scene {
             target: aim.target ?? undefined,
             targetPoint: aim.point ?? undefined,
             label: getItem(itemId).name,
-            description: `${me.name} looses ${getItem(itemId).name}.`,
+            description: `${me.name} casts ${getItem(itemId).name}.`,
             hostileAttack: !!aim.target && aim.target.team !== me.team && hexHarmful(hex),
             actionVisual: hexVisual(hex),
             needleBan: { kind: 'item', itemId },
@@ -6570,7 +6577,7 @@ export class GameScene extends Phaser.Scene {
         await runAction(
           this.gs.makeActionItem({
             source: me,
-            label: activating ? 'Awaken Lantern' : 'Seal Lantern',
+            label: activating ? 'Activate Lantern' : 'Deactivate Lantern',
             description: `${me.name} shakes the Edgelord Lantern.`,
             needleBan: { kind: 'item', itemId: 'edgelordLantern' },
             resolve: async (game) => {
@@ -6611,7 +6618,7 @@ export class GameScene extends Phaser.Scene {
       }
       case 'eldritch': {
         if (me.isActionBanned('eldritch')) {
-          this.gs.log(`${me.name} reaches for eldritch truth, but it has been stifled forever.`);
+          this.gs.log(`${me.name} cannot use Eldritch Truth: it is banned.`);
           break;
         }
         spend('main');
@@ -6642,7 +6649,7 @@ export class GameScene extends Phaser.Scene {
             source: me,
             target,
             label: `${getItem(itemId).name}: ${bolt.label}`,
-            description: `${me.name} looses a bolt from ${getItem(itemId).name} at ${target.name}.`,
+            description: `${me.name} fires a bolt from ${getItem(itemId).name} at ${target.name}.`,
             hostileAttack: true,
             actionVisual: STAFF_BOLT_VISUAL[bolt.type] ?? 'lightning',
             needleBan: { kind: 'item', itemId },
@@ -6654,7 +6661,7 @@ export class GameScene extends Phaser.Scene {
       }
       case 'thunder-charge': {
         if (me.isActionBanned('thunder-charge')) {
-          this.gs.log(`${me.name} reaches to charge thunder, but it has been stifled forever.`);
+          this.gs.log(`${me.name} cannot charge thunder: it is banned.`);
           break;
         }
         spend('bonus');
@@ -6673,7 +6680,7 @@ export class GameScene extends Phaser.Scene {
       }
       case 'thunder-discharge': {
         if (me.isActionBanned('thunder-discharge')) {
-          this.gs.log(`${me.name} reaches to discharge thunder, but it has been stifled forever.`);
+          this.gs.log(`${me.name} cannot discharge thunder: it is banned.`);
           break;
         }
         spend('bonus');
@@ -6700,7 +6707,7 @@ export class GameScene extends Phaser.Scene {
               ? 'Dagger of Shadow'
             : 'Weapon Action';
         if (firstAbility && me.isActionBanned(`weapon:${firstAbility}`)) {
-          this.gs.log(`${me.name}'s weapon action has been stifled forever.`);
+          this.gs.log(`${me.name}'s weapon action is banned.`);
           break;
         }
         spend('bonus');
@@ -6712,7 +6719,7 @@ export class GameScene extends Phaser.Scene {
               firstAbility === 'blackBellMode'
                 ? `${me.name} changes Black Bell from ${me.blackBellCondense ? 'Condense' : 'Toll'} mode.`
                 : firstAbility === 'shadowDaggerTeleport'
-                  ? `${me.name} reaches through one shadow toward another.`
+                  ? `${me.name} teleports between shadows.`
                 : `${me.name} uses a weapon action.`,
             needleBan: firstAbility
               ? { kind: 'ability', key: `weapon:${firstAbility}`, label: 'that weapon action' }
@@ -6776,7 +6783,7 @@ export class GameScene extends Phaser.Scene {
             description: `${me.name} focuses.`,
             resolve: (game) => {
               game.log(
-                `${me.name} focuses — the next word spell this turn costs half mana and rolls its DC twice.`
+                `${me.name} focuses.`
               );
             },
           })
@@ -6835,7 +6842,7 @@ export class GameScene extends Phaser.Scene {
             turnsLeft: cmd.order === 'flee' ? 2 : undefined,
           };
         }
-        this.gs.log(`${me.name} shouts: "${SHOUT_LABEL[cmd.order]}${target ? ` ${target.name}` : ''}!"`);
+        this.gs.log(`${me.name} orders all summons: ${SHOUT_LABEL[cmd.order]}${target ? ` ${target.name}` : ''}.`);
         if (!opts.queueOnly) await this.runSummonOrders(me);
         break;
       }
@@ -7074,7 +7081,7 @@ export class GameScene extends Phaser.Scene {
     const game = this.gs;
     const n = game.shatterGamblerBlade(mage);
     if (n <= 0) {
-      game.log(`${mage.name} cashes out the Gambler's Blade, but greed was too thin to pay out.`);
+      game.log(`${mage.name} cashes out the Gambler's Blade: not enough Greed to pay out.`);
       return;
     }
     const drafted: string[] = [];
@@ -7293,11 +7300,11 @@ export class GameScene extends Phaser.Scene {
     if (!declared || !me.alive) return false;
     const edge = fleeEdgeAt(me.pos);
     if (!edge) {
-      this.gs.log(`${me.name} is dragged back from the edge; the escape fails.`);
+      this.gs.log(`${me.name} fails to escape.`);
       this.redraw();
       return false;
     }
-    this.gs.log(`${me.name} slips away over the ${FLEE_EDGE_LABEL[edge]} edge.`);
+    this.gs.log(`${me.name} escapes over the ${FLEE_EDGE_LABEL[edge]} edge.`);
     playSound('move.dash');
     const othersStand = !!this.explorationCombat &&
       this.gs.mages.some((m) => m.team === me.team && m !== me && !m.isSummon && !m.sceneSide && m.alive);
@@ -7321,7 +7328,7 @@ export class GameScene extends Phaser.Scene {
       me.spend('main');
       const aimed = channeled.aimOnRelease ? await this.aimChanneledCast(me, channeled) : channeled;
       if (aimed) {
-        this.gs.log(`${me.name} releases the channelled ${channeled.spell.name} at full force.`);
+        this.gs.log(`${me.name} releases the channelled ${channeled.spell.name}.`);
         await this.runStack(
           this.gs.makeSpellItem(
             me,
@@ -7334,7 +7341,7 @@ export class GameScene extends Phaser.Scene {
           )
         );
       } else {
-        this.gs.log(`${me.name}'s channelled ${channeled.spell.name} finds no target and fizzles.`);
+        this.gs.log(`${me.name}'s channelled ${channeled.spell.name} has no target and fizzles.`);
       }
     }
     const delayed = me.delayedCast;
@@ -7744,7 +7751,7 @@ export class GameScene extends Phaser.Scene {
         if (held.kind === 'spell') this.setCharging(held.source, false);
         this.gs.log(`${held.label} is delayed until ${victim.name}'s next turn begins.`);
       } else {
-        this.gs.log(`${item.label} finds nothing left to delay.`);
+        this.gs.log(`${item.label} has nothing to delay.`);
       }
     }
 
@@ -7761,7 +7768,7 @@ export class GameScene extends Phaser.Scene {
     // what makes a movement spell answer a swing, an arrow or a bolt.
     if (this.gs.attackEvaded(item)) {
       this.gs.log(
-        `${item.target?.name ?? 'The target'} is already gone — ${item.label} strikes empty ground.`
+        `${item.target?.name ?? 'The target'} is gone. ${item.label} misses.`
       );
       if (item.kind === 'spell') this.setCharging(item.source, false);
       await this.delay(150);
@@ -8050,34 +8057,34 @@ export class GameScene extends Phaser.Scene {
       if (ban.kind === 'item') {
         src.bannedItemIds.add(ban.itemId);
         this.gs.log(
-          `${reactor.name}'s Needle of Serenity stifles the action — ${src.name}'s ${getItem(ban.itemId).name} is disabled forever.`
+          `${reactor.name}'s Needle of Serenity bans ${src.name}'s ${getItem(ban.itemId).name} permanently.`
         );
       } else {
         src.bannedAbilityIds.add(ban.key);
         this.gs.log(
-          `${reactor.name}'s Needle of Serenity stifles ${ban.label} — ${src.name} can never use it again.`
+          `${reactor.name}'s Needle of Serenity bans ${ban.label}. ${src.name} can never use it again.`
         );
       }
     } else if (top.kind === 'spell' && top.spell && this.isColorAbility(top.spell)) {
       src.bannedAbilityIds.add(top.spell.id);
       this.gs.log(
-        `${reactor.name}'s Needle of Serenity stifles ${top.spell.name} — ${src.name} can never use it again.`
+        `${reactor.name}'s Needle of Serenity bans ${top.spell.name}. ${src.name} can never use it again.`
       );
     } else if (top.kind === 'melee') {
       const wid = src.activeWeaponId();
       if (wid) {
         src.bannedItemIds.add(wid);
         this.gs.log(
-          `${reactor.name}'s Needle of Serenity stifles the strike — ${src.name}'s ${getItem(wid).name} is disabled forever.`
+          `${reactor.name}'s Needle of Serenity bans ${src.name}'s ${getItem(wid).name} permanently.`
         );
       } else {
         src.unarmedBanned = true;
         this.gs.log(
-          `${reactor.name}'s Needle of Serenity stifles the strike — ${src.name} can never strike unarmed again.`
+          `${reactor.name}'s Needle of Serenity bans ${src.name}'s unarmed strike permanently.`
         );
       }
     } else {
-      this.gs.log(`${reactor.name}'s Needle of Serenity stifles the action.`);
+      this.gs.log(`${reactor.name}'s Needle of Serenity cancels the action.`);
     }
   }
 
@@ -8124,7 +8131,7 @@ export class GameScene extends Phaser.Scene {
         r = ai.chooseReaction(top) ?? null;
       } catch (error) {
         console.error('AI reaction decision failed; passing priority.', error);
-        this.gs.log(`${reactor.name} cannot find a response and passes priority.`);
+        this.gs.log(`${reactor.name} passes.`);
         return null;
       }
       if (r) return { spell: r.spell, target: r.target, point: r.point };
@@ -8135,7 +8142,7 @@ export class GameScene extends Phaser.Scene {
         if (this.canBash(reactor, top)) return { shield: 'bash' };
         if (this.canBlock(reactor)) return { shield: 'block' };
       }
-      this.gs.log(`${reactor.name} passes priority.`);
+      this.gs.log(`${reactor.name} passes.`);
       return null;
     }
     // Online: the opponent's reaction arrives over the wire; ours is relayed.
@@ -8586,7 +8593,7 @@ export class GameScene extends Phaser.Scene {
 
     if (!me.hasCharges(spell.words)) {
       this.flashHint(spell.words.length === 1 && spell.words[0] === 'storm'
-        ? 'Load Storm with a paired cast before releasing it (two releases per day).'
+        ? 'Storm is empty: cast a pair first.'
         : spell.words.includes('storm') && me.stormDualcastsUsed >= 3
           ? 'No Storm dualcasts left today.'
           : 'Not enough charges.');
@@ -8670,7 +8677,7 @@ export class GameScene extends Phaser.Scene {
     if (me.moveRange() < 1) {
       return this.flashHint(me.overloaded()
         ? `Too heavy to move: carrying ${me.carriedWeight().toFixed(1)}/${me.carryCap()} kg. Drop something first.`
-        : 'Slowed to a standstill: no movement left this turn.');
+        : 'No movement left this turn.');
     }
     this.pendingSpell = null;
     this.mode = 'aiming-move';
@@ -8705,7 +8712,7 @@ export class GameScene extends Phaser.Scene {
       return this.flashHint('Leap needs a bonus action.');
     this.pendingSpell = null;
     this.mode = 'aiming-leap';
-    this.flashHint('Leap: click a direction (distance is a d6 roll).', true);
+    this.flashHint('Leap: click a direction.', true);
     this.redraw();
   }
 
@@ -8742,7 +8749,7 @@ export class GameScene extends Phaser.Scene {
     const me = this.gs.current;
     if (!me.hasDeathsAngelWings()) return;
     if (me.isItemBanned('deathsAngelWings'))
-      return this.flashHint('The Wings have been stifled forever.');
+      return this.flashHint('The Wings are banned.');
     if (me.deathsAngelEnergy <= 0) return this.flashHint('The Wings need 1 Energy.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('The cape ability needs a bonus action.');
@@ -8814,7 +8821,7 @@ export class GameScene extends Phaser.Scene {
     this.submitTurn({ t: 'command', summon: this.seatOf(summon) });
     const extra = summons.length > 1 ? ' (the one nearest your cursor)' : '';
     this.flashHint(
-      `Commanding ${summon.name}${extra}: move (M) and attack (A/I), then it returns control. Press E to release early.`,
+      `Commanding ${summon.name}${extra}. E: release.`,
       true
     );
     this.redraw();
@@ -8829,7 +8836,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.gs.summonsOf(me).some((s) => this.gs.canCommandSummon(me, s)))
       return this.flashHint('You have no summons to command.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions && !me.freeSummonOrders)
-      return this.flashHint('Shouting a command needs a bonus action.');
+      return this.flashHint('Ordering all summons needs a bonus action.');
     if (order === 'attack') {
       this.pendingSpell = null;
       this.mode = 'aiming-shout';
@@ -8859,7 +8866,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Why `me` cannot use a banned item. */
   private bannedItemHint(me: Mage): string {
-    return me.itemsSacrificed() ? 'Your items belong to the Shikigami until the day is over.' : 'That item has been stifled forever.';
+    return me.itemsSacrificed() ? 'Your items are held by the Shikigami until the day ends.' : 'That item is banned.';
   }
 
   /** Whether `me` can throw `itemId` at `target` (enemy alive, within throw range). */
@@ -8905,7 +8912,7 @@ export class GameScene extends Phaser.Scene {
   /** Why `me` cannot loose `hex` now, or null. */
   private hexBlocked(me: Mage, hex: HexRecipe): string | null {
     const cost = hexManaCost(hex);
-    if (me.mana < cost) return `Loosing it takes ${cost} mana.`;
+    if (me.mana < cost) return `Casting it takes ${cost} mana.`;
     if (Dev.infiniteActions) return null;
     const action = hexAction(hex);
     if (action === 'bonus') return me.actions.bonus > 0 ? null : 'It needs a bonus action.';
@@ -8918,7 +8925,7 @@ export class GameScene extends Phaser.Scene {
     if (this.mode === 'reaction' || !this.humanActiveOrInventory) return;
     const me = this.gs.current;
     const hex = me.utility.includes(itemId) ? hexOf(itemId) : undefined;
-    if (!hex) return this.flashHint('No such Hexzettel.');
+    if (!hex) return this.flashHint('No such hex sheet.');
     if (me.isItemBanned(itemId)) return this.flashHint(this.bannedItemHint(me));
     if (me.swordFormLocked()) return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
     const blocked = this.hexBlocked(me, hex);
@@ -8974,13 +8981,13 @@ export class GameScene extends Phaser.Scene {
     const me = this.gs.current;
     if (!me.hasEdgelordLantern()) return;
     if (me.isItemBanned('edgelordLantern'))
-      return this.flashHint('The Edgelord Lantern has been stifled forever.');
+      return this.flashHint('The Edgelord Lantern is banned.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Shaking the lantern needs a bonus action.');
     if (!me.edgelordLanternActive && this.gs.edgelordCaptives(me).length > 0)
-      return this.flashHint('The lantern cannot awaken while a creature remains inside.');
+      return this.flashHint('The lantern cannot activate while a creature is inside.');
     if (!me.edgelordLanternActive && me.mana < 4)
-      return this.flashHint('Awakening the lantern costs 4 mana.');
+      return this.flashHint('Activating the lantern costs 4 mana.');
     this.mode = 'busy';
     this.submitTurn({ t: 'edgelord-shake' });
   }
@@ -9004,7 +9011,7 @@ export class GameScene extends Phaser.Scene {
     const me = this.gs.current;
     if (!me.hasEdgelordLantern()) return;
     if (me.edgelordLanternActive)
-      return this.flashHint('Seal the Edgelord Lantern before throwing it.');
+      return this.flashHint('Deactivate the Edgelord Lantern before throwing it.');
     if (this.gs.edgelordCaptives(me).length === 0)
       return this.flashHint('The lantern must contain at least one living creature.');
     if (!this.canUseEdgelordThrow(me))
@@ -9047,7 +9054,7 @@ export class GameScene extends Phaser.Scene {
     const me = this.gs.current;
     if (!me.hasEldritchMantle()) return;
     if (me.isActionBanned('eldritch'))
-      return this.flashHint('Eldritch truth has been stifled forever.');
+      return this.flashHint('Eldritch Truth is banned.');
     if (me.actions.main <= 0 && !Dev.infiniteActions)
       return this.flashHint('Eldritch is a main action.');
     this.buildEldritchMenu();
@@ -9058,7 +9065,7 @@ export class GameScene extends Phaser.Scene {
     if (choice === 'attack') {
       this.pendingSpell = null;
       this.mode = 'aiming-eldritch';
-      this.flashHint('Click any enemy — eldritch truth ignores all defenses.', false, 'info');
+      this.flashHint('Click any enemy.', false, 'info');
       this.redraw();
       return;
     }
@@ -9076,7 +9083,7 @@ export class GameScene extends Phaser.Scene {
     this.hideEldritchMenu();
     this.mode = 'eldritch-menu';
     this.eldritchMenu = new ChoiceMenuView(this, 'MANTLE OF ELDRITCH TRUTH',
-      'Choose how the mantle bends reality this turn.', [
+      'Choose one this turn.', [
         { id: 'attack', label: 'Attack', detail: 'Deal 10 true damage to any one target.' },
         { id: 'defend', label: 'Defend', detail: 'Void all damage until your next turn.' },
         { id: 'restore', label: 'Restore', detail: 'Restore 5 HP, 10 mana, and 2 charges to every word.' },
@@ -9099,13 +9106,13 @@ export class GameScene extends Phaser.Scene {
     const me = this.gs.current;
     if (choice === 'charge') {
       if (me.isActionBanned('thunder-charge'))
-        return this.flashHint('Charge Up has been stifled forever.');
+        return this.flashHint('Charge Up is banned.');
       this.mode = 'busy';
       this.submitTurn({ t: 'thunder-charge' });
       return;
     }
     if (me.isActionBanned('thunder-discharge'))
-      return this.flashHint('Discharge has been stifled forever.');
+      return this.flashHint('Discharge is banned.');
     if (me.thunderStacks <= 0) return this.flashHint('No Thunder stacks to discharge.');
     this.pendingSpell = null;
     this.mode = 'aiming-discharge';
@@ -9124,7 +9131,7 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'thunder-menu';
     const me = this.gs.current;
     this.thunderMenu = new ChoiceMenuView(this, `ROARING THUNDER  /  ${me.thunderStacks} STACKS`,
-      'Build the storm or release every stored charge.', [
+      'Charge up, or release every stack.', [
         {
           id: 'charge',
           label: 'Charge Up',
@@ -9165,7 +9172,7 @@ export class GameScene extends Phaser.Scene {
       hotkey: '1–4 / Enter',
       desc: spell
         ? `${spell.actionType} action · ${this.spellManaCost(me, spell)} mana`
-        : 'Click words in the panel to compose a spell, then cast.',
+        : 'No spell selected.',
       enabled: !!spell && (affordSpell || inf) && !me.hasCastThisTurn && !me.blocksCasting(),
       reason: !spell
         ? 'Select a valid word combination first.'
@@ -9191,7 +9198,7 @@ export class GameScene extends Phaser.Scene {
           !me.isAbilityBanned(ab.id) &&
           left > 0,
         reason: me.isAbilityBanned(ab.id)
-          ? 'Stifled forever.'
+          ? 'Banned.'
           : left <= 0
             ? 'Spent for this combat.'
             : 'Needs a bonus action + charges / mana.',
@@ -9235,7 +9242,7 @@ export class GameScene extends Phaser.Scene {
       id: 'leap',
       label: 'Leap',
       hotkey: 'L',
-      desc: `Bound a d6 distance in any direction · ${me.leapsLeft()} left this combat.`,
+      desc: `Jump a d6 distance in any direction · ${me.leapsLeft()} left this combat.`,
       enabled: (me.actions.bonus > 0 || inf) && me.leapsLeft() > 0,
       reason: me.leapsLeft() <= 0 ? 'No leaps left this combat.' : 'Needs a bonus action.',
       run: () => this.beginLeap(),
@@ -9307,9 +9314,9 @@ export class GameScene extends Phaser.Scene {
       const blocked = this.hexBlocked(me, hex);
       entries.push({
         id: 'hex',
-        label: `Loose ${getItem(hexId).name}`,
+        label: `Cast ${getItem(hexId).name}`,
         hotkey: '—',
-        desc: `${{ main: 'Main', bonus: 'Bonus', full: 'Main + bonus' }[hexAction(hex)]} action · ${hexManaCost(hex)} mana. Other sheets wait in the inventory.`,
+        desc: `${{ main: 'Main', bonus: 'Bonus', full: 'Main + bonus' }[hexAction(hex)]} action · ${hexManaCost(hex)} mana. More in the inventory.`,
         enabled: !blocked && !me.swordFormLocked(),
         reason: me.swordFormLocked() ? 'Locked in sword form.' : blocked ?? '',
         run: () => this.beginHex(hexId),
@@ -9324,19 +9331,19 @@ export class GameScene extends Phaser.Scene {
         (me.edgelordLanternActive || (captives === 0 && me.mana >= 4));
       entries.push({
         id: 'edgelord-shake',
-        label: me.edgelordLanternActive ? 'Seal Edgelord Lantern' : 'Awaken Edgelord Lantern',
+        label: me.edgelordLanternActive ? 'Deactivate Edgelord Lantern' : 'Activate Edgelord Lantern',
         hotkey: 'K',
         desc: me.edgelordLanternActive
           ? 'Pull nearby units and capture afflicted creatures near death.'
           : 'Pay 4 mana; give 3 Soul Rend to every unit within 15cm.',
         enabled: canShake,
         reason: me.isItemBanned('edgelordLantern')
-          ? 'Stifled forever.'
+          ? 'Banned.'
           : me.actions.bonus <= 0 && !inf
             ? 'Needs a bonus action.'
             : !me.edgelordLanternActive && captives > 0
               ? 'A living creature is still inside.'
-              : 'Awakening costs 4 mana.',
+              : 'Activating costs 4 mana.',
         run: () => this.shakeEdgelordLantern(),
       });
       entries.push({
@@ -9346,7 +9353,7 @@ export class GameScene extends Phaser.Scene {
         desc: 'Spend all actions and reaction; blast a 5cm radius within Strength cm.',
         enabled: this.canUseEdgelordThrow(me) && me.effectiveStr() > 0,
         reason: me.edgelordLanternActive
-          ? 'Seal it first.'
+          ? 'Deactivate it first.'
           : captives === 0
             ? 'Needs a living captive.'
             : 'Needs an untouched turn, except after deactivating.',
@@ -9358,11 +9365,11 @@ export class GameScene extends Phaser.Scene {
     if (me.hasEldritchMantle()) {
       entries.push({
         id: 'eldritch',
-        label: 'Eldritch truth',
+        label: 'Eldritch Truth',
         hotkey: 'Q',
         desc: 'Attack / Defend / Restore (main action).',
         enabled: (me.actions.main > 0 || inf) && !me.isActionBanned('eldritch'),
-        reason: me.isActionBanned('eldritch') ? 'Stifled forever.' : 'Needs a main action.',
+        reason: me.isActionBanned('eldritch') ? 'Banned.' : 'Needs a main action.',
         run: () => this.beginEldritch(),
       });
     }
@@ -9388,11 +9395,11 @@ export class GameScene extends Phaser.Scene {
     if (this.raid && this.raidPrepActive) {
       entries.push({
         id: 'raid-restore-vitals',
-        label: 'Restore health & mind',
+        label: 'Restore health & sanity',
         hotkey: 'Free',
-        desc: `Refill health and sanity (${me.hp}/${me.maxHp} HP, ${me.sanity}/${me.maxSanity} mind). Costs no action.`,
+        desc: `Refill health and sanity (${me.hp}/${me.maxHp} HP, ${me.sanity}/${me.maxSanity} sanity). Costs no action.`,
         enabled: me.hp < me.maxHp || me.sanity < me.maxSanity,
-        reason: 'Already at full health and mind.',
+        reason: 'Already at full health and sanity.',
         run: () => this.requestRaidPrepRestore('vitals'),
       });
       entries.push({
@@ -9417,7 +9424,7 @@ export class GameScene extends Phaser.Scene {
         id: 'raid-begin',
         label: `Summon ${raidTargetName(this.raidBoss)}`,
         hotkey: 'Menu',
-        desc: 'End preparation and fight as you stand. Gear, stacks, and buffs all carry over.',
+        desc: 'End preparation and start the fight. Gear, stacks and buffs carry over.',
         enabled: true,
         run: () => this.requestRaidBossFight(),
       });
@@ -9426,7 +9433,7 @@ export class GameScene extends Phaser.Scene {
     if (me.hasDeathsAngelWings()) {
       entries.push({
         id: 'deaths-angel-wings',
-        label: me.deathsAngelFlightTurns > 0 ? 'Extend Deaths Angel Wings' : 'Unfurl Deaths Angel Wings',
+        label: me.deathsAngelFlightTurns > 0 ? 'Extend Deaths Angel Wings' : 'Use Deaths Angel Wings',
         hotkey: 'S',
         desc: `${me.deathsAngelEnergy} Energy · ${me.deathsAngelFlightTurns} flight turns · spend 1 for +2 turns.`,
         enabled:
@@ -9434,7 +9441,7 @@ export class GameScene extends Phaser.Scene {
           me.deathsAngelEnergy > 0 &&
           !me.isItemBanned('deathsAngelWings'),
         reason: me.isItemBanned('deathsAngelWings')
-          ? 'Stifled forever.'
+          ? 'Banned.'
           : me.deathsAngelEnergy <= 0
             ? 'Needs 1 Energy from a kill.'
             : 'Needs a bonus action.',
@@ -9611,7 +9618,7 @@ export class GameScene extends Phaser.Scene {
         for (const order of ['return', 'flee', 'attack', 'anyone'] as const) {
           entries.push({
             id: `shout:${order}`,
-            label: `Shout: ${SHOUT_LABEL[order]}${order === 'attack' ? ' TARGET' : ''}`,
+            label: `Order All: ${SHOUT_LABEL[order]}${order === 'attack' ? ' TARGET' : ''}`,
             hotkey: 'Menu',
             desc: SHOUT_DESC[order],
             enabled: canPay,
@@ -9671,9 +9678,9 @@ export class GameScene extends Phaser.Scene {
       id: 'needle',
       label: 'Needle of Serenity',
       hotkey: 'K',
-      desc: 'Stifle the incoming ability or weapon strike.',
+      desc: 'Permanently ban the incoming ability or weapon strike.',
       enabled: this.canNeedle(reactor, top),
-      reason: 'Nothing here can be stifled.',
+      reason: 'Nothing here can be banned.',
       run: () => this.chooseNeedleReaction(),
     });
 
@@ -9684,7 +9691,7 @@ export class GameScene extends Phaser.Scene {
       id: 'block',
       label: 'Block',
       hotkey: 'B',
-      desc: 'Raise your shield to soak the incoming blow.',
+      desc: 'Block the incoming attack with your shield.',
       enabled: physical && this.canBlock(reactor),
       reason: 'No shield, or nothing to block.',
       run: () => this.chooseShieldReaction('block'),
@@ -9711,7 +9718,7 @@ export class GameScene extends Phaser.Scene {
       id: 'dodge',
       label: 'Dodge',
       hotkey: 'D',
-      desc: 'Spend a dodge to try to shrug off the attack.',
+      desc: 'Spend a dodge to try to avoid the attack.',
       enabled: physical && this.canDodge(reactor),
       reason: 'No dodge available, or nothing to dodge.',
       run: () => this.chooseDodgeReaction(),
@@ -10139,13 +10146,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Equip a bag item into its own slot (bonus action), swapping out what is in the way. */
-  private equipItem(itemId: ItemId, replace?: ItemId): void {
+  private equipItem(itemId: ItemId, replace?: ItemId, hand?: 'main' | 'off'): void {
     if (!this.humanActiveOrInventory) return;
     const me = this.gs.current;
     if (me.swordFormLocked())
       return this.flashHint('The bound greatshield locks your bag — swap to shield form first.');
     if (!me.bag.includes(itemId)) return;
-    const off = me.displacedBy(itemId, replace);
+    const off = me.displacedBy(itemId, replace, hand);
     if (!off) {
       const slot = getItem(itemId).slot;
       return this.flashHint(
@@ -10159,7 +10166,7 @@ export class GameScene extends Phaser.Scene {
       return this.flashHint('Equipping an item needs a bonus action.');
     this.closeInventory();
     this.resetSelection();
-    this.submitTurn(replace && off.includes(replace) ? { t: 'item-equip', itemId, replace } : { t: 'item-equip', itemId });
+    this.submitTurn({ t: 'item-equip', itemId, ...(replace && off.includes(replace) ? { replace } : {}), ...(hand ? { hand } : {}) });
   }
 
   /** Stow a held or worn item back into the bag (bonus action), chosen from the inventory. */
@@ -10171,7 +10178,7 @@ export class GameScene extends Phaser.Scene {
     if (getItem(itemId).permanentlyBinding)
       return this.flashHint(`${getItem(itemId).name} is permanently bound.`);
     if (!me.canStow(itemId)) return;
-    if (!me.torchSpentOnStow(itemId) && this.explorationCombat && !packCanStow(me, itemId)) return this.flashHint('No room in the pack.');
+    if (!me.torchSpentOnStow(itemId) && this.explorationCombat && !packCanStow(me, itemId)) return this.flashHint('No room in your bag.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('Unequipping an item needs a bonus action.');
     this.closeInventory();
@@ -10397,7 +10404,7 @@ export class GameScene extends Phaser.Scene {
     });
     const dropping = (id: ItemId): InventoryActionView['confirm'] => ({
       title: `Drop ${getItem(id).name}?`,
-      body: `It falls at your feet${getItem(id).torchCombats != null ? ' and goes out' : ''}. You can pick it up again while you stand beside it. Costs a bonus action.`,
+      body: `Drops at your feet${getItem(id).torchCombats != null ? ' and goes out' : ''}. Bonus action.`,
       label: 'Drop It',
     });
     const handActions = (id: ItemId): InventoryItemView['actions'] => {
@@ -10405,11 +10412,11 @@ export class GameScene extends Phaser.Scene {
       const total = getItem(id).torchCombats ?? 0;
       const unequip: InventoryActionView = mage.torchSpentOnStow(id)
         ? {
-          kind: 'unequip', label: 'Put Out', tone: 'danger',
+          kind: 'unequip', label: 'Put Away', tone: 'danger',
           confirm: {
-            title: 'Put out the torch?',
-            body: `It has burned through a fight: once put out it is spent and gone, with ${mage.torchCombatsLeft} of its ${total} fights of light unused.`,
-            label: 'Put It Out',
+            title: 'Put away the torch?',
+            body: `Used torch: putting it away destroys it (${mage.torchCombatsLeft} of ${total} fights left).`,
+            label: 'Destroy It',
           },
         }
         : { kind: 'unequip', label: 'Unequip' };
@@ -10446,7 +10453,7 @@ export class GameScene extends Phaser.Scene {
           kind: 'equip', label: 'Swap In', tone: 'positive',
           confirm: {
             title: `Swap in ${getItem(id).name}?`,
-            body: `${names} ${off.length > 1 ? 'go' : 'goes'} ${torch ? 'out and is spent' : 'into your bag'}. One bonus action for the whole swap.`,
+            body: `${names} ${torch ? (off.length > 1 ? 'are put away; the used torch is destroyed' : 'is destroyed') : off.length > 1 ? 'go into your bag' : 'goes into your bag'}. One bonus action.`,
             label: 'Swap (Bonus Action)',
           },
         }], count);
@@ -10458,7 +10465,7 @@ export class GameScene extends Phaser.Scene {
         if (definition.throwable) actions.push({ kind: 'throw', label: mage.readyConsumable === id ? 'Throw' : 'Ready' });
         if (mage.hasConsumablePouch() && mage.pouch.length < 3 && (definition.potion || definition.throwable))
           actions.push({ kind: 'pouch-store', label: 'Into Pouch' });
-        if (definition.hexzettel) actions.push({ kind: 'hex', label: `Loose (${hexManaCost(definition.hexzettel)} mana)`, tone: 'positive' });
+        if (definition.hexzettel) actions.push({ kind: 'hex', label: `Cast (${hexManaCost(definition.hexzettel)} mana)`, tone: 'positive' });
         return { ...item(id, 'Supply', actions, count), tag: mage.readyConsumable === id ? 'READY' : undefined };
       }),
       ...grouped(mage.pouch).map(([id, count]) => {
@@ -10491,6 +10498,7 @@ export class GameScene extends Phaser.Scene {
         pending: this.pendingLevels,
       } : undefined,
       readOnly,
+      offhandOnly: mage.offhandOnly,
       equipment,
       supplies,
       statuses: mage.statuses.map((status) => ({
@@ -10499,18 +10507,25 @@ export class GameScene extends Phaser.Scene {
         detail: this.statusBlurb(status),
       })),
     }, {
-      perform: (kind, id, replace) => this.performInventoryAction(kind, id, replace),
+      perform: (kind, id, replace, hand) => this.performInventoryAction(kind, id, replace, hand),
       close: () => this.closeInventory(),
       tabChanged: (tab) => this.tutorialNotify({ k: 'inventory-tab', tab }),
     });
   }
 
-  private performInventoryAction(kind: InventoryActionKind, id: ItemId, replace?: ItemId): void {
+  private performInventoryAction(kind: InventoryActionKind, id: ItemId, replace?: ItemId, hand?: 'main' | 'off'): void {
     switch (kind) {
       case 'consume': this.consumeItem(id); break;
       case 'throw': this.beginThrow(id); break;
       case 'hex': this.beginHex(id); break;
-      case 'equip': this.equipItem(id, replace); break;
+      case 'equip': this.equipItem(id, replace, hand); break;
+      case 'swap-hands': {
+        if (!this.humanActiveOrInventory || !this.gs.current.hands.includes(id)) break;
+        if (this.gs.current.swordFormLocked()) return this.flashHint('The bound greatshield locks your hands.');
+        this.closeInventory();
+        this.submitTurn({ t: 'item-swap-hands' });
+        break;
+      }
       case 'pouch-store': this.movePouchItem(id, true); break;
       case 'pouch-remove': this.movePouchItem(id, false); break;
       case 'unequip': this.unequipItem(id); break;
@@ -10539,7 +10554,7 @@ export class GameScene extends Phaser.Scene {
     const abilities = me.weaponAbilityItems().map((id) => getItem(id).weaponAbility);
     const firstAbility = abilities[0];
     if (firstAbility && me.isActionBanned(`weapon:${firstAbility}`))
-      return this.flashHint('That weapon action has been stifled forever.');
+      return this.flashHint('That weapon action is banned.');
     if (me.actions.bonus <= 0 && !Dev.infiniteActions)
       return this.flashHint('A weapon action needs a bonus action.');
     this.resetSelection();
@@ -10883,7 +10898,7 @@ export class GameScene extends Phaser.Scene {
     if (bloodPct > 0) {
       const bloodCost = Math.max(1, Math.round(mage.maxHp * bloodPct));
       mage.hp = Math.max(0, mage.hp - bloodCost);
-      this.gs.log(`${mage.name}'s blood charm exacts ${bloodCost} HP for the casting.`);
+      this.gs.log(`${mage.name}'s blood charm costs ${bloodCost} HP.`);
     }
     // Blessing of Roaring Thunder: each word cast (success or not) adds a stack.
     if (mage.hasThunderBlessing() && spell.words.length > 0) {
@@ -10941,7 +10956,7 @@ export class GameScene extends Phaser.Scene {
       const lifeCost = fromLife * per;
       me.hp = Math.max(0, me.hp - lifeCost);
       this.gs.log(`${me.name} pays ${lifeCost} life for ${fromLife} color charge${fromLife > 1 ? 's' : ''}.`);
-      if (me.hp <= 0) this.gs.log(`${me.name} is consumed by the black magic!`);
+      if (me.hp <= 0) this.gs.log(`${me.name} dies paying the HP cost.`);
     }
     me.spendColorCharges(fromCharges);
     const baseManaCost = me.profile.blueSecondaryTier ? 0 : ability.manaCost;
@@ -10968,7 +10983,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (me.isAbilityBanned(ability.id)) {
-      this.flashHint('That ability has been stifled forever.');
+      this.flashHint('That ability is banned.');
       return;
     }
     if (me.abilityCastsLeft(ability.id) <= 0) {
@@ -11103,7 +11118,7 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     if (this.reactor.isAbilityBanned(ability.id)) {
-      this.flashHint('That ability has been stifled forever.');
+      this.flashHint('That ability is banned.');
       return;
     }
     if (this.reactor.abilityCastsLeft(ability.id) <= 0) {
@@ -11132,8 +11147,8 @@ export class GameScene extends Phaser.Scene {
     this.refreshAutoPassButton();
     this.flashHint(
       this.autoPassReactions
-        ? 'Auto-pass ON — reactions will pass automatically. [O] to turn off.'
-        : 'Auto-pass OFF — you will be prompted for reactions. [O] to turn on.'
+        ? 'Auto-pass ON. [O] to turn off.'
+        : 'Auto-pass OFF. [O] to turn on.'
     );
     // If a reaction prompt is currently open, resolve it as a pass immediately.
     if (this.autoPassReactions && this.mode === 'reaction') this.onReactionPass();
@@ -11161,8 +11176,8 @@ export class GameScene extends Phaser.Scene {
     this.refreshSpectateButton();
     this.flashHint(
       this.spectateAll
-        ? 'Spectate ON — the AI now plays every side. [Y] to take back control.'
-        : 'Spectate OFF — you regain control on the next turn. [Y] to watch again.'
+        ? 'Spectate ON. [Y] to take back control.'
+        : 'Spectate OFF from next turn. [Y] to watch again.'
     );
     // If we are idling on a human turn, let the AI take it over right now.
     if (this.spectateAll && this.mode === 'idle') void this.driveSpectatedTurn();
@@ -11417,7 +11432,7 @@ export class GameScene extends Phaser.Scene {
         }
         const spell = this.pendingSpell;
         if (!spell) {
-          this.flashHint('Choose a spell first, then click a foe here.');
+          this.flashHint('Choose a spell first.');
           return;
         }
         if (this.gs.isValidSpellTarget(spell, me, foe)) {
@@ -11430,7 +11445,7 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       default:
-        this.flashHint('Begin an attack or a targeted spell first, then click a foe here.');
+        this.flashHint('Start an attack or spell first.');
     }
   }
 
@@ -11526,7 +11541,7 @@ export class GameScene extends Phaser.Scene {
   private chooseNeedleReaction(): void {
     if (!this.reactor || !this.reactionTop) return;
     if (!this.canNeedle(this.reactor, this.reactionTop)) {
-      this.flashHint('The Needle can only stifle abilities or weapon strikes.');
+      this.flashHint('The Needle can only ban abilities or weapon strikes.');
       return;
     }
     this.resolveReaction({ needle: true });
@@ -11588,7 +11603,7 @@ export class GameScene extends Phaser.Scene {
     } else {
       dest = await this.requestSubtargetPoint(reactor, {
         maxRange: range,
-        prompt: `${reactor.name}: dodge — pick where to slip (Esc to hold ground).`,
+        prompt: `${reactor.name}: dodge — pick where to move (Esc to stay).`,
       });
     }
     if (dest) this.dodgeMove(reactor, dest);
@@ -11670,7 +11685,7 @@ export class GameScene extends Phaser.Scene {
       add('melee', 'Attack', 'Make your normal bonus-action weapon strike.');
     }
     if (source.leapsLeft() > 0) {
-      add('leap', 'Leap', `Bound in a chosen direction; ${source.leapsLeft()} leaps remain.`);
+      add('leap', 'Leap', `Jump in a chosen direction; ${source.leapsLeft()} leaps left.`);
     }
 
     if (source.hasWeaponAction()) {
@@ -11686,7 +11701,7 @@ export class GameScene extends Phaser.Scene {
       source.deathsAngelEnergy > 0 &&
       !source.isItemBanned('deathsAngelWings')
     ) {
-      add('deaths-angel-wings', 'Unfurl Deaths Angel Wings', 'Spend 1 Energy to begin or extend flight.');
+      add('deaths-angel-wings', 'Use Deaths Angel Wings', 'Spend 1 Energy to start or extend flight.');
     }
     if (source.bindMantleCharges > 0) {
       add('mantle-bind', 'Weak Bind', `Root the nearest enemy; ${source.bindMantleCharges} charges remain.`);
@@ -11698,7 +11713,7 @@ export class GameScene extends Phaser.Scene {
     }
     const cleanseCost = source.cleanseManaCost();
     if (cleanseCost != null && source.mana >= cleanseCost) {
-      add('cleanse', 'Cleanse', `Pay ${cleanseCost} mana to wash every affliction off yourself.`);
+      add('cleanse', 'Cleanse', `Pay ${cleanseCost} mana to remove every affliction from yourself.`);
     }
     if (
       source.hasEdgelordLantern() &&
@@ -11708,7 +11723,7 @@ export class GameScene extends Phaser.Scene {
     ) {
       add(
         'edgelord-shake',
-        source.edgelordLanternActive ? 'Seal Edgelord Lantern' : 'Awaken Edgelord Lantern',
+        source.edgelordLanternActive ? 'Deactivate Edgelord Lantern' : 'Activate Edgelord Lantern',
         source.edgelordLanternActive ? 'Pull and capture nearby creatures.' : 'Pay 4 mana and spread Soul Rend.'
       );
     }
@@ -11716,7 +11731,7 @@ export class GameScene extends Phaser.Scene {
     if (!source.swordFormLocked()) {
       for (const itemId of source.bag) {
         if (source.canEquipFromBag(itemId)) {
-          add(`item-equip:${itemId}`, `Equip ${getItem(itemId).name}`, 'Move this item from the bag into its equipment slot.');
+          add(`item-equip:${itemId}`, `Equip ${getItem(itemId).name}`, '');
         }
       }
       for (const itemId of source.hands) {
@@ -11747,7 +11762,7 @@ export class GameScene extends Phaser.Scene {
         !((item.potion === 'mana' && source.mana >= source.maxMana) ||
           (item.potion === 'health' && source.hp >= source.maxHp))
       ) {
-        add(`item-use:${itemId}`, `Consume ${item.name}`, 'Use the item without spending your stored bonus action.');
+        add(`item-use:${itemId}`, `Consume ${item.name}`, '');
       }
       if (
         item.throwable && (source.pouch.includes(itemId) || source.readyConsumable === itemId) &&
@@ -11775,7 +11790,7 @@ export class GameScene extends Phaser.Scene {
       this.dodgeBonusMenu = new PagedChoiceMenuView(
         this,
         'PERFECT DODGE / FREE BONUS ACTION',
-        `${source.name} may use one legal bonus action without spending the stored bonus-action slot. Normal resource costs still apply.`,
+        `${source.name}: one free bonus action.`,
         options,
         (optionId) => finish(optionId),
         () => finish(null)
@@ -11959,7 +11974,7 @@ export class GameScene extends Phaser.Scene {
   private async offerDodgeBonusAction(source: Mage): Promise<void> {
     const options = this.dodgeBonusOptions(source);
     if (options.length === 0) {
-      this.gs.log(`${source.name}'s perfect dodge finds no legal bonus action.`);
+      this.gs.log(`${source.name}'s perfect dodge: no bonus action available.`);
       return;
     }
     this.dodgeBonusActor = source;
@@ -11974,7 +11989,7 @@ export class GameScene extends Phaser.Scene {
         this.gs.log(`${source.name} passes the perfect-dodge bonus window.`);
         return;
       }
-      this.gs.log(`${source.name} turns the perfect dodge into a free bonus action!`);
+      this.gs.log(`${source.name} uses the perfect dodge for a free bonus action.`);
       await this.applyTurnCommand(cmd, { actor: source, freeBonus: true, queueOnly: true });
     } finally {
       this.dodgeBonusMenu?.destroy();
@@ -12203,7 +12218,7 @@ export class GameScene extends Phaser.Scene {
         `${opts.label}: ${opts.value} on 1d${opts.sides}.`,
         [
           { id: 'keep', label: 'Keep', detail: `Keep ${opts.value}.` },
-          { id: 'reroll', label: 'Reroll', detail: 'Roll this die once more and keep the new result.' },
+          { id: 'reroll', label: 'Reroll', detail: '' },
         ],
         (choice) => finish(choice === 'reroll')
       );
@@ -12657,7 +12672,7 @@ export class GameScene extends Phaser.Scene {
     });
 
     // ---- Dock column 2: the spell builder ----
-    this.panelHeader(DOCK_SPELL, 'WORD RACK', MENU_HEX.brassLight);
+    this.panelHeader(DOCK_SPELL, 'WORDS', MENU_HEX.brassLight);
     for (let i = 0; i < WORD_SLOTS; i++) {
       const slot = wordSlot(i);
       const plate = new WordPlate(this, slot.x, slot.y, {
@@ -12985,7 +13000,7 @@ export class GameScene extends Phaser.Scene {
         width: 980,
         height: 660,
         title: 'SCENARIO LAB',
-        subtitle: 'Place entities, kit them out, then save or load the fight as a memory file',
+        subtitle: 'Place units, equip them, then save or load the fight as a scenario file.',
         accent: MENU_COLOR.amethyst,
       });
       this.scenarioTitle = chrome.title;
@@ -13214,7 +13229,7 @@ export class GameScene extends Phaser.Scene {
     this.scenarioLabel(
       left,
       y + 34,
-      'Presets come from the Creative prep screen (Swamprun / Raid / Mine Run). Applying one replaces stats and gear.',
+      'Applying a preset replaces stats and gear.',
       TEXT.dim,
     );
   }
@@ -13227,7 +13242,7 @@ export class GameScene extends Phaser.Scene {
     this.scenarioLabel(
       left,
       rowY,
-      `Words ${base.length}/${LOADOUT_SIZE} — click to add or remove. Colour identity and charges update instantly.`,
+      `Words ${base.length}/${LOADOUT_SIZE}`,
       TEXT.dim,
     );
 
@@ -13275,7 +13290,7 @@ export class GameScene extends Phaser.Scene {
       );
       bx += b.width + 6;
     }
-    this.scenarioLabel(left, y + 36, '* not offered on the draft screen (easter-egg words).', TEXT.dim);
+    this.scenarioLabel(left, y + 36, '* hidden words', TEXT.dim);
   }
 
   /** Overwrite an entity's stats and gear from a saved Creative preset. */
@@ -13293,7 +13308,7 @@ export class GameScene extends Phaser.Scene {
     this.scenarioLabel(
       left,
       top,
-      'Move places an entity anywhere; Edit opens its stats, words and gear. F6 (dev panel) edits live resources.',
+      'F6: dev panel.',
       TEXT.dim,
     );
     let y = top + 28;
@@ -13359,7 +13374,7 @@ export class GameScene extends Phaser.Scene {
     this.scenarioLabel(
       left,
       top + 26,
-      'Pick one, then click the field to drop it. Keep clicking to place more; Esc returns here.',
+      'Click the field to place. Esc: back.',
       TEXT.dim,
     );
 
@@ -13367,7 +13382,7 @@ export class GameScene extends Phaser.Scene {
     const step = 26;
     const y0 = top + 58;
     const entries: { label: string; color: string; arm: () => void }[] = [
-      { label: 'Mage (blank kit)', color: MENU_HEX.brassLight, arm: () => (this.scenarioBrush = { player: true }) },
+      { label: 'Mage (no gear)', color: MENU_HEX.brassLight, arm: () => (this.scenarioBrush = { player: true }) },
       ...(Object.keys(ENEMY_DEFS) as EnemyKind[]).map((kind) => ({
         label: ENEMY_DEFS[kind].name,
         color: '#e8e8f0',
@@ -13561,7 +13576,7 @@ export class GameScene extends Phaser.Scene {
       width: 560,
       height: 250,
       title: 'NAME SCENARIO',
-      subtitle: 'Save this arena state as a Memory file.',
+      subtitle: 'Save this fight as a scenario file.',
       accent: MENU_COLOR.brass,
       dismiss: () => this.scenarioNameEntry.finish(false),
     });
@@ -13598,7 +13613,7 @@ export class GameScene extends Phaser.Scene {
     const save = new CabinetChip(this, cx + 17, cy + 51, {
       width: 210,
       height: 38,
-      label: 'SAVE MEMORY',
+      label: 'SAVE SCENARIO',
       tone: 'primary',
       onActivate: () => this.scenarioNameEntry.finish(true),
     });
@@ -13622,7 +13637,7 @@ export class GameScene extends Phaser.Scene {
           const saved = downloadScenario(this.gs, value.trim() || suggestion);
           this.memoryName = saved.name;
           this.gs.log(`Scenario saved as "${saved.name}".`);
-          this.flashHint(`Saved "${saved.name}" — load it from the Memory menu.`);
+          this.flashHint(`Saved "${saved.name}". Load it from Workshop > Load Scenario.`);
         } catch {
           this.flashHint('Could not save that scenario.');
         }
@@ -13676,7 +13691,7 @@ export class GameScene extends Phaser.Scene {
     this.resetSelection();
     this.restyleCreatureSprites();
     this.gs.log(
-      `Memory loaded — "${scenario.name}" (round ${this.gs.round}, ${mages.length} entities).`
+      `Scenario loaded: "${scenario.name}" (round ${this.gs.round}, ${mages.length} units).`
     );
     this.mode = 'busy';
     void this.startTurn();
@@ -13713,7 +13728,7 @@ export class GameScene extends Phaser.Scene {
       width: 860,
       height: 640,
       title: 'TRAINING LAB',
-      subtitle: 'Configure combatants, resources, stacks, and equipment in real time',
+      subtitle: 'Edit units, resources, stacks and gear.',
       accent: MENU_COLOR.verdigris,
       dismiss: () => this.closeTrainingOverlay(),
     });
@@ -14031,7 +14046,7 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'idle';
     this.resetSelection();
     this.syncMageSprites();
-    this.gs.log('Training: field reset — HP, mana, positions and effects restored.');
+    this.gs.log('Training: field reset.');
     this.redraw();
     this.gs.startRound();
     void this.startTurn();
@@ -17150,7 +17165,7 @@ export class GameScene extends Phaser.Scene {
         size,
         text: [
           `${name}  ·  ${effect.roundsLeft} round${effect.roundsLeft === 1 ? '' : 's'} left`,
-          `${ours ? 'Your side' : 'Foes'}${caster ? ` · laid by ${caster.name}` : ''}`,
+          `${ours ? 'Your side' : 'Foes'}${caster ? ` · placed by ${caster.name}` : ''}`,
           rules,
         ].filter(Boolean).join('\n'),
       });
@@ -17494,16 +17509,7 @@ export class GameScene extends Phaser.Scene {
       const w = me.loadout[i];
       const on = this.selectedIdx.includes(i);
       const charges = w === 'storm' ? 3 - me.stormDualcastsUsed : me.charges[w] ?? 0;
-      const wordColor = WORD_COLOR[w];
-      const accent = isModifierWord(w)
-        ? MENU_COLOR.amethyst
-        : wordColor === 'red'
-          ? MENU_COLOR.blood
-          : wordColor === 'blue'
-            ? MENU_COLOR.verdigris
-            : wordColor === 'black'
-              ? MENU_COLOR.amethyst
-              : MENU_COLOR.brass;
+      const accent = wordCardColor(w);
       const meta = w === 'storm'
         ? `${charges}P / ${2 - me.stormMonocastsUsed}S`
         : `${charges} CHARGE${charges === 1 ? '' : 'S'}${WORDS[w].grantsReaction ? ' · REACTION' : ''}`;
@@ -17521,7 +17527,7 @@ export class GameScene extends Phaser.Scene {
     this.actionMenuButton?.setVisible(canOpenActions);
     if (canOpenActions && this.actionMenuButton) {
       this.actionMenuButton.setText(
-        this.mode === 'reaction' ? 'PASS PRIORITY' : 'ACTIONS'
+        this.mode === 'reaction' ? 'PASS' : 'ACTIONS'
       );
     }
 
@@ -17677,11 +17683,10 @@ export class GameScene extends Phaser.Scene {
   private inspectCard(m: Mage): string {
     const health = (value: number): number => Number(value.toFixed(2));
     const lines: string[] = [
-      `${m.name}${m.isSummon ? ' (summon)' : ''}  ·  ${health(m.hp)}/${health(m.maxHp)} HP  ·  ${isCrusadeBuilding(m) ? 'Building (no mind)' : `${m.sanity}/${m.maxSanity} mind`}`,
+      `${m.name}${m.isSummon ? ' (summon)' : ''}  ·  ${health(m.hp)}/${health(m.maxHp)} HP  ·  ${isCrusadeBuilding(m) ? 'Building (no sanity)' : `${m.sanity}/${m.maxSanity} sanity`}`,
     ];
     if (isCrusadeBuilding(m)) lines.push('Weak: Burn specifically. Resists non-DoT debuffs.');
     if (m.enemyKind === 'crusadeHelper') {
-      lines.push(`(${'Cheap Slaves'.split('').map((letter) => `${letter}\u0336`).join('')}) "Neatly treated Helpers"`);
       lines.push('Damaging or killing helpers grants no usual bonuses. Killing one deals 1d2-1 mill to the killer.');
       lines.push('With a camp alive: two replacements appear next turn and act immediately.');
     }
@@ -17762,14 +17767,14 @@ export class GameScene extends Phaser.Scene {
     }
     for (const s of this.gs.shadows) {
       if (dist(p, s) <= s.radius) {
-        return 'Shadow pool — its owner may cast spells from here (extending their reach), and any mage standing inside takes extra spell damage.';
+        return 'Shadow pool — its owner can cast spells from here.';
       }
     }
     for (const t of this.gs.totems) {
       if (dist(p, t) <= t.radius) {
         return t.lifesteal
-          ? 'Corrosion totem — each round it saps the health of mages within its aura and heals its owner for the damage dealt.'
-          : 'Corrosion totem — each round it saps the health of every mage standing within its aura.';
+          ? 'Corrosion totem — each round it damages mages in its aura and heals its owner by that much.'
+          : 'Corrosion totem — each round it damages every mage in its aura.';
       }
     }
     for (const pool of this.gs.corrosionPools) {
@@ -17784,7 +17789,7 @@ export class GameScene extends Phaser.Scene {
     }
     for (const zone of this.gs.hazardZones) {
       if (hazardDistance(zone, p) > zone.radius) continue;
-      if (zone.hex) return `${zone.name} - a laid Hexzettel. ${zone.hex.text}`;
+      if (zone.hex) return `${zone.name} (hex). ${zone.hex.text}`;
       if (zone.crossOnly) {
         const who = zone.foesOnly ? 'An enemy of its caster' : 'A unit';
         return `${zone.name} - ${who} moving through it takes ${zone.damageSpecs[0]} ${zone.damageType}.`;
@@ -17885,7 +17890,7 @@ export class GameScene extends Phaser.Scene {
       this.showEndCard({
         eyebrow: 'WITHDRAWN',
         title: 'ESCAPED',
-        detail: `The party broke off ${FLEE_EDGE_LABEL[escapedOver]}.`,
+        detail: `The party fled ${FLEE_EDGE_LABEL[escapedOver]}.`,
         actionLabel: 'CONTINUE',
         tone: 'victory',
         onActivate: () => this.returnToMenu(),
@@ -17914,7 +17919,7 @@ export class GameScene extends Phaser.Scene {
       this.busy = false;
       if (this.mineRun) this.closeMineExploration();
       const won = this.explorationWon;
-      const trained = `${this.explorationKills.length} felled. Level ${this.runLevel} (${this.runXp}/${this.xpToNextLevel()} XP).`;
+      const trained = `${this.explorationKills.length} defeated. Level ${this.runLevel} (${this.runXp}/${this.xpToNextLevel()} XP).`;
       const dungeon = this.dungeon ? DUNGEONS[this.dungeon] : null;
       const reached = !dungeon ? ''
         : this.mineRun ? `${this.mineMaze?.steps ?? 0} tunnels walked. `
@@ -17922,10 +17927,10 @@ export class GameScene extends Phaser.Scene {
       const boss = this.explorationCombat.boss ? BOSSES[this.explorationCombat.boss.id] : null;
       this.showEndCard({
         eyebrow: this.mineCrushed || boss ? 'BLOODMOON' : won ? (dungeon ? 'OUT ALIVE' : 'FIGHT WON') : 'DEFEATED',
-        title: this.mineCrushed ? 'CRUSHED IN THE MINES' : boss && won ? `${boss.name.toUpperCase()} DEFEATED` : won ? (dungeon ? dungeon.name.toUpperCase() : 'VICTORY') : 'PARTY LOST',
+        title: this.mineCrushed ? 'DIED IN THE MINES' : boss && won ? `${boss.name.toUpperCase()} DEFEATED` : won ? (dungeon ? dungeon.name.toUpperCase() : 'VICTORY') : 'PARTY LOST',
         detail: won
           ? `${reached}${trained}`
-          : this.mineCrushed ? 'The maze shifted as the bloodmoon rose. No one escaped.' : 'The whole party has fallen. The run is over.',
+          : this.mineCrushed ? 'The bloodmoon rose while the party was inside.' : 'The party is dead. The run is over.',
         actionLabel: 'CONTINUE',
         tone: won ? 'victory' : 'defeat',
         onActivate: () => this.returnToMenu(),
@@ -17963,7 +17968,7 @@ export class GameScene extends Phaser.Scene {
       this.showEndCard({
         eyebrow: 'TRAINING COMPLETE',
         title: 'FIELD RESET',
-        detail: 'Combat resolved. Restore every combatant and clear the field.',
+        detail: 'Fight over. Reset restores everyone.',
         actionLabel: 'RESET FIELD',
         tone: 'neutral',
         onActivate: () => {

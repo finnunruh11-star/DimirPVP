@@ -175,7 +175,7 @@ export class VoteBoard extends Phaser.GameObjects.Container {
       this.spinAt = reveal.final;
       this.landed = true;
       const label = this.rows.find((view) => view.row.id === reveal.final)?.row.label ?? '';
-      this.status.setText(among.length > 1 ? `A tie! The lots fall on: ${label}` : `Chosen: ${label}`);
+      this.status.setText(among.length > 1 ? `Tie, picked at random: ${label}` : `Chosen: ${label}`);
       playSound('ui.confirm');
       for (const view of this.rows) this.paintRow(view);
     };
@@ -183,7 +183,7 @@ export class VoteBoard extends Phaser.GameObjects.Container {
       land();
       return;
     }
-    this.status.setText('A tie! Drawing lots...');
+    this.status.setText('Tie: picking at random...');
     // The same number of hops on every screen, so the light stops together everywhere.
     const hops = among.length * 3 + finalAt;
     let hop = 0;

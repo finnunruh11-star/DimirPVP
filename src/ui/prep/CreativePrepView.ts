@@ -166,13 +166,13 @@ export class CreativePrepView extends Phaser.GameObjects.Container {
     this.setDepth(98);
     addCabinetBackdrop(scene, this);
 
-    const title = scene.add.text(58, 42, 'CREATIVE PREPARATION', {
+    const title = scene.add.text(58, 42, 'CREATIVE', {
       fontFamily: MENU_FONT.display,
       fontSize: '30px',
       fontStyle: 'bold',
       color: MENU_HEX.bone,
     });
-    const subtitle = scene.add.text(60, 82, 'Set attributes directly and assemble any starting kit.', {
+    const subtitle = scene.add.text(60, 82, 'Set stats and items.', {
       fontFamily: MENU_FONT.body,
       fontSize: '15px',
       color: MENU_HEX.boneDim,
@@ -191,25 +191,25 @@ export class CreativePrepView extends Phaser.GameObjects.Container {
     addRecess(scene, this, 430, 132, 792, 410);
     addRecess(scene, this, 58, 562, 1164, 116, MENU_COLOR.woodDeep);
 
-    const attributesHeading = scene.add.text(76, 146, 'ATTRIBUTES', {
+    const attributesHeading = scene.add.text(76, 146, 'STATS', {
       fontFamily: MENU_FONT.control,
       fontSize: '12px',
       fontStyle: 'bold',
       color: MENU_HEX.brass,
     });
-    const catalogueHeading = scene.add.text(448, 146, 'ITEM CATALOGUE / SELECT TO ADD', {
+    const catalogueHeading = scene.add.text(448, 146, 'ITEMS / CLICK TO ADD', {
       fontFamily: MENU_FONT.control,
       fontSize: '12px',
       fontStyle: 'bold',
       color: MENU_HEX.brass,
     });
-    this.inspectorTitle = scene.add.text(448, 448, 'CREATIVE KIT', {
+    this.inspectorTitle = scene.add.text(448, 448, 'CREATIVE', {
       fontFamily: MENU_FONT.control,
       fontSize: '12px',
       fontStyle: 'bold',
       color: MENU_HEX.brassLight,
     });
-    this.inspectorBody = scene.add.text(448, 466, 'Choose an attribute control or item to inspect it.', {
+    this.inspectorBody = scene.add.text(448, 466, '', {
       fontFamily: MENU_FONT.body,
       fontSize: '12px',
       color: MENU_HEX.boneDim,
@@ -337,7 +337,7 @@ export class CreativePrepView extends Phaser.GameObjects.Container {
       label: 'Previous',
       enabled: page > 0,
       onActivate: () => this.actions.setPage(page - 1),
-      onFocus: () => this.setInspector('PREVIOUS PAGE', 'Show the previous twelve catalogue items.'),
+      onFocus: () => this.setInspector('PREVIOUS PAGE', ''),
     });
     const next = new CabinetChip(this.scene, 1086, 504, {
       width: 104,
@@ -345,7 +345,7 @@ export class CreativePrepView extends Phaser.GameObjects.Container {
       label: 'Next',
       enabled: page < pages - 1,
       onActivate: () => this.actions.setPage(page + 1),
-      onFocus: () => this.setInspector('NEXT PAGE', 'Show the next twelve catalogue items.'),
+      onFocus: () => this.setInspector('NEXT PAGE', ''),
     });
     const pageText = this.scene.add.text(870, 510, `PAGE ${page + 1} / ${pages}`, {
       fontFamily: MENU_FONT.control,
@@ -387,14 +387,14 @@ export class CreativePrepView extends Phaser.GameObjects.Container {
         tone: 'positive',
         enabled: !!preset,
         onActivate: () => this.actions.loadPreset(slot),
-        onFocus: () => this.setInspector('LOAD BUILD', preset ? `Replace the current setup with ${preset.name}.` : 'This slot is empty.'),
+        onFocus: () => this.setInspector('LOAD BUILD', preset ? `Load ${preset.name}.` : 'Empty slot.'),
       });
       const save = new CabinetChip(this.scene, x + 68, 628, {
         width: 60,
         height: 30,
         label: 'Save',
         onActivate: () => this.openNameDialog(slot, preset?.name ?? `Build ${slot + 1}`),
-        onFocus: () => this.setInspector('SAVE BUILD', 'Store the current attributes and complete item list in this slot.'),
+        onFocus: () => this.setInspector('SAVE BUILD', 'Save these stats and items here.'),
       });
       const clear = new CabinetChip(this.scene, x + 136, 628, {
         width: 68,
@@ -403,7 +403,7 @@ export class CreativePrepView extends Phaser.GameObjects.Container {
         tone: 'danger',
         enabled: !!preset,
         onActivate: () => this.actions.clearPreset(slot),
-        onFocus: () => this.setInspector('CLEAR BUILD', preset ? `Erase ${preset.name} from local storage.` : 'This slot is empty.'),
+        onFocus: () => this.setInspector('CLEAR BUILD', preset ? `Delete ${preset.name}.` : 'Empty slot.'),
       });
       this.add([load, save, clear]);
       this.focus.add(load);
@@ -418,7 +418,7 @@ export class CreativePrepView extends Phaser.GameObjects.Container {
       fontStyle: 'bold',
       color: MENU_HEX.bone,
     });
-    const kitDetail = this.scene.add.text(750, 598, last ? `Last added: ${getItem(last).name}` : 'No starting equipment selected.', {
+    const kitDetail = this.scene.add.text(750, 598, last ? `Last added: ${getItem(last).name}` : 'No items.', {
       fontFamily: MENU_FONT.body,
       fontSize: '12px',
       color: MENU_HEX.boneDim,
@@ -430,16 +430,16 @@ export class CreativePrepView extends Phaser.GameObjects.Container {
       label: 'Undo Last',
       enabled: !!last,
       onActivate: this.actions.undoItem,
-      onFocus: () => this.setInspector('UNDO LAST', last ? `Remove the latest ${getItem(last).name}.` : 'No item can be removed.'),
+      onFocus: () => this.setInspector('UNDO LAST', last ? `Remove ${getItem(last).name}.` : 'Nothing to remove.'),
     });
     const clearItems = new CabinetChip(this.scene, 856, 628, {
       width: 98,
       height: 30,
-      label: 'Clear Kit',
+      label: 'Clear Items',
       tone: 'danger',
       enabled: this.snapshot.items.length > 0,
       onActivate: this.actions.clearItems,
-      onFocus: () => this.setInspector('CLEAR KIT', 'Remove every selected starting item.'),
+      onFocus: () => this.setInspector('CLEAR ITEMS', ''),
     });
     const confirm = new CabinetChip(this.scene, 970, 620, {
       width: 232,
@@ -447,7 +447,7 @@ export class CreativePrepView extends Phaser.GameObjects.Container {
       label: this.snapshot.confirmLabel,
       tone: 'primary',
       onActivate: this.actions.confirm,
-      onFocus: () => this.setInspector('KIT COMPLETE', 'Apply these attributes and items, then begin the run.'),
+      onFocus: () => this.setInspector('READY', ''),
     });
     this.add([kitLabel, kitDetail, undo, clearItems, confirm]);
     this.focus.add(undo);

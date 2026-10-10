@@ -270,7 +270,52 @@ const tests: [name: string, run: () => void][] = [
     mage.hands = ['torch', 'buckler'];
     equal(mage.displacedBy('travellersDagger'), ['buckler'], 'the off hand gives way by default');
     equal(mage.displacedBy('travellersDagger', 'torch'), ['torch'], 'or the hand chosen');
-    assert(mage.swapIn('travellersDagger', 'buckler') && mage.hands.includes('travellersDagger') && mage.bag.includes('buckler'), 'swapped');
+    assert(mage.swapIn('travellersDagger', 'torch'), 'replace the main hand');
+    equal(mage.hands, ['travellersDagger', 'buckler'], 'replacement stays in the selected hand');
+    assert(mage.swapHands(), 'held items can switch hands');
+    equal(mage.hands, ['buckler', 'travellersDagger'], 'switching hands swaps their order');
+    mage.hands = ['buckler'];
+    mage.bag.push('travellersDagger');
+    equal(mage.displacedBy('travellersDagger', 'buckler'), ['buckler'], 'selected hand is replaced even with another hand free');
+    assert(mage.swapIn('travellersDagger', 'buckler'), 'replace rather than fill a free hand');
+    equal(mage.hands, ['travellersDagger'], 'replacement does not equip a second item');
+    assert(mage.bag.includes('buckler'), 'displaced gear is stowed');
+  }],
+
+  ['switches the active weapon even with no actions left', () => {
+    const mage = traveller();
+    mage.hands = ['ironShortsword', 'travellersDagger'];
+    mage.actions = { main: 0, bonus: 0, move: 0 };
+    equal(mage.activeWeaponId(), 'ironShortsword', 'main weapon is initially active');
+    assert(mage.swapHands(), 'dragging hands does not require an action');
+    equal(mage.activeWeaponId(), 'travellersDagger', 'offhand weapon becomes active');
+    equal(mage.actions, { main: 0, bonus: 0, move: 0 }, 'no actions charged');
+    assert(mage.swapHands(), 'can switch back for free');
+    equal(mage.activeWeaponId(), 'ironShortsword', 'original weapon becomes active again');
+  }],
+
+  ['honors empty hand targets and preserves them through saved parties', () => {
+    const mage = traveller();
+    mage.bag.push('travellersDagger', 'buckler');
+    assert(mage.equipAt('travellersDagger', undefined, 'off'), 'equip directly into empty offhand');
+    equal([mage.handAt('main'), mage.handAt('off')], [null, 'travellersDagger'], 'main hand stays empty');
+    const [loaded] = restoreParty(capturePartySnapshot([mage]));
+    equal([loaded.handAt('main'), loaded.handAt('off')], [null, 'travellersDagger'], 'offhand placement survives save');
+    loaded.hands = ['ironShortsword'];
+    equal([loaded.handAt('main'), loaded.handAt('off')], ['ironShortsword', null], 'replacing the held kit clears old placement');
+    assert(mage.equipAt('buckler', undefined, 'main'), 'equip into empty main');
+    equal(mage.hands, ['buckler', 'travellersDagger'], 'both hand targets are honored');
+    mage.bag.push('torch');
+    assert(mage.equipAt('torch', undefined, 'main'), 'replace main while offhand stays equipped');
+    equal(mage.hands, ['torch', 'travellersDagger'], 'offhand is untouched');
+    const actions = { ...mage.actions };
+    mage.torchCombatsLeft -= 1;
+    const burn = mage.torchCombatsLeft;
+    assert(mage.swapHands(), 'switch held items for free');
+    equal(mage.actions, actions, 'no actions spent');
+    equal(mage.torchCombatsLeft, burn, 'torch is not stowed or relit');
+    mage.sabotagedItems.add('torch');
+    assert(!mage.swapHands(), 'bound gear cannot change hands');
   }],
 
   ['puts a fresh torch back whole, but spends one that has burned', () => {
@@ -283,6 +328,21 @@ const tests: [name: string, run: () => void][] = [
     mage.torchCombatsLeft -= 1;
     assert(mage.torchSpentOnStow('torch'), 'a burned torch is spent');
     assert(mage.unequipHand('torch') && !mage.bag.includes('torch'), 'put out and gone');
+  }],
+
+  ['checks and applies targeted equipment and free hand switches through co-op intents', () => {
+    const mage = traveller();
+    mage.hands = ['torch', 'buckler'];
+    mage.bag.push('travellersDagger');
+    const run = createRun(11, capturePartySnapshot([mage]));
+    const intent = parseIntent({ op: 'equip', item: 'travellersDagger', hand: 'main' });
+    assert(intent && applyIntent(run, null, intent).ok, 'targeted equip is accepted');
+    equal(partyOf(run)[0].hands, ['travellersDagger', 'buckler'], 'intent honors main hand');
+    const swap = parseIntent({ op: 'swap-hands' });
+    assert(swap && applyIntent(run, null, swap).ok, 'swap is accepted');
+    equal(partyOf(run)[0].hands, ['buckler', 'travellersDagger'], 'intent switches held items');
+    equal(parseIntent({ op: 'equip', item: 'travellersDagger', hand: 'invalid' }), null, 'reject invalid hand');
+    equal(parseIntent({ op: 'equip', item: 'travellersDagger', replace: 'invalid' }), null, 'reject invalid replacement');
   }],
 
   ['sells pickaxes for 3 gold wherever they are sold', () => {

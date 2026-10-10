@@ -125,7 +125,7 @@ const scriptorium = (town: string, name: string): ShopDef => ({
   id: `${town}-scriptorium`,
   kind: 'scriptorium',
   name,
-  sign: 'SCRIPTORIUM',
+  sign: 'SCRIBE',
   keeper: 'scribe',
   stock: {
     fixed: [
@@ -205,13 +205,13 @@ const outfitter = (town: string, name: string): ShopDef => ({
 export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
   ([
     // ---- The Capitol: everything ----
-    guild('capitol', "Adventurers' Guild"),
-    apothecary('capitol', 'Royal Apothecary'),
-    scriptorium('capitol', 'The Inkwell Scriptorium'),
+    guild('capitol', 'Capitol Guild'),
+    apothecary('capitol', 'Capitol Apothecary'),
+    scriptorium('capitol', 'Capitol Scribe'),
     {
       id: 'capitol-weaponsmith',
       kind: 'weaponsmith',
-      name: 'Kingsguard Arms',
+      name: 'Capitol Weaponsmith',
       sign: 'WEAPONS',
       keeper: 'smith',
       stock: {
@@ -226,7 +226,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     {
       id: 'capitol-armory',
       kind: 'armory',
-      name: 'Crown Armory',
+      name: 'Capitol Armourer',
       sign: 'ARMOUR',
       keeper: 'armorer',
       stock: {
@@ -241,7 +241,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     {
       id: 'capitol-jeweller',
       kind: 'jeweller',
-      name: 'Silverleaf Accessories',
+      name: 'Capitol Jeweller',
       sign: 'ACCESSORIES',
       keeper: 'jeweller',
       stock: {
@@ -256,7 +256,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     {
       id: 'capitol-gems',
       kind: 'gems',
-      name: 'The Facet',
+      name: 'Capitol Gems',
       sign: 'GEMS',
       keeper: 'gemcutter',
       stock: {
@@ -268,11 +268,11 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       buys: [{ accepts: isGem, rate: 1.25 }],
       services: [],
     },
-    valuables('capitol', 'Gilded Curios', ['rare', 'epic', 'unreal', 'mythical']),
+    valuables('capitol', 'Capitol Valuables', ['rare', 'epic', 'unreal', 'mythical']),
     {
       id: 'capitol-forge',
       kind: 'forge',
-      name: 'City Forge',
+      name: 'Capitol Forge',
       sign: 'FORGE',
       keeper: 'forgemaster',
       stock: { fixed: FORGE_SUPPLIES, priceMult: 1.5 },
@@ -280,12 +280,12 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       services: ['forge'],
     },
     // ---- Hearthfire: the basics, and the best steel in the land ----
-    guild('hearthfire', 'Hearthfire Guildhall'),
-    apothecary('hearthfire', 'Ashen Remedies'),
+    guild('hearthfire', 'Hearthfire Guild'),
+    apothecary('hearthfire', 'Hearthfire Apothecary'),
     {
       id: 'hearthfire-weaponsmith',
       kind: 'weaponsmith',
-      name: 'Anvilheart Weapons',
+      name: 'Hearthfire Weaponsmith',
       sign: 'WEAPONS',
       keeper: 'smith',
       stock: {
@@ -300,7 +300,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     {
       id: 'hearthfire-armory',
       kind: 'armory',
-      name: 'Emberwall Armory',
+      name: 'Hearthfire Armourer',
       sign: 'ARMOUR',
       keeper: 'armorer',
       stock: {
@@ -315,7 +315,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     {
       id: 'hearthfire-forge',
       kind: 'forge',
-      name: 'The Great Forge',
+      name: 'Hearthfire Forge',
       sign: 'FORGE',
       keeper: 'forgemaster',
       stock: { fixed: FORGE_SUPPLIES, priceMult: 1.2 },
@@ -323,16 +323,16 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       services: ['forge'],
     },
     // ---- Kerusai: a small town ----
-    guild('kerusai', 'Kerusai Lodge'),
-    apothecary('kerusai', 'Mirewater Tonics'),
-    scriptorium('kerusai', 'Reedpen Scriptorium'),
-    valuables('kerusai', 'The Drowned Coin', ['rare', 'epic']),
+    guild('kerusai', 'Kerusai Guild'),
+    apothecary('kerusai', 'Kerusai Apothecary'),
+    scriptorium('kerusai', 'Kerusai Scribe'),
+    valuables('kerusai', 'Kerusai Valuables', ['rare', 'epic']),
     // ---- Oakhaven: a timber town in the Northwood ----
-    guild('oakhaven', 'Oakhaven Lodge'),
+    guild('oakhaven', 'Oakhaven Guild'),
     {
       id: 'oakhaven-herbalist',
       kind: 'herbalist',
-      name: 'Greenhollow Herbs',
+      name: 'Oakhaven Herbalist',
       sign: 'HERBS',
       keeper: 'herbalist',
       stock: { fixed: [{ id: 'healthPotion' }, { id: 'manaPotion' }, { id: 'herbMoonglow' }, { id: 'torch' }] },
@@ -345,7 +345,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     {
       id: 'oakhaven-bowyer',
       kind: 'bowyer',
-      name: 'Longshadow Bowyer',
+      name: 'Oakhaven Bowyer',
       sign: 'BOWS',
       keeper: 'hunter',
       stock: {
@@ -362,12 +362,12 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       services: [],
     },
     // ---- Pennybruck: a small miners' village on the lower slopes ----
-    guild('pennybruck', 'Pennybruck Hall'),
-    apothecary('pennybruck', 'Slopeside Remedies'),
+    guild('pennybruck', 'Pennybruck Guild'),
+    apothecary('pennybruck', 'Pennybruck Apothecary'),
     {
       id: 'pennybruck-supply',
       kind: 'supply',
-      name: 'Deepvein Supply',
+      name: 'Pennybruck Supply',
       sign: 'SUPPLY',
       keeper: 'miner',
       stock: { fixed: [{ id: 'torch' }, { id: 'lantern' }, { id: 'pickaxe', price: PICKAXE_PRICE }, { id: 'mineMap', price: MINE_MAP_PRICE }, { id: 'throwingDagger' }, { id: 'oreCoal' }] },
@@ -378,13 +378,13 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       services: [],
     },
     // ---- Thassa: the lake port ----
-    guild('thassa', 'Tidewatch Guild'),
-    apothecary('thassa', 'Saltwind Apothecary'),
-    scriptorium('thassa', 'The Tidal Script'),
+    guild('thassa', 'Thassa Guild'),
+    apothecary('thassa', 'Thassa Apothecary'),
+    scriptorium('thassa', 'Thassa Scribe'),
     {
       id: 'thassa-pearls',
       kind: 'jeweller',
-      name: 'The Pearl Trader',
+      name: 'Thassa Pearls',
       sign: 'PEARLS',
       keeper: 'pearler',
       stock: { pool: isAccessory, rarities: ['rare', 'epic', 'unreal'], size: 4, priceMult: 1.1 },
@@ -395,17 +395,17 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
       services: [],
     },
     // ---- Nerogril: the last well before the deep desert ----
-    guild('nerogril', 'Nerogril Waystation'),
-    apothecary('nerogril', 'Sandglass Remedies'),
-    outfitter('nerogril', 'Dune Outfitters'),
+    guild('nerogril', 'Nerogril Guild'),
+    apothecary('nerogril', 'Nerogril Apothecary'),
+    outfitter('nerogril', 'Nerogril Outfitter'),
     // ---- The Theocracy: the holy city of the White Desert ----
-    guild('theocracy', "The Pilgrims' Hall"),
-    apothecary('theocracy', 'The Sacred Spring'),
-    outfitter('theocracy', 'Oasis Outfitters'),
+    guild('theocracy', 'Theocracy Guild'),
+    apothecary('theocracy', 'Theocracy Apothecary'),
+    outfitter('theocracy', 'Theocracy Outfitter'),
     {
       id: 'theocracy-arms',
       kind: 'weaponsmith',
-      name: 'Arms of the Faithful',
+      name: 'Theocracy Weaponsmith',
       sign: 'WEAPONS',
       keeper: 'smith',
       stock: {
@@ -420,7 +420,7 @@ export const SHOPS: Record<string, ShopDef> = Object.fromEntries(
     {
       id: 'theocracy-relics',
       kind: 'valuables',
-      name: 'Reliquary of the Sun',
+      name: 'Theocracy Relics',
       sign: 'RELICS',
       keeper: 'priest',
       stock: { pool: (def) => isAccessory(def) || isArmour(def), rarities: ['epic', 'unreal', 'mythical'], size: 4, priceMult: 1.3 },
@@ -442,14 +442,14 @@ export const WAYSIDE_DISCOUNT = 0.85;
 export const waysideShopId = (kind: WaysideKind): string => `wayside-${kind}`;
 
 const WAYSIDE_NAMES: Record<WaysideKind, string> = {
-  weaponsmith: "Travelling Weaponsmith's Cart",
-  armory: "Travelling Armourer's Cart",
-  jeweller: "Travelling Jeweller's Coach",
-  apothecary: "Travelling Apothecary's Wagon",
-  bowyer: "Travelling Bowyer's Cart",
-  herbalist: "Travelling Herbalist's Wagon",
-  supply: "Travelling Outfitter's Wagon",
-  gems: "Travelling Gem Dealer's Coach",
+  weaponsmith: 'Travelling Weaponsmith',
+  armory: 'Travelling Armourer',
+  jeweller: 'Travelling Jeweller',
+  apothecary: 'Travelling Apothecary',
+  bowyer: 'Travelling Bowyer',
+  herbalist: 'Travelling Herbalist',
+  supply: 'Travelling Outfitter',
+  gems: 'Travelling Gem Dealer',
 };
 
 // Wayside wares stock like the first town shop of their kind, cheaper, and buy nothing.
@@ -460,7 +460,7 @@ for (const kind of WAYSIDE_KINDS) {
     id: waysideShopId(kind),
     kind,
     name: WAYSIDE_NAMES[kind],
-    sign: 'WARES',
+    sign: 'TRADER',
     keeper: model.keeper,
     stock: { ...model.stock, priceMult: (model.stock.priceMult ?? 1) * WAYSIDE_DISCOUNT },
     buys: [],

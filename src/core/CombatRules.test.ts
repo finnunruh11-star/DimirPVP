@@ -66,6 +66,35 @@ function passRound(game: GameState): void {
 }
 
 const tests: [name: string, run: () => void | Promise<void>][] = [
+  ['rebuilds survivor initiative before adding the next dungeon wave', () => {
+    const player = godUnit('Player', 1, 200);
+    const companion = godUnit('Companion', 1, 240);
+    const fallen = godUnit('Fallen', 1, 280);
+    const foes = Array.from({ length: 5 }, (_, index) => creature(`Old foe ${index}`, 600 + index * 20));
+    const game = new GameState([fallen, ...foes, player, companion], 7);
+    game.restoreTurnOrder([7, 6, 5, 4, 3, 2, 1, 0], [], 5);
+    companion.initiativeLast = true;
+    const summon = game.spawnSummon(godUnit('Summon', 1, 300), player, 'zombie');
+    const party = [player, companion, summon];
+    game.mages = party;
+    summon.summonOwnerIndex = 0;
+    const order = party.flatMap((mage, index) => mage.isSummon || mage.inert ? [] : [index]);
+    game.restoreTurnOrder(order, party.map(() => 0), order[0] ?? 0);
+
+    equal(game.currentIndex, 0, 'the active mage belongs to the surviving roster');
+    equal(game.initiativeOrder, [0, 1], 'removed enemies and carried summons take no turns');
+    const newcomer = creature('Next wave foe', 600);
+    game.addMage(newcomer);
+    equal(game.initiativeOrder, [0, 3, 1], 'new enemies are inserted before initiative-last survivors');
+    game.startNewCombat({ preserveScarabs: true });
+    equal([...game.initiativeOrder].sort(), [0, 1, 3], 'fresh combat uses only the complete new roster');
+    equal(game.initiativeOrder[game.initiativeOrder.length - 1], 1, 'initiative-last still acts last after rerolling');
+    for (let turn = 0; turn < 6; turn++) {
+      assert(game.mages[game.currentIndex], 'every active turn has a valid combatant');
+      game.endTurn();
+    }
+  }],
+
   ['makes Specters immune to applied debuffs', () => {
     const caster = new Mage({
       name: 'Caster',

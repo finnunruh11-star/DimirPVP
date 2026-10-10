@@ -5091,7 +5091,7 @@ export class GameState {
     source.deathsAngelEnergy -= 1;
     source.deathsAngelFlightTurns += 2;
     this.log(
-      `${source.name} spends 1 Energy and ${wasActive ? 'extends' : 'unfurls'} the Wings for ${source.deathsAngelFlightTurns} turn${source.deathsAngelFlightTurns === 1 ? '' : 's'}.`
+      `${source.name} spends 1 Energy and ${wasActive ? 'extends' : 'activates'} the Wings for ${source.deathsAngelFlightTurns} turn${source.deathsAngelFlightTurns === 1 ? '' : 's'}.`
     );
     if (!wasActive) this.pulseDeathsAngelWings(source);
     return true;
@@ -5678,7 +5678,7 @@ export class GameState {
       target.sanity = Math.max(target.unkillable ? 1 : 0, target.sanity - millLoss);
     }
     this.log(
-      `${target.name}'s Soul Rend (${rend.stacks}) tears away ${hpLoss} health and ${millLoss} mill.`
+      `${target.name}'s Soul Rend (${rend.stacks}) deals ${hpLoss} HP and ${millLoss} mill.`
     );
     // The wound closes a little every time it bites.
     rend.stacks -= 1;
@@ -5955,7 +5955,7 @@ export class GameState {
     bearer.edgelordLanternActive = false;
     bearer.edgelordLanternJustDeactivated = true;
     if (captured.length > 0) {
-      this.log(`${bearer.name}'s lantern devours ${captured.map((mage) => mage.name).join(', ')}.`);
+      this.log(`${bearer.name}'s lantern captures ${captured.map((mage) => mage.name).join(', ')}.`);
     } else {
       this.log(`${bearer.name} seals the Edgelord Lantern, but it catches nothing.`);
     }
@@ -5999,7 +5999,7 @@ export class GameState {
       if (!captive.isImmuneTo('sanity')) {
         captive.sanity = Math.max(captive.unkillable ? 1 : 0, captive.sanity - 5);
       }
-      this.log(`${captive.name} suffers 10 true damage and 5 true mill inside the lantern.`);
+      this.log(`${captive.name} takes 10 true damage and 5 true mill inside the lantern.`);
       if (wasAlive && !captive.vitalsAlive) {
         captive.edgelordCapturedBy = undefined;
         this.log(`${captive.name} dies inside the Edgelord Lantern and disappears.`);
@@ -6680,7 +6680,7 @@ export class GameState {
     if (s >= 14) {
       const fire = this.rng.roll('1d20').total;
       const mill = this.rng.roll('1d10').total;
-      this.log(`Roaring thunder ravages ${m.name} (${fire} fire, ${mill} mill).`);
+      this.log(`Thunder hits ${m.name} (${fire} fire, ${mill} mill).`);
       this.vfxSink?.boom?.(m.pos);
       dealDamage(self, m, dmg(fire, 'heat'), { canMiss: false });
       dealDamage(self, m, dmg(mill, 'sanity'), { canMiss: false });
@@ -6695,7 +6695,7 @@ export class GameState {
     } else if (s >= 12) {
       const fire = this.rng.roll('1d6').total;
       const mill = this.rng.roll('1d3').total;
-      this.log(`${m.name} smoulders under the blessing (${fire} fire, ${mill} mill).`);
+      this.log(`${m.name} burns under the blessing (${fire} fire, ${mill} mill).`);
       dealDamage(self, m, dmg(fire, 'heat'), { canMiss: false });
       dealDamage(self, m, dmg(mill, 'sanity'), { canMiss: false });
     } else {
@@ -6709,7 +6709,7 @@ export class GameState {
   /** Detonate a Thunder-blessed mage that has reached 15 stacks. Returns true if it fired. */
   checkThunderDeath(m: Mage): boolean {
     if (!m.alive || !m.hasThunderBlessing() || m.thunderStacks < 15) return false;
-    this.log(`${m.name} is consumed by roaring thunder and erupts!`);
+    this.log(`${m.name} overloads with thunder and explodes!`);
     const blast = 10 * RANGE_UNIT;
     for (const other of this.mages) {
       if (other === m || !other.alive) continue;
@@ -7025,7 +7025,7 @@ export class GameState {
     const artifact = this.artifactsAgainst(item).find(denialArmed);
     if (!artifact?.denial) return null;
     artifact.denial.charges = 0;
-    this.log(`${artifact.name} says no: ${item.source.name}'s ${item.label} is stifled.`);
+    this.log(`${artifact.name} stifles ${item.source.name}'s ${item.label}.`);
     this.vfxSink?.combatFeedback?.(item.source, { kind: 'blocked', label: 'STIFLED' });
     if (item.source.alive) {
       dealDamage(
@@ -7234,7 +7234,7 @@ export class GameState {
     const bolt = def.staffBolts?.[index];
     if (!bolt || !target.alive) return;
     const spec = `${staffDice(source.effectiveInt(), bolt)}d${bolt.sides}`;
-    this.log(`${source.name} looses ${def.name}'s ${bolt.label.toLowerCase()} (${spec} ${bolt.type}).`);
+    this.log(`${source.name} fires ${def.name}'s ${bolt.label.toLowerCase()} (${spec} ${bolt.type}).`);
     for (const foe of this.staffBoltTargets(source, bolt, target)) {
       if (!foe.alive) continue;
       const ctx = this.effectContext(source, foe, null);
@@ -8207,7 +8207,7 @@ export class GameState {
           if (!source.alive || !target.alive) return;
         }
         if (!stillReaches(game)) {
-          game.log(`${target.name} is out of reach — ${source.name}'s attack finds nothing.`);
+          game.log(`${target.name} is out of reach — ${source.name}'s attack misses.`);
           return;
         }
         // Swamprun creatures strike with an intrinsic (weaponless) attack that
@@ -8370,7 +8370,7 @@ export class GameState {
           // Bows consume one arrow per shot (hit or miss); summons never run dry.
           if (w.usesArrows && !source.isSummon) {
             source.arrows = Math.max(0, source.arrows - 1);
-            game.log(`${source.name} looses an arrow (${source.arrows} left).`);
+            game.log(`${source.name} shoots an arrow (${source.arrows} left).`);
           }
         } else {
           // Strength swing (unarmed = ×1 generic); flat bonuses land after the multiply.

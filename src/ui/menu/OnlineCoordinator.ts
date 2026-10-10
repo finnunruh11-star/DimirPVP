@@ -109,7 +109,7 @@ export class OnlineCoordinator {
     if (!/^wss?:\/\//.test(url)) throw new Error('Relay URL must start with ws:// or wss://.');
     if (this.model.capability.usesBuild && !this.model.loadoutReady(0)) throw new Error('Finish your mage build first.');
     if (request.role === 'host' && this.model.humanCount() < 2) {
-      throw new Error('Online rooms require at least two human seats.');
+      throw new Error('Online rooms need at least two human players.');
     }
 
     const draft = this.model.draftFor(0);
@@ -130,7 +130,7 @@ export class OnlineCoordinator {
       const roomHumans = Math.max(2, Math.min(4, Number(seatMessage.size) || 2));
       this.report({
         stage: 'waiting',
-        message: `Seat ${localSeat + 1} of ${roomHumans}. Waiting for players...`,
+        message: `Player ${localSeat + 1} of ${roomHumans}. Waiting for players...`,
       });
       await this.waitFor('ready');
       this.net.send({ k: 'hello', seat: localSeat, loadout: myLoadout, class: myClass, v: ADVENTURE_PROTOCOL });
@@ -138,7 +138,7 @@ export class OnlineCoordinator {
       const config = localSeat === 0
         ? await this.assembleHost(roomHumans, myLoadout, myClass)
         : await this.receiveGuest(localSeat, roomHumans);
-      this.report({ stage: 'starting', message: 'Match assembled. Entering the arena...' });
+      this.report({ stage: 'starting', message: 'Starting...' });
       // Ownership transfers to GameScene through MatchConfig. Menu teardown must
       // not close a socket that has successfully completed the handshake.
       this.net = null;
@@ -171,7 +171,7 @@ export class OnlineCoordinator {
     myLoadout: WordId[],
     myClass: MageClass
   ): Promise<MatchConfig> {
-    this.report({ stage: 'assembling', message: 'All players joined. Collecting mage builds...' });
+    this.report({ stage: 'assembling', message: 'All players joined. Collecting builds...' });
     const adventure = this.model.mode === 'exploration';
     const loadouts = new Map<number, WordId[]>([[0, myLoadout]]);
     const classes = new Map<number, MageClass>([[0, myClass]]);
@@ -225,7 +225,7 @@ export class OnlineCoordinator {
   }
 
   private async receiveGuest(localSeat: number, roomHumans: number): Promise<MatchConfig> {
-    this.report({ stage: 'assembling', message: 'Connected. Waiting for host rules...' });
+    this.report({ stage: 'assembling', message: 'Connected. Waiting for the host...' });
     const start = await this.waitFor('start');
     const totalSeats = Array.isArray(start.seats)
       ? Math.max(2, Math.min(4, start.seats.length))

@@ -749,6 +749,7 @@ export interface WornView {
   gloves: ItemId | null;
   boots: ItemId | null;
   hands: readonly ItemId[];
+  offhandOnly?: boolean;
   accessories: readonly ItemId[];
 }
 
@@ -761,8 +762,9 @@ export interface DollEntry {
 
 export function dollEntries(worn: WornView): DollEntry[] {
   const twoHanded = worn.hands.find((id) => getItem(id).twoHanded);
-  const main = worn.hands[0] ?? null;
-  const off = twoHanded && worn.hands.length < 2 ? twoHanded : worn.hands[1] ?? null;
+  const offOnly = worn.hands.length === 1 && worn.offhandOnly && !twoHanded;
+  const main = offOnly ? null : worn.hands[0] ?? null;
+  const off = offOnly ? worn.hands[0] : twoHanded && worn.hands.length < 2 ? twoHanded : worn.hands[1] ?? null;
   return [
     { slot: 'cape', id: worn.cape, ghost: false },
     { slot: 'head', id: worn.head, ghost: false },

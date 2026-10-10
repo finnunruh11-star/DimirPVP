@@ -141,7 +141,7 @@ export function shoulderTurn(game: GameState, rider: Mage): void {
   const tier = shikigamiTier(rite.points);
   const anyone = (): Mage[] => game.mages.filter((m) => m.alive && !game.isUnreachable(m));
   const pick = (units: Mage[]): Mage | undefined => (units.length > 0 ? game.rng.pick(units) : undefined);
-  game.log(`${rider.name}'s Shikigami stirs.`);
+  game.log(`${rider.name}'s Shikigami acts.`);
   const doomed = pick(anyone());
   if (doomed) {
     game.vfxSink?.godFx?.('reap', doomed.pos, { size: doomed.bodyRadius() * 4 });
@@ -192,11 +192,11 @@ function owe(game: GameState, target: Mage, source: Mage): void {
   if (!owes(target)) {
     const due: DebuffStatus = { key: DUE_KEY, name: "Death's Due", kind: 'debuff', duration: Infinity, mods: {} };
     target.statuses.push(due);
-    game.log(`Death is on holiday: ${target.name} does not die, and now owes Death a life.`);
+    game.log(`Death's Holiday: ${target.name} does not die, but owes Death a life.`);
   }
   if (source !== target && owes(source)) {
     source.statuses = source.statuses.filter((s) => s.key !== DUE_KEY);
-    game.log(`${source.name} pays its due with ${target.name}'s life.`);
+    game.log(`${source.name} pays its debt with ${target.name}'s life.`);
   }
 }
 
@@ -507,7 +507,7 @@ export function deathLawEnds(game: GameState, kind: HexLawKind, owner: Mage | un
   for (const m of game.mages.filter((u) => u.alive && owes(u))) {
     m.statuses = m.statuses.filter((s) => s.key !== DUE_KEY);
     game.vfxSink?.godFx?.('skull', m.pos, { size: m.bodyRadius() * 4 });
-    game.defeatMage(m, owner ?? m, `Death's holiday is over: ${m.name} pays its due.`);
+    game.defeatMage(m, owner ?? m, `Death's Holiday is over: ${m.name} dies.`);
   }
 }
 
