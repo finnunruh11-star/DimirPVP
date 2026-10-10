@@ -8,7 +8,8 @@ import { Mage } from './Mage';
 import { packCapacity, packFits, packSlotsUsed, slotsFor, slotsForCount, stackSize } from './Pack';
 import type { Spell } from '../spells/Spell';
 import { BOSSES, MOONSHARD } from '../pve/exploration/bloodmoon';
-import { buyItem, dropItem, grantToParty, partyOf, sellItem, sellOffers, sellPrice, shopStock, withParty } from '../pve/exploration/economy';
+import { buyItem, dropItem, grantToMage, grantToParty, partyOf, sellItem, sellOffers, sellPrice, shopStock, withParty } from '../pve/exploration/economy';
+import { canMoveLoot, canReleaseLoot, claimLoot, lootEntries, moveLoot, parseLootChoice, releaseLoot } from '../pve/loot';
 import { rollExploreFindLoot } from '../pve/exploration/finds';
 import { applyIntent, parseIntent } from '../pve/exploration/intents';
 import { levelWordPool } from '../pve/exploration/levels';
@@ -61,6 +62,65 @@ const TEN_KINDS: ItemId[] = [
 ];
 
 const tests: [name: string, run: () => void][] = [
+  ['redistributes carried items through the loose haul without duplication', () => {
+    const first = traveller();
+    const second = traveller();
+    first.bag.push('oreIron', 'oreIron');
+    first.arrows = 2;
+    first.utility.push('healthPotion');
+    first.readyConsumable = 'healthPotion';
+    const haul = lootEntries([]);
+    assert(releaseLoot(haul, [first, second], 0, 'oreIron'), 'old inventory can become loose loot');
+    equal(first.bag, ['oreIron'], 'one copy leaves the source');
+    equal(claimLoot(haul, [first, second], 0, 1, grantToMage), 'oreIron', 'the other player takes it');
+    equal(claimLoot(haul, [first, second], 0, 1, grantToMage), null, 'the same loose item cannot be claimed twice');
+    assert(moveLoot([first, second], 0, 1, 'arrow', grantToMage), 'arrows move directly');
+    equal([first.arrows, second.arrows], [1, 1], 'one arrow moves');
+    assert(releaseLoot(haul, [first, second], 0, 'healthPotion'), 'readied supplies may be released');
+    equal(first.readyConsumable, null, 'readied supply is cleared');
+    assert(!releaseLoot(haul, [first, second], 0, 'healthPotion'), 'missing inventory cannot be released again');
+    first.hands.push('ironShortsword');
+    assert(!canReleaseLoot([first], 0, 'ironShortsword'), 'held gear is not loose bag inventory');
+    first.bag.push('mineMap');
+    assert(!canReleaseLoot([first], 0, 'mineMap'), 'key items stay with their owner');
+  }],
+
+  ['keeps weight and slot limits atomic when redistributing loot', () => {
+    const first = traveller();
+    const second = traveller();
+    first.bag.push('oreIron');
+    second.canCarry = () => false;
+    assert(!canMoveLoot([first, second], 0, 1, 'oreIron'), 'overweight target refused');
+    assert(!moveLoot([first, second], 0, 1, 'oreIron', grantToMage), 'overweight transfer rejected');
+    equal([first.bag, second.bag], [['oreIron'], []], 'rejection changes neither bag');
+    second.canCarry = () => true;
+    second.bag.push(...TEN_KINDS.filter((id) => id !== 'oreIron'), 'herbMoonglow');
+    assert(!moveLoot([first, second], 0, 1, 'oreIron', grantToMage), 'full target refused');
+    equal(first.bag, ['oreIron'], 'a slot rejection leaves the source untouched');
+    assert(!canMoveLoot([first, second], 0, 0, 'oreIron'), 'self-transfer refused');
+    first.utility.push('smallBag');
+    first.bag.push(...TEN_KINDS.filter((id) => id !== 'oreIron'), 'herbMoonglow');
+    assert(!canReleaseLoot([first], 0, 'smallBag'), 'a bag cannot leave while its slots are needed');
+    equal(parseLootChoice('release:0:oreIron'), { kind: 'release', member: 0, id: 'oreIron' }, 'release parses');
+    equal(parseLootChoice('move:0:1:oreIron'), { kind: 'move', from: 0, to: 1, id: 'oreIron' }, 'transfer parses');
+    for (const choice of ['release:-1:oreIron', 'move:0:oreIron', 'release:0:1:oreIron', 'move:0:1:unknown', 'release:0:%ZZ']) {
+      equal(parseLootChoice(choice), null, 'malformed inventory operation refused');
+    }
+  }],
+
+  ['checks the remaining weight when a weight-reducing bag leaves', () => {
+    const mage = traveller();
+    mage.utility.push('bagOfHolding');
+    mage.bag.push(...Array.from({ length: 20 }, () => 'oreIron' as ItemId));
+    const lightened = mage.carriedWeight();
+    mage.carryCap = () => lightened;
+    assert(!canReleaseLoot([mage], 0, 'bagOfHolding'), 'removing the weight reduction cannot overload the owner');
+    equal(mage.utility, ['bagOfHolding'], 'checking removal never changes the real bag');
+    const cap = lightened / 2;
+    mage.carryCap = () => cap;
+    assert(canReleaseLoot([mage], 0, 'oreIron'), 'an already overloaded owner can still shed weight');
+  }],
+
   ['stacks twenty to a slot, one weapon or tool to a slot, and key items and bags in none', () => {
     equal([slotsForCount('oreCopper', 20), slotsForCount('oreCopper', 21), slotsForCount('oreCopper', 41), slotsForCount('oreCopper', 59)], [1, 2, 3, 3], 'copper ore');
     equal(stackSize(getItem('healthPotion')), 20, 'potions stack');

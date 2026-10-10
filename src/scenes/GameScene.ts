@@ -60,7 +60,7 @@ import { tallyVotes } from '../pve/partyVote';
 import { restoreParty } from '../pve/exploration/party';
 import { MineDepositView } from '../ui/pve/MineDepositView';
 import { LootView } from '../ui/pve/LootView';
-import { canClaimLoot, claimLoot, lootEntries, parseLootChoice } from '../pve/loot';
+import { canClaimLoot, canMoveLoot, canReleaseLoot, claimLoot, lootEntries, moveLoot, parseLootChoice, releaseLoot } from '../pve/loot';
 import { itemRarityColor } from '../visuals/itemIcons';
 import { CabinetChip, MenuFocusGroup, WordPlate } from '../ui/cabinet/controls';
 import {
@@ -4176,6 +4176,10 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'shop';
     const entries = lootEntries(items);
     const party = this.gs.mages.filter((mage) => mage.team === 1 && mage.alive && !mage.isSummon && !mage.sceneSide);
+    for (const mage of party) {
+      const owned = this.swamprunArrowsOwned.get(mage);
+      if (owned != null) mage.arrows = owned;
+    }
     const voters = this.online ? this.mineVoters() : [this.localSeat];
     const ready = new Set<number>();
     const owner = (mage: Mage): number => mage.isAI ? 0 : this.controllerSeatOf(mage);
@@ -4183,13 +4187,22 @@ export class GameScene extends Phaser.Scene {
     const allowed = (choice: string, seat = this.localSeat): boolean => {
       const parsed = parseLootChoice(choice);
       if (!parsed || !voters.includes(seat) || ready.has(seat)) return false;
-      return parsed.kind === 'ready' || (canClaimLoot(entries, party, parsed.entry, parsed.member, fits)
-        && (!this.online || owner(party[parsed.member]) === seat));
+      if (parsed.kind === 'ready') return true;
+      if (parsed.kind === 'take') return canClaimLoot(entries, party, parsed.entry, parsed.member, fits)
+        && (!this.online || owner(party[parsed.member]) === seat);
+      if (parsed.kind === 'release') return canReleaseLoot(party, parsed.member, parsed.id)
+        && (!this.online || owner(party[parsed.member]) === seat);
+      return canMoveLoot(party, parsed.from, parsed.to, parsed.id, fits)
+        && (!this.online || owner(party[parsed.from]) === seat);
     };
     const view = new LootView(this, {
       title, source, message, gold, entries, party: () => party,
       canTake: (entry, member) => allowed(`take:${entry}:${member}`),
       take: (entry, member) => this.mineChoiceResolve?.(`take:${entry}:${member}`),
+      canRelease: (member, id) => allowed(`release:${member}:${encodeURIComponent(id)}`),
+      release: (member, id) => this.mineChoiceResolve?.(`release:${member}:${encodeURIComponent(id)}`),
+      canMove: (from, to, id) => allowed(`move:${from}:${to}:${encodeURIComponent(id)}`),
+      move: (from, to, id) => this.mineChoiceResolve?.(`move:${from}:${to}:${encodeURIComponent(id)}`),
       done: () => this.mineChoiceResolve?.('ready'),
       doneLabel: this.online ? 'Ready' : 'Continue', confirmLeave: !this.online,
     });
@@ -4205,10 +4218,19 @@ export class GameScene extends Phaser.Scene {
           else view.refresh(`${this.seatName(result.seat)} is ready.`);
           continue;
         }
-        const id = claimLoot(entries, party, choice.entry, choice.member,
-          (mage, item) => this.gs.grantItem(mage, item), fits);
-        if (id) {
-          const text = `${party[choice.member].name} packs ${getItem(id).name}.`;
+        const grant = (mage: Mage, item: ItemId): void => this.gs.grantItem(mage, item);
+        let text = '';
+        if (choice.kind === 'take') {
+          const id = claimLoot(entries, party, choice.entry, choice.member, grant, fits);
+          if (id) text = `${party[choice.member].name} packs ${getItem(id).name}.`;
+        } else if (choice.kind === 'release') {
+          if (releaseLoot(entries, party, choice.member, choice.id)) {
+            text = `${party[choice.member].name} leaves ${getItem(choice.id).name} on the ground.`;
+          }
+        } else if (moveLoot(party, choice.from, choice.to, choice.id, grant, fits)) {
+          text = `${party[choice.from].name} passes ${getItem(choice.id).name} to ${party[choice.to].name}.`;
+        }
+        if (text) {
           this.gs.log(text);
           view.refresh(text);
           playSound('ui.confirm');
@@ -4217,6 +4239,7 @@ export class GameScene extends Phaser.Scene {
       const left = entries.flatMap((entry) => Array.from({ length: entry.count }, () => entry.id));
       if (left.length) this.gs.log(`Left behind: ${this.materialTally(left)}.`);
     } finally {
+      for (const mage of party) this.swamprunArrowsOwned.set(mage, mage.arrows);
       this.mineChoiceResolve = null;
       this.hideMinePanel();
       this.mode = previousMode;

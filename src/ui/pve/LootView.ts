@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { playSound } from '../../audio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/constants';
-import { getItem, rarityRank } from '../../core/Items';
+import { getItem, rarityRank, type ItemId } from '../../core/Items';
 import type { Mage } from '../../core/Mage';
 import { SceneInput } from '../../engine/SceneInput';
 import type { LootEntry } from '../../pve/loot';
@@ -10,8 +10,8 @@ import { itemRarityColor } from '../../visuals/itemIcons';
 import { CabinetChip } from '../cabinet/controls';
 import { isReducedMotion } from '../cabinet/motion';
 import { addCabinetBackdrop, addSectionRule, MENU_FONT, MENU_HEX } from '../cabinet/theme';
-import { addItemCard, addMeter, DragController, ItemTile, SpatialFocus } from '../inventory/kit';
-import { kg, RARITY_NAME } from '../inventory/itemInfo';
+import { addItemCard, addMeter, DragController, ItemTile, SpatialFocus, type DragPayload } from '../inventory/kit';
+import { carriedStacks, kg, RARITY_NAME } from '../inventory/itemInfo';
 
 export interface LootViewModel {
   title: string;
@@ -21,6 +21,10 @@ export interface LootViewModel {
   party(): readonly Mage[];
   canTake(entry: number, member: number): boolean;
   take(entry: number, member: number): void;
+  canRelease(member: number, id: ItemId): boolean;
+  release(member: number, id: ItemId): void;
+  canMove(from: number, to: number, id: ItemId): boolean;
+  move(from: number, to: number, id: ItemId): void;
   done(): void;
   doneLabel?: string;
   confirmLeave?: boolean;
@@ -32,13 +36,15 @@ const PER_PAGE = 14;
 const SIZE = 64;
 const PITCH = 110;
 const BAGS_Y = GAME_HEIGHT - 230;
+type LootPick = { kind: 'loot'; entry: number } | { kind: 'bag'; member: number; id: ItemId };
 
 export class LootView extends Phaser.GameObjects.Container {
   private readonly keys: SceneInput;
   private readonly drag: DragController;
   private focus = new SpatialFocus();
-  private picked = 0;
+  private picked: LootPick = { kind: 'loot', entry: 0 };
   private page = 0;
+  private readonly bagPages = new Map<number, number>();
   private closed = false;
   private ready = false;
   private leaving = false;
@@ -51,7 +57,9 @@ export class LootView extends Phaser.GameObjects.Container {
     this.setDepth(390);
     this.keys = new SceneInput(scene);
     this.drag = new DragController(scene, 391, (payload, target) => {
-      this.take(Number(payload.from), Number(target.key));
+      const picked = this.dragPick(payload);
+      if (target.key === 'haul') this.release(picked);
+      else this.put(picked, Number(target.key));
     });
     this.keys.bindKeys([
       { key: 'LEFT', capture: true, run: () => this.focus.move('left') },
@@ -120,15 +128,28 @@ export class LootView extends Phaser.GameObjects.Container {
       .filter(({ entry }) => entry.count > 0 || (entry.taken ?? 0) > 0);
     const pages = Math.max(1, Math.ceil(available.length / PER_PAGE));
     this.page = Math.min(this.page, pages - 1);
-    if (!model.entries[this.picked]) this.picked = available[0]?.index ?? 0;
+    if ((this.picked.kind === 'loot' && !model.entries[this.picked.entry])
+      || (this.picked.kind === 'bag' && !model.party()[this.picked.member])) {
+      this.picked = { kind: 'loot', entry: available[0]?.index ?? 0 };
+    }
     this.text(58, 166, available.length ? 'THE HAUL' : 'NOTHING LEFT BEHIND', 460, 12, MENU_HEX.verdigris);
+    if (this.picked.kind === 'bag') {
+      this.chip(552, 158, 230, 'Leave on ground', () => this.release(this.picked),
+        !this.ready && model.canRelease(this.picked.member, this.picked.id));
+    }
+    this.drag.addTarget({ key: 'haul', x: 50, y: 198, w: 750, h: 218,
+      accepts: (payload) => {
+        const picked = this.dragPick(payload);
+        return !this.ready && picked.kind === 'bag' && model.canRelease(picked.member, picked.id);
+      } });
     available.slice(this.page * PER_PAGE, (this.page + 1) * PER_PAGE).forEach(({ entry, index }, slot) => {
       const x = 58 + (slot % COLUMNS) * PITCH;
       const y = 204 + Math.floor(slot / COLUMNS) * PITCH;
       const tile = new ItemTile(scene, x, y, {
-        id: entry.id, count: entry.count + (entry.taken ?? 0), size: SIZE, selected: index === this.picked,
+        id: entry.id, count: entry.count + (entry.taken ?? 0), size: SIZE,
+        selected: this.picked.kind === 'loot' && index === this.picked.entry,
         tag: entry.count === 0 ? 'PACKED' : undefined,
-        onActivate: () => { this.picked = index; this.render(); },
+        onActivate: () => { this.picked = { kind: 'loot', entry: index }; this.render(); },
         drag: entry.count > 0 ? { controller: this.drag, payload: { id: entry.id, from: `${index}` } } : undefined,
       });
       this.add(tile);
@@ -148,10 +169,13 @@ export class LootView extends Phaser.GameObjects.Container {
       this.text(118, 433, `${this.page + 1} / ${pages}`, 96, 12);
       this.chip(220, 426, 48, '>', () => { this.page = (this.page + 1) % pages; this.render(); });
     }
-    const picked = model.entries[this.picked];
+    const picked = this.picked.kind === 'loot' ? model.entries[this.picked.entry] : this.picked;
     if (picked) {
+      const eyebrow = this.picked.kind === 'bag' ? `${model.party()[this.picked.member].name}'s bag`
+        : `${RARITY_NAME[getItem(picked.id).rarity] || 'Supply'} / ${model.entries[this.picked.entry].count > 0
+          ? `${model.entries[this.picked.entry].count} remaining` : 'Packed'}`;
       addItemCard(scene, this, 858, 174, 364, BAGS_Y - 16, {
-        id: picked.id, eyebrow: `${RARITY_NAME[getItem(picked.id).rarity] || 'Supply'} / ${picked.count > 0 ? `${picked.count} remaining` : 'Packed'}`,
+        id: picked.id, eyebrow,
       });
     } else {
       this.text(858, 208, model.entries.length ? 'The spoils are packed.' : 'No items found.', 350, 22, MENU_HEX.bone);
@@ -175,29 +199,75 @@ export class LootView extends Phaser.GameObjects.Container {
     const width = (GAME_WIDTH - 116 - Math.max(0, party.length - 1) * 24) / Math.max(1, party.length);
     party.forEach((mage, member) => {
       const x = 58 + member * (width + 24);
-      const fits = !this.ready && this.model.canTake(this.picked, member);
+      const fits = this.canPut(this.picked, member);
       this.text(x + 64, BAGS_Y + 12, mage.name, width - 70, 17, MENU_HEX.bone).setMaxLines(1);
       const bag = this.scene.add.image(x + 26, BAGS_Y + 38, itemIconTexture(this.scene, 'smallBag')).setScale(3);
       this.add(bag);
       const cap = mage.carryCap();
       addMeter(this.scene, this, x, BAGS_Y + 70, width - 4, 'CARRIED',
         `${kg(mage.carriedWeight())} / ${Number.isFinite(cap) ? kg(cap) : 'Unlimited'} kg`,
-        Number.isFinite(cap) ? mage.carriedWeight() / Math.max(1, cap) : 0, 0x77b2a3);
-      this.chip(x + 64, BAGS_Y + 34, Math.min(width - 70, 244), fits ? 'Put in bag' : this.model.entries[this.picked]?.count === 0 ? 'Packed' : 'Unavailable',
-        () => this.take(this.picked, member), fits);
-      this.drag.addTarget({ key: `${member}`, x, y: BAGS_Y + 4, w: width, h: 142,
-        accepts: (payload) => !this.ready && this.model.canTake(Number(payload.from), member) });
+        Number.isFinite(cap) ? mage.carriedWeight() / Math.max(1, cap) : 0, 0x77b2a3,
+        { warn: mage.carriedWeight() > cap });
+      this.chip(x + 64, BAGS_Y + 34, Math.min(width - 70, 244), fits ? 'Put in bag' : 'Unavailable',
+        () => this.put(this.picked, member), fits);
+      this.drag.addTarget({ key: `${member}`, x, y: BAGS_Y + 4, w: width, h: 146,
+        accepts: (payload) => this.canPut(this.dragPick(payload), member) });
+      const stacks = carriedStacks(mage);
+      const columns = Math.max(1, Math.min(8, Math.floor((width - 82) / 48)));
+      const pages = Math.max(1, Math.ceil(stacks.length / columns));
+      const page = Math.min(this.bagPages.get(member) ?? 0, pages - 1);
+      this.bagPages.set(member, page);
+      stacks.slice(page * columns, (page + 1) * columns).forEach((stack, slot) => {
+        const at = x + slot * 48;
+        const movable = !this.ready && this.model.canRelease(member, stack.id);
+        const tile = new ItemTile(this.scene, at, BAGS_Y + 108, {
+          id: stack.id, count: stack.count, size: 42,
+          selected: this.picked.kind === 'bag' && this.picked.member === member && this.picked.id === stack.id,
+          locked: !movable,
+          onActivate: () => { this.picked = { kind: 'bag', member, id: stack.id }; this.render(); },
+          drag: movable ? { controller: this.drag, payload: { id: stack.id, from: `bag:${member}` } } : undefined,
+        });
+        this.add(tile);
+        this.focus.add(tile, `bag:${member}:${stack.id}`, at, BAGS_Y + 108, 42, 42);
+      });
+      if (stacks.length === 0) this.text(x, BAGS_Y + 116, 'Bag empty', width - 88, 12);
+      if (pages > 1) {
+        this.chip(x + width - 78, BAGS_Y + 110, 34, '<', () => {
+          this.bagPages.set(member, (page + pages - 1) % pages); this.render();
+        });
+        this.chip(x + width - 38, BAGS_Y + 110, 34, '>', () => {
+          this.bagPages.set(member, (page + 1) % pages); this.render();
+        });
+      }
     });
   }
 
-  private take(entry: number, member: number): void {
-    if (this.ready || !this.model.canTake(entry, member)) {
+  private dragPick(payload: DragPayload): LootPick {
+    return payload.from.startsWith('bag:')
+      ? { kind: 'bag', member: Number(payload.from.slice(4)), id: payload.id }
+      : { kind: 'loot', entry: Number(payload.from) };
+  }
+
+  private canPut(picked: LootPick, member: number): boolean {
+    return !this.ready && (picked.kind === 'loot' ? this.model.canTake(picked.entry, member)
+      : this.model.canMove(picked.member, member, picked.id));
+  }
+
+  private put(picked: LootPick, member: number): void {
+    if (!this.canPut(picked, member)) {
       playSound('ui.deny');
       this.refresh('That item does not fit in this bag.');
       return;
     }
     this.leaving = false;
-    this.model.take(entry, member);
+    if (picked.kind === 'loot') this.model.take(picked.entry, member);
+    else this.model.move(picked.member, member, picked.id);
+  }
+
+  private release(picked: LootPick): void {
+    if (this.ready || picked.kind !== 'bag' || !this.model.canRelease(picked.member, picked.id)) return;
+    this.leaving = false;
+    this.model.release(picked.member, picked.id);
   }
 
   private finish(): void {

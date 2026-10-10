@@ -101,7 +101,12 @@ For a page served by `npm run relay`, accept the prefilled relay URL. When using
     Treasure opens a shared loot screen. Each player can drag an item into their
     own bag, or select the item and the bag. Claims use the same ordered choice
     channel, validate bag ownership and capacity, and remove exactly one item
-    from the shared haul. All players must mark Ready before continuing.
+    from the shared haul. Players may also release older carried items onto the
+    haul or pass them directly to another player's bag. Only the source's owner
+    can release or transfer their inventory; weight and slot limits are checked
+    before anything moves. Rejected operations leave both bags unchanged, and
+    redistributed ammunition persists into the next combat. All players must
+    mark Ready before continuing.
     The map's Inventory button and `I` key open a read-only view of that client's
     local explorer; inspecting it sends no message and does not interrupt the
     leader's pending route choice.

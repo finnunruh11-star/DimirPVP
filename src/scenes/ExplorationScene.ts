@@ -6,7 +6,7 @@ import { MAGE_CLASSES, type MageClass } from '../core/Classes';
 import { setHexLore } from '../core/hexcraft/lore';
 import { getItem, type ItemId } from '../core/Items';
 import { Mage } from '../core/Mage';
-import { canClaimLoot, claimLoot, lootEntries } from '../pve/loot';
+import { canClaimLoot, canMoveLoot, canReleaseLoot, claimLoot, lootEntries, moveLoot, releaseLoot } from '../pve/loot';
 import { LootView } from '../ui/pve/LootView';
 import { recordKills } from '../pve/exploration/bounties';
 import { AREA_HOURS, enterArea, leaveArea, spendAreaTime } from '../pve/exploration/area';
@@ -1835,7 +1835,7 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     this.refresh();
     const left = await this.showLoot([loot.item], 'DISCOVERY', 'search', loot.message,
       loot.left > 0 ? [loot.item] : []);
-    loot.left = left.length;
+    loot.left = left.filter((id) => id === loot.item).length;
     if (this.run.pendingLevels > 0 && (await hud.levelUps(this.run, this.actions()))) saveRun(this.run);
     while (loot.left > 0 && this.hud === hud && this.scene.isActive()) {
       const choice = await hud.choose('BAG FULL',
@@ -1865,7 +1865,11 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       entry.taken = entry.count - remaining;
       entry.count = remaining;
     }
-    return new Promise((resolve) => {
+    const unclaimedNow = (): ItemId[] => entries.flatMap((entry) => Array.from({ length: entry.count }, () => entry.id));
+    const hud = this.hud;
+    if (!hud) return Promise.resolve(unclaimedNow());
+    // Built in the HUD: this scene's camera follows the party, so a window placed here lands off screen.
+    return hud.showWindow<ItemId[]>((close) => {
       let closed = false;
       const finish = (): void => {
         if (closed) return;
@@ -1873,9 +1877,9 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
         view.destroy();
         saveRun(this.run);
-        resolve(entries.flatMap((entry) => Array.from({ length: entry.count }, () => entry.id)));
+        close(unclaimedNow());
       };
-      const view = new LootView(this, {
+      const view = new LootView(hud, {
         title, source, message, entries, gold: gold ? `+${moneyLabel(gold)}` : undefined,
         party: () => partyOf(this.run),
         canTake: (entry, member) => canClaimLoot(entries, partyOf(this.run), entry, member),
@@ -1885,6 +1889,25 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
           saveRun(this.run);
           this.refresh();
           view.refresh(`${partyOf(this.run)[member].name} packs ${getItem(item).name}.`);
+          playSound('ui.confirm');
+        },
+        canRelease: (member, id) => canReleaseLoot(partyOf(this.run), member, id),
+        release: (member, id) => {
+          const released = withParty(this.run, (_leader, party) => releaseLoot(entries, party, member, id));
+          if (!released) { view.refresh('That item must stay in the bag.'); return; }
+          saveRun(this.run);
+          this.refresh();
+          view.refresh(`${partyOf(this.run)[member].name} leaves ${getItem(id).name} on the ground.`);
+          playSound('ui.confirm');
+        },
+        canMove: (from, to, id) => canMoveLoot(partyOf(this.run), from, to, id),
+        move: (from, to, id) => {
+          const moved = withParty(this.run, (_leader, party) => moveLoot(party, from, to, id, grantToMage));
+          if (!moved) { view.refresh('That item does not fit in this bag.'); return; }
+          saveRun(this.run);
+          this.refresh();
+          const party = partyOf(this.run);
+          view.refresh(`${party[from].name} passes ${getItem(id).name} to ${party[to].name}.`);
           playSound('ui.confirm');
         },
         done: finish,

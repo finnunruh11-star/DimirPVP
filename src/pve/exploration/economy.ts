@@ -304,7 +304,7 @@ const amount = (requested: number, owned: number): number =>
   Math.max(1, Math.min(owned, Number.isFinite(requested) ? Math.floor(requested) : 1));
 
 /** Take `count` of `id` out of the pack, loose ones before the pouch's. Returns how many came out. */
-function takeFromPack(mage: Mage, id: ItemId, count: number): number {
+export function takeFromPack(mage: Mage, id: ItemId, count: number): number {
   const def = getItem(id);
   if (def.ammo) {
     const taken = Math.min(count, mage.arrows);

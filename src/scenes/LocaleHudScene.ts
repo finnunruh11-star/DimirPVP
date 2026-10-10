@@ -1001,6 +1001,11 @@ export class LocaleHudScene extends Phaser.Scene {
     });
   }
 
+  /** A window the owner builds in this scene, held like the HUD's own: nothing else answers until it is done. */
+  showWindow<T>(open: (done: (value: T) => void) => void): Promise<T> {
+    return this.hold<T>(open);
+  }
+
   choose<T extends string>(title: string, subtitle: string, options: { id: T; label: string; detail: string; enabled?: boolean }[], cancel?: T): Promise<T> {
     return this.hold<T>((done) => {
       const view: ChoiceMenuView<T> = new ChoiceMenuView<T>(this, title, subtitle, options, (id) => {

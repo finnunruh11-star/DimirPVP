@@ -109,7 +109,12 @@ mob per two additional players, and Mine waves add two cap slots per extra playe
 
 Mine chests and Exploration combat show an animated haul with item details,
 rarity glints, and drag-to-bag collection. Selecting an item and then a bag also
-works with mouse, touch, or keyboard. Weight and pack limits still apply; leaving
+works with mouse, touch, or keyboard. The bag strips also show carried inventory:
+drag an item onto the haul to leave it loose, or directly into another player's
+bag to redistribute it. Transfers move one item at a time, including arrows and
+pouched supplies; equipped, key, and bound items stay protected. Weight and pack
+limits apply to both new loot and transfers, including the loss of a bag's weight
+reduction or extra slots. Redistributed arrows carry into the next combat. Leaving
 unclaimed loot requires confirmation in local play. Online parties share each
 accepted claim and wait until everyone is ready. Discoveries and searches show
 the same reveal, including already-packed rewards. Survival salvage still sells
