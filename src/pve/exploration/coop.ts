@@ -30,14 +30,14 @@ export function partySize(run: ExplorationRun): number {
   return Math.max(1, run.party.entities.length);
 }
 
-/** Enemy and XP pressure of a party this size: +75% per extra member, as in Swamprun. */
+/** Enemy pressure of a party this size, as in Swamprun. */
 export function partyScale(size: number): number {
   return swamprunPartyScale(Math.max(1, size));
 }
 
 /** Everyone levels together, so a bigger party needs proportionally more XP per level. */
 export function partyXpScale(run: ExplorationRun): number {
-  return partyScale(partySize(run));
+  return 1 + Math.max(0, partySize(run) - 1) * 0.75;
 }
 
 /** Bank XP on the shared track until a completed long rest. */

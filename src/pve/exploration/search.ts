@@ -275,34 +275,37 @@ export function trackedPack(kind: string, depth: number, dice: Dice): EncounterS
   return Array.from({ length: count }, () => spawnOf(kind, depth));
 }
 
-function gatherResource(run: ExplorationRun, target: SearchTarget, member: MageClass | null, dice: Dice): string {
+function gatherResource(run: ExplorationRun, target: SearchTarget, member: MageClass | null, dice: Dice): { message: string; loot: ItemId[]; left: ItemId[] } {
   const id = target.id as ItemId;
   const count = target.resource === 'herb' ? dice.die(3) : target.resource === 'ore' ? dice.die(2) : 1;
-  return haulLabel(id, count, grantToParty(run, id, count, member));
+  const left = grantToParty(run, id, count, member);
+  return { message: haulLabel(id, count, left), loot: Array.from({ length: count }, () => id), left: Array.from({ length: left }, () => id) };
 }
 
 const SUPPLY_FINDS: readonly ItemId[] = ['healthPotion', 'manaPotion', 'torch', 'arrow'];
 
 /** Just short of what was sought, but the search was not for nothing. */
-function luckyTurn(run: ExplorationRun, member: MageClass | null, zone: RegionId, dice: Dice): { message: string; levels: number } {
+function luckyTurn(run: ExplorationRun, member: MageClass | null, zone: RegionId, dice: Dice): Omit<SearchResolution, 'roll'> {
   const roll = dice.float();
   const herbs = HERBS[zone];
   if (roll < 0.3 && herbs.length) {
     const herb = dice.pick(herbs);
     const count = dice.die(2);
     const left = grantToParty(run, herb, count, member);
-    return { message: `Found ${getItem(herb).name} instead: ${haulLabel(herb, count, left)}.`, levels: 0 };
+    return { message: `Found ${getItem(herb).name} instead: ${haulLabel(herb, count, left)}.`, levels: 0,
+      loot: Array.from({ length: count }, () => herb), left: Array.from({ length: left }, () => herb) };
   }
   if (roll < 0.55) {
     const id = dice.pick(SUPPLY_FINDS);
     const count = id === 'arrow' ? 2 + dice.die(3) : 1;
     const left = grantToParty(run, id, count, member);
-    return { message: `Found a dropped bag: ${haulLabel(id, count, left)}.`, levels: 0 };
+    return { message: `Found a dropped bag: ${haulLabel(id, count, left)}.`, levels: 0,
+      loot: Array.from({ length: count }, () => id), left: Array.from({ length: left }, () => id) };
   }
   if (roll < 0.75) {
     const gold = money((2 + dice.die(6)) / 10);
     run.gold = money(run.gold + gold);
-    return { message: `Found a lost purse: ${moneyLabel(gold)}.`, levels: 0 };
+    return { message: `Found a lost purse: ${moneyLabel(gold)}.`, levels: 0, gold };
   }
   if (roll < 0.9) {
     const back = withMember(run, member, (mage) => (mage.alive ? mage.restoreShare(0.15) : null));
@@ -319,6 +322,9 @@ export interface SearchResolution {
   /** What it came to, for the searcher. */
   message: string;
   levels: number;
+  loot?: ItemId[];
+  left?: ItemId[];
+  gold?: number;
   /** A creature was tracked down: the group, still unaware of the searcher. */
   pack?: { spawns: EncounterSpawn[]; label: string; zone: RegionId; depth: number };
 }
@@ -333,7 +339,10 @@ export function resolveSearch(run: ExplorationRun, tile: Cell, target: SearchTar
   const site = searchSite(run, tile);
   recordSearch(run, tile);
   if (roll.outcome === 'found') {
-    if (target.category === 'resource') return { roll, message: `Found ${gatherResource(run, target, member, dice)}.`, levels: 0 };
+    if (target.category === 'resource') {
+      const reward = gatherResource(run, target, member, dice);
+      return { ...reward, roll, message: `Found ${reward.message}.`, levels: 0 };
+    }
     if (target.category === 'creature') {
       const spawns = trackedPack(target.id, site.depth, dice);
       const label = describeSpawns(spawns);

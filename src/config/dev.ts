@@ -18,3 +18,17 @@ export const Dev = {
 };
 
 export type DevToggle = keyof typeof Dev;
+
+/**
+ * Toggles that change the fight itself, not just how it is shown. Online every
+ * screen simulates the fight, so these must flip on all of them at the same step.
+ */
+const SHARED_TOGGLES: readonly DevToggle[] = ['autoSuccess', 'infiniteMove', 'infiniteActions', 'aiPassive'];
+
+export function isSharedToggle(key: unknown): key is DevToggle {
+  return SHARED_TOGGLES.includes(key as DevToggle);
+}
+
+export function resetSharedToggles(): void {
+  for (const key of SHARED_TOGGLES) Dev[key] = false;
+}

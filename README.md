@@ -103,6 +103,18 @@ and combat-speed control.
 
 ## PvE runs
 
+Enemy budgets add 35% per extra player, rather than 75%; solo encounters and
+shared XP requirements are unchanged. Compact swamp encounters add one extra
+mob per two additional players, and Mine waves add two cap slots per extra player.
+
+Mine chests and Exploration combat show an animated haul with item details,
+rarity glints, and drag-to-bag collection. Selecting an item and then a bag also
+works with mouse, touch, or keyboard. Weight and pack limits still apply; leaving
+unclaimed loot requires confirmation in local play. Online parties share each
+accepted claim and wait until everyone is ready. Discoveries and searches show
+the same reveal, including already-packed rewards. Survival salvage still sells
+automatically, with the gold payout announced on a result screen.
+
 - **Swamprun** is endless co-op survival against escalating swamp creatures and
   milestone bosses.
 - **Expedition** is currently a solo/local campaign with depth choices,

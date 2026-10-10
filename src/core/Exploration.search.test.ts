@@ -152,6 +152,14 @@ const tests: [name: string, run: () => void][] = [
     equal(pickedOver(run, capitolTile), 2, 'the ground is picked over');
   }],
 
+  ['reports the exact resource haul and unclaimed items for the result screen', () => {
+    const run = partyRun(1);
+    const target = searchTargets(run, capitolTile).resource[0];
+    const found = searchUntil(run, capitolTile, target, 6, 'found');
+    assert(found.loot && found.loot.length > 0 && found.loot.every((id) => id === target.id), 'the reveal shows the resources rolled');
+    assert(found.left && found.left.length <= found.loot.length, 'unclaimed items cannot exceed the haul');
+  }],
+
   ['turns a near miss into something good all the same', () => {
     for (let trial = 0; trial < 6; trial++) {
       const run = partyRun(1, 40 + trial);

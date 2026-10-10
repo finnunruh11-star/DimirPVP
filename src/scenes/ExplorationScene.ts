@@ -6,6 +6,8 @@ import { MAGE_CLASSES, type MageClass } from '../core/Classes';
 import { setHexLore } from '../core/hexcraft/lore';
 import { getItem, type ItemId } from '../core/Items';
 import { Mage } from '../core/Mage';
+import { canClaimLoot, claimLoot, lootEntries } from '../pve/loot';
+import { LootView } from '../ui/pve/LootView';
 import { recordKills } from '../pve/exploration/bounties';
 import { AREA_HOURS, enterArea, leaveArea, spendAreaTime } from '../pve/exploration/area';
 import { advanceHours, clockTime, isNight, spanLabel } from '../pve/exploration/clock';
@@ -13,7 +15,7 @@ import { MAX_PARTY, livingMembers } from '../pve/exploration/coop';
 import { campOutcome, clearTravel, openPoll, pollOutcome, travelOutcome, type Spot, type TravelVote } from '../pve/exploration/council';
 import { absoluteHour, inDesert, isSandstorm, stormHoursLeft } from '../pve/exploration/desert';
 import { dungeonCombat, DUNGEONS } from '../pve/exploration/dungeons';
-import { exchangeItems, grantToMage, grantToParty, money, moneyLabel, partyOf, shikigamiRides } from '../pve/exploration/economy';
+import { exchangeItems, grantToMage, grantToParty, money, moneyLabel, partyOf, shikigamiRides, withParty } from '../pve/exploration/economy';
 import { describeSpawns, rollEncounter, type EncounterKind, type EncounterSpawn, type EncounterZone } from '../pve/exploration/encounters';
 import { bloodmoonCombat, bloodmoonDue, bloodmoonFight, BOSSES, hoursToBloodmoon, type BossFight } from '../pve/exploration/bloodmoon';
 import { isExplored, unpackExplored } from '../pve/exploration/explored';
@@ -1829,12 +1831,12 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
     const hud = this.hud;
     if (!hud) return;
     void this.fxAll({ what: 'sparkle' });
-    playSound('ui.confirm');
-    this.notify(loot.left ? `Found ${getItem(loot.item).name}, but nobody can carry it yet.` : loot.message, 3000);
     saveRun(this.run);
     this.refresh();
+    const left = await this.showLoot([loot.item], 'DISCOVERY', 'search', loot.message,
+      loot.left > 0 ? [loot.item] : []);
+    loot.left = left.length;
     if (this.run.pendingLevels > 0 && (await hud.levelUps(this.run, this.actions()))) saveRun(this.run);
-    await this.pause(650);
     while (loot.left > 0 && this.hud === hud && this.scene.isActive()) {
       const choice = await hud.choose('BAG FULL',
         `${getItem(loot.item).name}  /  ${getItem(loot.item).weight} kg. Drop something to take it.`, [
@@ -1850,6 +1852,45 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
         this.refresh();
       }
     }
+  }
+
+  private showLoot(
+    items: readonly ItemId[], title: string, source: 'search' | 'chest', message: string,
+    unclaimed: readonly ItemId[], gold?: number,
+  ): Promise<ItemId[]> {
+    const entries = lootEntries(items);
+    const left = new Map(lootEntries(unclaimed).map((entry) => [entry.id, entry.count]));
+    for (const entry of entries) {
+      const remaining = left.get(entry.id) ?? 0;
+      entry.taken = entry.count - remaining;
+      entry.count = remaining;
+    }
+    return new Promise((resolve) => {
+      let closed = false;
+      const finish = (): void => {
+        if (closed) return;
+        closed = true;
+        this.events.off(Phaser.Scenes.Events.SHUTDOWN, finish);
+        view.destroy();
+        saveRun(this.run);
+        resolve(entries.flatMap((entry) => Array.from({ length: entry.count }, () => entry.id)));
+      };
+      const view = new LootView(this, {
+        title, source, message, entries, gold: gold ? `+${moneyLabel(gold)}` : undefined,
+        party: () => partyOf(this.run),
+        canTake: (entry, member) => canClaimLoot(entries, partyOf(this.run), entry, member),
+        take: (entry, member) => {
+          const item = withParty(this.run, (_leader, party) => claimLoot(entries, party, entry, member, grantToMage));
+          if (!item) { view.refresh('There is no room in that bag.'); return; }
+          saveRun(this.run);
+          this.refresh();
+          view.refresh(`${partyOf(this.run)[member].name} packs ${getItem(item).name}.`);
+          playSound('ui.confirm');
+        },
+        done: finish,
+      });
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, finish);
+    });
   }
 
   /** Trouble on the road: the foe steps into view, then the fight begins. Now and then it is a scene already under way. */
@@ -2026,13 +2067,15 @@ export class ExplorationScene extends Phaser.Scene implements HudOwner {
       this.refresh();
       return;
     }
-    this.notify(`Search for ${done.choice.target.label}: ${resolution.message}`, 3600);
     const pack = resolution.pack;
     if (pack && done.go) {
       await this.fxAll({ what: 'cue', symbol: '!', color: '#ffd070' });
       this.startCombat('monsters', pack.zone, pack.depth, pack.spawns, `${pack.label}. You attack first.`, { kind: 'weapon' });
       return;
     }
+    await this.showLoot(resolution.loot ?? [],
+      resolution.roll.outcome === 'nothing' ? 'NOTHING FOUND' : 'SEARCH COMPLETE', 'search',
+      resolution.message, resolution.left ?? [], resolution.gold);
     if (resolution.roll.outcome !== 'nothing') {
       void this.fxAll({ what: 'sparkle' });
     }

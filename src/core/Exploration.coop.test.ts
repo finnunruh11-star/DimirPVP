@@ -13,6 +13,7 @@ import {
   levelsOwed,
   mergeFightParty,
   partyScale,
+  partyXpScale,
   respawnFallen,
   withSummons,
 } from '../pve/exploration/coop';
@@ -34,7 +35,8 @@ import { capturePartySnapshot, restoreParty } from '../pve/exploration/party';
 import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import { parseRun } from '../pve/exploration/save';
 import { shopById } from '../pve/exploration/shops';
-import { ENEMY_DEFS } from '../pve/swamprun';
+import { ENEMY_DEFS, rollSwamprunEncounter } from '../pve/swamprun';
+import { mineWaveComposition } from '../pve/minerun';
 import { xpToNext } from '../pve/progression';
 import { parseWildPack } from '../net/fightWire';
 
@@ -158,9 +160,23 @@ const tests: [name: string, run: () => void][] = [
     assert(takeStarterWeapon(run, MAGE_CLASSES[1], 'travellersDagger').ok, 'another takes something else');
   }],
 
+  ['softens multiplayer mob scaling without changing solo encounters', () => {
+    equal(partyScale(1), 1, 'solo budget unchanged');
+    equal(partyScale(2), 1.35, 'two add 35%');
+    equal(partyScale(3), 1.7, 'three add 70%');
+    for (const wave of [1, 2, 3, 4, 5, 6, 8, 9]) {
+      const solo = rollSwamprunEncounter(wave, new Dice(5), 1);
+      const trio = rollSwamprunEncounter(wave, new Dice(5), 3);
+      assert(trio.kinds.length <= solo.kinds.length + 1, 'a trio adds at most one compact mob');
+    }
+    const soloMine = mineWaveComposition(100, new Dice(4), 1, ['kobold']);
+    const trioMine = mineWaveComposition(100, new Dice(4), 3, ['kobold']);
+    equal(trioMine.length, soloMine.length + 4, 'the mine cap adds two mobs per extra member, not four');
+  }],
+
   ['scales XP by party size, so a level takes as many fights per head', () => {
-    equal(xpToNext(1, partyScale(1)), xpToNext(1), 'solo curve unchanged');
-    equal(xpToNext(1, partyScale(2)), Math.ceil(10 * 1.75), 'two need 75% more');
+    equal(xpToNext(1, partyXpScale(partyRun(1))), xpToNext(1), 'solo curve unchanged');
+    equal(xpToNext(1, partyXpScale(partyRun(2))), Math.ceil(10 * 1.75), 'two need 75% more');
     const run = partyRun(2);
     equal(addRunXp(run, 17), 0, 'seventeen XP is not yet a level for two');
     equal(addRunXp(run, 1), 0, 'eighteen waits for rest');

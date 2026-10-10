@@ -59,6 +59,8 @@ import type { MineVoteDisplay, MineVoteState } from '../ui/pve/MineVoteStrip';
 import { tallyVotes } from '../pve/partyVote';
 import { restoreParty } from '../pve/exploration/party';
 import { MineDepositView } from '../ui/pve/MineDepositView';
+import { LootView } from '../ui/pve/LootView';
+import { canClaimLoot, claimLoot, lootEntries, parseLootChoice } from '../pve/loot';
 import { itemRarityColor } from '../visuals/itemIcons';
 import { CabinetChip, MenuFocusGroup, WordPlate } from '../ui/cabinet/controls';
 import {
@@ -75,7 +77,7 @@ import { TextEntry } from '../ui/cabinet/TextEntry';
 import { addCabinetWindow } from '../ui/cabinet/CabinetWindow';
 import { isReducedMotion, toggleMotionPreference } from '../ui/cabinet/motion';
 import { SpellVfx } from '../visuals/SpellVfx';
-import { DevResourceEditor } from '../ui/workshop/DevResourceEditor';
+import { DevResourceEditor, readDevResources, writeDevResources, type DevResources } from '../ui/workshop/DevResourceEditor';
 import { playSound, playMusic, type SoundName } from '../audio';
 import {
   ACTIONS_PER_TURN,
@@ -131,7 +133,7 @@ import summonSmokeSheetUrl from '../../spritesheet/Smoke Bursts/symmetrical_smok
 import swampMistSheetUrl from '../../spritesheet/Smoke Bursts/directional_smoke_burst_001/directional_smoke_burst_001_large_white/spritesheet.png';
 import swampTilesUrl from '../assets/arena/kenney/roguelikeSheet_transparent.png';
 import { scarabAlive, type ScarabState } from '../core/Scarab';
-import { Dev, type DevToggle } from '../config/dev';
+import { Dev, isSharedToggle, resetSharedToggles, type DevToggle } from '../config/dev';
 import {
   MODIFIER_WORDS,
   WORD_ORDER,
@@ -669,6 +671,8 @@ type TurnCommand =
   | { t: 'flee' }
   | { t: 'raid-begin' }
   | { t: 'raid-restore'; kind: RaidRestoreKind }
+  | { t: 'dev'; key: DevToggle; on: boolean }
+  | { t: 'dev-resources'; seat: number; values: DevResources }
   | { t: 'end' };
 
 /** A reaction-window choice (a counter/response, or a pass). */
@@ -922,6 +926,11 @@ export class GameScene extends Phaser.Scene {
    * rest of the turn start here, but after it on every other peer.
    */
   private turnStarting = false;
+  /**
+   * Changes whenever the turn in progress is over: a new turn began, or a
+   * cleared wave or room took it along. A turn can end without an End command.
+   */
+  private turnSerial = 0;
 
   private mode: InputMode = 'idle';
   private busy = false;
@@ -1532,6 +1541,12 @@ export class GameScene extends Phaser.Scene {
     this.net = config.net ?? null;
     // Every peer of this fight shares its seed: it names the fight's messages.
     this.net?.setLockstep(config.seed ?? null);
+    // Online the fight-changing cheats are shared and last one fight: any left on
+    // from an offline game would make this screen play a different fight.
+    if (this.online) {
+      resetSharedToggles();
+      this.events.once(Phaser.Scenes.Events.SHUTDOWN, resetSharedToggles);
+    }
     this.localTeam = config.localTeam ?? 1;
     this.localSeat = config.localSeat ?? this.localTeam - 1;
     this.opponentLeft = false;
@@ -2559,13 +2574,8 @@ export class GameScene extends Phaser.Scene {
 
   /** A won overworld fight: pay out, train, then hand the run back. */
   private async finishExplorationFight(): Promise<void> {
-    this.awardWaveLoot();
+    await this.awardWaveLoot();
     if (this.explorationCombat?.boss) {
-      // The boss leaves 1d3 moonshards of its colour (rolled on every peer alike).
-      const shard = MOONSHARD[BOSSES[this.explorationCombat.boss.id].color];
-      const hauled = this.awardMaterials(Array.from({ length: this.gs.rng.die(3) }, () => shard));
-      if (hauled.taken.length) this.gs.log(`The boss leaves ${this.materialTally(hauled.taken)}.`);
-      if (hauled.left.length) this.gs.log(`No room to carry, left behind: ${this.materialTally(hauled.left)}.`);
       this.addRunXp(this.xpToNextLevel() - this.runXp);
       this.gs.log('Bloodmoon over. Claim earned levels at a long rest.');
     }
@@ -3056,43 +3066,18 @@ export class GameScene extends Phaser.Scene {
     const recipients = this.gs.mages.filter(
       (mage) => mage.team === 1 && mage.alive && !mage.isSummon
     );
-    let itemText = 'No item inside.';
     let found: ItemId | undefined;
     if (recipients.length > 0) {
       const recipient = recipients[this.mineChestCursor % recipients.length];
       this.mineChestCursor += 1;
       const rarity = rollRarity(() => this.gs.rng.float(), recipient.maxLuck, true);
-      const item = draftChoices(rarity, () => this.gs.rng.float(), 1, true)[0];
-      if (item) {
-        found = item;
-        // Whoever's turn it is takes it if they can; otherwise anyone with room. Nobody is loaded past their limit.
-        const kg = getItem(item).weight;
-        const fits = (mage: Mage): boolean => mage.canCarry(kg) && this.packRoomFor(mage, item);
-        const carrier = fits(recipient) ? recipient : recipients.find(fits);
-        if (carrier) {
-          this.gs.grantItem(carrier, item);
-          itemText = `${carrier.name} receives ${getItem(item).name} (${rarity}).`;
-        } else {
-          itemText = `${getItem(item).name} (${rarity}) does not fit in any bag and stays in the chest.`;
-        }
-      }
+      found = draftChoices(rarity, () => this.gs.rng.float(), 1, true)[0];
     }
     room.resolved = true;
-    this.gs.log(gold > 0 ? `The party opens a mine chest: ${gold}g. ${itemText}` : `The party opens a mine chest. ${itemText}`);
+    this.gs.log(`The party opens a mine chest${gold > 0 ? `: ${gold}g` : ''}.`);
     this.updateWaveHud();
-    await this.promptMineChoice(
-      'TREASURE CHEST',
-      this.mineStatusLine(),
-      gold > 0 ? `${gold}g for the party. ${itemText}` : itemText,
-      [{ id: 'continue', label: 'Leave the chest' }],
-      {
-        room,
-        node: node.id,
-        lit: true,
-        verdict: found ? getItem(found).name.toUpperCase() : 'NOTHING OF USE',
-        verdictColor: found ? itemRarityColor(found) : MINE_VERDICT.quiet,
-      }
-    );
+    await this.collectLootScreen(found ? [found] : [], 'TREASURE CHEST', 'chest',
+      found ? 'The lid opens. Something gleams inside.' : 'The chest is empty.', gold > 0 ? `+${gold}g for the party` : undefined);
   }
 
   /**
@@ -3170,11 +3155,11 @@ export class GameScene extends Phaser.Scene {
    * allowed and announces it with who made it, so every peer does the same seeded
    * work. Picks `allowed` refuses are ignored; '' when the run ends.
    */
-  private nextMineChoice(allowed: (choice: string) => boolean): Promise<{ choice: string; seat: number }> {
+  private nextMineChoice(allowed: (choice: string, seat?: number) => boolean): Promise<{ choice: string; seat: number }> {
     if (!this.online) {
       return new Promise((resolve) => {
         this.mineChoiceResolve = (choice) => {
-          if (choice && !allowed(choice)) return;
+          if (choice && !allowed(choice, this.localSeat)) return;
           this.mineChoiceResolve = null;
           resolve({ choice, seat: this.localSeat });
         };
@@ -3184,7 +3169,7 @@ export class GameScene extends Phaser.Scene {
     const round = `${this.mineVoteSalt}:${++this.mineVoteRound}`;
     if (this.localSeat !== 0) {
       this.mineChoiceResolve = (choice) => {
-        if (choice && allowed(choice)) net.send({ k: 'mine-pick', round, choice });
+        if (choice && allowed(choice, this.localSeat)) net.send({ k: 'mine-pick', round, choice });
       };
       return (async () => {
         for (;;) {
@@ -3193,7 +3178,8 @@ export class GameScene extends Phaser.Scene {
             this.mineChoiceResolve = null;
             return { choice: '', seat: 0 };
           }
-          if (message.k !== 'mine-choice' || typeof message.choice !== 'string' || !allowed(message.choice)) continue;
+          if (message.k !== 'mine-choice' || typeof message.choice !== 'string'
+            || !allowed(message.choice, typeof message.seat === 'number' ? message.seat : 0)) continue;
           this.mineChoiceResolve = null;
           return { choice: message.choice, seat: typeof message.seat === 'number' ? message.seat : 0 };
         }
@@ -3201,7 +3187,7 @@ export class GameScene extends Phaser.Scene {
     }
     return new Promise((resolve) => {
       const settle = (choice: string, seat: number): void => {
-        if (choice && !allowed(choice)) return;
+        if (choice && !allowed(choice, seat)) return;
         net.setSideHandler(null);
         this.mineChoiceResolve = null;
         if (choice) net.send({ k: 'mine-choice', choice, seat });
@@ -3988,13 +3974,14 @@ export class GameScene extends Phaser.Scene {
   private async runWaveInterlude(): Promise<boolean> {
     if (this.swamprunInterludeActive) return false;
     this.swamprunInterludeActive = true;
+    this.turnSerial += 1;
     try {
       this.gs.finishCurrentTurn();
       if (this.explorationCombat && !this.dungeon) {
         await this.finishExplorationFight();
         return false;
       }
-      this.awardWaveLoot();
+      await this.awardWaveLoot();
       for (const m of this.gs.mages) {
         if (m.team !== 1 || !m.alive) continue;
         this.tickTorches(m);
@@ -4127,9 +4114,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Roll every fallen creature's drop table and sell the loot into the party's gold. */
-  private awardWaveLoot(): void {
+  private async awardWaveLoot(): Promise<void> {
     if (this.explorationCombat) {
-      this.awardExplorationDrops();
+      await this.awardExplorationDrops();
       return;
     }
     let gold = 0;
@@ -4158,20 +4145,82 @@ export class GameScene extends Phaser.Scene {
     this.gs.log(
       `${this.mineRun ? 'Encounter' : 'Wave'} ${this.swamprunWave} cleared! Sold loot for ${gold}g${supplyText}${drops}. Party gold: ${this.swamprunGold}g.`
     );
+    await this.collectLootScreen([], 'ENCOUNTER CLEARED', 'combat',
+      tally.length ? `Sold salvage: ${tally.join(', ')}.` : 'The battlefield is quiet. No salvage found.',
+      `+${gold}g for the party`);
   }
 
   /** Exploration pays in what the fallen leave, never in coin: each creature rolls its own drops. */
-  private awardExplorationDrops(): void {
+  private async awardExplorationDrops(): Promise<void> {
     const found: ItemId[] = [];
     for (const m of this.swamprunWaveEnemies) {
       if (!m.enemyKind || this.swamprunWispCopies.has(m)) continue;
       found.push(...rollDrops(dropKind(m.enemyKind, m.mine?.role), this.swamprunWave, this.gs.rng));
     }
     this.swamprunWaveEnemies = [];
-    const hauled = this.collectMaterials(found);
-    const left = hauled.left.length ? ` Too heavy to carry, left behind: ${this.materialTally(hauled.left)}.` : '';
-    this.gs.log(found.length ? `Drops: ${hauled.text}.${left}` : 'No drops.');
+    if (this.explorationCombat?.boss) {
+      const shard = MOONSHARD[BOSSES[this.explorationCombat.boss.id].color];
+      found.push(...Array.from({ length: this.gs.rng.die(3) }, () => shard));
+    }
+    this.gs.log(found.length ? `Drops: ${this.materialTally(found)}.` : 'No drops.');
+    await this.collectLootScreen(found, 'VICTORY SPOILS', 'combat',
+      found.length ? 'The fallen leave their spoils.' : 'Victory. Nothing of value was left behind.');
     this.updateWaveHud();
+  }
+
+  private async collectLootScreen(
+    items: readonly ItemId[], title: string, source: 'chest' | 'combat', message: string, gold?: string,
+  ): Promise<void> {
+    this.hideMinePanel();
+    const previousMode = this.mode;
+    this.mode = 'shop';
+    const entries = lootEntries(items);
+    const party = this.gs.mages.filter((mage) => mage.team === 1 && mage.alive && !mage.isSummon && !mage.sceneSide);
+    const voters = this.online ? this.mineVoters() : [this.localSeat];
+    const ready = new Set<number>();
+    const owner = (mage: Mage): number => mage.isAI ? 0 : this.controllerSeatOf(mage);
+    const fits = (mage: Mage, id: ItemId): boolean => this.packRoomFor(mage, id);
+    const allowed = (choice: string, seat = this.localSeat): boolean => {
+      const parsed = parseLootChoice(choice);
+      if (!parsed || !voters.includes(seat) || ready.has(seat)) return false;
+      return parsed.kind === 'ready' || (canClaimLoot(entries, party, parsed.entry, parsed.member, fits)
+        && (!this.online || owner(party[parsed.member]) === seat));
+    };
+    const view = new LootView(this, {
+      title, source, message, gold, entries, party: () => party,
+      canTake: (entry, member) => allowed(`take:${entry}:${member}`),
+      take: (entry, member) => this.mineChoiceResolve?.(`take:${entry}:${member}`),
+      done: () => this.mineChoiceResolve?.('ready'),
+      doneLabel: this.online ? 'Ready' : 'Continue', confirmLeave: !this.online,
+    });
+    this.minePanel = view;
+    try {
+      while (ready.size < voters.length && this.scene.isActive() && !this.mineRunEnded && !this.opponentLeft) {
+        const result = await this.nextMineChoice(allowed);
+        if (!result.choice) break;
+        const choice = parseLootChoice(result.choice)!;
+        if (choice.kind === 'ready') {
+          ready.add(result.seat);
+          if (result.seat === this.localSeat) view.markReady();
+          else view.refresh(`${this.seatName(result.seat)} is ready.`);
+          continue;
+        }
+        const id = claimLoot(entries, party, choice.entry, choice.member,
+          (mage, item) => this.gs.grantItem(mage, item), fits);
+        if (id) {
+          const text = `${party[choice.member].name} packs ${getItem(id).name}.`;
+          this.gs.log(text);
+          view.refresh(text);
+          playSound('ui.confirm');
+        }
+      }
+      const left = entries.flatMap((entry) => Array.from({ length: entry.count }, () => entry.id));
+      if (left.length) this.gs.log(`Left behind: ${this.materialTally(left)}.`);
+    } finally {
+      this.mineChoiceResolve = null;
+      this.hideMinePanel();
+      this.mode = previousMode;
+    }
   }
 
   private xpToNextLevel(): number {
@@ -5556,6 +5605,7 @@ export class GameScene extends Phaser.Scene {
     // Locked until the turn start settles; the end of this method hands control out.
     this.mode = 'busy';
     this.turnStarting = true;
+    this.turnSerial += 1;
     this.gs.beginTurn();
     if (!turnOwner.isAI) playSound('turn.start');
     this.showTurnBanner(turnOwner);
@@ -5634,8 +5684,11 @@ export class GameScene extends Phaser.Scene {
       // The opponent pilots this turn; drive it from their relayed commands.
       this.mode = 'busy';
       this.redraw();
+      const turn = this.turnSerial;
       await this.runRemoteTurn();
       if (this.gs.isOver) return this.endGame();
+      // Already over without an End (a cleared wave, a forced turn end): it must not pass twice.
+      if (turn !== this.turnSerial) return;
       await this.nextTurn();
     } else {
       this.mode = 'idle';
@@ -6925,6 +6978,21 @@ export class GameScene extends Phaser.Scene {
         this.redraw();
         break;
       }
+      case 'dev': {
+        if (!isSharedToggle(cmd.key)) break;
+        Dev[cmd.key] = cmd.on === true;
+        const label = this.devToggles.find((toggle) => toggle.key === cmd.key)?.label ?? cmd.key;
+        this.gs.log(`Cheat: ${label} ${Dev[cmd.key] ? 'on' : 'off'}.`);
+        this.refreshDevPanel();
+        this.redraw();
+        break;
+      }
+      case 'dev-resources': {
+        const target = Number.isInteger(cmd.seat) ? this.gs.mages[cmd.seat] : undefined;
+        if (target) writeDevResources(target, cmd.values);
+        this.redraw();
+        break;
+      }
       case 'end':
         // Handled by the caller (local onEndTurn / remote driver) so the turn
         // rotation happens exactly once per peer.
@@ -6959,8 +7027,11 @@ export class GameScene extends Phaser.Scene {
 
   /** Drive the opponent's turn from their relayed commands until they end it. */
   private async runRemoteTurn(): Promise<void> {
+    const turn = this.turnSerial;
     for (;;) {
-      if (this.opponentLeft || this.gs.isOver) return;
+      // Its pilot sends nothing more once the turn is over, and a receive left
+      // waiting here would swallow the next message meant for someone else.
+      if (this.opponentLeft || this.gs.isOver || turn !== this.turnSerial) return;
       const msg = await this.net!.recv();
       if (msg.k !== 'turn') {
         if (msg.k === 'bye') return;
@@ -8382,7 +8453,7 @@ export class GameScene extends Phaser.Scene {
       { key: 'F3', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDev('infiniteActions'); }) },
       { key: 'F4', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDev('aiPassive'); }) },
       { key: 'F5', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDev('skipDice'); }) },
-      { key: 'F6', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.devResources.toggle(); }) },
+      { key: 'F6', capture: true, run: actionHotkey('', () => { if (this.devPanel.visible) this.toggleDevResources(); }) },
     ]);
     controls.bindAnyKey((event) => {
       if (event.key !== '#') return;
@@ -11041,9 +11112,34 @@ export class GameScene extends Phaser.Scene {
 
   /** Flip a dev cheat toggle and refresh the panel / view. */
   private toggleDev(key: DevToggle): void {
+    if (this.online && isSharedToggle(key)) {
+      if (this.onlineCheatReady()) this.submitTurn({ t: 'dev', key, on: !Dev[key] });
+      return;
+    }
     Dev[key] = !Dev[key];
     this.refreshDevPanel();
     this.redraw();
+  }
+
+  /**
+   * Online, a cheat that changes the fight travels like a move, so every screen
+   * applies it at the same step: on your own turn, between actions.
+   */
+  private onlineCheatReady(): boolean {
+    if (this.isLocalTurn() && (this.mode === 'idle' || this.mode === 'dev-resources')) return true;
+    this.flashHint('Online, cheats work on your own turn, between actions.');
+    return false;
+  }
+
+  private toggleDevResources(): void {
+    if (this.online && !this.devResources.isOpen && !this.onlineCheatReady()) return;
+    this.devResources.toggle();
+  }
+
+  private relayDevResources(mage: Mage): void {
+    if (!this.online) return;
+    const cmd: TurnCommand = { t: 'dev-resources', seat: this.seatOf(mage), values: readDevResources(mage) };
+    this.net?.send({ k: 'turn', cmd });
   }
 
   // ===========================================================================
@@ -12948,7 +13044,7 @@ export class GameScene extends Phaser.Scene {
       accent: MENU_COLOR.amethyst,
       onActivate: () => {
         this.devClickGuard = true;
-        this.devResources.toggle();
+        this.toggleDevResources();
       },
     });
     this.devPanel.add([bg, inner, title, ...this.devToggles.map((d) => d.control), resources]);
@@ -12978,6 +13074,7 @@ export class GameScene extends Phaser.Scene {
         set mode(value: InputMode) { self.mode = value; },
         get workshopFocus() { return self.workshopFocus; },
         redraw: () => self.redraw(),
+        edited: (mage) => self.relayDevResources(mage),
         addWorkshopChip: (...args) => self.addWorkshopChip(...args),
       });
     }

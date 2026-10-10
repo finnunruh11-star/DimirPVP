@@ -631,7 +631,7 @@ export function mineWaveComposition(
 ): MineSpawnSpec[] {
   const level = mineEnemyLevel(wave);
   const extraMembers = Math.max(0, Math.floor(partySize) - 1);
-  const spawnCap = MAX_PER_WAVE + extraMembers * 4;
+  const spawnCap = MAX_PER_WAVE + extraMembers * 2;
   let budget = Math.round((3 + Math.max(1, wave) * 2) * swamprunPartyScale(partySize));
   const out: MineSpawnSpec[] = [];
   const roleOrder = shuffledRoles(rng);

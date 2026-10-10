@@ -610,9 +610,9 @@ const STANDARD_KINDS: EnemyKind[] = [
   'lich',
   'reaper',
 ];
-const EXTRA_MEMBER_BUDGET_SCALE = 0.75;
+const EXTRA_MEMBER_BUDGET_SCALE = 0.35;
 
-/** Multiplayer pressure: each extra party member adds 75% of a solo wave. */
+/** Multiplayer pressure: each extra party member adds 35% of a solo wave. */
 export function swamprunPartyScale(partySize: number): number {
   return 1 + Math.max(0, Math.floor(partySize) - 1) * EXTRA_MEMBER_BUDGET_SCALE;
 }
@@ -650,10 +650,11 @@ function scaleCompactRoster(kinds: EnemyKind[], partySize: number): EnemyKind[] 
   if (kinds.includes('deathknightSpear') || kinds.includes('reaper')) return kinds;
   const extraMembers = Math.max(0, Math.min(3, Math.floor(partySize) - 1));
   if (extraMembers === 0) return kinds;
+  const extraMobs = Math.ceil(extraMembers / 2);
   const strongest = [...kinds]
     .filter((kind) => !ENEMY_DEFS[kind].boss)
     .sort((a, b) => ENEMY_DEFS[b].power - ENEMY_DEFS[a].power)[0] ?? kinds[0];
-  return [...kinds, ...Array.from({ length: extraMembers }, () => strongest)];
+  return [...kinds, ...Array.from({ length: extraMobs }, () => strongest)];
 }
 
 /** Roll one compact encounter: standard swamps use d20, Deep Swamps use d10. */

@@ -10,6 +10,7 @@ import { createRun, type ExplorationRun } from '../pve/exploration/run';
 import { ROOM_PRICE, SHOPS, shopById } from '../pve/exploration/shops';
 import { MINE_ENEMY_DEFS } from '../pve/minerun';
 import { ENEMY_DEFS } from '../pve/swamprun';
+import { canClaimLoot, claimLoot, lootEntries, parseLootChoice } from '../pve/loot';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -31,6 +32,29 @@ const guild = shopById('capitol-guild')!;
 const TOWNS = ['capitol', 'kerusai', 'hearthfire', 'oakhaven', 'pennybruck', 'thassa', 'nerogril', 'theocracy'];
 
 const tests: [name: string, run: () => void][] = [
+  ['shares a finite haul without duplicating claims or overflowing bags', () => {
+    const run = freshRun();
+    withParty(run, (leader) => {
+      const haul = lootEntries(['manaStoneSmall', 'manaStoneSmall', 'gemRuby']);
+      equal(haul.map((entry) => entry.count), [2, 1], 'duplicates stack');
+      assert(canClaimLoot(haul, [leader], 0, 0), 'an item fits');
+      equal(claimLoot(haul, [leader], 0, 0, grantToMage), 'manaStoneSmall', 'first claim');
+      equal(claimLoot(haul, [leader], 0, 0, grantToMage), 'manaStoneSmall', 'second claim');
+      equal(claimLoot(haul, [leader], 0, 0, grantToMage), null, 'a repeated claim cannot duplicate loot');
+      equal(claimLoot(haul, [leader], 1, 0, grantToMage, () => false), null, 'no slot means no claim');
+      equal(haul[1].count, 1, 'a rejected claim leaves the item available');
+      leader.hp = 0;
+      assert(!canClaimLoot(haul, [leader], 1, 0), 'fallen members cannot take loot');
+      assert(!canClaimLoot(haul, [leader], 99, 0) && !canClaimLoot(haul, [leader], 1, 99), 'unknown indices refused');
+      assert(!canClaimLoot(haul, [leader], 0.5, 0), 'fractional indices refused');
+    });
+    equal(parseLootChoice('take:2:1'), { kind: 'take', entry: 2, member: 1 }, 'a claim parses');
+    equal(parseLootChoice('ready'), { kind: 'ready' }, 'ready parses');
+    for (const choice of ['take:-1:0', 'take:1.2:0', 'take:0:1:extra', 'take:Infinity:0', 'take:99999999999999999999:0']) {
+      equal(parseLootChoice(choice), null, 'malformed claim refused');
+    }
+  }],
+
   ['the restless dead, goblins, bandits and the desert leave nothing; mana stones still sell', () => {
     const rng = new Dice(99);
     const nothing = ['zombie', 'skeleton', 'acidZombie', 'defender', 'goblinChief', 'goblinRaider', 'goblinShaman', 'bandit', 'bandit-archer', 'bandit-captain', 'sand-stalker', 'sandworm'];

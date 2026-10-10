@@ -11,6 +11,7 @@
 
 import Phaser from 'phaser';
 import type { GameState } from '../../core/GameState';
+import type { Mage } from '../../core/Mage';
 import type { InputMode } from '../../scenes/GameScene';
 import { CabinetChip, MenuFocusGroup } from '../cabinet/controls';
 import { addCabinetWindow } from '../cabinet/CabinetWindow';
@@ -30,6 +31,8 @@ export interface DevResourceHost {
   mode: InputMode;
   readonly workshopFocus: MenuFocusGroup;
   redraw(): void;
+  /** Called after every change the editor makes to `mage`. */
+  edited(mage: Mage): void;
   addWorkshopChip(
     container: Phaser.GameObjects.Container,
     widgets: Phaser.GameObjects.GameObject[],
@@ -40,6 +43,61 @@ export interface DevResourceHost {
     color: string,
     background: string
   ): CabinetChip;
+}
+
+const EDITED_NUMBERS = [
+  'hp', 'mana', 'sanity', 'luck', 'colorCharges',
+  'thunderStacks', 'greedStacks', 'momentumStacks', 'anchorStacks',
+  'dodgesRemaining', 'wordSpellReactionsUsed', 'weaponReactionsUsed',
+] as const;
+const EDITED_FLAGS = ['reactionAvailable', 'reactedThisCycle'] as const;
+const EDITED_ACTIONS = ['move', 'main', 'bonus'] as const;
+
+/** Everything the editor can change on one entity, as plain data another screen can apply. */
+export interface DevResources {
+  numbers: number[];
+  flags: boolean[];
+  actions: number[];
+  /** Word charges, in loadout order. */
+  charges: number[];
+  /** No statuses left: the editor can only clear them all. */
+  bare: boolean;
+}
+
+export function readDevResources(mage: Mage): DevResources {
+  return {
+    numbers: EDITED_NUMBERS.map((key) => mage[key]),
+    flags: EDITED_FLAGS.map((key) => mage[key]),
+    actions: EDITED_ACTIONS.map((key) => mage.actions[key]),
+    charges: mage.loadout.map((word) => mage.charges[word] ?? 0),
+    bare: mage.statuses.length === 0,
+  };
+}
+
+/** Apply values read on another screen. Anything malformed is left as it was. */
+export function writeDevResources(mage: Mage, values: DevResources): void {
+  if (!values || typeof values !== 'object') return;
+  const number = (list: unknown, index: number): number | null => {
+    const value = Array.isArray(list) ? Number(list[index]) : NaN;
+    return Number.isFinite(value) ? value : null;
+  };
+  EDITED_NUMBERS.forEach((key, index) => {
+    const value = number(values.numbers, index);
+    if (value != null) mage[key] = value;
+  });
+  EDITED_FLAGS.forEach((key, index) => {
+    const value: unknown = Array.isArray(values.flags) ? values.flags[index] : undefined;
+    if (typeof value === 'boolean') mage[key] = value;
+  });
+  EDITED_ACTIONS.forEach((key, index) => {
+    const value = number(values.actions, index);
+    if (value != null) mage.actions[key] = value;
+  });
+  mage.loadout.forEach((word, index) => {
+    const value = number(values.charges, index);
+    if (value != null) mage.charges[word] = value;
+  });
+  if (values.bare === true) mage.statuses = [];
 }
 
 export class DevResourceEditor {
@@ -179,6 +237,7 @@ export class DevResourceEditor {
       for (const [delta, text] of steps) {
         const b = this.button(bx, y - 4, text, () => {
           apply(delta);
+          this.host.edited(t);
           this.refresh();
           this.host.redraw();
         });
@@ -277,6 +336,7 @@ export class DevResourceEditor {
         on ? 'Turn off' : 'Turn on',
         () => {
           set(!on);
+          this.host.edited(t);
           this.refresh();
           this.host.redraw();
         },
@@ -352,6 +412,7 @@ export class DevResourceEditor {
         t.weaponReactionsUsed = 0;
         t.reactedThisCycle = false;
         t.reactionAvailable = t.canEverReact;
+        this.host.edited(t);
         this.refresh();
         this.host.redraw();
       },
@@ -364,6 +425,7 @@ export class DevResourceEditor {
       'Clear statuses',
       () => {
         t.statuses = [];
+        this.host.edited(t);
         this.refresh();
         this.host.redraw();
       },

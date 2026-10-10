@@ -98,6 +98,10 @@ For a page served by `npm run relay`, accept the prefilled relay URL. When using
     party leader clicks one of the one-to-four highlighted routes connected to the
     current location. Tunnel, room-entry, treasure/ore, and shared-pickaxe choices
     are relayed as `mine-choice` before all clients apply the same seeded result.
+    Treasure opens a shared loot screen. Each player can drag an item into their
+    own bag, or select the item and the bag. Claims use the same ordered choice
+    channel, validate bag ownership and capacity, and remove exactly one item
+    from the shared haul. All players must mark Ready before continuing.
     The map's Inventory button and `I` key open a read-only view of that client's
     local explorer; inspecting it sends no message and does not interrupt the
     leader's pending route choice.
@@ -119,6 +123,11 @@ roles, equipment, AI choices, action rolls, hazards, and loot all use the shared
 match seed. Every browser simulates them locally in the same order; only human
 decisions travel through the relay. All players should run the same build so that
 lockstep data and rules match.
+
+The `#` cheat panel works online too. Auto-success, infinite move, infinite
+actions, AI passive, and resource-editor changes are relayed like turn commands,
+so they apply on every screen. Use them on your own turn between actions. They
+reset at the start and end of each online fight. Skip dice stays local.
 
 ## Troubleshooting
 
